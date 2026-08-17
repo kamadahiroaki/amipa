@@ -55,6 +55,7 @@ echo "[build-prep] 4/4 コード配置"
 mkdir -p "$APP/prep"
 cp -r "$SRC/prep/amipa_prep" "$APP/prep/amipa_prep"
 # ★ホストの umask がそのまま入るとコンテナの実行ユーザから読めない。全ユーザ可にする。
+install -m 0644 "$SRC/NOTICE" "$APP/NOTICE" 2>/dev/null || true
 chmod -R a+rX "$APP"
 rm -rf /tmp/wheels /tmp/povu "${CARGO_HOME}" "$APP"/prep/amipa_prep/__pycache__
 echo "[build-prep] done: $(du -sh "$APP" | cut -f1)"

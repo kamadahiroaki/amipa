@@ -1,0 +1,43 @@
+AMIPA — Annotated Multi-resolution Interactive Pangenome Atlas
+Copyright (c) 2026 AMIPA authors
+
+本ソフトウェアは以下の第三者ソフトウェアを利用し、配布するコンテナイメージにはそれらの
+バイナリを同梱しています。各コンポーネントは**それぞれのライセンス**に従います。
+
+--------------------------------------------------------------------------------
+同梱している主なコンポーネント
+--------------------------------------------------------------------------------
+コンポーネント      ライセンス            入手元
+povu                MIT                   https://github.com/pangenome/povu
+Infomap             GPL-3.0-or-later      https://github.com/mapequation/infomap
+SQLite              Public Domain         https://sqlite.org/
+NumPy               BSD-3-Clause          https://numpy.org/
+SciPy               BSD-3-Clause          https://scipy.org/
+Numba / llvmlite    BSD-2-Clause          https://numba.pydata.org/
+Biopython           Biopython License     https://biopython.org/
+Matplotlib          Matplotlib License    https://matplotlib.org/
+PyO3 / rusqlite     MIT or Apache-2.0     https://pyo3.rs/ , https://github.com/rusqlite/rusqlite
+Node.js             MIT ほか              https://nodejs.org/
+better-sqlite3      MIT                   https://github.com/WiseLibs/better-sqlite3
+Express             MIT                   https://expressjs.com/
+React               MIT                   https://react.dev/
+PixiJS              MIT                   https://pixijs.com/
+Debian ベースイメージ 各パッケージのライセンス https://www.debian.org/
+
+同梱している版は `docker/requirements.txt`（Python）、`prep/core/*/Cargo.lock`（Rust）、
+`viewer/*/yarn.lock`（JavaScript）、`docker/build-prep.sh` の POVU_COMMIT（povu）で固定しています。
+コンテナ内の各パッケージの著作権表示は `/usr/share/doc/*/copyright` にそのまま残しています。
+
+--------------------------------------------------------------------------------
+GPL コンポーネントに関する表示（重要）
+--------------------------------------------------------------------------------
+本イメージには **Infomap（GPL-3.0-or-later）** が含まれます。AMIPA の前処理は Infomap を
+**同一プロセス内で読み込んで**使用するため、`prep/` 以下は GPL-3.0-or-later で配布します。
+
+GPL に基づき、同梱している GPL コンポーネントの**対応するソースコード**を入手できます。
+本イメージに含まれるのは上記の入手元で公開されている**無改変の版**であり、
+`docker/requirements.txt` に記載の版番号で取得できます。
+入手が困難な場合は本プロジェクトの連絡先までご請求ください（媒体費用実費のみで提供します）。
+
+Debian ベースイメージに含まれる GPL/LGPL のシステムパッケージについても同様に、
+Debian の公開アーカイブから対応するソースを入手できます。

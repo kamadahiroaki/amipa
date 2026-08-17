@@ -8,6 +8,7 @@ From: node:20-bookworm
 
 %files
     viewer /src/viewer
+    NOTICE /src/NOTICE
     prep/amipa_prep/cs_ops.py /src/viewer/scripts/cs_ops.py
     docker/build-viewer.sh /usr/local/bin/build-viewer.sh
     docker/amipa           /usr/local/bin/amipa

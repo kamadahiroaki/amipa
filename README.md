@@ -32,3 +32,10 @@ docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" \
 | `docker/` | 2 つのイメージ定義（Docker / Apptainer で同じビルド手順を共用） |
 | `deploy/` | クラウド公開の手順一式 |
 | `docs/` | 仕様と使い方 |
+
+## ライセンスと引用
+
+- `prep/` は **GPL-3.0-or-later**（Infomap を同一プロセスで利用するため）、
+  `viewer/` は **MIT**。同梱物の一覧は [`NOTICE`](NOTICE)、詳細は [docs/licensing.md](docs/licensing.md)
+- 引用のしかたは [docs/citation.md](docs/citation.md)（AMIPA 本体＋使った工程の外部ツール）
+- コンテナ内では `amipa licenses` で同梱物のライセンス表示を確認できます
