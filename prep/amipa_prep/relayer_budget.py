@@ -129,7 +129,7 @@ def relayer_budget(parent_np, size_np, floor=1000, r_min=2.0, r_max=2.5, shrink=
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--typed", required=True, help="path<TAB>kind<TAB>atom(lod_snarl_infomap --dump-typed)")
+    ap.add_argument("--typed", required=True, help="path<TAB>kind<TAB>atom(lod.py --dump-typed)")
     ap.add_argument("--floor", type=int, default=1000, help="最上層(全体図)の目標グリフ数(既定1000)")
     ap.add_argument("--rmin", type=float, default=2.0, help="上段(全体側)の層あたり比(既定2)")
     ap.add_argument("--rmax", type=float, default=2.5, help="下段(詳細側)の層あたり比(既定2.5)")

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """components.py — 連結成分の分類（major=本体 / debris=孤立ノード・微小成分）の共有情報源。
 
-UNIFIED_INFOMAP_LOD_SPEC.md §8。LOD 木（lod_snarl_infomap.py）とレイアウト
+UNIFIED_INFOMAP_LOD_SPEC.md §8。LOD 木（lod.py）とレイアウト
 （scripts/layout_sgd_plain.py）が同一規則で成分を major/debris に分ける。
 
 - major : 重み(=内部 GFA ノード数) >= τ、または ref を担う成分。ゲノム全体では各染色体が major。

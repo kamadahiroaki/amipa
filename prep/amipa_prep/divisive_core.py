@@ -2,13 +2,13 @@
 """divisive_core.py — 「multilevel Infomap をクラスタ毎に掛け直す divisive(トップダウン再帰分割)」
 の共有コア。UNIFIED_INFOMAP_LOD_SPEC.md §2 の実装。
 
-App A(商グラフ=layer0 の上)と App B(各 snarl 内部=layer0 の下)の両方が、atoms/adjf/posf を
+App A(商グラフ=layer0 の上)と App B(各バブル内部=layer0 の下)の両方が、atoms/adjf/posf を
 差し替えてこの 1 本の `divisive_build` を呼ぶ。どの階層でも「1 回展開の子(fan-out) <= B」を保証。
 
 ノード表現(タプル; App A/App B/合成で共通):
   ("L", atom)          葉。atom は App A では supernode id、合成後は GFA node id。
   ("G", [children..])  Infomap-cluster 中間ノード(自然コミュニティ or 縮約 or 座標チャンク)。
-  ("S", F, [children]) snarl 展開ノード(App B のみ; F=flubble id)。
+  ("S", F, [children]) バブル展開ノード(App B のみ; F=flubble id)。
 
 コアが生成するのは ("L")/("G") のみ。App B が葉(atom=kid)を resolve して ("S")/("L") に置換する。
 
@@ -128,7 +128,7 @@ def chain_partition(atoms, adjf, posf, B, stats=None, ratio=1.2):
     稀な分岐/閉路への許容。tangle は辺数が n を大きく超えるので確実に弾かれる。
     コスト: adjf を最大 1 パス(O(n+E))。上限超過で早期 bail するので tangle は途中で止まる。
 
-    根拠(chr22 実測): vg snarl 木の巨大 fan-out(最大 293176 直接子)は max 境界共有=2 の直列
+    根拠(chr22 実測): 分解器が出す巨大 fan-out(最大 293176 直接子)は max 境界共有=2 の直列
     チェーン(連続小バブル ~21万; 98.9% が末端小バブル)。線形集合上で Infomap は degenerate な
     深い peel-chain を吐く(depth534 の主因)。チェーンは本質的に線形なので posf 順の balanced
     bracketing が正解(=速さと正確性が両立; size 閾値の LOD③ と違い tangle を誤爆しない)。
@@ -219,8 +219,8 @@ def divisive_build(atoms, adjf, posf, B, stats=None, seed=1, use_meta=True, smal
         直接 B 分割する(既定 0=無効=bit-identical)。tiny-Infomap 呼び出しの連鎖(1〜2 atom ずつ
         剥がす trivial cut = 深さ~n の peel-chain)を balanced な深さ~log_B(n) に潰し、
         呼び出し回数を削る。bit-identical でない(品質/速度トレードオフ; 不変条件で検証)。
-    large: LOD③ large-n cutoff。n>=large の巨大集合(mega-snarl 等)も Infomap を省き座標チャンクで
-        B 分割する(既定 0=無効)。巨大 snarl 上の高価な Infomap 実行と、その unbalanced cut による
+    large: LOD③ large-n cutoff。n>=large の巨大集合(巨大バブル等)も Infomap を省き座標チャンクで
+        B 分割する(既定 0=無効)。巨大バブル上の高価な Infomap 実行と、その unbalanced cut による
         深い peel-chain を balanced な深さ~log_B(n) に潰す。App B の律速(巨大 Infomap)対策。
     chain_ratio: chain-aware 分割の発火(既定 0.0=無効=bit-identical)。>0 なら Infomap の前に
         chain_partition を試し、誘導グラフが線形(辺数<=chain_ratio*n=連続バブル)なら Infomap を

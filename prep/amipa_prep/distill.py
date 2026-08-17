@@ -7,7 +7,7 @@
 下流の numpy 計算は不変 → 出力は構成的に bit-identical。
 
 ノードID densify(密詰め): dense id = 元 int id の「ソート順位(1-based)」。
-  - vg snarls(①)と中間の ID 空間を一致させるための前段(§10.2)。① は dense GFA を入力に取る
+  - ①バブル分解と中間の ID 空間を一致させるための前段(§10.2)。① は dense GFA を入力に取る
     (dense=identity のときは元 GFA をそのまま使ってよい)。
   - chr22 PGGB は S 行 id が既に 1..N の連番 → dense=identity(id_map=arange)。この場合 remap は恒等で
     既存 db と bit-identical。minigraph の文字列 id は上流の sed で整数化済み前提(distill は int id を仮定)。
@@ -82,7 +82,7 @@ def main():
     ap.add_argument("--gfa", required=True)
     ap.add_argument("--out", required=True, help="出力ディレクトリ prefix")
     ap.add_argument("--emit-dense-gfa", default=None,
-                    help="dense≠identity のとき ①(vg snarls)用の dense id GFA をここに書く。"
+                    help="dense≠identity のとき ①用の密 ID GFA（バブル分解器 povu に渡す） をここに書く。"
                          "identity なら書かない(元 GFA をそのまま使えるため)。")
     ap.add_argument("--emit-seq", dest="emit_seq", action="store_true", default=True,
                     help="葉の塩基配列を s_seq.bin(連結生bytes)+s_seq_off.npy(CSR byte offset, file order, N+1)へ"
@@ -248,7 +248,7 @@ def main():
 
     # ---- dense GFA(① 用): identity でなければ書く ----
     if args.emit_dense_gfa and not identity:
-        log(f"emit dense GFA for ① (vg snarls): {args.emit_dense_gfa}")
+        log(f"emit dense GFA for ① (bubble decomposition): {args.emit_dense_gfa}")
         _rewrite_dense_gfa(args.gfa, args.emit_dense_gfa, uniq)
     elif args.emit_dense_gfa:
         log("dense=identity → 元 GFA をそのまま ① に使えるので dense GFA は書かない")

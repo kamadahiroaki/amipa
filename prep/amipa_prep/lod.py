@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""lod_snarl_infomap.py — App B(layer0 の「下」= 各 snarl 内部)＋全体合成。
+"""lod.py — App B(layer0 の「下」= 各バブル内部)＋全体合成。
 
 UNIFIED_INFOMAP_LOD_SPEC.md §4。root から個別 GFA ノードまで、どの階層でも fan-out<=B を保証する
 統一 LOD 木を作る。2 粒度に同一の divisive_core を適用:
   App A: 商グラフ(layer0 supernode)上の divisive           … infomap_supernode + divisive_core
-  App B: 各 snarl 内部で、直接子(直接葉ノード＋子 flubble)が >B のとき局所商グラフに divisive
+  App B: 各バブル内部で、直接子(直接葉ノード＋子バブル)が >B のとき局所商グラフに divisive
 seam(layer0)で App A の葉(layer0 unit)を種別解決:
-  (0,node)背骨 → LOD 葉 / (1,flubble F) → expand_snarl(F) / (2,members) → strip(座標≤B分割)
+  (0,node)背骨 → LOD 葉 / (1,flubble F) → expand_bubble(F) / (2,members) → strip(座標≤B分割)
 
 このスクリプト1本でフル pipeline(ExpandModel → super-map → 商グラフ → App A → App B → 合成木)を
 実行し、最終 LOD 木の統計(葉数==N, 全階層 max fan-out<=B, depth, per-level)を出す。
 
 用法:
-  lod_snarl_infomap.py --gfa X.gfa --pvst A.pvst [B.pvst ...] [--B 10] [--out tree.tsv]
+  lod.py --gfa X.gfa --pvst A.pvst [B.pvst ...] [--B 10] [--out tree.tsv]
   ※ GFA と pvst は同一 node-id 空間であること(compact GFA は odgi が再採番するので不可;
      povu をかけた元 GFA を使う)。
 """
@@ -58,8 +58,8 @@ def compute_top(M):
     return top
 
 
-class SnarlExpander:
-    """App B: snarl 内部の展開＋全体合成。divisive_core を共有。"""
+class BubbleExpander:
+    """App B: バブル内部の展開＋全体合成。divisive_core を共有。"""
 
     HUGE = 1 << 62
 
@@ -74,11 +74,11 @@ class SnarlExpander:
         self.chain_ratio = chain_ratio  # chain-aware 分割(0.0=無効)。連続バブルを Infomap 省き posf 分割
         self.edge_hapw = edge_hapw   # None=L行多重度 / dict(ekey->相異ハプロ数)=ハプロ重み
         self.dstats = Stats()
-        self.n_snarl = 0
-        self.n_snarl_big = 0        # 直接子 >B で divisive をかけた snarl 数
+        self.n_bubble = 0
+        self.n_bubble_big = 0        # 直接子 >B で divisive をかけたバブル数
         self.max_direct_children = 0  # 生の直接子数(縮約前)の最大 = 旧 fan-out 相当
 
-    # ---- 直接子(直接葉ノード + 子 flubble) ----
+    # ---- 直接子(直接葉ノード + 子バブル) ----
     def direct_children(self, F):
         M = self.M
         kids = [("n", nd) for nd in M.direct_leaves.get(F, ())]
@@ -151,7 +151,7 @@ class SnarlExpander:
     def resolve(self, kid, members):
         if kid[0] == "n":
             return ("L", kid[1])                    # GFA ノード = LOD 葉
-        return self.expand(kid[1], members)          # 子 flubble を再帰
+        return self.expand(kid[1], members)          # 子バブル を再帰
 
     def _attach(self, node, cm):
         """divisive の ("L",kid)/("G",..) 木の葉(kid)を resolve で解決。"""
@@ -161,7 +161,7 @@ class SnarlExpander:
         return ("G", [self._attach(c, cm) for c in node[1]])
 
     def expand(self, F, member_nodes):
-        self.n_snarl += 1
+        self.n_bubble += 1
         kids = self.direct_children(F)
         self.max_direct_children = max(self.max_direct_children, len(kids))
         cm, member_kid = self.bucket(F, member_nodes)
@@ -171,7 +171,7 @@ class SnarlExpander:
             children = [self.resolve(k, cm.get(k, [])) for k in order]
             return ("S", F, children)
         # >B 直接子 → 局所商グラフに divisive(Infomap-cluster 中間ノード挿入)
-        self.n_snarl_big += 1
+        self.n_bubble_big += 1
         ke = self._kid_quotient(cm, member_kid)
         adjf = lambda k: ke.get(k, {}).items()
         tree = divisive_build(kids, adjf, posf, self.B, stats=self.dstats,
@@ -322,13 +322,13 @@ def main():
                     help="LOD② small-n cutoff: n<=この値の小集合は Infomap を省き座標チャンクで "
                          "B 分割(既定0=無効=bit-identical)。tiny-Infomap 連鎖・深さを削る。目安 2*B")
     ap.add_argument("--large-cutoff", type=int, default=0,
-                    help="LOD③ large-n cutoff: n>=この値の巨大集合(mega-snarl)は Infomap を省き "
+                    help="LOD③ large-n cutoff: n>=この値の巨大集合(巨大バブル)は Infomap を省き "
                          "座標チャンクで B 分割(既定0=無効)。App B 律速の巨大 Infomap と深い "
                          "peel-chain を潰す。目安 数千")
     ap.add_argument("--chain-ratio", type=float, default=0.0,
                     help="chain-aware 分割: 誘導グラフが線形(無向辺数<=ratio*n=連続バブル)なら "
                          "Infomap を省き posf(ゲノム順)で B 分割(既定0=無効)。size でなく線形性で "
-                         "発火し tangle を誤爆しない。vg snarl 木の巨大直列チェーン対策。推奨 1.2")
+                         "発火し tangle を誤爆しない。巨大な直列チェーン対策。推奨 1.2")
     ap.add_argument("--nsplit", type=int, default=6)
     ap.add_argument("--no-meta", action="store_true",
                     help="reduce_to_B の preferred-number Infomap 再クラスタ段を無効化(coalesce のみ)")
@@ -339,7 +339,7 @@ def main():
                          "mult=L行多重度(旧・比較用)")
     ap.add_argument("--out", default=None, help="葉(path<TAB>node)出力先(省略で書かない)")
     ap.add_argument("--tail-analysis", action="store_true",
-                    help="dominant 鎖(半減の尾)を種別(G=Infomap/S=snarl)で解剖して報告")
+                    help="dominant 鎖(半減の尾)を種別(G=Infomap/S=バブル)で解剖して報告")
     ap.add_argument("--dump-typed", default=None,
                     help="全ノードを path<TAB>kind(G/S/L)で出力(種別付き再レイヤリング用)")
     args = ap.parse_args()
@@ -403,7 +403,7 @@ def main():
     astats = Stats()
     adjf = lambda a: adj.get(a, ())
     posf = lambda a: a
-    exp = SnarlExpander(M, B=args.B, seed=args.seed, use_meta=not args.no_meta,
+    exp = BubbleExpander(M, B=args.B, seed=args.seed, use_meta=not args.no_meta,
                         edge_hapw=edge_hapw, small=args.small_cutoff, large=args.large_cutoff,
                         chain_ratio=args.chain_ratio)
 
@@ -421,7 +421,7 @@ def main():
             f"smallcut={astats.n_smallcut} largecut={astats.n_largecut} "
             f"chain={astats.n_chain}(maxn={astats.max_chain_n}) "
             f"reduce={astats.n_reduce} infomap_time={astats.infomap_time:.1f}s")
-        log("App B: expand snarls + compose (major) ...")
+        log("App B: expand bubbles + compose (major) ...")
         major_root = exp.compose(appA, l0, nodes_by_topflub)
     else:
         major_root = None
@@ -445,7 +445,7 @@ def main():
         root = ("G", [major_root, debris_root])     # 最上位=[本体, debris bin]
     else:
         root = major_root if major_root is not None else debris_root
-    log(f"App B done: snarls_expanded={exp.n_snarl} big(>B direct)={exp.n_snarl_big} "
+    log(f"App B done: bubbles_expanded={exp.n_bubble} big(>B direct)={exp.n_bubble_big} "
         f"max_raw_direct_children={exp.max_direct_children} "
         f"infomap(appB)={exp.dstats.n_infomap} positional={exp.dstats.n_positional} "
         f"smallcut={exp.dstats.n_smallcut} largecut={exp.dstats.n_largecut} "
@@ -468,9 +468,9 @@ def main():
     print(f"max fan-out (全階層) = {info['max_fanout']}  "
           f"({'OK <=' + str(B) if info['max_fanout'] <= B else 'VIOLATION'})")
     print(f"depth                = {info['depth']}")
-    print(f"max raw direct-children of a snarl (縮約前, 旧fan-out相当) = "
+    print(f"max raw direct-children of a bubble (縮約前, 旧fan-out相当) = "
           f"{exp.max_direct_children}  -> 縮約後は max fan-out {info['max_fanout']}")
-    print(f"snarls expanded      = {exp.n_snarl}  (>B direct → divisive: {exp.n_snarl_big})")
+    print(f"bubbles expanded     = {exp.n_bubble}  (>B direct → divisive: {exp.n_bubble_big})")
     print(f"infomap calls        = App A {astats.n_infomap} + App B {exp.dstats.n_infomap}")
     lv = info["level_nodes"]
     print("per-level node count  = " +
@@ -484,7 +484,7 @@ def main():
         dk = ta["dom_kind"]
         print(f"\n=== dominant 鎖の種別解剖(半減の尾の正体) ===")
         print(f"dominant nodes       = {ta['n_dom']}  "
-              f"(G=Infomap {dk['G']}, S=snarl {dk['S']})")
+              f"(G=Infomap {dk['G']}, S=バブル {dk['S']})")
         print("dominant fan-out hist = " +
               ", ".join(f"{k}:{ta['dom_fan'][k]}" for k in sorted(ta['dom_fan'])))
         print(f"longest dominant chain = {ta['max_chain']}  "
@@ -492,7 +492,7 @@ def main():
         ch = ta["chain"]
         ns = sum(1 for k, _, _ in ch if k == "S")
         ng = sum(1 for k, _, _ in ch if k == "G")
-        print(f"  最長鎖の種別内訳     = S(snarl) {ns} / G(Infomap) {ng} of {len(ch)}")
+        print(f"  最長鎖の種別内訳     = S(バブル) {ns} / G(Infomap) {ng} of {len(ch)}")
         print(f"  最長鎖 (kind,size,fanout) 先頭12 = {ch[:12]}")
 
     if args.dump_typed:

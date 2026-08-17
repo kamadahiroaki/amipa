@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""layout_emit_db_relayer.py — 統一 LOD 木(lod_snarl_infomap.py の *.unified.typed)を
+"""layout_emit_db_relayer.py — 統一 LOD 木(lod.py の *.unified.typed)を
 「予算駆動の省レイヤ展開(relayer_budget)」で LOD 層に畳んでから viewer 多層 layered.db にする。
 
 ■ layout_emit_db_unified.py との違い(なぜ別スクリプトか)
@@ -2774,7 +2774,7 @@ def emit_hap_mult(cur, con, gfa, distill, sids, ord_ids, row2node, rep_at,
         uk, mx = _group_max(vis * H + lg_hap, lg_cnt)
         vis_u = uk // H; hap_u = (uk % H).astype(np.int64)
         idx_in_P = posmap[vis_u]
-        kindok = (kind[vis_u] == 0) | (kind[vis_u] == 2)   # 葉(L=0) or flubble/snarl(S=2) のみ
+        kindok = (kind[vis_u] == 0) | (kind[vis_u] == 2)   # 葉(L=0) or バブル(S=2) のみ
         keep = (idx_in_P >= 0) & kindok                    # present 全 hap(cn≥1)を格納
         idx_in_P = idx_in_P[keep]; hap_u = hap_u[keep]; mx = mx[keep]
         for batch in _pack_mult_rows(rid_base, idx_in_P, hap_u, mx, INS_CHUNK):
@@ -3219,7 +3219,7 @@ def orient_by_ref(xy, ids, ei, ej, gfa, distill, ref_key, log=lambda *a: None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--typed", required=True, help="lod_snarl_infomap.py の *.unified.typed(path<TAB>kind<TAB>atom)")
+    ap.add_argument("--typed", required=True, help="lod.py の *.unified.typed(path<TAB>kind<TAB>atom)")
     ap.add_argument("--npz", required=True, help="layout_sgd_plain.py の npz(ids,xy,ei,ej[,esu,esv])")
     ap.add_argument("--gfa", default=None, help="ノード size(bp) 用。無ければ size=葉数")
     ap.add_argument("--distill", default=None,
@@ -3774,7 +3774,7 @@ def main():
     # 確定後に葉の連結成分を求めて木へ伝播し、ref_strand と同じ rowid 規約で UPDATE する。
     if "comp_id" not in _ncols:
         cur.execute("ALTER TABLE nodes ADD COLUMN comp_id INTEGER")
-    # kind 列(0=葉/L, 1=クラスタ/G, 2=flubble・snarl/S)。node_name 接頭辞(n/S/G)と同義だが明示 1 バイト属性で
+    # kind 列(0=葉/L, 1=クラスタ/G, 2=バブル/S)。node_name 接頭辞(n/S/G)と同義だが明示 1 バイト属性で
     # クエリしやすく(is_bubble は size!=1 の集約フラグで kind ではない=別物・残置)。ref_strand と同じ rowid 規約で UPDATE。
     if "kind" not in _ncols:
         cur.execute("ALTER TABLE nodes ADD COLUMN kind INTEGER")

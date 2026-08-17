@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""infomap_supernode.py — 「先に snarl を畳んで数万スーパーノードにしてから Infomap」版。
+"""infomap_supernode.py — 「先に バブルを畳んで数万スーパーノードにしてから Infomap」版。
 
 Phase B の layer0 unit(=top-level flubble を1個に畳んだタイル + 背骨ノード群; PGGB で ~86,062,
 chrY で ~260) を頂点とし、GFA エッジが別 unit を跨ぐ本数を重みとする商グラフ(quotient graph)を
@@ -171,7 +171,7 @@ def ekey(u, v):
 def build_edge_hapw(gfa):
     """P 行を1回走査し、生 GFA 辺ごとの『相異ハプロタイプ数』を事前計算する(App B 用に保存)。
 
-    App B(_kid_quotient)は snarl 発火のたびに直接子間の生辺を数えるので、path を毎回走査すると
+    App B(_kid_quotient)は バブル発火のたびに直接子間の生辺を数えるので、path を毎回走査すると
     重い。ここで一度だけ計算して dict に保存し、以降は辞書引きだけにする。
 
     HPRC/MC の P 行は同一 hapkey(sample#hap) のコンティグが連続して並ぶので、edge_lasthap で

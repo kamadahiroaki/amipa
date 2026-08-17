@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """relayer_common.py — LOD 再レイヤリング共通ユーティリティ。
 
-`build_typed()`: lod_snarl_infomap.py --dump-typed の出力(path<TAB>kind<TAB>atom)から
+`build_typed()`: lod.py --dump-typed の出力(path<TAB>kind<TAB>atom)から
 統一 LOD 木を復元する。スケジューラ(現状 relayer_budget のみ)と emitter の共通入口。
 以前は relayer_kindaware.py に同居していたが、kindaware スケジューラ廃止に伴いここへ移設。
 """

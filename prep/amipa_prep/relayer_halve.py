@@ -2,9 +2,9 @@
 """relayer_halve.py — 統一 LOD 木(path<TAB>node)を「半減展開」で LOD 層に再編し層数を測る。
 
 odgitest(Phase B / balanced_expand)で採用したのと同じ戦略を、既にできた細かい木
-(lod_snarl_infomap.py の depth31 木など)への後処理として掛ける:
+(lod.py の depth31 木など)への後処理として掛ける:
 
-  各グリフ g(= 木の内部ノード。Infomap クラスタ "G" でも snarl "S" でも区別しない)を、
+  各グリフ g(= 木の内部ノード。Infomap クラスタ "G" でもバブル "S" でも区別しない)を、
   「展開後の最大ピースの子孫ノード数が親 g の半分以下」になるまで **一度に** 展開する。
   具体的には g のサブツリーをしきい値 T=size(g)//2 で切ったフロンティア(=size<=T の最も浅い
   ノード集合)を次の LOD 層のグリフとする。size(child)<=T なら即採用、超える枝だけ更に潜る。
@@ -117,7 +117,7 @@ def halving_layers(off, kids, size):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--tree", required=True,
-                    help="path<TAB>node の LOD 木(lod_snarl_infomap.py --out)")
+                    help="path<TAB>node の LOD 木(lod.py --out)")
     args = ap.parse_args()
     t0 = time.time()
 

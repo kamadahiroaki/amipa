@@ -30,6 +30,9 @@ amipa prep add-annot --out graph.amipa --gene gencode.gtf.gz
 amipa prep add-reads --out graph.amipa --reads HG002=HG002.gaf
 ```
 
+アノテーションは**生のファイルをそのまま渡す**（事前に別ツールでグラフへ射影しておく必要はない）。
+射影は AMIPA が参照座標とパスをたどって行う。
+
 リードの GAF は **path のノード ID がアトラスの葉ノードと一致**している必要がある
 （`vg giraffe --named-coordinates` の出力など）。ずれていると大半のリードが捨てられ、
 `skip` の割合が高く報告される。
