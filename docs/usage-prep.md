@@ -75,5 +75,24 @@ amipa prep run --gfa big.gfa --out big.amipa \
 | 1 染色体（大, GFA 0.8GB） | 約 25 分 | 16GB | 約 9GB |
 | 全ゲノム（GFA 48GB） | 約 11 時間 | 段により 96–320GB | 約 260GB |
 
-全ゲノム規模は段ごとに必要な資源が大きく違うので、ジョブスケジューラがある環境では
-**段を別ジョブに分ける**とよい（`amipa prep qsub --per-stage` が雛形を生成する）。
+段ごとに必要な資源は大きく違う。**`amipa prep plan`** が入力サイズから目安を出す。
+
+```bash
+amipa prep plan --gfa graph.gfa --out graph.amipa --threads 24
+```
+
+```
+  段             スロット      メモリ合計     /スロット      見込み時間
+  distill          1        67G       67G       1.0h
+  decompose        8       164G       21G       1.1h
+  lod              1       149G      149G       1.9h
+  layout          24        91G        4G       2.1h
+  emit             1       178G      178G       4.6h
+```
+
+ジョブスクリプトは**利用者が自分の環境の書式で書き、その中で `amipa prep run` を呼ぶ**
+（スケジューラの書式はサイトごとに違うので AMIPA は持たない）。
+AGE / Slurm の雛形は [`examples/hpc/`](../examples/hpc/) にある。
+
+多コアを使うのはレイアウト段だけなので、全ゲノム規模では**段を別ジョブに分ける**と
+200 コア時間ほど節約できる。中規模までは 1 ジョブで通す方が単純でよい。

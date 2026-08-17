@@ -18,9 +18,10 @@
     amipa prep status --out mygraph.amipa
     amipa prep run --out mygraph.amipa --from layout      # layout 以降を作り直す
     amipa prep run --out mygraph.amipa --only emit        # emit だけ
-    # HPC(AGE)なら「パイプライン丸ごと 1 ジョブ」を投げる（qsub が無い環境では上の run をそのまま使う）
-    amipa prep qsub --gfa graph.gfa --out mygraph.amipa   # → <out>/run.qsub.sh を生成
-    amipa prep qsub ... --per-stage                     # WG 等: 段別ジョブ + -hold_jid 連結
+    # ジョブスケジューラで回すとき: 資源の目安を見てから、自分の環境の書式で
+    # ジョブスクリプトを書き、その中で上の run（必要なら --only <段>）を呼ぶ。
+    amipa prep plan --gfa graph.gfa --out mygraph.amipa  # 段ごとのスロット/メモリ/時間の目安
+    #                                                      雛形は examples/hpc/
 
 **再開の考え方**: 段ごとに「コマンド行＋入力ファイルの署名(サイズ,mtime)」から鍵を作って
 `state.json` に記録する。次回は鍵と出力の実在を照合し、変わっていない段は飛ばす。
@@ -645,149 +646,59 @@ def execute(b: Bundle, a, want: list[str]) -> None:
     print(f"  apptainer exec --cleanenv -B {b.root}:/data ~/pangenome/ggb/sif/amipa-viewer.sif amipa check")
 
 
-# ───────────────────────────── qsub 生成 ─────────────────────────────
+# ─────────────────────── 資源の見積り（plan） ───────────────────────
 
 def sizing(gfa_bytes: int, threads: int) -> dict:
-    """AGE のリソース要求の目安。**s_vmem は 1 スロットあたり**（ジョブ全体 = s_vmem × slots）。
+    """段ごとの資源の目安。**HPRC MC-GRCh38 v1.0（GFA 48.3GB）の実測に合わせて較正**してある。
 
-    実測の足場: WG MC(GFA 48GB) が distill 200G / povu 20G / lod 180G / layout 8G×24 / emit 320G。
-    chrY(0.08GB) や chr22 では下限が効く。合わなければ生成後のスクリプトを直接編集してよい。
+    実測 maxvmem（= スケジューラのメモリ上限が縛る量。RSS ではない）:
+        distill 48.2G / decompose 118.7G / lod 108.1G / layout 65.5G(24並列合計)
+        / emit 128.3G / annot 65.9G
+    ここに **約 1.4 倍の余裕**を掛けた値を返す。GFA サイズに比例させているが、
+    グラフの密度で変わるので**あくまで出発点**。実行後に実測して詰めるのが正しい。
+
+    メモリはジョブ全体の量(GB)で返す。スロットあたりで指定する必要がある環境では
+    total / slots で割ること（`amipa prep plan` はその値も出す）。
     """
     g = gfa_bytes / 1e9
-    # 下限は「小さいグラフでも実際に要る量」。★s_vmem は**仮想メモリ**の上限なので、実測 RSS より
-    # 余裕を持たせる（chr22 の ④ は RSS 28GB 実測 ＝ 32G 指定だと仮想天井で kill されうる）。
+    t = max(1, threads)
     return {
-        "distill":   dict(slots=1, vmem=clamp(4.5 * g, 16, 240)),
-        "decompose": dict(slots=threads, vmem=clamp(0.5 * g, 4, 40)),
-        "lod":       dict(slots=1, vmem=clamp(4.0 * g, 16, 220)),
-        "layout":    dict(slots=threads, vmem=clamp(0.25 * g, 4, 12)),
-        "emit":      dict(slots=1, vmem=clamp(7.0 * g, 64, 400)),
-        "annot":     dict(slots=1, vmem=clamp(1.0 * g, 16, 64)),
-        "reads":     dict(slots=1, vmem=clamp(1.0 * g, 16, 64)),
-        "bundle":    dict(slots=1, vmem=8),
+        "distill":   dict(slots=1, total=clamp(1.4 * g, 8, 320), hours=0.5 + g / 100),
+        "decompose": dict(slots=min(8, t), total=clamp(3.4 * g, 8, 400), hours=0.3 + g / 60),
+        "lod":       dict(slots=1, total=clamp(3.1 * g, 8, 400), hours=0.3 + g / 30),
+        "layout":    dict(slots=t, total=clamp(1.9 * g, 8, 300), hours=0.2 + g / 25),
+        "emit":      dict(slots=1, total=clamp(3.7 * g, 24, 480), hours=0.2 + g / 11),
+        "annot":     dict(slots=1, total=clamp(1.9 * g, 8, 200), hours=0.1 + g / 27),
+        "reads":     dict(slots=1, total=clamp(1.0 * g, 8, 200), hours=0.2),
+        "bundle":    dict(slots=1, total=8, hours=0.1),
     }
 
 
-def qsub_common_args(b: Bundle, a) -> list[str]:
-    """生成するジョブスクリプトに渡す共通引数（投入時とは別 cwd で走るので全て絶対パス）。"""
-    common = [f"--out {shlex.quote(str(b.root))}", f"--name {shlex.quote(b.name)}"]
-    if a.gfa:
-        common.append(f"--gfa {shlex.quote(str(a.gfa))}")
-    for opt, val in (("--threads", a.threads),
-                     ("--template", a.template), ("--povu", a.povu), ("--python", a.python),
-                     ("--ref-key", a.ref_key)):
-        common.append(f"{opt} {shlex.quote(str(val))}")
-    # --tmp / --mem-gib は**明示された時だけ**焼き込む。既定のままならジョブ側が自分の環境で
-    # 決め直す（$TMPDIR はスケジューラがノードローカルに用意することが多く、投入ノードで
-    # 決めた値を持ち込むより正しい）。
-    if getattr(a, "tmp_explicit", False):
-        common.append(f"--tmp {shlex.quote(str(a.tmp))}")
-    if getattr(a, "spill_explicit", False):
-        common.append(f"--spill {shlex.quote(str(a.spill))}")
-    # --mem-gib は**明示された時だけ**焼き込む。既定のままならジョブが自分の s_vmem(RLIMIT_AS)
-    # から決めるので、投入ノードの空きメモリ(数百GB)を持ち込んで kill されるのを避けられる。
-    if getattr(a, "mem_explicit", False):
-        common.append(f"--mem-gib {a.mem_gib}")
-    for opt, val in (("--band", a.band), ("--gene", a.gene), ("--region", a.region)):
-        if val:
-            common.append(f"{opt} {shlex.quote(str(val))}")
-    if a.region:
-        common.append(f"--region-ref {shlex.quote(a.region_ref)}")
-    for spec in (a.reads or []):
-        common.append(f"--reads {shlex.quote(spec)}")
-    if a.ribbon_disk:
-        common.append("--ribbon-disk")
-    return common
+def show_plan(b: Bundle, a) -> None:
+    """段ごとの資源の目安を出す。**ジョブスクリプトは利用者が自分の環境の書式で書く**。
 
-
-def gen_qsub_whole(b: Bundle, a, want: list[str], common: list[str]) -> None:
-    """パイプライン全体を **1 本のジョブ**にする（既定）。
-
-    ★AGE では `-l s_vmem` × `def_slot` が**ジョブ全体の上限(RLIMIT_AS)**として効く（実測:
-      8 slots × 2G → プロセスから見える上限 16GB）。つまり単スレの段(②④)も、多スロットで
-      取った合計メモリをそのまま使える。だから「slots=--threads、s_vmem=ピーク合計/slots」で
-      1 ジョブにまとめられる。
-    欠点: 単スレの段の間もスロットを占有する。WG のように ④ が数時間かかる場合は
-      `--per-stage`（段別 + -hold_jid）の方が資源効率がよい。
+    ここが出すのは「何スロット・どれだけメモリ・だいたい何時間」という中身の話だけで、
+    スケジューラの構文には踏み込まない（サイトごとに違うため）。雛形は examples/hpc/ にある。
     """
-    b.mkdirs()      # ★#$ -o のログ先が無いと AGE はジョブを開始できない
-    size = sizing(a.gfa.stat().st_size if a.gfa else 10 ** 9, a.threads)
-    peak = max(size[n]["slots"] * size[n]["vmem"] for n in want)
-    slots = max(1, a.threads)
-    vmem = max(2, -(-peak // slots))          # 切り上げ。slots × vmem >= peak
-    big = bool(a.gfa and a.gfa.stat().st_size > 5e9)
-    script = b.root / "run.qsub.sh"
-    script.write_text(f"""#!/bin/bash
-#$ -S /bin/bash
-#$ -cwd
-#$ -j y
-#$ -pe def_slot {slots}
-#$ -l s_vmem={vmem}G
-{'#$ -l ljob' if big else '# 2 日を超える見込みなら次行を有効にする（既定キューの上限は 2 日）'}
-{'' if big else '##$ -l ljob'}
-#$ -o {b.root}/work/log/pipeline.$JOB_ID.log
-#$ -N ggb_prep
-# ggb-prep が生成: **パイプライン全体を 1 ジョブで**通す。
-#   要求 = {slots} slots x {vmem}G = {slots * vmem}G（段別のピーク {peak}G を満たす量）
-#   途中で落ちても、同じコマンドを投げ直せば**終わった段は飛ばして続きから**走る。
-set -euo pipefail
-{shlex.quote(a.python)} {shlex.quote(str(Path(__file__).resolve()))} run \
-    {' '.join(common)}
-""")
-    script.chmod(0o755)
-    log(f"1 ジョブ版を生成: {script}")
-    print(f"  投入: qsub {script}")
-    print(f"  資源: def_slot {slots} / s_vmem {vmem}G（合計 {slots * vmem}G）")
-    print("  ※ 段ごとに資源を最適化したい（WG 等）なら --per-stage で段別チェーンを生成する")
-
-
-def gen_qsub(b: Bundle, a, want: list[str]) -> None:
-    b.mkdirs()          # ★#$ -o のログ先が無いと AGE はジョブを開始できない
-    qdir = b.root / "qsub"
-    qdir.mkdir(parents=True, exist_ok=True)
-    # 前回の生成物は消す（段の増減で番号がずれ、古い 70-bundle.sh などが残ると取り違える）
-    for old in list(qdir.glob("*.qsub.sh")) + list(qdir.glob("submit.sh")):
-        old.unlink()
-    size = sizing(a.gfa.stat().st_size if a.gfa else 10 ** 9, a.threads)
-    common = qsub_common_args(b, a)
-
-    names = []
-    for i, name in enumerate(want, start=1):
-        sz = size[name]
-        script = qdir / f"{i * 10:02d}-{name}.qsub.sh"
-        script.write_text(f"""#!/bin/bash
-#$ -S /bin/bash
-#$ -cwd
-#$ -j y
-#$ -pe def_slot {sz['slots']}
-#$ -l s_vmem={sz['vmem']}G
-#$ -o {b.root}/work/log/{name}.qsub.$JOB_ID.log
-#$ -N ggb_{name}
-# ggb-prep が生成。この段だけを走らせる（--only）。リソースは目安なので実測に合わせて編集してよい。
-# ★2 日で終わらない見込みなら `#$ -l ljob` を足す（既定キューの上限は 2 日で、超えると削除される）。
-set -euo pipefail
-{shlex.quote(a.python)} {shlex.quote(str(Path(__file__).resolve()))} run --only {name} \\
-    {' '.join(common)}
-""")
-        script.chmod(0o755)
-        names.append(script)
-
-    submit = qdir / "submit.sh"
-    lines = ["#!/bin/bash", "# 段を -hold_jid で連結して投入する（前段が終わってから次段が走る）。",
-             "# ★SHIROKANE の qsub は先に resource サマリを数行出すので、`awk '{print $3}'` では",
-             "#   ジョブ ID を取り違える。'Your job <id>' の行だけを見ること。",
-             "set -euo pipefail", "cd \"$(dirname \"$0\")\"", "prev=\"\""]
-    for s in names:
-        lines.append(f'jid=$(qsub ${{prev:+-hold_jid $prev}} {s.name} | awk \'/Your job/{{print $3}}\')')
-        lines.append('[ -n "$jid" ] || { echo "qsub 失敗: ' + s.name + '" >&2; exit 1; }')
-        lines.append(f'echo "{s.name} -> $jid"')
-        lines.append("prev=$jid")
-    lines.append('echo "最後のジョブ: $prev"')
-    submit.write_text("\n".join(lines) + "\n")
-    submit.chmod(0o755)
-    log(f"qsub スクリプトを生成: {qdir}")
-    print(f"  投入: {submit}")
-    print("  段別に投げ直したいときは 10-distill.qsub.sh などを個別に qsub してよい（--only なので独立）")
+    gfa_bytes = a.gfa.stat().st_size if a.gfa else 0
+    size = sizing(gfa_bytes, a.threads)
+    stages = [n for n in STAGES if n in build_stages(b, a)]
+    if a.json:
+        out = {n: {**size[n], "per_slot": -(-size[n]["total"] // size[n]["slots"])} for n in stages}
+        print(json.dumps({"gfa_bytes": gfa_bytes, "threads": a.threads, "stages": out},
+                         indent=2, ensure_ascii=False))
+        return
+    log(f"入力 GFA {human(gfa_bytes)} / --threads {a.threads} での目安")
+    print(f"  {'段':<10} {'スロット':>7} {'メモリ合計':>10} {'/スロット':>9} {'見込み時間':>10}")
+    for n in stages:
+        v = size[n]
+        per = -(-v["total"] // v["slots"])
+        print(f"  {n:<10} {v['slots']:>7} {str(v['total']) + 'G':>10} {str(per) + 'G':>9} {v['hours']:>9.1f}h")
+    print()
+    print("  ・HPRC MC-GRCh38 v1.0(GFA 48.3GB)の実測に約 1.4 倍の余裕を掛けた値。"
+          "グラフの密度で変わるので出発点として使い、1 度流したら実測で詰めること")
+    print("  ・スロットあたりで指定する環境（例: AGE の s_vmem）では「/スロット」の列を使う")
+    print("  ・ジョブスクリプトの雛形は examples/hpc/ を参照（中で `amipa prep run --only <段>` を呼ぶ）")
 
 
 # ───────────────────────────── CLI ─────────────────────────────
@@ -848,11 +759,9 @@ def main():
     p_rd = sub.add_parser("add-reads", help="既存バンドルにリード整列を足す")
     add_common(p_rd)
 
-    p_qs = sub.add_parser("qsub", help="AGE 用のジョブスクリプトを生成（既定: 全段を 1 ジョブ）")
-    add_common(p_qs, need_gfa=True)
-    p_qs.add_argument("--per-stage", action="store_true",
-                      help="段ごとに別ジョブにして -hold_jid で連結する（WG 等、段で資源が"
-                           "大きく違う場合に資源効率がよい）")
+    p_pl = sub.add_parser("plan", help="段ごとの資源の目安を出す（ジョブスクリプトは利用者が書く）")
+    add_common(p_pl, need_gfa=True)
+    p_pl.add_argument("--json", action="store_true", help="JSON で出す")
 
     a = ap.parse_args()
 
@@ -871,7 +780,7 @@ def main():
             print(f"  {extra}: {'あり' if (b.root / extra).exists() else 'なし'}")
         return
 
-    # 入力パスは絶対化する（qsub スクリプトは投入時とは別の cwd で走りうる）
+    # 入力パスは絶対化する（ジョブスクリプトは投入時とは別の cwd で走りうる）
     for attr in ("gfa", "band", "gene", "region", "template", "povu"):
         v = getattr(a, attr, None)
         if v:
@@ -882,7 +791,7 @@ def main():
     if a.tmp:                       # 未指定なら後段の resolve_tmp が決める
         a.tmp = str(Path(a.tmp).resolve())
 
-    # 既定値の補完。★qsub スクリプトには焼き込まない（各ジョブが自分の s_vmem から決める）
+    # 既定値の補完。★環境で変わる値は記録に焼き込まない
     a.mem_explicit = a.mem_gib is not None
     a.tmp_explicit = a.tmp is not None
     a.spill_explicit = getattr(a, "spill", None) is not None
@@ -898,14 +807,8 @@ def main():
     if not Path(a.template).exists():
         die(f"--template が無い: {a.template}（emitter はスキーマ供給用の DB を要る）")
 
-    if a.cmd == "qsub":
-        want = [s for s in STAGES if s != "bundle"] + ["bundle"]
-        stages = build_stages(b, a)
-        want = [s for s in want if s in stages]
-        if a.per_stage:
-            gen_qsub(b, a, want)
-        else:
-            gen_qsub_whole(b, a, want, qsub_common_args(b, a))
+    if a.cmd == "plan":
+        show_plan(b, a)
         return
 
     if a.cmd == "add-annot":
