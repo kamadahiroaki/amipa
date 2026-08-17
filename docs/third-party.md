@@ -8,7 +8,8 @@ AMIPA は以下を利用している。それぞれのライセンスは各プ�
 | Infomap | コミュニティ検出（解像度階層の構築） | https://www.mapequation.org/ |
 | SQLite（R*Tree / FTS5 を含む） | アトラスの格納と空間・文字列索引 | https://sqlite.org/ |
 | NumPy / SciPy / numba | 数値計算とレイアウト | — |
-| Biopython | BGZF 圧縮ファイルの読み出し | https://biopython.org/ |
+| zstd | リード実体の圧縮容器（seekable format） | https://facebook.github.io/zstd/ |
+| Biopython | 旧アトラスの BGZF 読み出しと配列の取り扱い | https://biopython.org/ |
 | PixiJS / React | 描画と画面 | — |
 | better-sqlite3 / Express | 閲覧側のサーバ | — |
 

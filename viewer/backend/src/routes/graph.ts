@@ -64,8 +64,9 @@ function raHasNodeId(d: any): boolean {
   } catch { return false }
 }
 
-// 案B(on-demand): リード転置索引(node_reads, サイドカー rd or 本体)があるか。有→ per-read 行は DB に無く、
-// BGZF GAF から Python ヘルパ(reads_query.py)で seek/parse する。cs スライスは ggb_reads と共有(TS 再実装しない)。
+// オンデマンド: リード転置索引(node_reads, サイドカー rd or 本体)があるか。有→ per-read 行は DB に無く、
+// zstd GAF(旧アトラスは BGZF)から Python ヘルパ(reads_query.py)で該当行だけ取り出して parse する。
+// cs スライスは前処理側と共有(TS 再実装しない)。
 function readNodeAvail(d: any): boolean {
   try { return readsSchema(d) != null } catch { return false }
 }
@@ -695,7 +696,7 @@ graphRouter.get('/read_alignments', (req, res) => {
   if (!db || !nodes) { res.status(400).json({ error: 'Missing db or nodes' }); return }
   const nodeList = nodes.split(',').filter(Boolean)
   if (nodeList.length === 0) { res.json({ reads: {}, totals: {} }); return }
-  // 案B(on-demand): read_node 索引がある DB は Python ヘルパで BGZF から取得（node ごとに 1 起動、並列）。
+  // オンデマンド: 転置索引がある DB は Python ヘルパで実体から取得（node ごとに 1 起動、並列）。
   if (readNodeAvail(getDb(db))) {
     const sample = (req.query as any).sample as string | undefined
     Promise.all(nodeList.map(n => {
@@ -840,7 +841,7 @@ graphRouter.get('/read_search', (req, res) => {
   const limit = Math.max(1, Math.min(100, Number((req.query as any).limit) || 30))
   try {
     const d = getDb(db)
-    // 案B(on-demand): read_node 索引がある DB は Python ヘルパで BGZF から検索・経路復元。
+    // オンデマンド: 転置索引がある DB は Python ヘルパで実体から検索・経路復元。
     if (readNodeAvail(d)) {
       readsHelper(db, ['--search', query, '--limit', String(limit)])
         .then(r => res.json(r))
@@ -923,7 +924,7 @@ graphRouter.get('/expand_node', (req, res) => {
     if (!seed) { res.json({ total: 0, added: [], columns: [] }); return }
 
     // seed のリード(seedAligns)を ranked → その aln_id が通る全ノード(getRows)で列レイアウト。
-    // レイアウトは共通。データ源だけ 案A=DB / 案B=helper cohort で差し替える。
+    // レイアウトは共通。データ源だけ「DB に行がある旧アトラス」と「helper cohort」で差し替える。
     const runLayout = (seedAligns: any[], getRows: (alnIds: number[]) => any[]) => {
       const ranked = seedAligns
         .map(a => ({ ...a, edge: (a.node_start <= EDGE || a.node_end >= seed.size - EDGE) ? 1 : 0 }))
@@ -1008,7 +1009,7 @@ graphRouter.get('/expand_node', (req, res) => {
     }
 
     if (readNodeAvail(d)) {
-      // 案B(on-demand): helper --expand で seed のリードと全通過ノードを cohort として取得。
+      // オンデマンド: helper --expand で seed のリードと全通過ノードを cohort として取得。
       readsHelper(db, ['--expand', node, '--max', String(ALN_CAP)]).then(r => {
         const cohort = (r && r.reads) || {}
         const seedAligns = (cohort[node] || []) as any[]
@@ -1020,7 +1021,7 @@ graphRouter.get('/expand_node', (req, res) => {
       return
     }
 
-    // 従来(案A 格納): seed aligns と aln_id→全ノードを DB から。新スキーマは node_id を node_name に解決。
+    // 旧アトラス(行を DB に持つ形): seed aligns と aln_id→全ノードを DB から。node_id は node_name に解決。
     const seedAligns = d.prepare(
       useId
         ? `SELECT aln_id, node_start, node_end, query_start, strand, mapq

@@ -49,7 +49,7 @@ done
 echo "[build-prep] 3/4 Python 依存"
 pip install --no-cache-dir -r "$SRC/docker/requirements.txt"
 pip install --no-cache-dir /tmp/wheels/*.whl
-python3 -c "import emit_core, reads_core, numpy, scipy, numba, infomap, Bio; print('[build-prep]   imports ok')"
+python3 -c "import emit_core, reads_core, numpy, scipy, numba, infomap, Bio, zstandard; print('[build-prep]   imports ok')"
 
 echo "[build-prep] 4/4 コード配置"
 mkdir -p "$APP/prep"

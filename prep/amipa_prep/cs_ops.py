@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-ggb_cs.py — GAF path / cs:Z / CIGAR の共有ヘルパ（numpy 非依存）。
+cs_ops.py — GAF path / cs:Z / CIGAR の共有ヘルパ（numpy 非依存）。
 
-ggb_reads.py(案A 格納), ggb_reads_ondemand.py(案B 索引構築), ggb_reads_query.py(案B 照会ヘルパ)が
-共有する。特に照会ヘルパはこの module だけ import すれば numpy を読まず起動が速い（cs ロジックは1箇所）。
-リファレンス実装: superbubble/ggb/dbbuilder/compute_graph_coverage.py。
+索引を作る側（reads_attach.py）と、閲覧側から呼ばれる照会ヘルパ（reads_query.py）が共有する。
+照会ヘルパはこの module だけ import すれば numpy を読まずに済み、1 リクエスト 1 プロセスでも起動が速い。
+**cs の切り出しはここ 1 箇所**にまとめてある（前処理と閲覧で解釈がずれないように）。
 """
 import re, zlib
 

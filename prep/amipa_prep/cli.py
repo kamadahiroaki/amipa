@@ -227,7 +227,7 @@ class Bundle:
           <name>.layered.db            本体
           <name>.layered.db.distill/   MSA 用（**実体ディレクトリ**。symlink にしない）
           <name>.layered.db.annot      アノテ（--band/--gene/--region 指定時）
-          reads/                       BGZF GAF（--reads 指定時）
+          reads/                       リード実体（seekable zstd の GAF。--reads 指定時）
           manifest.json                版・能力・sha256
           work/                        中間物（typed/npz/pvst/tree）と log。部分やり直しに要る
           state.json                   段の完了記録（再開用）
@@ -476,10 +476,13 @@ def build_stages(b: Bundle, a) -> dict:
             note="アノテ（band/gene/region）→ サイドカー＋被覆索引",
         )
 
-    # リード（任意）: 案B（オンデマンド）。GAF を BGZF 化して索引だけ DB に持つ。
+    # リード（任意）: オンデマンド。GAF を seekable zstd に詰め替え、索引だけをサイドカーに持つ。
+    #   表示に使わない大きなタグ（既定 bq:Z=塩基クオリティ）は保存しない＝BGZF の 1/8 になる。
     if a.reads:
         rcmd = [py, str(PKG / "reads_attach.py"), str(b.db),
-                "--out-dir", str(b.reads_dir)]
+                "--out-dir", str(b.reads_dir), "--level", str(a.reads_level)]
+        if a.reads_keep_tags:
+            rcmd += ["--drop-tags", ""]
         ins = [b.db]
         for spec in a.reads:
             if "=" not in spec:
@@ -734,6 +737,11 @@ def add_common(p, need_gfa=False):
     p.add_argument("--region", type=Path, help="領域 BED（CHM13 座標）")
     p.add_argument("--region-ref", default="chm13")
     p.add_argument("--reads", action="append", metavar="SAMPLE=GAF", help="リード整列（複数指定可）")
+    p.add_argument("--reads-level", type=int, default=9,
+                   help="リード実体の zstd 圧縮レベル（既定 9）。上げると容量は減るが構築が遅くなる"
+                        "（閲覧側は遅くならない）")
+    p.add_argument("--reads-keep-tags", action="store_true",
+                   help="GAF のタグを全部保存する（既定は表示に使わない bq:Z を捨てる）")
     p.add_argument("--hash-limit-gb", type=float, default=2.0,
                    help="manifest で sha256 を計算する上限サイズ（既定 2GB。大きい DB は省略）")
     p.add_argument("--force", action="store_true", help="全段やり直す")

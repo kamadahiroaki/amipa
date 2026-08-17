@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-ggb_reads_query.py — 案B(on-demand) の照会ヘルパ。backend(Node/TS)から起動され、
-索引(read_node/read_aln/read_src)＋BGZF GAF から必要行だけ seek/parse して JSON を返す。
+reads_query.py — オンデマンドのリード照会ヘルパ。backend(Node/TS)から起動され、
+索引(node_reads/read_aln/read_src)＋**seekable zstd の GAF**（旧アトラスは BGZF）から
+必要な行だけ取り出して parse し、JSON を返す。
 
-cs スライス等のロジックは ggb_reads.py と共有(二重実装回避)。1リクエスト=1プロセス(常駐しない)。
+cs スライス等のロジックは前処理側と共有(二重実装回避)。1リクエスト=1プロセス(常駐しない)。
 
 モード:
   --node nX [--sample S] [--region A-B] [--end-margin M --ends-over K] [--max N]
@@ -19,7 +20,9 @@ cs スライス等のロジックは ggb_reads.py と共有(二重実装回避)�
 """
 import sys, os, re, json, sqlite3, argparse
 _HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _HERE)
+# 共有モジュール(cs_ops / zstd_seek)は前処理側が正。イメージではビルド時に隣へ複製されるが、
+# リポジトリ直実行（開発時）では prep/amipa_prep にしか無いので両方見る。
+sys.path[:0] = [_HERE, os.path.join(_HERE, "..", "..", "prep", "amipa_prep")]
 from cs_ops import extract_node_cs, cs_to_cigar, extract_node_cigar  # cs ロジック共有(numpy 非依存)
 
 TOK = re.compile(r'([<>])(\d+)')
@@ -116,10 +119,10 @@ def sizes_for(con, gids):
     return out
 
 
-def resolve_bgzf(db_path, recorded):
-    """BGZF GAF の実在パスを返す。
+def resolve_read_file(db_path, recorded):
+    """リード実体の実在パスを返す。
 
-    ★`read_src.bgzf_path` には**構築時の絶対パス**が入っている。バンドルを別のマシンへ移したり
+    ★`read_src.path` には**構築時の絶対パス**が入っている。バンドルを別のマシンへ移したり
       コンテナに `/data` としてマウントすると当然そこには無い。DB の隣を探し直す:
         <db のディレクトリ>/reads/<basename>  →  <db のディレクトリ>/<basename>  → 記録された絶対パス
       （バンドル規約では reads/ 直下に置く）
@@ -132,23 +135,62 @@ def resolve_bgzf(db_path, recorded):
     return recorded          # 見つからなければ記録どおり（エラーメッセージに元パスを出したいので）
 
 
+def read_sources(con):
+    """read_src を (sample_no → (path, container, sample_id)) で返す。
+
+    現行は `path` + `container`（'zstd'）。**旧アトラスは `bgzf_path` 列で容器は BGZF** なので、
+    列の有無で見分けて両方読めるようにしておく（付け替えずに開ける）。
+    """
+    cols = {r[1] for r in con.execute("PRAGMA rd.table_info(read_src)")}
+    if "path" in cols:
+        q = "SELECT sample_no, path, COALESCE(container,'zstd'), sample_id FROM rd.read_src"
+    else:
+        q = "SELECT sample_no, bgzf_path, 'bgzf', sample_id FROM rd.read_src"
+    return {r[0]: (r[1], r[2], r[3]) for r in con.execute(q)}
+
+
 def open_readers(con, db_path=None):
-    src = {r[0]: r[1] for r in con.execute("SELECT sample_no, bgzf_path FROM rd.read_src")}
-    if db_path:
-        src = {k: resolve_bgzf(db_path, v) for k, v in src.items()}
-    name = {r[0]: r[1] for r in con.execute("SELECT sample_no, sample_id FROM rd.read_src")}
-    from Bio import bgzf
+    src = read_sources(con)
+    name = {sn: v[2] for sn, v in src.items()}
     readers = {}
+
     def get(sn):
         if sn not in readers:
-            readers[sn] = bgzf.BgzfReader(src[sn], "rb")
+            path, container, _ = src[sn]
+            if db_path:
+                path = resolve_read_file(db_path, path)
+            if container == "bgzf":
+                from Bio import bgzf                       # 旧アトラス互換
+                h = bgzf.BgzfReader(path, "rb")
+
+                def _bgzf(vo, h=h):
+                    h.seek(vo)                             # seek は移動後の位置を返す(捨てる)
+                    return h.readline().decode()
+                readers[sn] = _bgzf
+            else:
+                from zstd_seek import SeekableZstdReader
+                r = SeekableZstdReader(path, cache=4)      # 直近フレームは持つ＝順に引くと展開1回
+                readers[sn] = lambda vo, r=r: r.read_line(vo).decode()
         return readers[sn]
     return get, name
 
 
 def fetch_line(get_reader, sn, voff):
-    h = get_reader(sn); h.seek(voff)
-    return h.readline().decode()
+    return get_reader(sn)(voff)
+
+
+def fetch_lines(get_reader, rows):
+    """[(sample_no, aln_id, voff)] をまとめて取る。
+
+    ★**(サンプル, voff) 順に読む**。zstd は 1 フレーム(既定 256KiB)を展開して行を切り出すので、
+      近い位置の行をまとめて引けば展開が 1 回で済む。返す順は入力どおり。
+    """
+    order = sorted(range(len(rows)), key=lambda i: (rows[i][0], rows[i][2]))
+    out = [None] * len(rows)
+    for i in order:
+        sn, aid, vo = rows[i]
+        out[i] = (sn, aid, fetch_line(get_reader, sn, vo))
+    return out
 
 
 def main():
@@ -189,7 +231,7 @@ def main():
         rows.sort(key=lambda r: r[1])   # aln_id 順(決定的)
         total = len(rows)
         rows = rows[:args.max]
-        lines = [(sn, aid, fetch_line(get_reader, sn, vo)) for sn, aid, vo in rows]
+        lines = fetch_lines(get_reader, rows)
         parsed = [(sn, aid, parse_gaf_line(l)) for sn, aid, l in lines]
         parsed = [(sn, aid, d) for sn, aid, d in parsed if d]
         # サイズは登場する全 path ノード分をまとめて引く

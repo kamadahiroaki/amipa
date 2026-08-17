@@ -24,6 +24,13 @@ cp -r "$SRC/viewer/backend/dist"  "$APP/viewer/backend/dist"
 cp    "$SRC/viewer/backend/package.json" "$SRC/viewer/backend/yarn.lock" "$APP/viewer/backend/"
 cp -r "$SRC/viewer/frontend/dist" "$APP/viewer/frontend/dist"
 cp -r "$SRC/viewer/scripts"       "$APP/viewer/scripts"
+# ★前処理側と共有する python モジュール（形式・アルゴリズムの正は prep 側にある）。
+#   viewer イメージに prep は入れないので、必要な物だけここへ複製する。
+#   Apptainer の def は %files で先に viewer/scripts へ置くので、その場合は prep/ が無い＝skip。
+for m in cs_ops.py zstd_seek.py; do
+  [[ -f "$SRC/prep/amipa_prep/$m" ]] && cp "$SRC/prep/amipa_prep/$m" "$APP/viewer/scripts/$m"
+  [[ -f "$APP/viewer/scripts/$m" ]] || { echo "共有モジュール $m が無い"; exit 1; }
+done
 rm -rf "$APP/viewer/scripts/__pycache__"
 ( cd "$APP/viewer/backend" && yarn install --frozen-lockfile --production )
 rm -rf "$YARN_CACHE_FOLDER"

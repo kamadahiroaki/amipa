@@ -2,10 +2,10 @@
 name = "reads_core"
 version = "0.1.0"
 edition = "2021"
-# 案B(オンデマンド reads)の DB 付与 hot path を所有する Rust core。
-# GAF パス走査(点4=単スレ Python 律速)と edge_sup 集計(点2=Python dict 15-30GB)を
-# 高速・compact 化し、read_node を rusqlite で直書き。BGZF 書込/voff は Python(Bio.bgzf)のまま
-# = voff 互換リスクを負わない。emit_core と同流儀(PyO3 + maturin, rusqlite bundled)。
+# オンデマンド reads の索引付与 hot path を所有する Rust core。
+# GAF パス走査と edge_sup 集計を高速・compact 化し、転置索引を rusqlite で直書きする。
+# リード実体の容器(seekable zstd)の書き出しもここが担当する = GAF を 1 パスで読み切る。
+# emit_core と同流儀(PyO3 + maturin, rusqlite bundled)。
 
 [lib]
 name = "reads_core"
@@ -16,6 +16,7 @@ pyo3 = { version = "0.22", features = ["extension-module"] }
 numpy = "0.22"
 rusqlite = { version = "0.31", features = ["bundled"] }
 flate2 = "1.0"
+zstd = "0.13"
 
 [profile.release]
 opt-level = 3

@@ -10,6 +10,7 @@ From: node:20-bookworm
     viewer /src/viewer
     NOTICE /src/NOTICE
     prep/amipa_prep/cs_ops.py /src/viewer/scripts/cs_ops.py
+    prep/amipa_prep/zstd_seek.py /src/viewer/scripts/zstd_seek.py
     docker/build-viewer.sh /usr/local/bin/build-viewer.sh
     docker/amipa           /usr/local/bin/amipa
 
@@ -17,7 +18,7 @@ From: node:20-bookworm
     set -eux
     APTOPT="-o APT::Sandbox::User=root"          # fakeroot ビルドでは APT が降格できない
     apt-get $APTOPT update
-    apt-get $APTOPT install -y --no-install-recommends python3 python3-numpy python3-biopython ca-certificates
+    apt-get $APTOPT install -y --no-install-recommends python3 python3-numpy python3-biopython python3-zstandard ca-certificates
     rm -rf /var/lib/apt/lists/*
     rm -rf /src/viewer/backend/node_modules /src/viewer/backend/dist \
            /src/viewer/frontend/node_modules /src/viewer/frontend/dist
@@ -41,7 +42,8 @@ From: node:20-bookworm
 %test
     node -e "require('/opt/amipa/viewer/backend/node_modules/better-sqlite3')" && echo "better-sqlite3 OK"
     test -f /opt/amipa/viewer/frontend/dist/index.html && echo "frontend OK"
-    python3 -c "import numpy, Bio.bgzf" && echo "python deps OK"
+    python3 -c "import numpy, zstandard, Bio.bgzf" && echo "python deps OK"
+    python3 -c "import sys; sys.path.insert(0,'/opt/amipa/viewer/scripts'); import zstd_seek, cs_ops" && echo "shared modules OK"
 
 %labels
     Name amipa-viewer

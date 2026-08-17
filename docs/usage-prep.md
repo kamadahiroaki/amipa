@@ -37,6 +37,12 @@ amipa prep add-reads --out graph.amipa --reads HG002=HG002.gaf
 （`vg giraffe --named-coordinates` の出力など）。ずれていると大半のリードが捨てられ、
 `skip` の割合が高く報告される。
 
+リードの実体は `graph.amipa/reads/<サンプル>.gaf.zst` に**詰め替えて**置く。
+1 行ずつ取り出せるように zstd の独立フレームに刻んであり、`zstd -d` で普通に伸長できる。
+このとき**表示に使わないタグは保存しない**（既定で塩基クオリティ `bq:Z`。HiFi の GAF では
+これだけで 7 割が消える）。全部残したいときは `--reads-keep-tags`、
+容量を詰めたいときは `--reads-level 12`〜`19`（閲覧の速さは変わらない）。
+
 ## 途中からやり直す
 
 ```bash

@@ -1,24 +1,24 @@
-// reads_core — 案B(オンデマンド reads)DB 付与の hot path(Rust)。
+// reads_core — オンデマンド reads の索引付与の hot path(Rust)。
 //
-// この版では **BGZF 書込も Rust が担当**(GAF 1パス化・Python との二重読み解消・書込高速化)。
-// BGZF ライタは flate2 で自作: 自分で書いた BGZF に自分で計算した voff を付けるので、
-// **voff は Bio.bgzf の seek 仕様(coffset<<16 | uoffset)と構造的に一致**(検証は chrY で voff-seek spot-check)。
+// **リード実体の容器(seekable zstd)の書き出しもここが担当する**(GAF 1パス化・Python との
+// 二重読み解消・書込高速化)。形式の正は `prep/amipa_prep/zstd_seek.py` の docstring:
+// 「非圧縮 frame_bytes ごとに独立 zstd フレーム + 末尾に skippable frame のシークテーブル」
+// (zstd 公式 seekable format v0.1.0)。フレームは**行の切れ目でだけ閉じる**ので 1 行が
+// フレームを跨がない。位置(`read_aln.voff`)は**素の非圧縮バイトオフセット**＝容器実装に依存しない。
 //
-// Python(ggb_reads_ondemand.py)側:
-//   - スキーマ作成(read_node/read_aln/read_src/read_cov/read_meta)、read_src(bgzf_path)登録、con.close()
+// Python(reads_attach.py)側:
+//   - スキーマ作成(node_reads/read_aln/read_src/read_cov/read_meta)、read_src 登録、con.close()
 //   - reads_core.build_reads(...) を呼ぶ。read_meta は後で書く。
-// Rust(build_reads)側(=点2/4 ＋ BGZF 書込の効率化):
-//   - 各サンプル: 入力 GAF(gzip)を1パス読み → BGZF 書込(voff 採取) → path 走査
-//   - read_node/read_aln を rusqlite 直書き、edge_sup を compact HashMap、depth→read_cov、edges.read_support
+// Rust(build_reads)側:
+//   - 各サンプル: 入力 GAF(gzip)を1パス読み → zstd 書込(voff 採取) → path 走査
+//   - read_aln を rusqlite 直書き、edge_sup を compact HashMap、depth→read_cov、node_reads 転置索引
 //
-// ★Python 意味論の忠実移植(内容一致検証用, voff 以外):
-//   TOK=[<>](\d+) / ヘッダ(@)は BGZF に書くが voff/parse しない / aln_id は len(cols)>=12 で加算
-//   (座標parse失敗でも消費) / read_node は 1リード内 gid 重複を集約 / offset は found ノードのみ前進 /
+// ★Python 意味論の忠実移植(内容一致検証用):
+//   TOK=[<>](\d+) / ヘッダ(@)は容器に書くが voff/parse しない / aln_id は len(cols)>=12 で加算
+//   (座標parse失敗でも消費) / 転置索引は 1リード内 gid 重複を集約 / offset は found ノードのみ前進 /
 //   edge key は canonical (min,max)。
 
 use flate2::read::MultiGzDecoder;
-use flate2::write::DeflateEncoder;
-use flate2::{Compression, Crc};
 use numpy::PyReadonlyArray1;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -28,80 +28,79 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-const BGZF_BLOCK: usize = 65280; // htslib 標準の1ブロック非圧縮上限(=uoffset<65536 を保証)
-// BGZF EOF marker(空ブロック28B, 標準)
-const BGZF_EOF: [u8; 28] = [
-    0x1f, 0x8b, 0x08, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x06, 0x00, 0x42, 0x43, 0x02, 0x00,
-    0x1b, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
+const SKIPPABLE_MAGIC: u32 = 0x184D_2A5E; // zstd skippable frame(素の zstd は読み飛ばす)
+const SEEKABLE_MAGIC: u32 = 0x8F92_EAB1; // seekable format のフッタ
 
-/// flate2 ベースの最小 BGZF ライタ。virtual_position() は「次に書くバイト = 行頭」の仮想オフセット。
-struct BgzfLineWriter<W: Write> {
+/// 行を追記して「行頭の**非圧縮**オフセット」を返す seekable zstd ライタ。
+/// zstd_seek.py の SeekableZstdWriter と同じ物を書く(相互に読める)。
+struct ZstdSeekWriter<W: Write> {
     inner: W,
-    buf: Vec<u8>, // 現ブロックの非圧縮バッファ
-    coffset: u64, // 現ブロック開始の圧縮ファイルオフセット(=inner へ書いた総バイト)
+    buf: Vec<u8>,
+    frame_bytes: usize,
+    uoffset: u64,             // 現フレーム先頭の非圧縮オフセット
+    entries: Vec<(u32, u32)>, // (圧縮size, 非圧縮size)
+    cctx: zstd::bulk::Compressor<'static>,
 }
-impl<W: Write> BgzfLineWriter<W> {
-    fn new(inner: W) -> Self {
-        Self {
+impl<W: Write> ZstdSeekWriter<W> {
+    fn new(inner: W, frame_bytes: usize, level: i32) -> std::io::Result<Self> {
+        let mut cctx = zstd::bulk::Compressor::new(level)?;
+        // フレーム毎に xxhash を付ける(壊れた読み出しを黙って通さない)。
+        cctx.set_parameter(zstd::zstd_safe::CParameter::ChecksumFlag(true))?;
+        Ok(Self {
             inner,
-            buf: Vec::with_capacity(BGZF_BLOCK + 4096),
-            coffset: 0,
-        }
+            buf: Vec::with_capacity(frame_bytes + (1 << 16)),
+            frame_bytes,
+            uoffset: 0,
+            entries: Vec::new(),
+            cctx,
+        })
     }
+    /// 次に書くバイト(=行頭)の非圧縮オフセット。
     #[inline]
     fn virtual_position(&self) -> i64 {
-        ((self.coffset << 16) | (self.buf.len() as u64)) as i64
+        (self.uoffset + self.buf.len() as u64) as i64
     }
-    /// 行(末尾 \n 含む)を書く。ブロックが埋まったら flush。
+    /// 1 行(末尾 \n 込み)を書く。フレームは**行の切れ目でだけ**閉じる。
     fn write_bytes(&mut self, data: &[u8]) -> std::io::Result<()> {
         self.buf.extend_from_slice(data);
-        while self.buf.len() >= BGZF_BLOCK {
-            self.flush_block(BGZF_BLOCK)?;
+        if self.buf.len() >= self.frame_bytes {
+            self.flush_frame()?;
         }
         Ok(())
     }
-    fn flush_block(&mut self, n: usize) -> std::io::Result<()> {
-        let data = &self.buf[..n];
-        let mut enc = DeflateEncoder::new(Vec::with_capacity(n / 2 + 64), Compression::new(6));
-        enc.write_all(data)?;
-        let comp = enc.finish()?;
-        let mut crc = Crc::new();
-        crc.update(data);
-        let crc32 = crc.sum();
-        let bsize = 18 + comp.len() + 8 - 1; // ブロック全長-1
-        if bsize > 0xffff {
+    fn flush_frame(&mut self) -> std::io::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let comp = self.cctx.compress(&self.buf)?;
+        if comp.len() > u32::MAX as usize || self.buf.len() > u32::MAX as usize {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                "BGZF block too large (incompressible?)",
+                "zstd frame > 4GiB",
             ));
         }
-        let mut hdr = [0u8; 18];
-        hdr[0] = 0x1f;
-        hdr[1] = 0x8b;
-        hdr[2] = 0x08;
-        hdr[3] = 0x04;
-        hdr[9] = 0xff; // OS
-        hdr[10] = 6; // XLEN=6
-        hdr[12] = 0x42; // 'B'
-        hdr[13] = 0x43; // 'C'
-        hdr[14] = 2; // SLEN=2
-        hdr[16] = (bsize & 0xff) as u8;
-        hdr[17] = ((bsize >> 8) & 0xff) as u8;
-        self.inner.write_all(&hdr)?;
         self.inner.write_all(&comp)?;
-        self.inner.write_all(&crc32.to_le_bytes())?;
-        self.inner.write_all(&(n as u32).to_le_bytes())?;
-        self.coffset += (18 + comp.len() + 8) as u64;
-        self.buf.drain(..n);
+        self.entries.push((comp.len() as u32, self.buf.len() as u32));
+        self.uoffset += self.buf.len() as u64;
+        self.buf.clear();
         Ok(())
     }
+    /// 残りを吐き出し、シークテーブル(skippable frame)を書いて閉じる。
     fn close(mut self) -> std::io::Result<()> {
-        while !self.buf.is_empty() {
-            let n = self.buf.len().min(BGZF_BLOCK);
-            self.flush_block(n)?;
+        self.flush_frame()?;
+        let n = self.entries.len() as u32;
+        let tbl_len = n as usize * 8 + 9;
+        self.inner.write_all(&SKIPPABLE_MAGIC.to_le_bytes())?;
+        self.inner.write_all(&(tbl_len as u32).to_le_bytes())?;
+        let mut tbl = Vec::with_capacity(tbl_len);
+        for (cs, ds) in &self.entries {
+            tbl.extend_from_slice(&cs.to_le_bytes());
+            tbl.extend_from_slice(&ds.to_le_bytes());
         }
-        self.inner.write_all(&BGZF_EOF)?;
+        tbl.extend_from_slice(&n.to_le_bytes());
+        tbl.push(0u8); // descriptor: エントリに checksum は付けない
+        tbl.extend_from_slice(&SEEKABLE_MAGIC.to_le_bytes());
+        self.inner.write_all(&tbl)?;
         self.inner.flush()?;
         Ok(())
     }
@@ -149,10 +148,24 @@ fn build_reads(
     size_arr: PyReadonlyArray1<i64>,
     maxlayer: i64,
     no_cov: bool,
+    frame_bytes: usize,
+    level: i32,
+    drop_tags: Vec<String>,
 ) -> PyResult<(Vec<i64>, i64, i64, f64)> {
     let sizes = size_arr
         .as_slice()
         .map_err(|e| PyRuntimeError::new_err(format!("size_arr: {e}")))?;
+    // 落とすタグは 2 文字の名前で受ける("bq" → 行中の "bq:Z:..." を捨てる)
+    let mut drop2: Vec<[u8; 2]> = Vec::new();
+    for t in &drop_tags {
+        let b = t.as_bytes();
+        if b.len() != 2 {
+            return Err(PyRuntimeError::new_err(format!(
+                "drop_tags は 2 文字のタグ名で指定する: {t:?}"
+            )));
+        }
+        drop2.push([b[0], b[1]]);
+    }
 
     let ns = sample_nos.len();
     if sample_ids.len() != ns || gaf_paths.len() != ns {
@@ -191,7 +204,7 @@ fn build_reads(
             for si in 0..ns {
                 let sample_no = sample_nos[si];
                 let gpath = &gaf_paths[si];
-                let bgz_path = format!("{}/{}.gaf.gz", out_dir, sample_ids[si]);
+                let out_path = format!("{}/{}.gaf.zst", out_dir, sample_ids[si]);
 
                 // 入力 GAF(gzip or plain)を読む
                 let inf = File::open(gpath)?;
@@ -202,11 +215,16 @@ fn build_reads(
                 };
                 let mut br = BufReader::with_capacity(1 << 20, reader);
 
-                // 出力 BGZF
-                let outf = File::create(&bgz_path)?;
-                let mut bw = BgzfLineWriter::new(BufWriter::with_capacity(1 << 20, outf));
+                // 出力 seekable zstd
+                let outf = File::create(&out_path)?;
+                let mut bw = ZstdSeekWriter::new(
+                    BufWriter::with_capacity(1 << 20, outf),
+                    frame_bytes,
+                    level,
+                )?;
 
                 let mut line: Vec<u8> = Vec::with_capacity(1 << 16);
+                let mut outline: Vec<u8> = Vec::with_capacity(1 << 16);
                 let mut n_reads: i64 = 0;
                 let mut tabs: Vec<usize> = Vec::with_capacity(32);
 
@@ -217,11 +235,9 @@ fn build_reads(
                         break;
                     }
                     if line[0] == b'@' {
-                        bw.write_bytes(&line)?; // ヘッダは BGZF に書くが voff/parse しない
+                        bw.write_bytes(&line)?; // ヘッダは容器に書くが voff/parse しない
                         continue;
                     }
-                    let v = bw.virtual_position(); // 行頭の voff(書込前に採取=Bio.bgzf.tell() と同義)
-                    bw.write_bytes(&line)?;
 
                     // 末尾 \n を除いてパース
                     let l: &[u8] = if *line.last().unwrap() == b'\n' {
@@ -236,14 +252,36 @@ fn build_reads(
                         }
                     }
                     let ncols = tabs.len() + 1;
-                    if ncols < 12 {
-                        continue; // <12 列: aln_id 加算せず
-                    }
                     let field = |j: usize| -> &[u8] {
                         let s = if j == 0 { 0 } else { tabs[j - 1] + 1 };
                         let e = if j < tabs.len() { tabs[j] } else { l.len() };
                         &l[s..e]
                     };
+
+                    // ★保存するのは「必要なタグだけ」に間引いた行(既定では塩基クオリティ bq:Z を捨てる)。
+                    //   HiFi の GAF は 1 行の 3/4 が bq:Z だが、ビューアは一切使わない。
+                    //   間引きは**書き出す行**にだけ効く。以下の解析は元の行から行う。
+                    let v = bw.virtual_position(); // 行頭の voff(=非圧縮オフセット。書込**前**に採る)
+                    if drop2.is_empty() || ncols <= 12 {
+                        bw.write_bytes(&line)?;
+                    } else {
+                        outline.clear();
+                        outline.extend_from_slice(&l[..tabs[11]]); // 1..12 列はそのまま
+                        for j in 12..ncols {
+                            let f = field(j);
+                            if f.len() >= 3 && f[2] == b':' && drop2.contains(&[f[0], f[1]]) {
+                                continue;
+                            }
+                            outline.push(b'\t');
+                            outline.extend_from_slice(f);
+                        }
+                        outline.push(b'\n');
+                        bw.write_bytes(&outline)?;
+                    }
+
+                    if ncols < 12 {
+                        continue; // <12 列: aln_id 加算せず
+                    }
 
                     aln_id += 1;
                     n_reads += 1;
@@ -314,7 +352,7 @@ fn build_reads(
                         }
                     }
                 }
-                bw.close()?; // EOF marker 書込
+                bw.close()?; // 残フレーム + シークテーブル
                 per_sample_nreads.push(n_reads);
                 tx.execute(
                     "UPDATE read_src SET n_reads=?1 WHERE sample_no=?2",
