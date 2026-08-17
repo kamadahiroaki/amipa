@@ -1,0 +1,59 @@
+# amipa-prep — Apptainer(SIF)。docker が使えない環境（HPC）用。
+#   ビルド:
+#     module use /usr/local/package/modulefiles && module load apptainer
+#     cd <amipa リポジトリのルート>
+#     env -u APPTAINER_BINDPATH apptainer build --fakeroot amipa-prep.sif docker/amipa-prep.def
+#   ★`env -u APPTAINER_BINDPATH` は必須（site の bind 設定でコンテナ作成に失敗するため）
+#   ★ビルドには外向き通信が要る（povu の CPM 依存 / PyPI / crates.io）
+#   実行:
+#     apptainer exec --cleanenv -B "$PWD:/work" amipa-prep.sif amipa prep run --gfa /work/x.gfa --out /work/x.amipa
+Bootstrap: docker
+From: python:3.9-slim-bookworm
+
+%files
+    prep /src/prep
+    docker/requirements.txt /src/docker/requirements.txt
+    docker/build-prep.sh /usr/local/bin/build-prep.sh
+    docker/amipa         /usr/local/bin/amipa
+
+%post
+    set -eux
+    # ★fakeroot ビルドでは APT が _apt へ降格できない（/etc/subuid が無い環境）
+    APTOPT="-o APT::Sandbox::User=root"
+    apt-get $APTOPT update
+    apt-get $APTOPT install -y --no-install-recommends \
+        build-essential cmake git ca-certificates curl pkg-config libgomp1 libncurses-dev
+    rm -rf /var/lib/apt/lists/*
+    rm -rf /src/prep/core/*/target /src/prep/core/*/dist /src/prep/amipa_prep/__pycache__
+    curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.79.0
+    export PATH=/root/.cargo/bin:$PATH
+    # ★`chmod +x` では other の読みが付かない（ホストの 0640 が入ると Permission denied）
+    chmod 0755 /usr/local/bin/build-prep.sh /usr/local/bin/amipa
+    /usr/local/bin/build-prep.sh /src /opt/amipa
+    apt-get $APTOPT purge -y build-essential cmake git pkg-config curl
+    apt-get $APTOPT autoremove -y
+    rm -rf /src /root/.cargo /root/.rustup /root/.cache
+    chmod 0755 /usr/local/bin/povu
+    mkdir -p /work
+
+%environment
+    export AMIPA_POVU=/usr/local/bin/povu
+    export AMIPA_EMITTER_REV=${AMIPA_EMITTER_REV:-container}
+    export PYTHONDONTWRITEBYTECODE=1
+    # ★ホストの ~/.local/site-packages を読ませない（apptainer は $HOME を bind するので
+    #   --cleanenv でも防げない。ホスト側 .so の GLIBCXX 不一致で import に失敗する）
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=/opt/amipa/prep/amipa_prep
+
+%runscript
+    exec amipa "$@"
+
+%test
+    povu -h >/dev/null 2>&1 && echo "povu OK"
+    python3 -c "import emit_core, reads_core, numpy, scipy, numba, infomap, Bio; print('imports OK')"
+    test -f /opt/amipa/prep/amipa_prep/templates/schema.db && echo "template OK"
+    python3 /opt/amipa/prep/amipa_prep/cli.py --help >/dev/null && echo "amipa prep OK"
+
+%labels
+    Name amipa-prep
+    Description AMIPA preprocessing (GFA -> multi-resolution atlas)

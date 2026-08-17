@@ -1,0 +1,58 @@
+# Azure VM 上の ggb 公開インスタンス（viewer + Caddy）。
+#   /opt/ggb/ に compose.yml / Caddyfile / .env を置いて `docker compose up -d`。
+#
+# 設計:
+#   ・viewer はホストにポートを晒さない（caddy からのみ到達）。443/80 だけ開ける。
+#   ・DB は :ro マウント。さらに GGB_READONLY=1 でアプリ側でも書き込み経路を塞ぐ（二重）。
+#   ・書き込み先はセッション用ボリュームだけ（パーマリンク `?s=` を残すため）。
+services:
+  viewer:
+    image: ${GGB_IMAGE:?set GGB_IMAGE in .env}
+    restart: unless-stopped
+    expose:
+      - "3001"
+    volumes:
+      - ${GGB_DATA:-/data/bundles}:/data:ro
+      - ggb-sessions:/var/lib/ggb/sessions
+    environment:
+      DB_DIR: /data
+      PORT: "3001"
+      GGB_READONLY: "1"
+      GGB_CACHE_MB: "${GGB_CACHE_MB:-512}"
+      GGB_DB_WORKERS: "${GGB_DB_WORKERS:-4}"
+      GGB_MAX_ROWS: "${GGB_MAX_ROWS:-400000}"
+      GGB_FETCH_MS: "${GGB_FETCH_MS:-20000}"
+      GGB_PREWARM: "${GGB_PREWARM:-}"
+      GGB_VERSION: "${GGB_IMAGE}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data           # 証明書（消すと Let's Encrypt を取り直す）
+      - caddy-config:/config
+    environment:
+      GGB_DOMAIN: ${GGB_DOMAIN:?set GGB_DOMAIN in .env}
+      GGB_ACME_EMAIL: ${GGB_ACME_EMAIL:?set GGB_ACME_EMAIL in .env}
+    depends_on:
+      - viewer
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+volumes:
+  ggb-sessions:
+  caddy-data:
+  caddy-config:

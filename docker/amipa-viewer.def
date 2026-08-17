@@ -1,0 +1,47 @@
+# amipa-viewer — Apptainer(SIF)。閲覧側だけで完結する。
+#   ビルド: cd <amipa ルート>
+#          env -u APPTAINER_BINDPATH apptainer build --fakeroot amipa-viewer.sif docker/amipa-viewer.def
+#   実行  : apptainer exec --cleanenv -B <atlas>:/data amipa-viewer.sif amipa check
+#          apptainer exec --cleanenv -B <atlas>:/data --env PORT=3999 amipa-viewer.sif amipa serve
+Bootstrap: docker
+From: node:20-bookworm
+
+%files
+    viewer /src/viewer
+    prep/amipa_prep/cs_ops.py /src/viewer/scripts/cs_ops.py
+    docker/build-viewer.sh /usr/local/bin/build-viewer.sh
+    docker/amipa           /usr/local/bin/amipa
+
+%post
+    set -eux
+    APTOPT="-o APT::Sandbox::User=root"          # fakeroot ビルドでは APT が降格できない
+    apt-get $APTOPT update
+    apt-get $APTOPT install -y --no-install-recommends python3 python3-numpy python3-biopython ca-certificates
+    rm -rf /var/lib/apt/lists/*
+    rm -rf /src/viewer/backend/node_modules /src/viewer/backend/dist \
+           /src/viewer/frontend/node_modules /src/viewer/frontend/dist
+    chmod 0755 /usr/local/bin/build-viewer.sh /usr/local/bin/amipa
+    /usr/local/bin/build-viewer.sh /src /opt/amipa
+    rm -rf /src
+    mkdir -p /data
+    chmod -R a+rX /opt/amipa
+
+%environment
+    export DB_DIR=${DB_DIR:-/data}
+    export SESSION_DIR=${SESSION_DIR:-/tmp/amipa-sessions}
+    export PORT=${PORT:-3001}
+    export AMIPA_PYTHON=${AMIPA_PYTHON:-python3}
+    export PYTHONNOUSERSITE=1
+    export NODE_ENV=production
+
+%runscript
+    exec amipa "$@"
+
+%test
+    node -e "require('/opt/amipa/viewer/backend/node_modules/better-sqlite3')" && echo "better-sqlite3 OK"
+    test -f /opt/amipa/viewer/frontend/dist/index.html && echo "frontend OK"
+    python3 -c "import numpy, Bio.bgzf" && echo "python deps OK"
+
+%labels
+    Name amipa-viewer
+    Description AMIPA viewer (serves a prebuilt atlas)

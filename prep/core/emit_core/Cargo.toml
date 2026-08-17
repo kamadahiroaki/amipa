@@ -1,0 +1,21 @@
+[package]
+name = "emit_core"
+version = "0.1.0"
+edition = "2021"
+# ④ emitter(layout_emit_db_relayer.py)の hot path(§4幾何 / §7 node / §8 edge / ribbon)を
+# 所有し、SQLite へ streaming 書込・compact 常駐にする Rust core。WG スケール(n,E≈2億)で
+# numpy 全常駐 + executemany の OOM/低速を解消する。Python は入力 parse と schedule(relayer)を担当。
+
+[lib]
+name = "emit_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+numpy = "0.22"
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

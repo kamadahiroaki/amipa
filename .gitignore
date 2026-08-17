@@ -1,0 +1,12 @@
+# 生成物・実データはリポジトリに入れない
+node_modules/
+dist/
+target/
+__pycache__/
+*.pyc
+*.sif
+sif/
+atlases/
+data/
+out/
+*.log

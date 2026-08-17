@@ -1,0 +1,10 @@
+# build context を小さく保つ
+**/node_modules
+**/dist
+**/target
+**/__pycache__
+**/*.pyc
+**/*.sif
+.git
+data
+out

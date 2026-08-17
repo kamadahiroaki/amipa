@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AMIPA — Annotated Multi-resolution Interactive Pangenome Atlas</title>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      /* ドラッグ操作（ノード掴み・パン・ボックス選択）でブラウザ既定のテキスト選択が始まらないよう
+         アプリ全体で選択を無効化。canvas 上のドラッグが上部バー等の文字列選択に吸われるのを防ぐ。
+         input/select 等のフォーム部品は内部テキストを自前で扱うため影響しない。 */
+      body {
+        overflow: hidden; background: #1a1a2e;
+        user-select: none; -webkit-user-select: none; -ms-user-select: none;
+      }
+      /* テキストを選択・コピーしたい箇所（入力欄など）は選択を許可 */
+      input, textarea { user-select: text; -webkit-user-select: text; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

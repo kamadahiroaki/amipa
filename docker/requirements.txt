@@ -1,0 +1,10 @@
+# AMIPA 前処理の Python 依存。**実際に通っている版に固定**する
+# （numpy/scipy/numba の組み合わせは相性が出やすい。上げるときは chrY で通してから）。
+numpy==1.23.5
+scipy==1.10.1
+numba==0.58.1
+llvmlite==0.41.1
+infomap==2.9.2
+biopython==1.80
+# レイアウトのプレビュー PNG 用（無くても npz は出る＝落ちないようにしてある）
+matplotlib==3.7.5

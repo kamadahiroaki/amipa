@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "emit_core"
+version = "0.1.0"
+requires-python = ">=3.9"
+description = "Rust core for the ggb ④ emitter hot path (geometry/nodes/edges/ribbon)"
+
+[tool.maturin]
+# cdylib -> emit_core*.so を site-packages 直下に置く(単一モジュール)。

@@ -1,0 +1,57 @@
+# TLS 終端 + 静的資産のキャッシュ + 保護。証明書は Let's Encrypt で自動取得・自動更新。
+# ドメインは Azure の DNS ラベル（<label>.<region>.cloudapp.azure.com）でよい。
+
+{
+	email {$GGB_ACME_EMAIL}
+	servers {
+		timeouts {
+			read_body 10s
+			idle 5m
+		}
+	}
+}
+
+{$GGB_DOMAIN} {
+	encode zstd gzip          # backend が既に gzip 済みの応答（/nodes 等）は素通しされる
+
+	# 重いクエリが返るまで待てるようにする（cold な巨大 DB では 10 秒級がありうる）。
+	reverse_proxy viewer:3001 {
+		transport http {
+			response_header_timeout 120s
+			read_timeout 180s
+		}
+	}
+
+	# 静的資産はハッシュ付きファイル名なので長期キャッシュしてよい（API 側は backend が no-store）。
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output file /data/access.log {
+			roll_size 50MiB
+			roll_keep 10
+		}
+		format json
+	}
+}
+
+# ── レート制限について ────────────────────────────────────────────────
+# Caddy 本体にレート制限は入っていない（プラグイン `caddy-ratelimit` が要る）。
+# 公開後に濫用が見えたら、次のどちらかで足す:
+#   (a) Cloudflare 無料プランを前段に置く（設定が最も簡単。DNS を Cloudflare に向ける）
+#   (b) xcaddy でプラグイン入りイメージを焼く:
+#         FROM caddy:2-builder AS b
+#         RUN xcaddy build --with github.com/mholt/caddy-ratelimit
+#         FROM caddy:2
+#         COPY --from=b /usr/bin/caddy /usr/bin/caddy
+#       そのうえで:
+#         rate_limit {
+#           zone api { key {remote_host} events 120 window 1m }
+#         }
+# なお viewer 側にも保険がある（GGB_MAX_ROWS / GGB_FETCH_MS / 放棄リクエストの破棄）。

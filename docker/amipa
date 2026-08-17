@@ -1,0 +1,19 @@
+#!/bin/bash
+# AMIPA コンテナの入口。イメージによって使えるサブコマンドが違う。
+#   prep イメージ : amipa prep run|status|add-annot|add-reads|qsub ...
+#   viewer イメージ: amipa serve | amipa check [db]
+set -euo pipefail
+APP=${AMIPA_APP_DIR:-/opt/amipa}
+cmd=${1:-help}
+[[ $# -gt 0 ]] && shift || true
+case "$cmd" in
+  prep)    exec python3 "$APP/prep/amipa_prep/cli.py" "$@" ;;
+  serve)   exec node "$APP/viewer/backend/dist/server.js" ;;
+  check)   exec node "$APP/viewer/backend/dist/check.js" "$@" ;;
+  version) exec node -e 'console.log(JSON.stringify({version:process.env.AMIPA_VERSION||"dev",commit:process.env.AMIPA_COMMIT||null,node:process.version},null,2))' 2>/dev/null \
+             || python3 -c 'import os,json;print(json.dumps({"version":os.environ.get("AMIPA_VERSION","dev")}))' ;;
+  bash|sh|python3|node) exec "$cmd" "$@" ;;
+  help|--help|-h)
+     echo "amipa prep  ...   前処理（GFA → アトラス）"; echo "amipa serve       ビューアを起動"; echo "amipa check [db]  データの点検"; exit 0 ;;
+  *) echo "unknown subcommand: $cmd (amipa help)" >&2; exit 2 ;;
+esac

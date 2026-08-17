@@ -1,0 +1,12 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "reads_core"
+version = "0.1.0"
+requires-python = ">=3.9"
+description = "Rust core for ggb Scheme-B (on-demand) read-index attach hot path (GAF path scan / edge_sup / read_node)"
+
+[tool.maturin]
+# cdylib -> reads_core*.so を site-packages 直下に置く(単一モジュール)。
