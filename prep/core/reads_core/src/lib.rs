@@ -183,10 +183,13 @@ fn build_reads(
 
         let mut depth_bases: Vec<f64> = vec![0.0; n_size];
         // ★posting-list(転置索引): gfa_id -> そのノードを通過したリードの aln_id 昇順リスト。
-        //   read_node(per-visit 73億行) を廃し、ノード毎に aln_id を delta+varint 圧縮 blob 化して node_reads へ。
-        //   aln_id はリード処理順=昇順で push されるので blob 内は昇順(delta 非負)が保証される。
-        let mut postings: Vec<Vec<u32>> = Vec::new();
+        //   per-visit の行(全ゲノムで 100 億)は持たず、ノード毎に 1 個の blob に畳んで node_reads へ。
+        //   ★aln_id はリード処理順=昇順なので、**その場で delta を varint にして書き足す**。
+        //     u32 を貯めてから畳むより 3 割方メモリが少なく済む(全ゲノムで 60GB → 45GB 程度)。
+        //     直前の aln_id はノード毎に覚えておく(u32 配列。葉 8000 万でも 326MB)。
+        let mut postings: Vec<Vec<u8>> = Vec::new();
         postings.resize_with(n_size, Vec::new);
+        let mut last_aln: Vec<u32> = vec![0; n_size];
         // 点2: edge_sup を compact HashMap に(Python dict の ~10分の1)。canonical (lo,hi) の u32 対。
         let mut edge_sup: std::collections::HashMap<(u32, u32), u32> =
             std::collections::HashMap::new();
@@ -332,7 +335,11 @@ fn build_reads(
                             }
                             let g = gid as u32;
                             if seen.insert(gid) {
-                                postings[gid as usize].push(aln_id as u32); // 転置索引に aln_id を追記(昇順)
+                                // 転置索引に aln_id を追記(昇順なので delta は非負)
+                                let gu = gid as usize;
+                                let d = (aln_id as u32) - last_aln[gu];
+                                write_varint(&mut postings[gu], d as u64);
+                                last_aln[gu] = aln_id as u32;
                             }
                             let a0 = path_start.max(offset);
                             let a1 = path_end.min(offset + seg);
@@ -364,8 +371,8 @@ fn build_reads(
 
         let _ = maxlayer; // maxlayer は backend が edge_read_support を join する層。Rust では未使用。
 
-        // ★node_reads(転置索引 blob) を postings から構築(read_node per-visit 表は廃止)。
-        //   gfa_id 毎に aln_id 昇順リストを delta+varint 圧縮 → BLOB。node→reads は blob 1件を復号するだけ。
+        // ★node_reads(転置索引 blob)。postings は既に delta+varint の形で貯めてあるのでそのまま入れる。
+        //   node→reads は blob 1 件を復号するだけ(per-visit 表は持たない)。
         conn.execute("DROP TABLE IF EXISTS node_reads", [])?;
         conn.execute(
             "CREATE TABLE node_reads(gfa_id INTEGER PRIMARY KEY, postings BLOB)",
@@ -375,19 +382,11 @@ fn build_reads(
             let txn = conn.transaction()?;
             {
                 let mut ins = txn.prepare("INSERT INTO node_reads(gfa_id,postings) VALUES(?,?)")?;
-                let mut blob: Vec<u8> = Vec::with_capacity(512);
                 for gid in 0..n_size {
-                    let lst = &postings[gid];
-                    if lst.is_empty() {
+                    if postings[gid].is_empty() {
                         continue;
                     }
-                    blob.clear();
-                    let mut prev: u32 = 0;
-                    for &a in lst {
-                        write_varint(&mut blob, (a - prev) as u64);
-                        prev = a;
-                    }
-                    ins.execute(params![gid as i64, &blob])?;
+                    ins.execute(params![gid as i64, &postings[gid]])?;
                 }
             }
             txn.commit()?;

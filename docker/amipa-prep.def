@@ -26,7 +26,7 @@ From: python:3.9-slim-bookworm
         build-essential cmake git ca-certificates curl pkg-config libgomp1 libncurses-dev
     rm -rf /var/lib/apt/lists/*
     rm -rf /src/prep/core/*/target /src/prep/core/*/dist /src/prep/amipa_prep/__pycache__
-    curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.79.0
+    curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.97.0
     export PATH=/root/.cargo/bin:$PATH
     # ★`chmod +x` では other の読みが付かない（ホストの 0640 が入ると Permission denied）
     chmod 0755 /usr/local/bin/build-prep.sh /usr/local/bin/amipa

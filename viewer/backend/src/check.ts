@@ -42,8 +42,51 @@ function checkRuntime(): void {
   } catch {
     warn(`python(${AMIPA_PYTHON})+numpy が使えない → bubble MSA パネルが無効（グラフ表示は可）`)
   }
-  for (const s of ['bubble_msa.py', 'reads_query.py', 'cs_ops.py']) {
+  for (const s of ['bubble_msa.py', 'reads_query.py', 'cs_ops.py', 'zstd_seek.py']) {
     fs.existsSync(amipaScript(s)) ? ok(`script ${s}`) : warn(`script ${s} が無い`)
+  }
+}
+
+
+// リード整列サイドカーの点検。索引が指す実体が本当にそこにあり、開ける形式かまで見る。
+function checkReads(sidecar: string, dbPath: string): void {
+  let rd: Database.Database
+  try { rd = new Database(sidecar, { readonly: true, fileMustExist: true }) }
+  catch (e) { bad(`.reads を開けない: ${(e as Error).message}`); return }
+  try {
+    const meta = Object.fromEntries((rd.prepare('SELECT key,value FROM read_meta').all() as
+      { key: string, value: string }[]).map(r => [r.key, r.value]))
+    const cols = new Set((rd.prepare('PRAGMA table_info(read_src)').all() as { name: string }[]).map(r => r.name))
+    const pathCol = cols.has('path') ? 'path' : 'bgzf_path'
+    const rows = rd.prepare(`SELECT sample_id, ${pathCol} AS p, n_reads FROM read_src`).all() as
+      { sample_id: string, p: string, n_reads: number }[]
+    ok(`reads: サイドカー.reads (${gb(fs.statSync(sidecar).size)}) — ${rows.length} サンプル`
+      + `, aln ${Number(meta.n_aln || 0).toLocaleString()}`
+      + (meta.dropped_tags ? `, 保存時に捨てたタグ ${meta.dropped_tags}` : ''))
+    const dir = path.dirname(fs.realpathSync(dbPath))
+    for (const r of rows) {
+      const base = path.basename(r.p)
+      const found = [path.join(dir, 'reads', base), path.join(dir, base), r.p].find(q => fs.existsSync(q))
+      if (!found) { bad(`reads: ${r.sample_id} の実体が無い（${base}）→ リード表示が空になる`); continue }
+      // 末尾 9 バイトの seekable zstd マジック（旧アトラスは BGZF なので判定しない）
+      let kind = 'bgzf'
+      if (base.endsWith('.zst')) {
+        const fd = fs.openSync(found, 'r')
+        const buf = Buffer.alloc(9)
+        try { fs.readSync(fd, buf, 0, 9, fs.fstatSync(fd).size - 9) } finally { fs.closeSync(fd) }
+        if (buf.readUInt32LE(5) !== 0x8F92EAB1) {
+          bad(`reads: ${base} にシークテーブルが無い（seekable zstd ではない）`)
+          continue
+        }
+        kind = 'zstd'
+      }
+      ok(`  ${r.sample_id}: ${path.relative(dir, found)} (${gb(fs.statSync(found).size)}, ${kind})`
+        + `, ${Number(r.n_reads || 0).toLocaleString()} reads`)
+    }
+  } catch (e) {
+    bad(`.reads の点検でエラー: ${(e as Error).message}`)
+  } finally {
+    rd.close()
   }
 }
 
@@ -98,6 +141,11 @@ function checkDb(dbPath: string): void {
     const dis = side('.distill')
     if (dis && fs.existsSync(path.join(dis, 'p_tok.npy'))) ok(`sidecar .distill — bubble MSA`)
     else if (feats.includes('distill_msa')) warn('.distill が無い/不完全 → bubble MSA パネルが使えない')
+
+    // リード整列: 索引はサイドカー .reads、実体は reads/<サンプル>.gaf.zst。
+    // 索引だけあって実体が無い（＝別マシンへ半分だけ運んだ）状態を検出する。
+    const rp = side('.reads')
+    if (rp) checkReads(rp, dbPath)
   } catch (e) {
     bad(`点検中のエラー: ${(e as Error).message}`)
   } finally {

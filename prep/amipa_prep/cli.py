@@ -540,7 +540,8 @@ def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
 
     files = []
     for p in [b.db, b.annot] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
-            + sorted(b.root.glob(f"{b.db.name}.nametri")):
+            + sorted(b.root.glob(f"{b.db.name}.nametri")) \
+            + sorted(b.root.glob(f"{b.db.name}.reads")):
         if not p.exists():
             continue
         e = {"name": p.name, "bytes": p.stat().st_size}
@@ -570,7 +571,7 @@ def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
         "db_built_at": meta.get("built_at"),
         "files": files,
         "total_bytes": sum(f["bytes"] for f in files),
-        "built_by": "ggb-prep",
+        "built_by": "amipa-prep",
         "manifest_built_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     out = b.root / "manifest.json"
@@ -651,12 +652,13 @@ def execute(b: Bundle, a, want: list[str]) -> None:
 
 # ─────────────────────── 資源の見積り（plan） ───────────────────────
 
-def sizing(gfa_bytes: int, threads: int) -> dict:
+def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
     """段ごとの資源の目安。**HPRC MC-GRCh38 v1.0（GFA 48.3GB）の実測に合わせて較正**してある。
 
     実測 maxvmem（= スケジューラのメモリ上限が縛る量。RSS ではない）:
         distill 48.2G / decompose 118.7G / lod 108.1G / layout 65.5G(24並列合計)
         / emit 128.3G / annot 65.9G
+    reads だけは GFA ではなく **GAF の量**に比例する（まだ実測前の見込み値）。
     ここに **約 1.4 倍の余裕**を掛けた値を返す。GFA サイズに比例させているが、
     グラフの密度で変わるので**あくまで出発点**。実行後に実測して詰めるのが正しい。
 
@@ -664,6 +666,7 @@ def sizing(gfa_bytes: int, threads: int) -> dict:
     total / slots で割ること（`amipa prep plan` はその値も出す）。
     """
     g = gfa_bytes / 1e9
+    q = gaf_bytes / 1e9          # リード整列(GAF.gz)の合計。reads 段だけはこちらに比例する
     t = max(1, threads)
     return {
         "distill":   dict(slots=1, total=clamp(1.4 * g, 8, 320), hours=0.5 + g / 100),
@@ -672,7 +675,10 @@ def sizing(gfa_bytes: int, threads: int) -> dict:
         "layout":    dict(slots=t, total=clamp(1.9 * g, 8, 300), hours=0.2 + g / 25),
         "emit":      dict(slots=1, total=clamp(3.7 * g, 24, 480), hours=0.2 + g / 11),
         "annot":     dict(slots=1, total=clamp(1.9 * g, 8, 200), hours=0.1 + g / 27),
-        "reads":     dict(slots=1, total=clamp(1.0 * g, 8, 200), hours=0.2),
+        # reads は GFA ではなく **GAF の量**で決まる（葉ごとの転置索引をメモリに持つため）。
+        # 目安: GAF.gz 1GB あたり ~0.85GB（HiFi・のべ通過 100 億回の実測見込み）＋葉の配列。
+        "reads":     dict(slots=1, total=clamp(1.2 * q + 0.1 * g, 8, 300),
+                          hours=0.2 + q / 12),
         "bundle":    dict(slots=1, total=8, hours=0.1),
     }
 
@@ -684,14 +690,22 @@ def show_plan(b: Bundle, a) -> None:
     スケジューラの構文には踏み込まない（サイトごとに違うため）。雛形は examples/hpc/ にある。
     """
     gfa_bytes = a.gfa.stat().st_size if a.gfa else 0
-    size = sizing(gfa_bytes, a.threads)
+    gaf_bytes = 0
+    for spec in (a.reads or []):
+        pth = Path(spec.split("=", 1)[1]) if "=" in spec else None
+        if pth and pth.exists():
+            gaf_bytes += pth.stat().st_size
+    size = sizing(gfa_bytes, a.threads, gaf_bytes)
     stages = [n for n in STAGES if n in build_stages(b, a)]
     if a.json:
         out = {n: {**size[n], "per_slot": -(-size[n]["total"] // size[n]["slots"])} for n in stages}
-        print(json.dumps({"gfa_bytes": gfa_bytes, "threads": a.threads, "stages": out},
+        print(json.dumps({"gfa_bytes": gfa_bytes, "gaf_bytes": gaf_bytes,
+                          "threads": a.threads, "stages": out},
                          indent=2, ensure_ascii=False))
         return
-    log(f"入力 GFA {human(gfa_bytes)} / --threads {a.threads} での目安")
+    log(f"入力 GFA {human(gfa_bytes)}"
+        + (f" / GAF {human(gaf_bytes)}" if gaf_bytes else "")
+        + f" / --threads {a.threads} での目安")
     print(f"  {'段':<10} {'スロット':>7} {'メモリ合計':>10} {'/スロット':>9} {'見込み時間':>10}")
     for n in stages:
         v = size[n]

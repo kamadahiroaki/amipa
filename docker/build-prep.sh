@@ -39,7 +39,9 @@ echo "[build-prep]   -> $(command -v povu) (+ $(ls /usr/local/lib/amipa | wc -l)
 
 echo "[build-prep] 2/4 Rust core"
 export CARGO_HOME=${CARGO_HOME:-/tmp/cargo}
-pip install --no-cache-dir maturin==1.5.1 >/dev/null
+# ★Rust の版は Cargo.lock を書いた側（開発機）と揃える。古いと lock を読めない
+#   （新しい crate は edition2024 を要求する）。maturin も同時代の物にする。
+pip install --no-cache-dir maturin==1.14.1 >/dev/null
 mkdir -p /tmp/wheels
 for c in emit_core reads_core; do
   ( cd "$SRC/prep/core/$c" && maturin build --release --out /tmp/wheels >/dev/null )

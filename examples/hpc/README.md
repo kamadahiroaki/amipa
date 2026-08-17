@@ -40,3 +40,25 @@ apptainer exec --cleanenv -B "$SCRATCH:/scratch" amipa-prep.sif \
 多層 SQLite を組む `--tmp` は**ランダム書き込み**なのでローカルディスクが要る。
 リボンの `--spill` は順次書きなので共有ストレージでもよく、**必要量が桁違いに大きいことがある**。
 その場合は別々に渡す（`-B "$SPILL:/spill" ... --spill /spill`）。
+
+## 投入した後で要求を直す
+
+見積りが大きすぎると、資源が空くまでいつまでも順番が回ってこない。**実行待ちのジョブなら
+要求を後から下げられる**（実行中は変えられないので、待っているうちに直すのが肝心）。
+
+```bash
+# AGE / SGE — s_vmem と mem_req を両方持たせている環境では**同時に**（食い違うと弾かれる）
+qalter -l s_vmem=12G,mem_req=12G <ジョブID>
+qstat -j <ジョブID> | grep hard_resource     # 反映されたか確認
+
+# Slurm
+scontrol update JobId=<ジョブID> MinMemoryNode=96G
+```
+
+1 度でも流したら、`qreport -j <ジョブID>`（AGE）や `sacct -j <ジョブID> --format=MaxVMSize`
+（Slurm）で**実測**を見て、次からはその値に寄せる。`amipa prep plan` が出すのは出発点でしかない。
+
+## リード整列の段だけは GAF の量で決まる
+
+他の段は GFA の大きさに比例するが、`reads` は**葉ごとの転置索引をメモリに載せる**ので
+GAF の量で決まる。`amipa prep plan` に `--reads` も一緒に渡すと、その分を含めた目安が出る。
