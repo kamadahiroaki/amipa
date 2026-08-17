@@ -1,11 +1,11 @@
-# Azure に ggb を公開する（全ゲノム対応）
+# Azure に AMIPA を公開する（全ゲノム対応）
 
 大学に付与された Azure 枠で、**全ゲノム（HPRC WG）のパンゲノムブラウザをインターネット公開**する手順。
 コピペで通る形にしてある。所要は VM 作成 15 分＋**データ転送（250–350GB）が数時間**。
 
 - 構成は **VM 1 台**。backend が SQLite を直接読むので DB サーバは要らない。
 - 更新は `update.sh` でイメージを入れ替えるだけ（**DB は触らない**）。
-- 公開時は `GGB_READONLY=1` ＋ DB を `:ro` マウントの二重で書き込みを塞ぐ。
+- 公開時は `AMIPA_READONLY=1` ＋ DB を `:ro` マウントの二重で書き込みを塞ぐ。
 
 ---
 
@@ -39,7 +39,7 @@
 
 ```bash
 # 変数（適宜変更）
-RG=ggb-rg; LOC=japaneast; VM=ggb-vm; DNS=ggb-demo          # → ggb-demo.japaneast.cloudapp.azure.com
+RG=amipa-rg; LOC=japaneast; VM=amipa-vm; DNS=amipa-demo          # → amipa-demo.japaneast.cloudapp.azure.com
 SIZE=Standard_E8ads_v5
 
 az group create -n $RG -l $LOC
@@ -53,8 +53,8 @@ az vm create -g $RG -n $VM \
   --custom-data cloud-init.yaml
 
 # データディスク（Premium SSD, host caching = ReadOnly）
-az disk create -g $RG -n ggb-data --size-gb 1024 --sku Premium_LRS
-az vm disk attach -g $RG --vm-name $VM --name ggb-data --caching ReadOnly
+az disk create -g $RG -n amipa-data --size-gb 1024 --sku Premium_LRS
+az vm disk attach -g $RG --vm-name $VM --name amipa-data --caching ReadOnly
 
 # 公開ポートは 80/443 のみ。SSH は自分の IP だけに絞る
 az vm open-port -g $RG -n $VM --port 80  --priority 1001
@@ -70,18 +70,18 @@ az network nsg rule update -g $RG --nsg-name ${VM}NSG -n default-allow-ssh --sou
 
 ```bash
 HOST=azureuser@${DNS}.${LOC}.cloudapp.azure.com
-ssh $HOST 'sudo mkdir -p /opt/ggb && sudo chown azureuser /opt/ggb'
-scp compose.yml Caddyfile update.sh $HOST:/opt/ggb/
-ssh $HOST 'chmod +x /opt/ggb/update.sh'
+ssh $HOST 'sudo mkdir -p /opt/amipa && sudo chown azureuser /opt/amipa'
+scp compose.yml Caddyfile update.sh $HOST:/opt/amipa/
+ssh $HOST 'chmod +x /opt/amipa/update.sh'
 
 # .env を作る
-ssh $HOST 'cat > /opt/ggb/.env' <<EOF
-GGB_IMAGE=ghcr.io/<org>/ggb-viewer:v0.1
-GGB_DOMAIN=${DNS}.${LOC}.cloudapp.azure.com
-GGB_ACME_EMAIL=you@example.ac.jp
-GGB_DATA=/data/bundles
-GGB_CACHE_MB=512
-GGB_DB_WORKERS=4
+ssh $HOST 'cat > /opt/amipa/.env' <<EOF
+AMIPA_IMAGE=ghcr.io/<org>/amipa-viewer:v0.1
+AMIPA_DOMAIN=${DNS}.${LOC}.cloudapp.azure.com
+AMIPA_ACME_EMAIL=you@example.ac.jp
+AMIPA_DATA=/data/bundles
+AMIPA_CACHE_MB=512
+AMIPA_DB_WORKERS=4
 EOF
 ```
 
@@ -98,10 +98,10 @@ VM が pull できる場所に **OCI イメージ**（HPC で焼いた SIF で�
 
 ACR を使う場合:
 ```bash
-az acr create -g $RG -n ggbreg --sku Basic
-az acr login -n ggbreg
-docker tag ggb-viewer:dev ggbreg.azurecr.io/ggb-viewer:v0.1 && docker push ggbreg.azurecr.io/ggb-viewer:v0.1
-az aks/vm ...   # VM からは: az acr login -n ggbreg（マネージド ID を付けるとパスワード不要）
+az acr create -g $RG -n amipareg --sku Basic
+az acr login -n amipareg
+docker tag amipa-viewer:dev amipareg.azurecr.io/amipa-viewer:v0.1 && docker push amipareg.azurecr.io/amipa-viewer:v0.1
+az aks/vm ...   # VM からは: az acr login -n amipareg（マネージド ID を付けるとパスワード不要）
 ```
 private な GHCR を使う場合は VM で 1 回だけ
 `echo $GITHUB_TOKEN | docker login ghcr.io -u <user> --password-stdin`。
@@ -114,9 +114,9 @@ private な GHCR を使う場合は VM で 1 回だけ
 # HPC 側。ジョブスクリプトの例（scripts/ に置いて qsub）
 #$ -S /bin/bash
 #$ -cwd -j y -l s_vmem=4G -pe def_slot 1 -l ljob      # ★2日を超える見込みなら ljob
-~/pangenome/ggb/superbubble/ggb/deploy/azure/sync-bundle.sh \
-  ~/pangenome/ggb/superbubble/bubbletools/lodwork/wg/mcgrch38.povu.fin.layered.db \
-  azureuser@ggb-demo.japaneast.cloudapp.azure.com /data/bundles
+<リポジトリ> \
+  <リポジトリ> \
+  azureuser@amipa-demo.japaneast.cloudapp.azure.com /data/bundles
 ```
 
 - DB を指定すると **同名のサイドカー（.annot / .hapidx / .nametri / .distill）も一緒に送る**。
@@ -129,11 +129,11 @@ private な GHCR を使う場合は VM で 1 回だけ
 
 ```bash
 ssh $HOST
-cd /opt/ggb
+cd /opt/amipa
 docker compose run --rm viewer check          # ← まずこれ。DB とサイドカーの点検（全走査しないので一瞬）
 sudo systemctl enable --now ggb               # compose up -d を systemd 管理で
 curl -s localhost/healthz                     # → ok
-curl -s https://$GGB_DOMAIN/api/version
+curl -s https://$AMIPA_DOMAIN/api/version
 ```
 
 `check` が `RESULT: OK` を返さないうちは公開しない。よくある指摘:
@@ -142,22 +142,22 @@ curl -s https://$GGB_DOMAIN/api/version
 
 **API の総点検**（35 endpoint）も回せる。HPC 側の `functions/reemit2/verify_api.sh` を使う:
 ```bash
-./verify_api.sh mc-grch38-wg.layered.db ggb-demo.japaneast.cloudapp.azure.com:443   # https 経由
+./verify_api.sh mc-grch38-wg.layered.db amipa-demo.japaneast.cloudapp.azure.com:443   # https 経由
 ```
 初回は cold なので遅い。これは**ウォームアップも兼ねる**。
 
 ## 6. ウォームアップの方針（WG では特に重要）
 
-- **`GGB_PREWARM` は WG では使わない。** 253GB を順読みしても RAM(64GiB) には載りきらず、
+- **`AMIPA_PREWARM` は WG では使わない。** 253GB を順読みしても RAM(64GiB) には載りきらず、
   その間ディスク帯域を食って利用者の操作が遅くなる。
 - 代わりに **代表的なビューポートを何回か叩いて温める**（`verify_api.sh` か、よく見る領域の URL を curl）。
   よく触るページだけがページキャッシュに残る。
-- chr22（8.4GB）は RAM に載るので `GGB_PREWARM=chr22-fin.layered.db` を付けてよい。
+- chr22（8.4GB）は RAM に載るので `AMIPA_PREWARM=chr22-fin.layered.db` を付けてよい。
 
 ## 7. 更新のしかた
 
 ```bash
-ssh $HOST /opt/ggb/update.sh ghcr.io/<org>/ggb-viewer:v0.2.0
+ssh $HOST /opt/amipa/update.sh ghcr.io/<org>/amipa-viewer:v0.2.0
 ```
 `pull` → `up -d` → `/healthz` 確認まで自動。失敗したら `.env.bak` に旧タグが残っているので
 `cp -f .env.bak .env && docker compose up -d` で戻せる。**DB は無関係なので触らない。**
@@ -182,7 +182,7 @@ az consumption budget create --budget-name ggb-monthly --amount 300 --time-grain
 
 ## 9. 公開前チェックリスト
 
-- [ ] `GGB_READONLY=1` が効いている（`curl -X POST https://.../api/save_edits` が 403）
+- [ ] `AMIPA_READONLY=1` が効いている（`curl -X POST https://.../api/save_edits` が 403）
 - [ ] DB が `:ro` でマウントされている
 - [ ] SSH が自分の IP に絞られている
 - [ ] `check` が RESULT: OK
@@ -193,7 +193,7 @@ az consumption budget create --budget-name ggb-monthly --amount 300 --time-grain
 
 ## 10. 既知の弱点
 
-- **同時実行に弱い**: 1 本の重いクエリがイベントループを塞ぐ。`GGB_DB_WORKERS` を増やすと
+- **同時実行に弱い**: 1 本の重いクエリがイベントループを塞ぐ。`AMIPA_DB_WORKERS` を増やすと
   並列に読めるが、worker ごとにページキャッシュを持つのでメモリを食う。公開規模が読めない間は
   Cloudflare 無料プランを前段に置くのが安上がり（Caddyfile 末尾のコメント参照）。
 - **cold な初回アクセス**: WG では 1 ビューポートあたり数百のランダム読みが起きうる。

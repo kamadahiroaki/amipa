@@ -8,7 +8,7 @@
 #   計算ノードから外向き通信はできる（このプロジェクトでの実績あり）。
 # ・rsync は再開可能。切れたら**同じコマンドをもう一度**打てば続きから進む。
 # ・sqlite の `-journal` / `-wal` は**送らない**（送ると壊れた状態を持ち込む）。
-# ・転送後は必ずリモートで `ggb-viewer check` を通すこと（README 参照）。
+# ・転送後は必ずリモートで `amipa-viewer check` を通すこと（README 参照）。
 set -euo pipefail
 
 SRC="${1:?転送元（バンドルのディレクトリ、または *.layered.db）}"
@@ -43,5 +43,5 @@ cat <<EOF
 
 [sync] 完了。リモート側で:
   ls -la $DEST_DIR
-  cd /opt/ggb && docker compose run --rm viewer check
+  cd /opt/amipa && docker compose run --rm viewer check
 EOF

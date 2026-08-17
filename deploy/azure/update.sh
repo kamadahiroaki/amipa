@@ -1,25 +1,25 @@
 #!/bin/bash
 # 公開インスタンスを新しい viewer イメージへ更新する（VM 上で実行）。
-#   /opt/ggb/update.sh [イメージタグ]
-#     例: /opt/ggb/update.sh ghcr.io/<org>/ggb-viewer:v0.2.0
-#   引数を省くと .env の GGB_IMAGE をそのまま pull し直す（:edge 運用向け）。
+#   /opt/amipa/update.sh [イメージタグ]
+#     例: /opt/amipa/update.sh ghcr.io/<org>/amipa-viewer:v0.2.0
+#   引数を省くと .env の AMIPA_IMAGE をそのまま pull し直す（:edge 運用向け）。
 #
 # DB は触らないので、更新はイメージの入れ替えだけ。数十秒で戻る。
 set -euo pipefail
-cd /opt/ggb
+cd /opt/amipa
 
 if [[ $# -ge 1 ]]; then
   NEW="$1"
-  # .env の GGB_IMAGE を書き換え（旧値は .env.bak に残す＝戻せるように）
+  # .env の AMIPA_IMAGE を書き換え（旧値は .env.bak に残す＝戻せるように）
   cp -f .env .env.bak
-  if grep -q '^GGB_IMAGE=' .env; then
-    sed -i "s|^GGB_IMAGE=.*|GGB_IMAGE=$NEW|" .env
+  if grep -q '^AMIPA_IMAGE=' .env; then
+    sed -i "s|^AMIPA_IMAGE=.*|AMIPA_IMAGE=$NEW|" .env
   else
-    echo "GGB_IMAGE=$NEW" >> .env
+    echo "AMIPA_IMAGE=$NEW" >> .env
   fi
 fi
 
-echo "[update] image = $(grep ^GGB_IMAGE= .env | cut -d= -f2-)"
+echo "[update] image = $(grep ^AMIPA_IMAGE= .env | cut -d= -f2-)"
 docker compose pull
 docker compose up -d
 docker image prune -f >/dev/null || true

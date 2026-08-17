@@ -2,7 +2,7 @@
 # ドメインは Azure の DNS ラベル（<label>.<region>.cloudapp.azure.com）でよい。
 
 {
-	email {$GGB_ACME_EMAIL}
+	email {$AMIPA_ACME_EMAIL}
 	servers {
 		timeouts {
 			read_body 10s
@@ -11,7 +11,7 @@
 	}
 }
 
-{$GGB_DOMAIN} {
+{$AMIPA_DOMAIN} {
 	encode zstd gzip          # backend が既に gzip 済みの応答（/nodes 等）は素通しされる
 
 	# 重いクエリが返るまで待てるようにする（cold な巨大 DB では 10 秒級がありうる）。
@@ -54,4 +54,4 @@
 #         rate_limit {
 #           zone api { key {remote_host} events 120 window 1m }
 #         }
-# なお viewer 側にも保険がある（GGB_MAX_ROWS / GGB_FETCH_MS / 放棄リクエストの破棄）。
+# なお viewer 側にも保険がある（AMIPA_MAX_ROWS / AMIPA_FETCH_MS / 放棄リクエストの破棄）。
