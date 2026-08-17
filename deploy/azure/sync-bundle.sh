@@ -2,7 +2,7 @@
 # HPC → Azure VM へバンドルを転送する（再開可能）。
 #
 #   使い方:  sync-bundle.sh <ローカルのバンドル or DB> <user@host> [リモートの置き場]
-#   例:      sync-bundle.sh ~/…/wg/mcgrch38.povu.fin.layered.db azureuser@ggb-demo.japaneast.cloudapp.azure.com
+#   例:      sync-bundle.sh ~/…/wg/mcgrch38.povu.fin.layered.db azureuser@amipa-demo.japaneast.cloudapp.azure.com
 #
 # ・WG は 250-350GB ある。**必ず qsub（計算ノード）から流す**。ログインノードで数時間流さない。
 #   計算ノードから外向き通信はできる（このプロジェクトでの実績あり）。

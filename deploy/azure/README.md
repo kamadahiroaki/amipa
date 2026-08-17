@@ -131,7 +131,7 @@ private な GHCR を使う場合は VM で 1 回だけ
 ssh $HOST
 cd /opt/amipa
 docker compose run --rm viewer check          # ← まずこれ。DB とサイドカーの点検（全走査しないので一瞬）
-sudo systemctl enable --now ggb               # compose up -d を systemd 管理で
+sudo systemctl enable --now amipa             # compose up -d を systemd 管理で
 curl -s localhost/healthz                     # → ok
 curl -s https://$AMIPA_DOMAIN/api/version
 ```
@@ -172,7 +172,7 @@ DB を差し替えるとき（新しい前処理で作り直したとき）:
 
 ```bash
 # 予算アラート（付与枠でも必ず）
-az consumption budget create --budget-name ggb-monthly --amount 300 --time-grain Monthly \
+az consumption budget create --budget-name amipa-monthly --amount 300 --time-grain Monthly \
   --category Cost --resource-group $RG --start-date $(date +%Y-%m-01)
 ```
 - 死活: `GET /healthz`（DB に触らないので、重いクエリで詰まっていても応答する）

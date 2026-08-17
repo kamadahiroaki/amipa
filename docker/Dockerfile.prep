@@ -1,0 +1,77 @@
+# amipa-prep — 前処理（GFA → アトラス）を丸ごと入れたイメージ。
+#   ビルド: docker build -f docker/Dockerfile.prep -t amipa-prep .          # context = リポジトリのルート
+#           docker build -f docker/Dockerfile.prep -t amipa-prep \
+#                        --build-arg AMIPA_REV=$(git rev-parse --short HEAD) .
+#   実行  : docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" -w /work amipa-prep \
+#             prep run --gfa /work/graph.gfa --out /work/graph.amipa --threads 8
+#
+# 中身: povu(C++) / emit_core・reads_core(Rust) / Python 3.9 ＋ numpy・scipy・numba・infomap・
+#       biopython・zstandard ＋ 前処理のコードと空テンプレ DB。
+# ★ビルド手順の実体は docker/build-prep.sh の 1 本だけで、**Apptainer def と共用**している
+#   （手順が二重化して片方だけ腐るのを避けるため）。
+# ★ビルドには外向き通信が要る（povu の CPM 依存 / PyPI / crates.io）。
+
+# ───────── builder: コンパイラ一式で povu と Rust wheel を作る ─────────
+FROM python:3.9-slim-bookworm AS builder
+ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake git ca-certificates curl pkg-config libncurses-dev \
+ && rm -rf /var/lib/apt/lists/*
+# ★Rust の版は Cargo.lock を書いた側（開発機）と揃える。古いと新しい依存が edition2024 を
+#   要求して `cargo metadata` が通らない。lock を更新したらここも見直す。
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.97.0
+ENV PATH=/root/.cargo/bin:$PATH
+WORKDIR /src
+COPY docker/requirements.txt ./docker/requirements.txt
+COPY prep   ./prep
+COPY NOTICE ./NOTICE
+COPY docker/build-prep.sh /usr/local/bin/build-prep.sh
+RUN chmod 0755 /usr/local/bin/build-prep.sh && /usr/local/bin/build-prep.sh /src /opt/amipa
+# maturin は wheel を焼くためだけの物。runtime へ持ち出さない
+RUN pip uninstall -y maturin >/dev/null 2>&1 || true
+
+# ───────── runtime: 実行に要るものだけ ─────────
+FROM python:3.9-slim-bookworm
+ENV DEBIAN_FRONTEND=noninteractive
+# povu の実行時依存（`ldd povu` の実測: libc6 / libgcc-s1 / libstdc++6 は base にある）。
+# ★`libncursesw6`(wide) ではなく **`libncurses6`**。povu は libncurses.so.6 を要求する。
+#   単一ステージの Apptainer 版は -dev が残るので気付けず、**docker のマルチステージだけで出る**。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgomp1 libncurses6 libtinfo6 ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
+COPY --from=builder /usr/local/bin/povu /usr/local/bin/povu
+# povu が持ち込む自前の共有ライブラリ（libzien.so 等。RPATH がビルド木を指すので同梱が要る）
+COPY --from=builder /usr/local/lib/amipa /usr/local/lib/amipa
+RUN echo /usr/local/lib/amipa > /etc/ld.so.conf.d/amipa.conf && ldconfig
+COPY --from=builder /opt/amipa /opt/amipa
+COPY docker/amipa /usr/local/bin/amipa
+# ★`chmod +x` では other の読みが付かない（ホストの umask 0640 が入ると Permission denied）
+RUN chmod 0755 /usr/local/bin/amipa /usr/local/bin/povu && chmod -R a+rX /opt/amipa
+
+# 版の刻印。.dockerignore で .git を外してあるので build-arg で渡す
+ARG AMIPA_REV=unknown
+ENV AMIPA_EMITTER_REV=$AMIPA_REV \
+    AMIPA_POVU=/usr/local/bin/povu \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONNOUSERSITE=1 \
+    PYTHONPATH=/opt/amipa/prep/amipa_prep
+
+# ★**最終イメージで**起動できるかを確かめる（共有ライブラリの取りこぼしはここで落とす）。
+#   実行時まで気付かないと「distill だけ通って povu で止まる」ことになる。
+RUN povu -h >/dev/null \
+ && ! ldd /usr/local/bin/povu | grep -q "not found" \
+ && python3 -c "import emit_core, reads_core, numpy, scipy, numba, infomap, Bio, zstandard" \
+ && test -f /opt/amipa/prep/amipa_prep/templates/schema.db \
+ && python3 /opt/amipa/prep/amipa_prep/cli.py --help >/dev/null \
+ && echo "runtime self-test OK"
+
+# 一時領域は**呼び出す側が決めて渡す**（イメージ内では場所を決め打ちしない）。
+#   docker run ... -v /fast/scratch:/scratch amipa-prep prep run ... --tmp /scratch
+WORKDIR /work
+ENTRYPOINT ["amipa"]
+CMD ["help"]
+
+LABEL org.opencontainers.image.title="amipa-prep" \
+      org.opencontainers.image.description="AMIPA preprocessing (GFA -> multi-resolution atlas)" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"

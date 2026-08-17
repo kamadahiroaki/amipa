@@ -13,7 +13,7 @@ services:
       - "3001"
     volumes:
       - ${AMIPA_DATA:-/data/bundles}:/data:ro
-      - amipa-sessions:/var/lib/ggb/sessions
+      - amipa-sessions:/var/lib/amipa/sessions
     environment:
       DB_DIR: /data
       PORT: "3001"

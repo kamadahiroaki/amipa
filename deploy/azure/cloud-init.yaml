@@ -14,7 +14,7 @@ packages:
   - jq
 
 write_files:
-  - path: /usr/local/sbin/ggb-mount-data
+  - path: /usr/local/sbin/amipa-mount-data
     permissions: "0755"
     content: |
       #!/bin/bash
@@ -61,8 +61,8 @@ runcmd:
   - apt-get update
   - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   - systemctl enable --now docker
-  - /usr/local/sbin/ggb-mount-data
+  - /usr/local/sbin/amipa-mount-data
   - mkdir -p /opt/amipa
   - usermod -aG docker azureuser || true
   - systemctl daemon-reload
-  # amipa.service は compose.yml を置いてから有効化する: systemctl enable --now ggb
+  # amipa.service は compose.yml を置いてから有効化する: systemctl enable --now amipa

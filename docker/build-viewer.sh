@@ -28,8 +28,15 @@ cp -r "$SRC/viewer/scripts"       "$APP/viewer/scripts"
 #   viewer イメージに prep は入れないので、必要な物だけここへ複製する。
 #   Apptainer の def は %files で先に viewer/scripts へ置くので、その場合は prep/ が無い＝skip。
 for m in cs_ops.py zstd_seek.py; do
-  [[ -f "$SRC/prep/amipa_prep/$m" ]] && cp "$SRC/prep/amipa_prep/$m" "$APP/viewer/scripts/$m"
-  [[ -f "$APP/viewer/scripts/$m" ]] || { echo "共有モジュール $m が無い"; exit 1; }
+  # Dockerfile は prep/amipa_prep/ 側を context に入れる。Apptainer の def は %files で先に
+  # viewer/scripts へ置くので prep/ が無い＝そのまま使う。どちらでも最後に有無を確かめる。
+  if [[ -f "$SRC/prep/amipa_prep/$m" ]]; then
+    cp "$SRC/prep/amipa_prep/$m" "$APP/viewer/scripts/$m"
+  fi
+  if [[ ! -f "$APP/viewer/scripts/$m" ]]; then
+    echo "[build-viewer] 共有モジュール $m が見つからない（context の入れ方を確認）" >&2
+    exit 1
+  fi
 done
 rm -rf "$APP/viewer/scripts/__pycache__"
 ( cd "$APP/viewer/backend" && yarn install --frozen-lockfile --production )

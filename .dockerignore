@@ -1,10 +1,15 @@
-# build context を小さく保つ
+# build context を小さく保つ。★ここに漏れがあると docker build が数十 GB を送り出す。
 **/node_modules
 **/dist
 **/target
 **/__pycache__
 **/*.pyc
 **/*.sif
+**/*.log
 .git
+# 実データ・成果物（atlases は 数十 GB になる）
+atlases
+sif
 data
 out
+work

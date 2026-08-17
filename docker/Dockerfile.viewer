@@ -1,0 +1,64 @@
+# amipa-viewer — 出来上がったアトラスを配信する閲覧側だけのイメージ。
+#   ビルド: docker build -f docker/Dockerfile.viewer -t amipa-viewer .      # context = リポジトリのルート
+#   実行  : docker run --rm -v /path/to/atlas:/data:ro amipa-viewer check
+#           docker run --rm -p 3001:3001 -v /path/to/atlas:/data amipa-viewer serve
+#
+# ★ビルド手順の実体は docker/build-viewer.sh の 1 本だけで、**Apptainer def と共用**している。
+# ★アトラスはイメージに焼き込まない。`/data` に mount する（DB_DIR で変えられる）。
+#   ビューアにはノードを編集する機能があるので、それを使うなら :ro を外す。
+
+# ───────── builder: tsc / vite / ネイティブモジュール ─────────
+FROM node:20-bookworm AS builder
+ENV DEBIAN_FRONTEND=noninteractive CI=1
+WORKDIR /src
+COPY viewer  ./viewer
+COPY NOTICE  ./NOTICE
+# 前処理側と共有する python モジュール（**形式・アルゴリズムの正は prep 側**にある）。
+# viewer イメージに prep は入れないので、必要な物だけ持ってくる。
+COPY prep/amipa_prep/cs_ops.py    ./prep/amipa_prep/cs_ops.py
+COPY prep/amipa_prep/zstd_seek.py ./prep/amipa_prep/zstd_seek.py
+COPY docker/build-viewer.sh /usr/local/bin/build-viewer.sh
+RUN chmod 0755 /usr/local/bin/build-viewer.sh \
+ && rm -rf viewer/backend/node_modules viewer/backend/dist \
+           viewer/frontend/node_modules viewer/frontend/dist \
+ && /usr/local/bin/build-viewer.sh /src /opt/amipa
+
+# ───────── runtime: node と python ヘルパだけ ─────────
+FROM node:20-bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive
+# 閲覧側が使う python（bubble MSA パネルとリード照会のヘルパ）。
+# zstandard = リード実体の容器、biopython = 旧アトラスの BGZF 読み出し。
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-numpy python3-biopython python3-zstandard ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+# better-sqlite3 のネイティブモジュールはビルド段で作った物をそのまま使う。
+# 同じ node 20 / bookworm なので ABI も glibc も一致する（下の自己テストで実際に require する）。
+COPY --from=builder /opt/amipa /opt/amipa
+COPY docker/amipa /usr/local/bin/amipa
+RUN chmod 0755 /usr/local/bin/amipa && chmod -R a+rX /opt/amipa && mkdir -p /data
+
+ARG AMIPA_REV=unknown
+ENV AMIPA_VERSION=$AMIPA_REV \
+    AMIPA_COMMIT=$AMIPA_REV \
+    DB_DIR=/data \
+    SESSION_DIR=/tmp/amipa-sessions \
+    PORT=3001 \
+    AMIPA_PYTHON=python3 \
+    PYTHONNOUSERSITE=1 \
+    NODE_ENV=production
+
+# ★**最終イメージで**動くかを確かめる。ネイティブモジュールの取りこぼしや
+#   python 依存の抜けは、ここで落とさないと「開いた後で一部の機能だけ黙って死ぬ」形になる。
+RUN node -e "require('/opt/amipa/viewer/backend/node_modules/better-sqlite3')" \
+ && test -f /opt/amipa/viewer/frontend/dist/index.html \
+ && python3 -c "import numpy, zstandard, Bio.bgzf" \
+ && python3 -c "import sys; sys.path.insert(0,'/opt/amipa/viewer/scripts'); import zstd_seek, cs_ops" \
+ && echo "runtime self-test OK"
+
+EXPOSE 3001
+ENTRYPOINT ["amipa"]
+CMD ["serve"]
+
+LABEL org.opencontainers.image.title="amipa-viewer" \
+      org.opencontainers.image.description="AMIPA viewer (serves a prebuilt atlas)" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later"

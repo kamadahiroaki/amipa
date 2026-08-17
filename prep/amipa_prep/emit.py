@@ -4452,9 +4452,10 @@ def main():
     # db_meta: ビルド由来(build 時刻/emitter git rev/含む機能)を DB に刻む。viewer が「今どの版の DB か」を表示する用。
     import subprocess
     # ★コンテナ内には .git が無い（git も無い）ので、イメージのビルド時に埋めた
-    #   GGB_EMITTER_REV を優先する。これが無いと db_meta.emitter_rev が "unknown" になり、
+    #   AMIPA_EMITTER_REV を優先する。これが無いと db_meta.emitter_rev が "unknown" になり、
     #   どの版で作った DB か後から辿れなくなる（図版の版刻印にも出る）。
-    _rev = os.environ.get("AMIPA_EMITTER_REV", "") or os.environ.get("AMIPA_EMITTER_REV", "") or os.environ.get("GGB_EMITTER_REV", "").strip()
+    _rev = (os.environ.get("AMIPA_EMITTER_REV", "")
+            or os.environ.get("GGB_EMITTER_REV", "")).strip()
     if not _rev:
         try:
             _rev = subprocess.run(["git", "-C", os.path.dirname(os.path.abspath(__file__)),
