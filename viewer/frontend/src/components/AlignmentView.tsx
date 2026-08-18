@@ -17,6 +17,9 @@ export interface AlignUi {
   readFill?: ReadFill              // リード塗りモード
   sampleHighlight?: boolean        // 株フォーカス: true=強調(非選択を灰), false/未=絞り込み(非選択を非表示)
   showConnectors: boolean
+  // リードの縦位置の決め方。'packed'=上に詰める（既定・縦が短い）／
+  // 'unique'=1 リード 1 段（全ノードで同じ段。列をまたいで目で追える）
+  readRows?: 'packed' | 'unique'
   laneHeights: number[]
   minMapq?: number                 // ボードの mapq 上書き（未設定/0=大域 mapq に追従、正値=上書き）
   cbSafe?: boolean                 // 色覚対応パレット（塩基/鎖/変異色を CB-safe に）
@@ -115,6 +118,7 @@ function computeReadLayout(
   nodes: NodeData[],
   byNode: Record<string, ReadAlignEntry[]>,
   selectedTags: (string | null)[] = [],
+  mode: 'packed' | 'unique' = 'packed',
 ): RowReadLayout {
   // Node global offsets
   const offsets = new Map<string, number>()
@@ -170,10 +174,34 @@ function computeReadLayout(
   // _grp=このリードが触れるノード集合＝接続相手の識別子、クラスタキーに使う）
   const result = new Map<string, LayoutEntry[]>()
   for (const nd of nodes) result.set(nd.node_name, [])
+
+  // ★'unique': 1 リード（＝1 スパン）に**全ノード共通の一意な段**を与える。
+  //   上に詰める方式は列ごとに独立して詰めるので、同じリードが列をまたぐたびに段が変わり、
+  //   n45173086→n45173091 のように何列も跨ぐリードを目で追えない。こちらは段が動かない。
+  //   縦は伸びる（リード数ぶんの段になる）ので、少数のリードを追跡したいときに使う。
+  const spanRow = new Map<Span, number>()
+  if (mode === 'unique') {
+    const ordered = [...spanArr].sort((a, b) =>
+      a.gs - b.gs ||
+      ((a.entries[0].aln_id ?? 0) - (b.entries[0].aln_id ?? 0)) ||
+      a.entries[0].read_name.localeCompare(b.entries[0].read_name))
+    ordered.forEach((sp, i) => spanRow.set(sp, i))
+  }
+
   for (const sp of spanArr) {
     for (const e of sp.entries) {
-      result.get(e.node_name)?.push({ ...e, y_row: 0, sig: sp.sig, _shared: sp.shared, _grp: sp.grp, _gs: sp.gs })
+      result.get(e.node_name)?.push({ ...e, y_row: spanRow.get(sp) ?? 0,
+        sig: sp.sig, _shared: sp.shared, _grp: sp.grp, _gs: sp.gs })
     }
+  }
+
+  if (mode === 'unique') {
+    const total = spanArr.length
+    const rbn = new Map<string, number>()
+    for (const nd of nodes) rbn.set(nd.node_name, total)   // 列の高さを揃える＝段が水平に並ぶ
+    const ss = new Set<string>()
+    for (const entries of Object.values(byNode)) for (const e of entries) if (e.sample_id) ss.add(e.sample_id)
+    return { byNode: result, maxYRow: total, rowsByNode: rbn, samples: [...ss].sort() }
   }
 
   // 段割り当て。狙い: ①横に離れたリードは別の隣接ノードと共有していても同段に同居させ縦を節約、
@@ -494,6 +522,8 @@ function AlignRowView({ row, dbFile, globalMapq, isActive, pendingNode, flippedI
   const [rawAlignData, setRawAlignData] = useState<Record<string, ReadAlignEntry[]> | null>(null)
   const [readTotals, setReadTotals] = useState<Record<string, number>>({})
   const [showConnectors, setShowConnectors] = useState(() => ui0?.showConnectors ?? true)
+  // リードの縦位置: 'packed'=上に詰める（既定）/ 'unique'=1 リード 1 段（列をまたいで追える）
+  const [readRows, setReadRows] = useState<'packed' | 'unique'>(() => ui0?.readRows ?? 'packed')
   const [cbSafe, setCbSafe] = useState<boolean>(() => ui0?.cbSafe ?? false)
   // ボード固有の mapq 上書き。null = 大域 mapq に追従。数値 = このボードだけその値で絞る。
   // （旧セッションの minMapq=0/未設定 は「追従」として扱う。正の保存値は上書きとして復元。）
@@ -542,12 +572,12 @@ function AlignRowView({ row, dbFile, globalMapq, isActive, pendingNode, flippedI
       boardZoom, nodeZoom,
       tags: selectedTags,
       samples: selectedSamples ? [...selectedSamples] : null,
-      readFill, sampleHighlight, showConnectors, laneHeights: laneRowHeights,
+      readFill, sampleHighlight, showConnectors, readRows, laneHeights: laneRowHeights,
       minMapq: mapqOverride == null ? undefined : mapqOverride,
       cbSafe,
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardZoom, nodeZoomKey, tagsKeyUi, samplesKeyUi, readFill, sampleHighlight, showConnectors, laneHeightsKeyUi, mapqOverride, cbSafe])
+  }, [boardZoom, nodeZoomKey, tagsKeyUi, samplesKeyUi, readFill, sampleHighlight, showConnectors, readRows, laneHeightsKeyUi, mapqOverride, cbSafe])
 
   const allNodes = row.columns.flat().filter((n): n is NodeData => n != null)
   const nodeNamesKey = allNodes.map(n => n.node_name).join(',')
@@ -797,9 +827,9 @@ ${parts.join('\n')}
       ? rawAlignData
       : Object.fromEntries(Object.entries(rawAlignData).map(([nname, entries]) =>
           [nname, entries.filter(keep)]))
-    setReadLayout(computeReadLayout(allNodes, data, selectedTags))
+    setReadLayout(computeReadLayout(allNodes, data, selectedTags, readRows))
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawAlignData, selectedSamples, sampleHighlight, effMapq, nodeNamesKey, columnsKey, tagsKey])
+  }, [rawAlignData, selectedSamples, sampleHighlight, effMapq, nodeNamesKey, columnsKey, tagsKey, readRows])
 
   // 列間コネクタ用データ: 列ごとに aln_id → {entry, nodeId, size}（全リード。選択不要）
   const bandHeightsKey = bandHeights.join(',')
@@ -1247,6 +1277,23 @@ ${parts.join('\n')}
               color: showConnectors ? '#fff' : '#495057', cursor: 'pointer',
             }}>
             線 {showConnectors ? 'ON' : 'OFF'}
+          </button>
+          {/* リードの縦位置。既定は上に詰める（縦が短い）。列をまたいで 1 本を目で追いたいときは
+              「1本1段」にすると、同じリードが**全ノードで同じ高さ**に並ぶ（段は伸びる）。 */}
+          <button
+            onClick={() => setReadRows(m => m === 'packed' ? 'unique' : 'packed')}
+            title={readRows === 'packed'
+              ? 'リードを上に詰めています（縦が短い代わりに、同じリードでも列ごとに高さが変わります）。'
+                + '押すと 1 リード 1 段になり、列をまたいで同じ高さに並びます'
+              : '1 リード 1 段（全ノードで同じ高さ＝列をまたいで追える）。押すと上に詰める表示に戻ります'}
+            style={{
+              fontFamily: 'sans-serif', fontSize: 11, padding: '2px 6px', marginTop: 2,
+              border: '1px solid', borderColor: readRows === 'unique' ? '#1971c2' : '#adb5bd',
+              borderRadius: 3,
+              background: readRows === 'unique' ? '#1971c2' : '#fff',
+              color: readRows === 'unique' ? '#fff' : '#495057', cursor: 'pointer',
+            }}>
+            {readRows === 'unique' ? '1本1段' : '詰める'}
           </button>
           {/* mapq フィルタ: 空欄=マップの大域 mapq に追従、数値=このボードだけ上書き */}
           <input
