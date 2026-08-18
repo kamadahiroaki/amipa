@@ -621,6 +621,12 @@ def execute(b: Bundle, a, want: list[str]) -> None:
             continue
         miss = s.missing_inputs()
         if miss:
+            # ★manifest は「今あるものの目録」なので、本体がまだ無いのは**失敗ではない**。
+            #   段別にジョブを投げる使い方（--only <段>）では毎回ここに来るので、
+            #   die すると emit 前の段が軒並み「終了ステータス 1」に見えてしまう。
+            if name == "bundle":
+                log(f"[bundle] 本体がまだ無いので manifest は作らない（{', '.join(miss)}）")
+                continue
             die(f"[{name}] 入力が無い: {', '.join(miss)}\n"
                 f"  前の段をまだ走らせていないか、--out が違う可能性がある。"
                 f"  `amipa prep status --out {b.root}` で確認する。")
@@ -655,12 +661,17 @@ def execute(b: Bundle, a, want: list[str]) -> None:
 def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
     """段ごとの資源の目安。**HPRC MC-GRCh38 v1.0（GFA 48.3GB）の実測に合わせて較正**してある。
 
-    実測 maxvmem（= スケジューラのメモリ上限が縛る量。RSS ではない）:
-        distill 48.2G / decompose 118.7G / lod 108.1G / layout 65.5G(24並列合計)
-        / emit 128.3G / annot 65.9G
-    reads だけは GFA ではなく **GAF の量**に比例する（まだ実測前の見込み値）。
-    ここに **約 1.4 倍の余裕**を掛けた値を返す。GFA サイズに比例させているが、
-    グラフの密度で変わるので**あくまで出発点**。実行後に実測して詰めるのが正しい。
+    実測 maxvmem / 実時間（= スケジューラのメモリ上限が縛る量。RSS ではない。2026-08-18 の通し）:
+        distill  1 slot   0.4h   33.5G
+        decompose 8 slots 0.8h  120.4G
+        lod      1 slot   1.3h  109.6G
+        layout  24 slots  1.0h   47.1G
+        emit     1 slot   5.0h  115.6G
+        annot    1 slot   2.0h   55.2G
+        reads    8 slots  1.1h   28.3G   ← GAF 60.1GB(gz, HiFi 3 サンプル, 19.0M aln)
+    reads だけは GFA ではなく **GAF の量**に比例する（葉ごとの転置索引をメモリに載せるため）。
+    ここに **約 1.3-1.5 倍の余裕**を掛けた値を返す。グラフの密度で変わるので**あくまで出発点**。
+    実行後に `qreport -j <ID>` 等で実測して詰めるのが正しい。
 
     メモリはジョブ全体の量(GB)で返す。スロットあたりで指定する必要がある環境では
     total / slots で割ること（`amipa prep plan` はその値も出す）。
@@ -669,16 +680,17 @@ def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
     q = gaf_bytes / 1e9          # リード整列(GAF.gz)の合計。reads 段だけはこちらに比例する
     t = max(1, threads)
     return {
-        "distill":   dict(slots=1, total=clamp(1.4 * g, 8, 320), hours=0.5 + g / 100),
-        "decompose": dict(slots=min(8, t), total=clamp(3.4 * g, 8, 400), hours=0.3 + g / 60),
-        "lod":       dict(slots=1, total=clamp(3.1 * g, 8, 400), hours=0.3 + g / 30),
-        "layout":    dict(slots=t, total=clamp(1.9 * g, 8, 300), hours=0.2 + g / 25),
-        "emit":      dict(slots=1, total=clamp(3.7 * g, 24, 480), hours=0.2 + g / 11),
-        "annot":     dict(slots=1, total=clamp(1.9 * g, 8, 200), hours=0.1 + g / 27),
+        "distill":   dict(slots=1, total=clamp(1.0 * g, 8, 320), hours=0.2 + g / 140),
+        "decompose": dict(slots=min(8, t), total=clamp(3.4 * g, 8, 400), hours=0.2 + g / 80),
+        "lod":       dict(slots=1, total=clamp(3.1 * g, 8, 400), hours=0.2 + g / 45),
+        "layout":    dict(slots=t, total=clamp(1.4 * g, 8, 300), hours=0.2 + g / 58),
+        "emit":      dict(slots=1, total=clamp(3.3 * g, 24, 480), hours=0.2 + g / 10),
+        "annot":     dict(slots=1, total=clamp(1.6 * g, 8, 200), hours=0.1 + g / 26),
         # reads は GFA ではなく **GAF の量**で決まる（葉ごとの転置索引をメモリに持つため）。
-        # 目安: GAF.gz 1GB あたり ~0.85GB（HiFi・のべ通過 100 億回の実測見込み）＋葉の配列。
-        "reads":     dict(slots=1, total=clamp(1.2 * q + 0.1 * g, 8, 300),
-                          hours=0.2 + q / 12),
+        # 実測: GAF.gz 60.1GB / 葉 8140 万 / のべ通過 52.8 億回 → 28.3G・1.1h。
+        # 通過を delta+varint でその場で畳むので、GAF.gz 1GB あたり ~0.47GB に収まる。
+        "reads":     dict(slots=1, total=clamp(0.7 * q + 0.1 * g, 8, 300),
+                          hours=0.2 + q / 50),
         "bundle":    dict(slots=1, total=8, hours=0.1),
     }
 
@@ -712,7 +724,7 @@ def show_plan(b: Bundle, a) -> None:
         per = -(-v["total"] // v["slots"])
         print(f"  {n:<10} {v['slots']:>7} {str(v['total']) + 'G':>10} {str(per) + 'G':>9} {v['hours']:>9.1f}h")
     print()
-    print("  ・HPRC MC-GRCh38 v1.0(GFA 48.3GB)の実測に約 1.4 倍の余裕を掛けた値。"
+    print("  ・HPRC MC-GRCh38 v1.0(GFA 48.3GB / GAF 60.1GB)の実測に 1.3-1.5 倍の余裕を掛けた値。"
           "グラフの密度で変わるので出発点として使い、1 度流したら実測で詰めること")
     print("  ・スロットあたりで指定する環境（例: AGE の s_vmem）では「/スロット」の列を使う")
     print("  ・ジョブスクリプトの雛形は examples/hpc/ を参照（中で `amipa prep run --only <段>` を呼ぶ）")
