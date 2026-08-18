@@ -5,10 +5,16 @@ import { getDb, getDbDir } from '../db'
 
 export const databasesRouter = Router()
 
-// viewer(ggb リポ)の git 版。起動時 1 回だけ解決してキャッシュ。
+// viewer の版。起動時 1 回だけ解決してキャッシュ。
+// ★コンテナには .git も git も無いので、イメージのビルド時に埋めた値を先に見る。
+//   git を呼ぶのはリポジトリ直実行のときだけ（stderr も捨てる。無い環境で
+//   "fatal: not a git repository" が起動ログに出ると障害に見える）。
 const VIEWER_REV = (() => {
+  const baked = process.env.AMIPA_COMMIT || process.env.AMIPA_VERSION
+  if (baked && baked !== 'unknown' && baked !== 'dev') return baked
   try {
-    return execSync('git rev-parse --short HEAD', { cwd: __dirname, encoding: 'utf8', timeout: 3000 }).trim()
+    return execSync('git rev-parse --short HEAD',
+                    { cwd: __dirname, encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
   } catch { return 'unknown' }
 })()
 
