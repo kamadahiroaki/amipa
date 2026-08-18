@@ -32,6 +32,7 @@ docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" \
 | `docker/` | 2 つのイメージ定義（Docker / Apptainer で同じビルド手順を共用） |
 | `deploy/` | クラウド公開の手順一式 |
 | `docs/` | 仕様と使い方 |
+| `examples/` | まず通す例（`chrY/`）と、ジョブスケジューラの雛形（`hpc/`） |
 
 ## ライセンスと引用
 

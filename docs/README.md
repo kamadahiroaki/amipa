@@ -2,6 +2,7 @@
 
 | 読むもの | 内容 |
 |---|---|
+| [../examples/chrY/](../examples/chrY/) | **まずこれ。** chrY（数分）で GFA → アトラス → 表示 を一通り通す |
 | [install.md](install.md) | 導入（Docker / Apptainer / ソースから） |
 | [usage-prep.md](usage-prep.md) | GFA からアトラスを作る |
 | [usage-viewer.md](usage-viewer.md) | アトラスを見る（機能と操作） |
@@ -10,6 +11,8 @@
 | [deploy.md](deploy.md) | クラウドで公開する |
 | [troubleshooting.md](troubleshooting.md) | うまくいかないとき |
 | [third-party.md](third-party.md) | 依存している外部ソフトウェアと出典 |
+| [licensing.md](licensing.md) / [citation.md](citation.md) | ライセンスの考え方と、引用のしかた |
+| [../examples/hpc/](../examples/hpc/) | ジョブスケジューラで回すときの雛形と資源の見積り |
 
 ## 全体像
 

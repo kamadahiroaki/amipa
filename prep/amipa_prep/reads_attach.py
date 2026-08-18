@@ -95,6 +95,10 @@ def main():
                     help=f"保存時に捨てる GAF タグ（コンマ区切り、既定 {','.join(DEFAULT_DROP_TAGS)}）。"
                          "ビューアが使わない大きなタグを落とすのが容量に一番効く。"
                          "空文字を渡すと何も落とさない")
+    ap.add_argument("--leafsize-cache", metavar="NPZ",
+                    help="葉サイズ走査（全ゲノムで 30-40 分）の結果を置く npz。"
+                         "既定は <db>.leafsizes.npz。base を読み取り専用で mount しているときは"
+                         "書ける場所をここに渡す。base より新しいものだけ使う")
     ap.add_argument("--no-cov", action="store_true", help="read_cov(深度サマリ) を作らない")
     ap.add_argument("--no-rust", action="store_true",
                     help="reads_core(Rust)を使わず純 Python 経路で構築(検証・フォールバック用)")
@@ -115,12 +119,33 @@ def main():
     sidecar = args.sidecar or (args.db + ".reads")
 
     # --- base DB(読取専用)から葉サイズ + maxlayer ---
+    # ★この走査は全ゲノム(230GB, 共有FS)で **30-40 分の固定費**。base は静的なので npz に
+    #   キャッシュし、base より新しいキャッシュがあれば即ロードする。やり直し（ジョブの
+    #   preempt や、タグ・圧縮レベルを変えての再構築）のたびに払わずに済む。
+    #   既定は base の隣。base を読み取り専用で mount している場合は書けないので、
+    #   --leafsize-cache で書ける場所を渡す（失敗しても止めない＝ただ遅いだけ）。
     t0 = time.time()
-    print(f"葉サイズ読込中(base 読取専用: {args.db}) ...", file=sys.stderr)
-    base = sqlite3.connect(f"file:{os.path.abspath(args.db)}?mode=ro", uri=True)
-    size_arr = load_leaf_sizes(base)
-    ml = base.execute("SELECT maxlayer FROM stats LIMIT 1").fetchone()[0]
-    base.close()
+    cache = args.leafsize_cache or (os.path.abspath(args.db) + ".leafsizes.npz")
+    size_arr = ml = None
+    try:
+        if os.path.exists(cache) and os.path.getmtime(cache) >= os.path.getmtime(args.db):
+            z = np.load(cache)
+            size_arr, ml = z["size_arr"], int(z["maxlayer"])
+            print(f"  葉サイズ: キャッシュから即ロード {cache} ({time.time()-t0:.1f}s)", file=sys.stderr)
+    except Exception as e:
+        print(f"  葉サイズキャッシュを読めない({e}) → 走査し直す", file=sys.stderr)
+        size_arr = None
+    if size_arr is None:
+        print(f"葉サイズ走査中(base 読取専用: {args.db}) ...", file=sys.stderr)
+        base = sqlite3.connect(f"file:{os.path.abspath(args.db)}?mode=ro", uri=True)
+        size_arr = load_leaf_sizes(base)
+        ml = base.execute("SELECT maxlayer FROM stats LIMIT 1").fetchone()[0]
+        base.close()
+        try:
+            np.savez(cache, size_arr=size_arr, maxlayer=np.int64(ml))
+            print(f"  葉サイズ: キャッシュを保存 {cache}", file=sys.stderr)
+        except Exception as e:
+            print(f"  葉サイズキャッシュを保存できない({e}) 続行", file=sys.stderr)
     print(f"  葉サイズ: maxid={len(size_arr)-1:,}  maxlayer={ml} ({time.time()-t0:.1f}s)", file=sys.stderr)
     depth_bases = np.zeros(len(size_arr), dtype=np.float64)
 
