@@ -10,3 +10,7 @@ atlases/
 data/
 out/
 *.log
+
+# セッション固有のメモ（サイト固有の運用など。公開しない）
+CLAUDE.local.md
+.claude/
