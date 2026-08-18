@@ -142,7 +142,11 @@ def main():
         ml = base.execute("SELECT maxlayer FROM stats LIMIT 1").fetchone()[0]
         base.close()
         try:
-            np.savez(cache, size_arr=size_arr, maxlayer=np.int64(ml))
+            # ★圧縮して書く。中身は id 空間ぶんの int64 配列（葉 8100 万で素のまま 619MiB）で、
+            #   1 染色体だと大半が 0、全ゲノムでも値が小さく上位バイトが 0 なのでよく縮む
+            #   （chrY 実測 619MiB → 0.7MiB。書込 2.1s / 読込 0.6s）。
+            #   走査に 30-40 分かかるものを数秒で復元できるので、圧縮の数秒は誤差。
+            np.savez_compressed(cache, size_arr=size_arr, maxlayer=np.int64(ml))
             print(f"  葉サイズ: キャッシュを保存 {cache}", file=sys.stderr)
         except Exception as e:
             print(f"  葉サイズキャッシュを保存できない({e}) 続行", file=sys.stderr)
