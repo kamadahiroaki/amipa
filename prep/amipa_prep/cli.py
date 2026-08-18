@@ -77,13 +77,13 @@ def die(msg: str, code: int = 1):
 def sig(p: Path) -> str:
     """入力の署名。ファイル=サイズ:mtime、ディレクトリ=件数:総サイズ:最終mtime。
 
-    ★`*.layered.db` だけは mtime でなく **emitter が刻んだ素性**(built_at + emitter_rev)を使う。
+    ★本体 DB(`*.db`)だけは mtime でなく **emitter が刻んだ素性**(built_at + emitter_rev)を使う。
       DB は後段（reads の索引付与や viewer のノード編集）で**中身が追記されて mtime が動く**が、
       annot から見た「どのグラフのどの emit か」は変わらない。mtime を見ると
       「リードを足しただけでアノテを作り直す」ような無駄な再実行が起きる。
     """
     try:
-        if str(p).endswith(".layered.db") and p.is_file():
+        if str(p).endswith(".db") and p.is_file():
             import sqlite3
             try:
                 con = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
@@ -224,9 +224,9 @@ class Bundle:
     """出力ディレクトリ 1 個 = バンドル 1 個。viewer にはこのディレクトリを渡す。
 
         <out>/
-          <name>.layered.db            本体
-          <name>.layered.db.distill/   MSA 用（**実体ディレクトリ**。symlink にしない）
-          <name>.layered.db.annot      アノテ（--band/--gene/--region 指定時）
+          <name>.db                    本体（多層 SQLite）
+          <name>.db.distill/           MSA 用（**実体ディレクトリ**。symlink にしない）
+          <name>.db.annot              アノテ（--band/--gene/--region 指定時）
           reads/                       リード実体（seekable zstd の GAF。--reads 指定時）
           manifest.json                版・能力・sha256
           work/                        中間物（typed/npz/pvst/tree）と log。部分やり直しに要る
@@ -238,7 +238,9 @@ class Bundle:
         self.work = self.root / "work"
         self.logs = self.work / "log"
         self.name = name or self._infer_name(gfa)
-        self.db = self.root / f"{self.name}.layered.db"
+        # ★本体は `<name>.db`。以前は `<name>.layered.db` だった（多層なのは中身の話で、
+        #   ファイル名に出す意味が無い）。既存アトラスは旧名のまま読める。
+        self.db = self.root / f"{self.name}.db"
         self.distill = Path(str(self.db) + ".distill")
         self.annot = Path(str(self.db) + ".annot")
         self.reads_dir = self.root / "reads"
@@ -251,11 +253,15 @@ class Bundle:
         self.dense_gfa = self.work / "dense.gfa"
 
     def _infer_name(self, gfa: Path | None) -> str:
-        # 既存バンドルなら中の *.layered.db、次に state.json、無ければ GFA のファイル名から決める
+        # 既存バンドルなら中の本体、次に state.json、無ければ GFA のファイル名から決める。
+        # ★旧名 `*.layered.db` も拾う（先に見る＝既存アトラスを開いたときに名前が変わらない）。
         if self.root.is_dir():
-            found = sorted(self.root.glob("*.layered.db"))
-            if found:
-                return found[0].name[: -len(".layered.db")]
+            for suf in (".layered.db", ".db"):
+                found = sorted(q for q in self.root.glob(f"*{suf}")
+                               if q.is_file() and not q.name.endswith((".reads", ".annot",
+                                                                       ".hapidx", ".nametri")))
+                if found:
+                    return found[0].name[: -len(suf)]
             try:
                 n = json.loads((self.root / "state.json").read_text()).get("name")
                 if n:

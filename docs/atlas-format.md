@@ -5,10 +5,10 @@
 ```
 graph.amipa/
   manifest.json              版・能力・sha256（何が入っているかの目録）
-  graph.layered.db           本体（多層 SQLite）
-  graph.layered.db.distill/  任意: 塩基レベルの整列表示に使う中間データ（★実体ディレクトリ）
-  graph.layered.db.annot     任意: アノテーション（バンド・遺伝子・領域）
-  graph.layered.db.reads     任意: リード整列の索引
+  graph.db           本体（多層 SQLite）
+  graph.db.distill/  任意: 塩基レベルの整列表示に使う中間データ（★実体ディレクトリ）
+  graph.db.annot     任意: アノテーション（バンド・遺伝子・領域）
+  graph.db.reads     任意: リード整列の索引
   reads/                     任意: リードの実体（seekable zstd の GAF）
   work/                      中間生成物とログ（部分的なやり直しに使う。配布時は削ってよい）
   state.json                 どの段まで終わったかの記録
@@ -47,7 +47,7 @@ graph.amipa/
 
 ```bash
 amipa check                 # DB_DIR の全アトラス
-amipa check graph.layered.db
+amipa check graph.db
 ```
 
 必須テーブル・空間索引・サイドカーの有無・Python 依存までを、**全走査せずに**確認する

@@ -8,12 +8,12 @@
 | `format` | 容器・索引・cs 切り出しが仕様どおりか（単体） | python3 + zstandard | 数秒 |
 | `image` | 焼いたイメージで povu が起動し、依存と共有ライブラリが揃うか | — | ビルド時に自動 |
 | `e2e` | GFA → アトラス → `amipa check` が全部 ok になるか。段の連結と再開の判定 | 小さい GFA（chrY） | 2〜4 分 |
-| `api` | 生きた backend が**空でない**応答を返すか（35 項目） | 起動中の viewer とアトラス | 分 |
+| `api` | 生きた backend が**空でない**応答を返すか（34 項目） | 起動中の viewer とアトラス | 分 |
 
 ```bash
 tests/run.sh format
 tests/run.sh e2e  --gfa /path/chrY.gfa
-tests/run.sh api  chrY.layered.db localhost:3001
+tests/run.sh api  chrY.db localhost:3001
 ```
 
 `image` の段は独立した script ではない。`docker/Dockerfile.*` と `docker/amipa-*.def` の

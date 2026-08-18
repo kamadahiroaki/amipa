@@ -193,7 +193,7 @@ export function startPrewarm(db: string): PrewarmState | null {
 
 /**
  * 起動時プリウォーム。**既定で有効**（この時点では利用者がいないのでフル速度で読める）。
- *   AMIPA_PREWARM 未設定 … DB_DIR の *.layered.db を順に温める（既定）
+ *   AMIPA_PREWARM 未設定 … DB_DIR の *.db を順に温める（既定）
  *   AMIPA_PREWARM=<名前,...> … その DB だけ
  *   AMIPA_PREWARM=off|0     … 何もしない
  * 小さい DB（既定 4GiB 未満）は放っておいても温まるので対象外。速度が出ない時は自動で見切る。
@@ -208,7 +208,9 @@ export function prewarmAtStartup() {
   if (!list.length) {
     // 既定: DB_DIR にあるアトラス本体を全部。ここに来るのは配信を始めた直後だけ。
     try {
-      list = fs.readdirSync(getDbDir()).filter(f => f.endsWith('.layered.db')).sort()
+      // 本体は `<name>.db`（旧アトラスは `<name>.layered.db`。どちらも .db で終わる）。
+      // サイドカーは .reads/.annot/… なのでここには混ざらない。
+      list = fs.readdirSync(getDbDir()).filter(f => f.endsWith('.db')).sort()
     } catch { list = [] }
     if (!list.length) return
   }

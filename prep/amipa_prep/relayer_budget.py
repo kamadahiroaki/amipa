@@ -116,6 +116,27 @@ def relayer_budget(parent_np, size_np, floor=1000, r_min=2.0, r_max=2.5, shrink=
         death[ref] = L
     per = [count(th) for th in thetas]
 
+    # ★最下層は「葉そのもの」でなければならない。
+    #   frontier の条件は (sv <= θ) & (sp > θ) で、最下層は θ=1。配下の葉がちょうど 1 個の
+    #   内部ノード（povu のバブルにはこれが多い）は sv==1 なのでこの条件を満たしてしまい、
+    #   その中の葉は sp==1 になって **どの層にも出なくなる**（＝ビューアから到達できず、
+    #   その葉のリードも塩基配列も見られない）。最下層に限って、内部ノードをその 1 葉に置き換える。
+    #   個数は変わらない（どちらも葉 1 個ぶん）ので per も完全分割も保たれる。
+    has_child = np.zeros(n, bool)
+    if n > 1:
+        has_child[parent_np[1:].astype(np.int64)] = True
+    is_leaf = ~has_child
+    last = M
+    at_last = (birth >= 0) & (birth <= last) & (last < death)
+    swap_out = at_last & ~is_leaf                 # 最下層に居る内部ノード（必ず sv==1）
+    death[swap_out] = last                        # 最下層の手前で終わらせる
+    swap_in = is_leaf & ((birth < 0) | (birth > last))   # どの層にも出ていなかった葉
+    birth[swap_in] = last
+    death[swap_in] = last + 1
+    ns = int(swap_out.sum()); ni = int(swap_in.sum())
+    if ns or ni:
+        log(f"最下層の正規化: 内部ノード {ns:,} を葉 {ni:,} に置き換え（葉 1 個だけを包む節）")
+
     # 検証: 各層 present-set サイズ == per == count(θ_L)(完全分割の担保)
     for L, th in enumerate(thetas):
         pc = int(((birth >= 0) & (birth <= L) & (L < death)).sum())
