@@ -180,6 +180,9 @@ interface Props {
   onLoadingChange?: (loading: boolean) => void
   /** 取得の進捗（取得中の行数 / 想定件数。total=0 は分母不明）。null で非表示。 */
   onFetchProgress?: (p: { rows: number; total: number } | null) => void
+  // 描画の高速経路（R-Tree だけを読む）が今 有効かどうか。上部バーに出して
+  // 「なぜ急に重くなったのか」が分かるようにする。理由も添える。
+  onFastPath?: (v: { on: boolean; reason: string }) => void
   onRibbonEdited?: () => void   // 編集でノード移動/回転しリボンを追従変異させた（App がパン再取得を止める）
   onNodesEdited?: (g: EditGesture) => void   // 移動/回転1ジェスチャ確定（DB反映用の剛体変換を報告）
   // グラフ距離フラッド（近接モード）: クリック点からの hop 距離でグリフを3層着色。
@@ -266,7 +269,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     nodeScale, edgeMin, mapMapq, hapSel, maxRows, onLodClamp, detailDepthMode, maxEdgePx, maxEdgeReads, showNodeNames, showNodeBp, labelScale, labelColor, labelOffset, showRefPos, refContigs, nodeColors,
     selectedPaths, ribbons, layerZoom, zoomWindow, worldBbox, layerOffset, suppressHeavyWarning,
     floodMode, floodResult, floodSeedComp, floodMaxHop, msaHighlight, msaHoverNodes,
-    onViewportChange, onHeavyView, onNodeSelect, onLoadingChange, onFetchProgress,
+    onViewportChange, onHeavyView, onNodeSelect, onLoadingChange, onFetchProgress, onFastPath,
     onRibbonEdited, onNodesEdited }, ref
 ) {
   const containerRef    = useRef<HTMLDivElement>(null)
@@ -368,13 +371,24 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   //             （= 探索中ずっと高速経路のままでいられる）。
   // 一度外したら戻さない（上の nx 群と同じ単調規則。トグル往復で毎回 reload しない）。
   const fastOkRef = useRef(true)
+  const onFastPathRef = useRef(onFastPath)
+  onFastPathRef.current = onFastPath
+  // ★以前は「一度外したら戻さない」だったが、Node bp を一度触っただけで**そのセッションの間
+  //   ずっと従来経路**になり、しかも画面には何も出ないので気付けなかった（全ゲノムの深層で
+  //   桁が変わる）。要らなくなったら戻す。往復での reload 連発は 400ms のディレイで抑える。
   useEffect(() => {
-    const needFull = showNodeBp ||
-      (!!floodMode && floodResult != null && floodSeedComp != null)
-    if (needFull && fastOkRef.current) {
-      fastOkRef.current = false
-      reloadRef.current?.()   // 欠落列が要る → 従来経路で取り直す
-    }
+    const reason = showNodeBp ? 'Node bp ラベル（size が要る）'
+      : (!!floodMode && floodResult != null && floodSeedComp != null) ? 'Proximity の選択（comp_id が要る）'
+      : ''
+    const want = reason === ''
+    if (want === fastOkRef.current) return
+    const t = setTimeout(() => {
+      if (want === fastOkRef.current) return
+      fastOkRef.current = want
+      onFastPathRef.current?.({ on: want, reason })
+      reloadRef.current?.()   // 列の要不要が変わった → 取り直す
+    }, 400)
+    return () => clearTimeout(t)
   }, [showNodeBp, floodMode, floodResult, floodSeedComp])
   useEffect(() => { maxHbRef.current = maxHb; renderRef.current?.() }, [maxHb])
   useEffect(() => { cnvModeRef.current = cnvMode; renderRef.current?.() }, [cnvMode])

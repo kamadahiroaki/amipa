@@ -68,14 +68,37 @@ function safeName(db: string): string | null {
   return s && s === db ? s : null
 }
 
+// ★温める対象は **本体だけでは足りない**。全ゲノム実測（2026-08-18）:
+//   本体 230GB を読み切った直後でも layer 16 の /edges が **100 秒**かかり、
+//   同じ要求の 2 回目が 0.17 秒（588x）。原因は本体ではなく **サイドカー**で、
+//   `/edges` が `rd.edge_read_support`（1.2 億行・18GB）を葉層で毎回引くため。
+//   本体だけ温めても一番痛い所が冷たいままなので、隣のサイドカーも順に読む。
+const SIDECARS = ['.reads', '.annot', '.hapidx', '.nametri']
+function prewarmFiles(real: string): string[] {
+  const out = [real]
+  for (const suf of SIDECARS) {
+    const f = real + suf
+    try { if (fs.statSync(f).isFile()) out.push(f) } catch { /* 無ければ飛ばす */ }
+  }
+  return out
+}
+function totalBytes(files: string[]): number {
+  let n = 0
+  for (const f of files) { try { n += fs.statSync(f).size } catch { /* */ } }
+  return n
+}
+
 /** dd の `status=progress` が stderr に出す "<n> bytes (...) copied, <t> s, <rate>" を拾う。 */
-function parseProgress(chunk: string, st: PrewarmState) {
+function parseProgress(chunk: string, st: PrewarmState, base = 0, startedAt = 0) {
   // \r 区切りで何度も上書き出力される。最後の完全な 1 件だけ見ればよい。
   const m = [...chunk.matchAll(/(\d+)\s+bytes[^\n\r]*?copied,\s*([\d.]+)\s*s/g)].pop()
   if (!m) return
-  const done = Number(m[1]), sec = Number(m[2])
-  if (Number.isFinite(done)) st.done = done
-  if (Number.isFinite(sec) && sec > 0) st.rate = done / sec
+  const done = Number(m[1])
+  if (!Number.isFinite(done)) return
+  st.done = base + done                       // ファイルを跨いで積む
+  // 速度は「開始からの通算」で出す（dd の秒はファイルごとに 0 に戻るため）
+  const el = startedAt ? (Date.now() - startedAt) / 1000 : Number(m[2])
+  if (el > 0) st.rate = st.done / el
 }
 
 function runNext() {
@@ -91,42 +114,60 @@ function runNext() {
 
   st.running = true
   st.startedAt = Date.now()
+  const files = prewarmFiles(real)
+  let idx = 0
+  let base = 0            // ここまでのファイルで読んだ総バイト（dd の報告は 1 ファイル内の値）
+  const state: PrewarmState = st   // 入れ子関数の中では narrowing が効かないので束ね直す
+  runFile()
+
+  function runFile() {
+  const f = files[idx]
   // dd を子プロセスで回す。node の event loop を一切塞がない（ここが read stream より重要）。
-  const child = spawn('dd', [`if=${real}`, 'of=/dev/null', 'bs=8M', 'status=progress'],
+  const child = spawn('dd', [`if=${f}`, 'of=/dev/null', 'bs=8M', 'status=progress'],
                       { stdio: ['ignore', 'ignore', 'pipe'] })
   current = { db, child }
   child.stderr?.setEncoding('utf8')
-  child.stderr?.on('data', (c: string) => parseProgress(c, st))
+  child.stderr?.on('data', (c: string) => parseProgress(c, state, base, state.startedAt))
   // 速度が出ないなら見切って止める。遅い OST を掴んだまま走り続けると、得られる warm より
   // 「その間ずっと利用者の取得を邪魔する」損の方が大きい。
   const rateGuard = MIN_RATE > 0 ? setTimeout(() => {
-    const el = (Date.now() - st.startedAt) / 1000
-    const rate = el > 0 ? st.done / el : 0
+    const el = (Date.now() - state.startedAt) / 1000
+    const rate = el > 0 ? state.done / el : 0
     if (rate < MIN_RATE) {
-      st.error = `遅すぎるので中止 (${(rate / 1e6).toFixed(0)} MB/s < ${(MIN_RATE / 1e6).toFixed(0)} MB/s)。`
+      state.error = `遅すぎるので中止 (${(rate / 1e6).toFixed(0)} MB/s < ${(MIN_RATE / 1e6).toFixed(0)} MB/s)。`
                + ` このFSは 1 ファイル 1 OST なので、OST が混んでいると桁で遅くなる`
-      console.log(`[prewarm] ${db}: ${st.error}`)
+      console.log(`[prewarm] ${db}: ${state.error}`)
       child.kill('SIGTERM')
     }
   }, RATE_CHECK_MS) : null
   child.on('error', (e) => {
-    st.error = String(e); st.running = false; st.endedAt = Date.now()
+    state.error = String(e); state.running = false; state.endedAt = Date.now()
     if (rateGuard) clearTimeout(rateGuard)
     current = null; runNext()
   })
   child.on('close', (code) => {
-    st.running = false
-    st.endedAt = Date.now()
     if (rateGuard) clearTimeout(rateGuard)
-    if (code === 0) { st.finished = true; st.done = st.total }
-    else if (!st.error) st.error = `dd exit ${code}`
-    console.log(`[prewarm] ${db}: ${st.finished ? 'done' : 'stopped'} ` +
-                `${(st.done / 1e9).toFixed(1)}/${(st.total / 1e9).toFixed(1)} GB ` +
-                `in ${((st.endedAt! - st.startedAt) / 1000).toFixed(1)}s`)
+    if (code === 0) {
+      base += (() => { try { return fs.statSync(f).size } catch { return 0 } })()
+      state.done = base
+      idx++
+      if (idx < files.length) { runFile(); return }      // 次のサイドカーへ
+      state.finished = true
+      state.done = state.total
+    } else if (!state.error) {
+      state.error = `dd exit ${code}`
+    }
+    state.running = false
+    state.endedAt = Date.now()
+    console.log(`[prewarm] ${db}: ${state.finished ? 'done' : 'stopped'} ` +
+                `${(state.done / 1e9).toFixed(1)}/${(state.total / 1e9).toFixed(1)} GB ` +
+                `in ${((state.endedAt! - state.startedAt) / 1000).toFixed(1)}s`)
     current = null
     runNext()
   })
-  console.log(`[prewarm] ${db}: 開始 ${(st.total / 1e9).toFixed(1)} GB`)
+  console.log(`[prewarm] ${db}: 開始 ${path.basename(f)} ` +
+              `(${idx + 1}/${files.length}, 合計 ${(state.total / 1e9).toFixed(1)} GB)`)
+  }
 }
 
 /**
@@ -139,7 +180,8 @@ export function startPrewarm(db: string): PrewarmState | null {
   const existing = states.get(name)
   if (existing) return existing            // 実行中 or 完了済み or 失敗（再試行はしない）
   let total = 0
-  try { total = fs.statSync(fs.realpathSync(path.join(getDbDir(), name))).size } catch { return null }
+  try { total = totalBytes(prewarmFiles(fs.realpathSync(path.join(getDbDir(), name)))) }
+  catch { return null }
   if (total < MIN_BYTES) return null       // 小さい DB は対象外
   const st: PrewarmState = { db: name, total, done: 0, rate: 0, running: false,
                              finished: false, startedAt: 0 }
@@ -149,10 +191,27 @@ export function startPrewarm(db: string): PrewarmState | null {
   return st
 }
 
-/** 起動時プリウォーム。AMIPA_PREWARM に DB 名をカンマ区切りで並べる（利用者がいないのでフル速度）。 */
+/**
+ * 起動時プリウォーム。**既定で有効**（この時点では利用者がいないのでフル速度で読める）。
+ *   AMIPA_PREWARM 未設定 … DB_DIR の *.layered.db を順に温める（既定）
+ *   AMIPA_PREWARM=<名前,...> … その DB だけ
+ *   AMIPA_PREWARM=off|0     … 何もしない
+ * 小さい DB（既定 4GiB 未満）は放っておいても温まるので対象外。速度が出ない時は自動で見切る。
+ */
 export function prewarmAtStartup() {
-  const list = ((process.env.AMIPA_PREWARM ?? process.env.GGB_PREWARM) || '').split(',').map(s => s.trim()).filter(Boolean)
-  if (!list.length) return
+  const raw = (process.env.AMIPA_PREWARM ?? process.env.GGB_PREWARM ?? '').trim()
+  if (raw === 'off' || raw === '0' || raw === 'false') {
+    console.log('[prewarm] 無効（AMIPA_PREWARM=off）')
+    return
+  }
+  let list = raw.split(',').map(s => s.trim()).filter(Boolean)
+  if (!list.length) {
+    // 既定: DB_DIR にあるアトラス本体を全部。ここに来るのは配信を始めた直後だけ。
+    try {
+      list = fs.readdirSync(getDbDir()).filter(f => f.endsWith('.layered.db')).sort()
+    } catch { list = [] }
+    if (!list.length) return
+  }
   console.log(`[prewarm] 起動時プリウォーム: ${list.join(', ')}`)
   for (const db of list) if (!startPrewarm(db)) console.log(`[prewarm] ${db}: 対象外/見つからない`)
 }

@@ -2,8 +2,8 @@
 // （worker(dbJobs.ts) と routes/graph.ts の両方から同じ SQL 組み立てを使うため）。
 // 中身は graph.ts から**無改変で移動**しただけ（コメントも含む）。
 import { hasSignSchema, VISIBLE_NODE_SUBQUERY } from './edgeGeom'
-import { maskWhere, type Selection } from './hapidx'
-import { tableCols, hbCoveringIdx } from './nodeQuery'
+import { hapIdxInfo, maskWhere, type Selection } from './hapidx'
+import { tableCols, hbCoveringIdx, maxLayerOf } from './nodeQuery'
 import { readsSchema } from './db'
 
 // リード由来のエッジ太さ(read_support)がこの DB にあるか。新スキーム= rd.edge_read_support(サイドカー),
@@ -21,10 +21,16 @@ export function edgeHasRs(d: any, mapq = 0): boolean {
   const ec = tableCols(d, 'edges')
   return ec.has('read_support') || (mapq > 0 && ec.has(`read_support_q${mapq}`))
 }
-// buildEdgesSql/buildSignedEdgesSql の extraJoin に足す edge_read_support への LEFT JOIN(引数なし)。
-export function edgeRsJoin(d: any): string {
+// buildEdgesSql/buildSignedEdgesSql の extraJoin に足す edge_read_support への LEFT JOIN。
+// ★葉の層でだけ結合する。edge_read_support の鍵は**葉の名前 `n{id}`** なので、上の層
+//   （端点が G…/S… のクラスタ）では絶対に当たらないのに、索引を引くコストだけ払っていた。
+//   全ゲノム実測で 1 エッジあたり layer12 0.21ms / layer14 0.38ms に対し **layer16 は 8.13ms**
+//   （命中して 18GB のサイドカーの葉ページを 1 枚ずつ拾うため）。当たらない層で引かない。
+export function edgeRsJoin(d: any, layer?: number): string {
   const rs = edgeRsSchema(d)
-  return rs ? ` LEFT JOIN ${rs}.edge_read_support ers ON ers.source=e.source AND ers.target=e.target` : ''
+  if (!rs) return ''
+  if (layer !== undefined && layer !== maxLayerOf(d)) return ''
+  return ` LEFT JOIN ${rs}.edge_read_support ers ON ers.source=e.source AND ers.target=e.target`
 }
 
 // 絞り込み時の可視ノード集合（マスク付き R-Tree を引く）。rtree の第1列は rowid 別名なので
@@ -39,9 +45,28 @@ export function visibleNodeSubquerySel(sel: Selection): { sql: string; params: b
   }
 }
 
-export function edgeRsExpr(d: any, mapq: number): string {
+// ★R-Tree に描画補助列 `nm`（node_name）があるなら、可視ノード名は **R-Tree だけで出せる**。
+//   従来は必ず `JOIN nodes` していたので、ノード側の高速経路がせっかく避けている
+//   「%_node のランダム読み」をエッジ取得のたびに踏んでいた（コールドで支配的）。
+//   nm が無い DB では従来どおり（機能は落ちない・速度だけ従来どおり）。
+function rtreeWithNm(d: any, sel: Selection | null): string | null {
+  const rt = sel ? sel.rtree : (hapIdxInfo(d)?.rtree ?? null)
+  if (!rt) return null
+  const bare = rt.includes('.') ? rt.split('.')[1] : rt
+  const schema = rt.includes('.') ? rt.split('.')[0] + '.' : ''
+  try {
+    const cols = new Set((d.prepare(`PRAGMA ${schema}table_info(${bare})`).all() as any[])
+      .map(c => String(c.name)))
+    return cols.has('nm') ? rt : null
+  } catch { return null }
+}
+
+export function edgeRsExpr(d: any, mapq: number, layer?: number): string {
   // 新スキーム: rd.edge_read_support を join 済み(ers.support)。レガシー: base edges 列。無ければ NULL。
-  if (edgeRsSchema(d)) return 'ers.support'
+  // 葉以外の層では join しない（edgeRsJoin と同じ判定）ので、参照せず NULL を返す。
+  if (edgeRsSchema(d)) {
+    return (layer !== undefined && layer !== maxLayerOf(d)) ? 'NULL' : 'ers.support'
+  }
   const ec = tableCols(d, 'edges')
   if (mapq > 0) {
     const c = `read_support_q${mapq}`
@@ -156,6 +181,16 @@ export function buildSignedEdgesBatchSql(n: number, rsSel: string, extraSel = ''
 }
 
 /** 可視ノード名を流すクエリ（バッチ版 phase 1 用）。パラメータ順 [L, x2, x1, y2, y1, ...mask]。 */
-export function visibleNodesSql(sel: Selection | null): { sql: string; params: bigint[] } {
+export function visibleNodesSql(d: any, sel: Selection | null): { sql: string; params: bigint[] } {
+  const rt = rtreeWithNm(d, sel)
+  if (rt) {
+    const mw = sel ? maskWhere('rt', sel) : { sql: '', params: [] as bigint[] }
+    return {
+      sql: `SELECT rt.nm AS node_name FROM ${rt} rt ` +
+           'WHERE rt.min_layer = ? AND rt.min_x <= ? AND rt.max_x >= ? ' +
+           'AND rt.min_y <= ? AND rt.max_y >= ?' + mw.sql,
+      params: mw.params,
+    }
+  }
   return sel ? visibleNodeSubquerySel(sel) : { sql: VISIBLE_NODE_SUBQUERY, params: [] }
 }

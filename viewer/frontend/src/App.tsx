@@ -326,6 +326,8 @@ export default function App() {
   const [hbAvail, setHbAvail] = useState(false)            // A-2 hap-breadth 列あり（パス多重度モード可）
   const [multAvail, setMultAvail] = useState(false)        // A-2 node_hap_mult あり（CNV モード可）
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null)  // 上部バー版表示(viewer/db)
+  // 描画の高速経路（R-Tree だけを読む）の状態。外れると全ゲノムの深層で桁が変わるので上部バーに出す。
+  const [fastPath, setFastPath] = useState<{ on: boolean; reason: string }>({ on: true, reason: '' })
   // 配信側で DB 書き換えを塞いである配信（AMIPA_READONLY=1）。編集操作そのものは許すが
   // Save だけ無効にする＝「動かして繋がりを確かめる」用途はデモでもそのまま使える。
   const saveDisabled = versionInfo?.readonly === true
@@ -1307,6 +1309,12 @@ export default function App() {
                     : 'なし → radius を矩形から導出＝深層で過大。ノード/エッジがリボンに対してずれる'}`
                 : '')}>
             <span>viewer <b style={{ color: '#495057' }}>{versionInfo.viewer}</b></span>
+            <span title={fastPath.on
+              ? '描画は R-Tree だけを読む高速経路。大きいグラフの深層ではこれが効く'
+              : `高速経路が外れている理由: ${fastPath.reason}\nこの表示をやめると自動で戻る`}
+              style={{ color: fastPath.on ? '#2b8a3e' : '#e8590c', fontWeight: fastPath.on ? 400 : 600 }}>
+              {fastPath.on ? '⚡fast' : '⚠ 従来経路'}
+            </span>
             {versionInfo.db && (
               <span>db <b style={{ color: '#495057' }}>{versionInfo.db.built_at ?? (versionInfo.db.mtime?.slice(0, 16).replace('T', ' ') ?? '?')}</b>
                 {versionInfo.db.emitter_rev ? ` @${versionInfo.db.emitter_rev}` : ''}
@@ -2172,6 +2180,7 @@ export default function App() {
                   }}
                   onLoadingChange={loading => { setIsLoading(loading); if (!loading) setFetchProg(null) }}
                   onFetchProgress={setFetchProg}
+                  onFastPath={setFastPath}
                 />
                 {/* アノテ凡例(色キー): アクティブなモードのみ。左下オーバーレイ。 */}
                 {showOverlays && (bandMode || regionMode || geneMode || selectedGene) && (

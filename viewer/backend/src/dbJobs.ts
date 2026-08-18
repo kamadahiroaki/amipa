@@ -325,15 +325,16 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
     const ex = edgeExtraSel(d)   // A-2: edge hap-breadth(edge_hb)を相乗り(無い DB は空)
     if (edgesHasSigns(d)) {
       const hasRs = edgeHasRs(d, job.mapq)
-      const rsSel = hasRs ? `, ${edgeRsExpr(d, job.mapq)} AS read_support` : ''
-      const rsJoin = hasRs ? edgeRsJoin(d) : ''   // rd.edge_read_support への LEFT JOIN(引数なし)
+      // ★層を渡す。葉以外では edge_read_support を結合しない（鍵が葉名なので当たらない）。
+      const rsSel = hasRs ? `, ${edgeRsExpr(d, job.mapq, L)} AS read_support` : ''
+      const rsJoin = hasRs ? edgeRsJoin(d, L) : ''
       const edgeMask = !!sel && hapIdxEdgeOk(d)
 
       // ── phase 1: 可視ノード名を**自分で**流して集める ─────────────────────
       // 以前は `IN (サブクエリ)` で SQLite に丸投げしていたが、それだと LIST SUBQUERY として
       // 1 行目より前に全部実体化され、中断も進捗も不可能だった（WG で 16.4 秒／16 行）。
       ctx.setPhase?.(1)
-      const vq = visibleNodesSql(sel)
+      const vq = visibleNodesSql(d, sel)
       const visCap = job.maxRows > 0 ? Math.max(job.maxRows, VIS_MIN_CAP) : VIS_DEFAULT_CAP
       ctx.setTotal?.(estimateTotal(d, sel ? sel.rtree : 'nodes_rtree', L,
         { x1: job.x1, y1: job.y1, x2: job.x2, y2: job.y2 },
@@ -391,8 +392,8 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
     if (sel && (hapIdxEdgeOk(d) || tableCols(d, 'edge_contig_cov').size > 0)) {
       const useMask = hapIdxEdgeOk(d)
       const em = useMask ? maskWhere('ehm', sel) : { sql: '', params: [] as bigint[] }
-      const gl = ctx.guard(d.prepare(buildEdgesSql(edgeRsExpr(d, job.mapq), ex.sel,
-        ex.join + edgeRsJoin(d) + (useMask ? ` JOIN ${sel.edgeTable} ehm ON ehm.edge_rowid = e.rowid` : '')) + em.sql),
+      const gl = ctx.guard(d.prepare(buildEdgesSql(edgeRsExpr(d, job.mapq, L), ex.sel,
+        ex.join + edgeRsJoin(d, L) + (useMask ? ` JOIN ${sel.edgeTable} ehm ON ehm.edge_rowid = e.rowid` : '')) + em.sql),
         [...args, ...em.params], gopt)
       let rows = gl.rows as any[]
       if (rows.length > 0 && (useMask ? sel.exact : true)) {
@@ -402,7 +403,7 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
       }
       return done(gl, rows)
     }
-    const g0 = ctx.guard(d.prepare(buildEdgesSql(edgeRsExpr(d, job.mapq), ex.sel, ex.join + edgeRsJoin(d))), args, gopt)
+    const g0 = ctx.guard(d.prepare(buildEdgesSql(edgeRsExpr(d, job.mapq, L), ex.sel, ex.join + edgeRsJoin(d, L))), args, gopt)
     return done(g0, g0.rows as any[])
   } catch {
     const rows = d.prepare(edgesQueryLegacy).all(...args) as any[]

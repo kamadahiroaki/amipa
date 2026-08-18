@@ -205,6 +205,18 @@ export function fastAnnotSel(d: any, want: { band: boolean; region: boolean; gen
   return { sel, join: ` LEFT JOIN ${srcA.qual}node_annot na${idx} ON na.node_rowid = r.rowid` }
 }
 
+// stats.maxlayer（＝葉の層）。接続ごとに 1 回だけ引いてキャッシュする。
+const maxLayerCache = new WeakMap<object, number>()
+export function maxLayerOf(d: any): number {
+  const hit = maxLayerCache.get(d)
+  if (hit !== undefined) return hit
+  let v = -1
+  try { v = Number((d.prepare('SELECT maxlayer FROM stats LIMIT 1').get() as any)?.maxlayer ?? -1) }
+  catch { v = -1 }
+  maxLayerCache.set(d, v)
+  return v
+}
+
 export function buildNodesSqlFast(rtree: string, angScale: number, maskSql = '',
                                   hasRad = false, hasXY = false,
                                   annot: { sel: string; join: string } | null = null): string {
