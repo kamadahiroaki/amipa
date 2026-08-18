@@ -326,6 +326,9 @@ export default function App() {
   const [hbAvail, setHbAvail] = useState(false)            // A-2 hap-breadth 列あり（パス多重度モード可）
   const [multAvail, setMultAvail] = useState(false)        // A-2 node_hap_mult あり（CNV モード可）
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null)  // 上部バー版表示(viewer/db)
+  // 配信側で DB 書き換えを塞いである配信（AMIPA_READONLY=1）。編集操作そのものは許すが
+  // Save だけ無効にする＝「動かして繋がりを確かめる」用途はデモでもそのまま使える。
+  const saveDisabled = versionInfo?.readonly === true
   const seqAvail = versionInfo?.db?.features.seq ?? false   // leaf_seq あり（配列表示モード可）
   const [showRefPos, setShowRefPos] = useState(true)       // 参照上の概算 bp 位置ラベルを重畳（既定ON）
   const [refContigs, setRefContigs] = useState<Map<number, RefContig>>(new Map())  // contig_id -> 表示名/長さ
@@ -1784,42 +1787,6 @@ export default function App() {
           >
             Edit
           </button>
-          {editMode && toggleBtn(softDragMode,
-            () => setSoftDragMode(m => { if (!m) showHint('ソフト移動: ノードを掴んでドラッグすると、BFSで近い近傍も hop 減衰した強さで一緒に動きます（d3-force風）。Shift+ドラッグは従来の剛体移動。「hop」で巻き込む距離を調整。'); return !m }),
-            'Soft drag', '#7048e8', '#f3f0ff', '掴んだノード＋BFS近傍を hop 減衰重みで一緒に動かす（d3-force風）')}
-          {editMode && softDragMode && (
-            <span style={{ fontFamily: 'sans-serif', fontSize: 12, color: '#495057', display: 'flex', alignItems: 'center', gap: 4 }}>
-              hop
-              <input type="number" min={1} max={30} step={1} value={softDragHops}
-                title="ソフト移動で巻き込む最大 hop 距離。大きいほど遠くまで一緒に動く"
-                onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragHops(isNaN(v) ? 6 : Math.max(1, Math.min(30, v))) }}
-                style={{ width: 44, fontSize: 12, padding: '2px 4px' }} />
-              soft
-              <input type="number" min={1} max={12} step={1} value={softDragSoftness}
-                title="柔らかさ。大きいほど柔らかく（近傍が広く緩やかに追従）、小さいほど硬い（掴んだ点だけ動く）"
-                onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragSoftness(isNaN(v) ? 5 : Math.max(1, Math.min(12, v))) }}
-                style={{ width: 44, fontSize: 12, padding: '2px 4px' }} />
-            </span>
-          )}
-          {editMode && (
-            <button
-              onClick={saveNodeEdits}
-              disabled={pendingEdits.length === 0 || savingEdits}
-              title="編集モードでのノード移動/回転を、子孫ノードと関連エッジごとDBへ保存する"
-              style={{
-                fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-                border: '1px solid',
-                borderColor: pendingEdits.length > 0 ? '#e8590c' : '#adb5bd',
-                borderRadius: 4,
-                background: pendingEdits.length > 0 ? '#fff4e6' : '#f8f9fa',
-                color: pendingEdits.length > 0 ? '#e8590c' : '#adb5bd',
-                cursor: pendingEdits.length === 0 || savingEdits ? 'default' : 'pointer',
-                fontWeight: pendingEdits.length > 0 ? 600 : 400,
-              }}
-            >
-              {savingEdits ? 'Saving…' : `Save to DB${pendingEdits.length > 0 ? ` (${pendingEdits.length})` : ''}`}
-            </button>
-          )}
           <button
             onClick={() => {
               setBottomH(h => {
@@ -1860,20 +1827,77 @@ export default function App() {
           >
             MSA
           </button>
-          {editMode && (
-            <span style={{ fontFamily: 'sans-serif', fontSize: 12, color: '#888' }}>
-              Click: select &nbsp;·&nbsp;
-              Shift+Click: add/remove &nbsp;·&nbsp;
-              Drag (empty): box-select &nbsp;·&nbsp;
-              Shift+Drag (empty): add to selection &nbsp;·&nbsp;
-              Drag (node): move &nbsp;·&nbsp;
-              Yellow handle: rotate &nbsp;·&nbsp;
-              Space+Drag: pan &nbsp;·&nbsp;
-              Esc: clear
-            </span>
-          )}
         </div>
       </div>
+
+      {/* ── Edit 行（2 段目・文脈ツールバー）────────────────────────────
+          ★上段は Edit の ON/OFF で**一切変わらない**。編集用のものは全部ここに出す。
+            以前は上段にインライン挿入していたので、Alignment/MSA が次の行へ落ち、
+            右寄せのせいで Edit ボタン自身の位置まで動いていた（ON にした所を
+            もう一度押すと別のボタンだった）。
+          ★Save もここに置く。編集は「DB に保存したいから」だけでなく
+            「繋がりをその場で確かめるために動かしてみる」使い方もするので、
+            Save は Edit の文脈の中にあるべきで、離れた場所に常駐させない。 */}
+      {editMode && (
+        <div style={{
+          flexShrink: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
+          padding: '4px 16px', background: '#faf8ff', borderBottom: '1px solid #e5dcf7',
+          fontFamily: 'sans-serif', fontSize: 12, color: '#495057',
+        }}>
+          <span style={{ fontWeight: 600, color: '#7048e8', whiteSpace: 'nowrap' }}>Edit</span>
+          {toggleBtn(softDragMode,
+            () => setSoftDragMode(m => { if (!m) showHint('ソフト移動: ノードを掴んでドラッグすると、BFSで近い近傍も hop 減衰した強さで一緒に動きます（d3-force風）。Shift+ドラッグは従来の剛体移動。「hop」で巻き込む距離を調整。'); return !m }),
+            'Soft drag', '#7048e8', '#f3f0ff', '掴んだノード＋BFS近傍を hop 減衰重みで一緒に動かす（d3-force風）')}
+          {softDragMode && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+              hop
+              <input type="number" min={1} max={30} step={1} value={softDragHops}
+                title="ソフト移動で巻き込む最大 hop 距離。大きいほど遠くまで一緒に動く"
+                onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragHops(isNaN(v) ? 6 : Math.max(1, Math.min(30, v))) }}
+                style={{ width: 44, fontSize: 12, padding: '2px 4px' }} />
+              soft
+              <input type="number" min={1} max={12} step={1} value={softDragSoftness}
+                title="柔らかさ。大きいほど柔らかく（近傍が広く緩やかに追従）、小さいほど硬い（掴んだ点だけ動く）"
+                onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragSoftness(isNaN(v) ? 5 : Math.max(1, Math.min(12, v))) }}
+                style={{ width: 44, fontSize: 12, padding: '2px 4px' }} />
+            </span>
+          )}
+          <button
+            onClick={saveNodeEdits}
+            disabled={pendingEdits.length === 0 || savingEdits || saveDisabled}
+            title={saveDisabled
+              ? 'この配信では DB への保存を無効にしてある（サーバ側で AMIPA_READONLY=1）。移動して確かめるのは自由で、結果は保存されない'
+              : '編集モードでのノード移動/回転を、子孫ノードと関連エッジごとDBへ保存する'}
+            style={{
+              fontFamily: 'sans-serif', fontSize: 13, padding: '3px 12px',
+              border: '1px solid',
+              borderColor: (pendingEdits.length > 0 && !saveDisabled) ? '#e8590c' : '#adb5bd',
+              borderRadius: 4,
+              background: (pendingEdits.length > 0 && !saveDisabled) ? '#fff4e6' : '#f8f9fa',
+              color: (pendingEdits.length > 0 && !saveDisabled) ? '#e8590c' : '#adb5bd',
+              cursor: (pendingEdits.length === 0 || savingEdits || saveDisabled) ? 'default' : 'pointer',
+              fontWeight: (pendingEdits.length > 0 && !saveDisabled) ? 600 : 400,
+            }}
+          >
+            {savingEdits ? 'Saving…' : `Save to DB${pendingEdits.length > 0 ? ` (${pendingEdits.length})` : ''}`}
+          </button>
+          {saveDisabled && (
+            <span style={{ color: '#868e96', whiteSpace: 'nowrap' }}
+              title="サーバを AMIPA_READONLY=1 で起動している">
+              保存は無効（閲覧専用の配信）
+            </span>
+          )}
+          <span style={{ marginLeft: 'auto', color: '#888' }}>
+            Click: select &nbsp;·&nbsp;
+            Shift+Click: add/remove &nbsp;·&nbsp;
+            Drag (empty): box-select &nbsp;·&nbsp;
+            Drag (node): move &nbsp;·&nbsp;
+            Yellow handle: rotate &nbsp;·&nbsp;
+            Space+Drag: pan &nbsp;·&nbsp;
+            Esc: clear
+          </span>
+        </div>
+      )}
 
       {/* ── Top panel ─────────────────────────────────────────────── */}
       {topH > 0 && (

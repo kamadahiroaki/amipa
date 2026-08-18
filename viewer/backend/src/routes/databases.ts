@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import fs from 'fs'
 import { execSync } from 'child_process'
+import { READONLY } from '../config'
 import { getDb, getDbDir } from '../db'
 
 export const databasesRouter = Router()
@@ -22,7 +23,19 @@ const VIEWER_REV = (() => {
 // db_meta の無い旧 DB はファイル mtime にフォールバック。leaf_seq/inv/mult は表存在で検出。
 databasesRouter.get('/version', (req, res) => {
   const { db } = req.query as Record<string, string>
-  const out: any = { viewer: VIEWER_REV }
+  // ★ここが `/api/version` の唯一の実装。以前は server.ts にも同じパスがあって**こちらを覆い隠して**
+  //   いたため、画面側は viewer 版も db の機能フラグ(leaf_seq 等)も受け取れていなかった。
+  //   配信モード(readonly)と版の刻印も含めた上位集合を返す（配備スクリプトもこれを見る）。
+  const out: any = {
+    viewer: VIEWER_REV,
+    name: 'amipa-viewer',
+    version: process.env.AMIPA_VERSION ?? process.env.GGB_VERSION ?? 'dev',
+    commit: process.env.AMIPA_COMMIT ?? process.env.GGB_COMMIT ?? null,
+    built_at: process.env.AMIPA_BUILT_AT ?? process.env.GGB_BUILT_AT ?? null,
+    node: process.version,
+    readonly: READONLY,
+    db_dir: getDbDir(),
+  }
   if (db) {
     try {
       const d = getDb(db)

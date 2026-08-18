@@ -176,6 +176,11 @@ export async function fetchLeafSeq(dbFile: string, name: string, full = false): 
 // 上部バー用の版情報。viewer=ggb git rev、db=ビルド由来(built_at/emitter_rev/mtime)+機能フラグ。
 export interface VersionInfo {
   viewer: string
+  // 配信モード。readonly=true の配信では DB を書き換える経路（ノード編集の保存）が
+  // サーバ側で塞がれている。画面側はこれを見て Save を無効表示にする。
+  readonly?: boolean
+  version?: string
+  commit?: string | null
   db?: { name: string; built_at: string | null; emitter_rev: string | null; mtime: string | null
     // rtree_built_at: R-Tree(高速経路が読む実体)を作った時刻。built_at(=④ emit の時刻)とは別。
     // rad=false は radius を矩形から導出する古い R-Tree（深層で相対 174% 過大＝表示がずれる）。

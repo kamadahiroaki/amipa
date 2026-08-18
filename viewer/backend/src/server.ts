@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import compression from 'compression'
 import path from 'path'
+import { READONLY } from './config'
 import { graphRouter } from './routes/graph'
 import { statsRouter } from './routes/stats'
 import { databasesRouter } from './routes/databases'
@@ -119,12 +120,11 @@ app.use('/api', (req, res, next) => {
   setTimeout(check, RECHECK_MS[0])
 })
 
-// 読み取り専用モード（公開インスタンス用）。AMIPA_READONLY=1 で **DB を書き換える経路だけ**を塞ぐ。
+// 読み取り専用モード（公開インスタンス用）。詳細は config.ts。
 //   ・遮断: POST /api/save_edits（ノード編集の DB 反映）
 //   ・通す: POST /api/session（パーマリンク用のスナップショット。SESSION_DIR 配下のファイルのみ）
 // 公開時は DB を ro マウントすれば二重の守りになる（better-sqlite3 は readonly 接続だが
 // save_edits だけ writable 接続を開くため、アプリ側でも塞いでおく）。
-const READONLY = (process.env.AMIPA_READONLY ?? process.env.GGB_READONLY) === '1' || (process.env.AMIPA_READONLY ?? process.env.GGB_READONLY) === 'true'
 if (READONLY) {
   app.use('/api', (req, res, next) => {
     if (req.method !== 'GET' && /^\/save_edits\b/.test(req.path)) {
@@ -137,19 +137,6 @@ if (READONLY) {
 
 // 死活監視（コンテナの HEALTHCHECK / ロードバランサ用）。DB には触らない＝重いクエリで詰まっていても返る。
 app.get('/healthz', (_req, res) => { res.type('text/plain').send('ok') })
-
-// 版の刻印。イメージタグ・コミット・DB_DIR・モードを返す（図版の版刻印や不具合報告で使う）。
-app.get('/api/version', (_req, res) => {
-  res.json({
-    name: 'amipa-viewer',
-    version: (process.env.AMIPA_VERSION ?? process.env.GGB_VERSION) || 'dev',
-    commit: (process.env.AMIPA_COMMIT ?? process.env.GGB_COMMIT) || null,
-    built_at: (process.env.AMIPA_BUILT_AT ?? process.env.GGB_BUILT_AT) || null,
-    node: process.version,
-    readonly: READONLY,
-    db_dir: getDbDir(),
-  })
-})
 
 app.use('/api', graphRouter)
 app.use('/api', statsRouter)
