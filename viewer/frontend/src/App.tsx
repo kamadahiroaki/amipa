@@ -327,7 +327,8 @@ export default function App() {
   const [multAvail, setMultAvail] = useState(false)        // A-2 node_hap_mult あり（CNV モード可）
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null)  // 上部バー版表示(viewer/db)
   // 描画の高速経路（R-Tree だけを読む）の状態。外れると全ゲノムの深層で桁が変わるので上部バーに出す。
-  const [fastPath, setFastPath] = useState<{ on: boolean; reason: string }>({ on: true, reason: '' })
+  const [fastPath, setFastPath] = useState<{ on: boolean; cause: 'nodebp' | 'proximity' | null }>(
+    { on: true, cause: null })
   // 配信側で DB 書き換えを塞いである配信（AMIPA_READONLY=1）。編集操作そのものは許すが
   // Save だけ無効にする＝「動かして繋がりを確かめる」用途はデモでもそのまま使える。
   const saveDisabled = versionInfo?.readonly === true
@@ -1309,12 +1310,26 @@ export default function App() {
                     : 'なし → radius を矩形から導出＝深層で過大。ノード/エッジがリボンに対してずれる'}`
                 : '')}>
             <span>viewer <b style={{ color: '#495057' }}>{versionInfo.viewer}</b></span>
-            <span title={fastPath.on
-              ? '描画は R-Tree だけを読む高速経路。大きいグラフの深層ではこれが効く'
-              : `高速経路が外れている理由: ${fastPath.reason}\nこの表示をやめると自動で戻る`}
-              style={{ color: fastPath.on ? '#2b8a3e' : '#e8590c', fontWeight: fastPath.on ? 400 : 600 }}>
-              {fastPath.on ? '⚡fast' : '⚠ 従来経路'}
-            </span>
+            {/* ★速いときは何も出さない（常時出ていると意味を失う）。遅くなる設定を
+                自分で入れている間だけ、**何が原因で・どうすれば戻るか**を出す。 */}
+            {!fastPath.on && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
+                color: '#e8590c', fontWeight: 600, fontFamily: 'sans-serif' }}
+                title={'この設定はノード 1 個ずつの詳細を読む必要があるため、'
+                  + '大きいグラフの深いズームでは表示に時間がかかります。'
+                  + '解除すると描画用の索引だけを読む速い経路に戻ります。'}>
+                ⚠ 表示が遅くなる設定:
+                {fastPath.cause === 'nodebp' ? 'Node bp' : 'Proximity'}
+                <button
+                  onClick={() => { if (fastPath.cause === 'nodebp') setShowNodeBp(false)
+                                   else { setFloodMode(false); setFloodResult(null); setFloodSeedComp(null) } }}
+                  style={{ fontSize: 11, padding: '1px 8px', cursor: 'pointer', borderRadius: 3,
+                    border: '1px solid #e8590c', background: '#fff4e6', color: '#e8590c',
+                    fontFamily: 'sans-serif', fontWeight: 600 }}>
+                  解除して速くする
+                </button>
+              </span>
+            )}
             {versionInfo.db && (
               <span>db <b style={{ color: '#495057' }}>{versionInfo.db.built_at ?? (versionInfo.db.mtime?.slice(0, 16).replace('T', ' ') ?? '?')}</b>
                 {versionInfo.db.emitter_rev ? ` @${versionInfo.db.emitter_rev}` : ''}

@@ -182,7 +182,7 @@ interface Props {
   onFetchProgress?: (p: { rows: number; total: number } | null) => void
   // 描画の高速経路（R-Tree だけを読む）が今 有効かどうか。上部バーに出して
   // 「なぜ急に重くなったのか」が分かるようにする。理由も添える。
-  onFastPath?: (v: { on: boolean; reason: string }) => void
+  onFastPath?: (v: { on: boolean; cause: 'nodebp' | 'proximity' | null }) => void
   onRibbonEdited?: () => void   // 編集でノード移動/回転しリボンを追従変異させた（App がパン再取得を止める）
   onNodesEdited?: (g: EditGesture) => void   // 移動/回転1ジェスチャ確定（DB反映用の剛体変換を報告）
   // グラフ距離フラッド（近接モード）: クリック点からの hop 距離でグリフを3層着色。
@@ -377,15 +377,15 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   //   ずっと従来経路**になり、しかも画面には何も出ないので気付けなかった（全ゲノムの深層で
   //   桁が変わる）。要らなくなったら戻す。往復での reload 連発は 400ms のディレイで抑える。
   useEffect(() => {
-    const reason = showNodeBp ? 'Node bp ラベル（size が要る）'
-      : (!!floodMode && floodResult != null && floodSeedComp != null) ? 'Proximity の選択（comp_id が要る）'
-      : ''
-    const want = reason === ''
+    const cause: 'nodebp' | 'proximity' | null = showNodeBp ? 'nodebp'
+      : (!!floodMode && floodResult != null && floodSeedComp != null) ? 'proximity'
+      : null
+    const want = cause === null
     if (want === fastOkRef.current) return
     const t = setTimeout(() => {
       if (want === fastOkRef.current) return
       fastOkRef.current = want
-      onFastPathRef.current?.({ on: want, reason })
+      onFastPathRef.current?.({ on: want, cause })
       reloadRef.current?.()   // 列の要不要が変わった → 取り直す
     }, 400)
     return () => clearTimeout(t)
