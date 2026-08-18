@@ -4,7 +4,7 @@ import Minimap from './components/Minimap'
 import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, INTRON_COLOR } from './annotColors'
 import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
 import BubbleMsa from './components/BubbleMsa'
-import { fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchCtgList, fetchUtgCtgs, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, CtgInfo, UtgCtgLink, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
+import { fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
 
 type Cell = NodeData | null
 
@@ -462,11 +462,10 @@ export default function App() {
   const exportMenuRef = useRef<HTMLDivElement>(null)
 
   // パスパネル
-  const [showPaths, setShowPaths] = useState(false)
+  const [showPaths, setShowPaths] = useState(true)   // 左のパス選択パネル（主要な操作面なので既定 ON）
   const [leftW, setLeftW] = useState(260)
-  const [ctgList, setCtgList] = useState<CtgInfo[]>([])
-  const [ctgSearch, setCtgSearch] = useState('')
-  const [ctgHapFilter, setCtgHapFilter] = useState<'all'|'0'|'1'|'2'>('all')
+  // CTG パスの折れ線描画。現行スキーマでは `ctg_paths` を埋める処理が無いので**常に空**
+  // （GraphCanvas 側の renderPaths も同じ理由で何も描かない）。
   const [selectedPaths, setSelectedPaths] = useState<Map<string, number>>(new Map())
 
   // ── パスリボン（サンプル/ハプロ/コンティグの通過経路を線で重畳） ──
@@ -512,7 +511,6 @@ export default function App() {
   const [ribbonCollapsed, setRibbonCollapsed] = useState(false)  // リスト部を畳む（リボン描画は維持）
   const [ribbonHidden, setRibbonHidden] = useState(false)        // 選択は維持したままリボン描画だけ一時非表示
   // Layer 2: UTGクリック時のCTGリスト
-  const [utgCtgs, setUtgCtgs] = useState<UtgCtgLink[]>([])
   // 葉ノードの塩基配列(選択時 on-demand)。leafSeqFull=全長取得済みか(既定は先頭100kb)。
   const [leafSeq, setLeafSeq] = useState<LeafSeq | null>(null)
   const [leafSeqFull, setLeafSeqFull] = useState(false)
@@ -530,20 +528,6 @@ export default function App() {
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
   }, [])
-
-  // CTGリストを取得
-  useEffect(() => {
-    if (!selectedDb) return
-    const opts = { limit: 50, search: ctgSearch || undefined,
-                   hap: ctgHapFilter !== 'all' ? Number(ctgHapFilter) : undefined }
-    fetchCtgList(selectedDb, opts).then(setCtgList).catch(() => setCtgList([]))
-  }, [selectedDb, ctgSearch, ctgHapFilter])
-
-  // ノード選択時にそのUTGのCTG一覧を取得
-  useEffect(() => {
-    if (!selectedNode || !selectedDb) { setUtgCtgs([]); return }
-    fetchUtgCtgs(selectedDb, selectedNode.node_name).then(setUtgCtgs).catch(() => setUtgCtgs([]))
-  }, [selectedNode, selectedDb])
 
   // 描画の高速経路(nx=fast)は R-Tree だけを読むので size/kind/haplotype/coverage が NodeData に
   // 入ってこない。詳細パネルはそれらを出すので、選択されたノード 1 個だけ後から引き直して補う
@@ -921,20 +905,6 @@ export default function App() {
     if (!isNaN(px) && px > 0) setMaxEdgePx(px)
     if (!isNaN(rs) && rs > 0) setMaxEdgeReads(rs)
   }, [detailParamInput])
-
-  const togglePath = useCallback((ctgName: string) => {
-    setSelectedPaths(prev => {
-      const next = new Map(prev)
-      if (next.has(ctgName)) {
-        next.delete(ctgName)
-      } else if (next.size < PATH_COLORS.length) {
-        const usedColors = new Set(next.values())
-        const color = PATH_COLORS.find(c => !usedColors.has(c)) ?? PATH_COLORS[0]
-        next.set(ctgName, color)
-      }
-      return next
-    })
-  }, [])
 
   // Surrounding panel sizes (px). Start collapsed so graph fills most of the area.
   const [topH,    setTopH]    = useState(0)
@@ -1769,7 +1739,7 @@ export default function App() {
           {divider()}
           {/* ── Panels: パス一覧・付属UI・編集・アライメント ── */}
           <button
-            onClick={() => setShowPaths(m => { if (!m) showHint('CTGパス一覧を表示します。パスを選択するとグラフ上にラインで描画されます。'); return !m })}
+            onClick={() => setShowPaths(m => { if (!m) showHint('左にパス選択パネルを出します。サンプル/ハプロタイプ/コンティグ単位で選ぶと、リボン描画・MSA の対象・絞り込み描画の対象になります。'); return !m })}
             style={{
               fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
               border: '1px solid',
@@ -1785,7 +1755,7 @@ export default function App() {
           </button>
           <button
             onClick={() => setShowOverlays(v => !v)}
-            title="ミニマップ・パスリボン・レイヤバッジなど、マップ上の付属UIをまとめて表示/非表示"
+            title="ミニマップ・凡例・レイヤバッジなど、マップ上に重なる付属UIをまとめて表示/非表示"
             style={{
               fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
               border: '1px solid',
@@ -1920,81 +1890,129 @@ export default function App() {
       {/* ── Main row ──────────────────────────────────────────────── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
 
-        {/* ── Left path panel ───────────────────────────────────── */}
+        {/* ── 左パネル: パス選択（リボン描画と MSA の対象を兼ねる） ───────── */}
         {showPaths && (
           <>
             <div style={{
-              width: leftW, flexShrink: 0, overflowY: 'auto',
-              background: '#fafafa', borderRight: '1px solid #c8cdd3',
-              display: 'flex', flexDirection: 'column',
+              width: leftW, flexShrink: 0, overflow: "hidden",
+              background: "#fafafa", borderRight: "1px solid #c8cdd3",
+              display: "flex", flexDirection: "column",
+              fontFamily: "sans-serif", fontSize: 12, color: "#343a40", padding: 8,
             }}>
-              <div style={{ padding: '8px 10px', borderBottom: '1px solid #e9ecef',
-                fontFamily: 'sans-serif', fontSize: 12, fontWeight: 600, color: '#495057' }}>
-                CTGパス
-                {selectedPaths.size > 0 && (
-                  <button onClick={() => setSelectedPaths(new Map())}
-                    style={{ marginLeft: 8, fontSize: 11, padding: '1px 6px', cursor: 'pointer',
-                      border: '1px solid #adb5bd', borderRadius: 3, background: '#f1f3f5' }}>
-                    クリア
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4,
+                marginBottom: (ribbonLevel !== 'none' && !ribbonCollapsed) ? 6 : 0 }}>
+                <span style={{ fontWeight: 600 }} title="選択したパスはリボン描画と MSA 対象を兼ねる">
+              パス{ribbonSel.size > 0 ? ` (${ribbonSel.size})` : ''}</span>
+                <select value={ribbonLevel} onChange={e => setRibbonLevel(e.target.value as 'none' | RibbonLevel)}
+                  style={{ flex: 1, marginLeft: 'auto' }}>
+                  <option value="none">なし</option>
+                  <option value="sample">サンプル</option>
+                  <option value="haplotype">ハプロタイプ</option>
+                  {(ribbonContig || !ribbonHapcov) && <option value="contig">コンティグ</option>}
+                </select>
+                {/* hap 絞り込み描画: 選択群を通るノード・エッジだけ取得する（サイドカー必須） */}
+                {hapIdx && (
+                  <button onClick={() => setHapFilter(v => !v)}
+                    title={ribbonSel.size === 0
+                      ? '選択群だけ描画（先に下のリストで群を選ぶ）'
+                      : hapFilter
+                        ? '選択群だけ描画: ON（クリックで全体表示に戻す）'
+                        : `選択群だけ描画: OFF（クリックで ON。${hapIdx.nHap} hap 索引${
+                            hapIdx.mode === 'bucket' ? '・近似マスク+厳密判定' : ''}）`}
+                    style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
+                      border: '1px solid ' + (hapFilter ? '#1971c2' : '#ced4da'), borderRadius: 3,
+                      background: hapFilter ? '#e7f5ff' : '#f8f9fa',
+                      color: hapFilter ? '#1971c2' : '#495057', lineHeight: 1, fontSize: 12 }}>
+                    🔍
+                  </button>
+                )}
+                {/* 全選択 / 反転: 絞り込み結果に対して */}
+                {ribbonLevel !== 'none' && pathGroups.length > 0 && (
+                  <>
+                    <button onClick={selectAllRibbon}
+                      title="表示中(絞り込み結果)を全選択"
+                      style={{ flex: '0 0 auto', height: 20, padding: '0 6px', cursor: 'pointer',
+                        border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
+                        color: '#495057', lineHeight: 1, fontSize: 11 }}>
+                      全選択
+                    </button>
+                    <button onClick={invertRibbon}
+                      title="表示中(絞り込み結果)の選択を反転"
+                      style={{ flex: '0 0 auto', height: 20, padding: '0 6px', cursor: 'pointer',
+                        border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
+                        color: '#495057', lineHeight: 1, fontSize: 11 }}>
+                      反転
+                    </button>
+                  </>
+                )}
+                {/* 選択があるとき: 一時非表示(選択は維持)・全解除 */}
+                {ribbonLevel !== 'none' && ribbonSel.size > 0 && (
+                  <>
+                    <button onClick={() => setRibbonHidden(h => !h)}
+                      title={ribbonHidden ? 'リボンを再表示' : 'リボンを一時非表示（選択は維持）'}
+                      style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
+                        border: '1px solid #ced4da', borderRadius: 3,
+                        background: ribbonHidden ? '#ffe3e3' : '#f8f9fa',
+                        color: ribbonHidden ? '#c92a2a' : '#495057', lineHeight: 1, fontSize: 12 }}>
+                      {ribbonHidden ? '🙈' : '👁'}
+                    </button>
+                    <button onClick={() => { setRibbonSel(new Map()); setRibbonHidden(false) }}
+                      title="選択を全解除"
+                      style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
+                        border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
+                        color: '#495057', lineHeight: 1, fontSize: 12 }}>
+                      ✕
+                    </button>
+                  </>
+                )}
+                {/* 折りたたみトグル: 描画は維持したままリスト部だけ畳む */}
+                {ribbonLevel !== 'none' && (
+                  <button onClick={() => setRibbonCollapsed(c => !c)}
+                    title={ribbonCollapsed ? 'リストを開く' : 'リストを畳む（描画は維持）'}
+                    style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
+                      border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
+                      color: '#495057', lineHeight: 1, fontSize: 12 }}>
+                    {ribbonCollapsed ? '▸' : '▾'}
                   </button>
                 )}
               </div>
-              {/* Haplotype filter */}
-              <div style={{ padding: '4px 10px', display: 'flex', gap: 4, borderBottom: '1px solid #e9ecef' }}>
-                {(['all','1','2','0'] as const).map(h => (
-                  <button key={h} onClick={() => setCtgHapFilter(h)}
-                    style={{ fontSize: 11, padding: '2px 8px', cursor: 'pointer', borderRadius: 3,
-                      border: '1px solid', fontFamily: 'sans-serif',
-                      borderColor: ctgHapFilter === h ? '#1971c2' : '#adb5bd',
-                      background: ctgHapFilter === h ? '#e7f5ff' : '#f8f9fa',
-                      color: ctgHapFilter === h ? '#1971c2' : '#495057' }}>
-                    {h === 'all' ? '全て' : h === '0' ? 'ctg' : `hap${h}`}
-                  </button>
-                ))}
-              </div>
-              {/* Search box */}
-              <input type="text" placeholder="CTG名で検索…" value={ctgSearch}
-                onChange={e => setCtgSearch(e.target.value)}
-                style={{ margin: '6px 10px', padding: '4px 8px', fontSize: 12,
-                  fontFamily: 'sans-serif', border: '1px solid #adb5bd', borderRadius: 3, outline: 'none' }}
-              />
-              {/* CTG list */}
-              <div style={{ flex: 1, overflowY: 'auto' }}>
-                {ctgList.map(ctg => {
-                  const color = selectedPaths.get(ctg.ctg_name)
-                  const checked = color !== undefined
-                  return (
-                    <div key={ctg.ctg_name}
-                      onClick={() => togglePath(ctg.ctg_name)}
-                      style={{ display: 'flex', alignItems: 'center', gap: 6,
-                        padding: '4px 10px', cursor: 'pointer', userSelect: 'none',
-                        background: checked ? '#f0f7ff' : undefined,
-                        borderBottom: '1px solid #f1f3f5' }}
-                      onMouseEnter={e => { if (!checked) e.currentTarget.style.background = '#f8f9fa' }}
-                      onMouseLeave={e => { if (!checked) e.currentTarget.style.background = '' }}>
-                      <input type="checkbox" readOnly checked={checked}
-                        style={{ accentColor: color !== undefined ? `#${color.toString(16).padStart(6,'0')}` : undefined }} />
-                      {checked && (
-                        <div style={{ width: 10, height: 10, borderRadius: 2, flexShrink: 0,
-                          background: `#${color!.toString(16).padStart(6,'0')}` }} />
-                      )}
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#212529',
-                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {ctg.ctg_name}
-                        </div>
-                        <div style={{ fontSize: 10, color: '#868e96', fontFamily: 'sans-serif' }}>
-                          {(ctg.total_len / 1e6).toFixed(1)}Mb · {ctg.haplotype === 0 ? 'ctg' : `hap${ctg.haplotype}`} · {ctg.utg_count} UTGs
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
+              {ribbonLevel !== 'none' && ribbonCollapsed && ribbonSel.size > 0 && (
+                <div style={{ fontSize: 11, color: '#868e96', marginTop: 4 }}>{ribbonSel.size} 群を表示中</div>
+              )}
+              {ribbonLevel !== 'none' && !ribbonCollapsed && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <span title="super-node の総塩基の θ% 以上を通れば通過。既定 0=少しでも通れば通過（表示フィルタと同じ基準）。上げると混雑は減るが、バブルは 1 ハプロタイプが総塩基の 1/アリル数しか覆えないためリボンが落ちやすい">θ {Math.round(ribbonTheta * 100)}%</span>
+                    <input type="range" min={0} max={100} value={Math.round(ribbonTheta * 100)}
+                      onChange={e => setRibbonTheta(Number(e.target.value) / 100)} style={{ flex: 1 }} />
+                  </div>
+                  <input type="text" placeholder="絞り込み…" value={ribbonSearch}
+                    onChange={e => setRibbonSearch(e.target.value)}
+                    style={{ marginBottom: 6, padding: '2px 4px', border: '1px solid #ced4da', borderRadius: 3 }} />
+                  <div style={{ overflowY: 'auto', flex: 1 }}>
+                    {pathGroups
+                      .filter(g => !ribbonSearch || g.key.toLowerCase().includes(ribbonSearch.toLowerCase()))
+                      .slice(0, 300).map(g => {
+                        const sel = ribbonSel.get(g.key)
+                        return (
+                          <div key={g.key} onClick={() => toggleRibbonGroup(g)}
+                            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px',
+                              cursor: 'pointer', borderRadius: 3, background: sel ? '#f1f3f5' : 'transparent' }}>
+                            <span style={{ width: 12, height: 12, borderRadius: 2, flex: '0 0 auto',
+                              border: '1px solid #adb5bd',
+                              background: sel ? '#' + sel.color.toString(16).padStart(6, '0') : '#ced4da' }} />
+                            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.key}</span>
+                            {ribbonLevel !== 'contig' && <span style={{ color: '#868e96' }}>{g.n_contigs}</span>}
+                          </div>
+                        )
+                      })}
+                  </div>
+                </>
+              )}
             </div>
             {/* Left resize handle */}
             <div onMouseDown={onLeftHandleDown} title="Drag to resize path panel"
-              style={{ ...handleStyle, width: HANDLE_SIZE, cursor: 'col-resize', borderRight: '1px solid #c8cdd3' }} />
+              style={{ ...handleStyle, width: HANDLE_SIZE, cursor: "col-resize", borderRight: "1px solid #c8cdd3" }} />
           </>
         )}
 
@@ -2365,128 +2383,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* パスリボン パネル: ミニマップ(右上,幅180)と被らないよう左へ退避 */}
-                {showOverlays && (
-                <div style={{
-                  position: 'absolute', top: 8, right: 196, zIndex: 11, width: 232,
-                  // 編集モード中はクリック透過（下のノードを掴めるように）。表示は維持
-                  pointerEvents: editMode ? 'none' : undefined,
-                  background: 'rgba(255,255,255,0.95)', border: '1px solid #dee2e6',
-                  borderRadius: 6, padding: 8, fontFamily: 'sans-serif', fontSize: 12,
-                  color: '#343a40', maxHeight: '72%', display: 'flex', flexDirection: 'column',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4,
-                    marginBottom: (ribbonLevel !== 'none' && !ribbonCollapsed) ? 6 : 0 }}>
-                    <span style={{ fontWeight: 600 }} title="選択したパスはリボン描画と MSA 対象を兼ねる">
-                  パス{ribbonSel.size > 0 ? ` (${ribbonSel.size})` : ''}</span>
-                    <select value={ribbonLevel} onChange={e => setRibbonLevel(e.target.value as 'none' | RibbonLevel)}
-                      style={{ flex: 1, marginLeft: 'auto' }}>
-                      <option value="none">なし</option>
-                      <option value="sample">サンプル</option>
-                      <option value="haplotype">ハプロタイプ</option>
-                      {(ribbonContig || !ribbonHapcov) && <option value="contig">コンティグ</option>}
-                    </select>
-                    {/* hap 絞り込み描画: 選択群を通るノード・エッジだけ取得する（サイドカー必須） */}
-                    {hapIdx && (
-                      <button onClick={() => setHapFilter(v => !v)}
-                        title={ribbonSel.size === 0
-                          ? '選択群だけ描画（先に下のリストで群を選ぶ）'
-                          : hapFilter
-                            ? '選択群だけ描画: ON（クリックで全体表示に戻す）'
-                            : `選択群だけ描画: OFF（クリックで ON。${hapIdx.nHap} hap 索引${
-                                hapIdx.mode === 'bucket' ? '・近似マスク+厳密判定' : ''}）`}
-                        style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
-                          border: '1px solid ' + (hapFilter ? '#1971c2' : '#ced4da'), borderRadius: 3,
-                          background: hapFilter ? '#e7f5ff' : '#f8f9fa',
-                          color: hapFilter ? '#1971c2' : '#495057', lineHeight: 1, fontSize: 12 }}>
-                        🔍
-                      </button>
-                    )}
-                    {/* 全選択 / 反転: 絞り込み結果に対して */}
-                    {ribbonLevel !== 'none' && pathGroups.length > 0 && (
-                      <>
-                        <button onClick={selectAllRibbon}
-                          title="表示中(絞り込み結果)を全選択"
-                          style={{ flex: '0 0 auto', height: 20, padding: '0 6px', cursor: 'pointer',
-                            border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
-                            color: '#495057', lineHeight: 1, fontSize: 11 }}>
-                          全選択
-                        </button>
-                        <button onClick={invertRibbon}
-                          title="表示中(絞り込み結果)の選択を反転"
-                          style={{ flex: '0 0 auto', height: 20, padding: '0 6px', cursor: 'pointer',
-                            border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
-                            color: '#495057', lineHeight: 1, fontSize: 11 }}>
-                          反転
-                        </button>
-                      </>
-                    )}
-                    {/* 選択があるとき: 一時非表示(選択は維持)・全解除 */}
-                    {ribbonLevel !== 'none' && ribbonSel.size > 0 && (
-                      <>
-                        <button onClick={() => setRibbonHidden(h => !h)}
-                          title={ribbonHidden ? 'リボンを再表示' : 'リボンを一時非表示（選択は維持）'}
-                          style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
-                            border: '1px solid #ced4da', borderRadius: 3,
-                            background: ribbonHidden ? '#ffe3e3' : '#f8f9fa',
-                            color: ribbonHidden ? '#c92a2a' : '#495057', lineHeight: 1, fontSize: 12 }}>
-                          {ribbonHidden ? '🙈' : '👁'}
-                        </button>
-                        <button onClick={() => { setRibbonSel(new Map()); setRibbonHidden(false) }}
-                          title="選択を全解除"
-                          style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
-                            border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
-                            color: '#495057', lineHeight: 1, fontSize: 12 }}>
-                          ✕
-                        </button>
-                      </>
-                    )}
-                    {/* 折りたたみトグル: 描画は維持したままリスト部だけ畳む */}
-                    {ribbonLevel !== 'none' && (
-                      <button onClick={() => setRibbonCollapsed(c => !c)}
-                        title={ribbonCollapsed ? 'リストを開く' : 'リストを畳む（描画は維持）'}
-                        style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
-                          border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
-                          color: '#495057', lineHeight: 1, fontSize: 12 }}>
-                        {ribbonCollapsed ? '▸' : '▾'}
-                      </button>
-                    )}
-                  </div>
-                  {ribbonLevel !== 'none' && ribbonCollapsed && ribbonSel.size > 0 && (
-                    <div style={{ fontSize: 11, color: '#868e96', marginTop: 4 }}>{ribbonSel.size} 群を表示中</div>
-                  )}
-                  {ribbonLevel !== 'none' && !ribbonCollapsed && (
-                    <>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                        <span title="super-node の総塩基の θ% 以上を通れば通過。既定 0=少しでも通れば通過（表示フィルタと同じ基準）。上げると混雑は減るが、バブルは 1 ハプロタイプが総塩基の 1/アリル数しか覆えないためリボンが落ちやすい">θ {Math.round(ribbonTheta * 100)}%</span>
-                        <input type="range" min={0} max={100} value={Math.round(ribbonTheta * 100)}
-                          onChange={e => setRibbonTheta(Number(e.target.value) / 100)} style={{ flex: 1 }} />
-                      </div>
-                      <input type="text" placeholder="絞り込み…" value={ribbonSearch}
-                        onChange={e => setRibbonSearch(e.target.value)}
-                        style={{ marginBottom: 6, padding: '2px 4px', border: '1px solid #ced4da', borderRadius: 3 }} />
-                      <div style={{ overflowY: 'auto', flex: 1 }}>
-                        {pathGroups
-                          .filter(g => !ribbonSearch || g.key.toLowerCase().includes(ribbonSearch.toLowerCase()))
-                          .slice(0, 300).map(g => {
-                            const sel = ribbonSel.get(g.key)
-                            return (
-                              <div key={g.key} onClick={() => toggleRibbonGroup(g)}
-                                style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px',
-                                  cursor: 'pointer', borderRadius: 3, background: sel ? '#f1f3f5' : 'transparent' }}>
-                                <span style={{ width: 12, height: 12, borderRadius: 2, flex: '0 0 auto',
-                                  border: '1px solid #adb5bd',
-                                  background: sel ? '#' + sel.color.toString(16).padStart(6, '0') : '#ced4da' }} />
-                                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.key}</span>
-                                {ribbonLevel !== 'contig' && <span style={{ color: '#868e96' }}>{g.n_contigs}</span>}
-                              </div>
-                            )
-                          })}
-                      </div>
-                    </>
-                  )}
-                </div>
-                )}
 
                 {showOverlays && (
                   <Minimap
@@ -2779,36 +2675,6 @@ export default function App() {
                         </button>
                       </div>
                     )}
-                  </div>
-                )}
-                {/* Layer 2: CTG list for this UTG */}
-                {utgCtgs.length > 0 && (
-                  <div style={{ marginTop: 10, borderTop: '1px solid #e9ecef', paddingTop: 8 }}>
-                    <div style={{ fontWeight: 600, fontSize: 11, color: '#868e96',
-                      marginBottom: 6, fontFamily: 'sans-serif' }}>Contigs</div>
-                    {utgCtgs.map(lnk => {
-                      const color = selectedPaths.get(lnk.ctg_name)
-                      return (
-                        <div key={lnk.ctg_name}
-                          style={{ display: 'flex', alignItems: 'center', gap: 5,
-                            marginBottom: 4, cursor: 'pointer' }}
-                          onClick={() => togglePath(lnk.ctg_name)}>
-                          {color !== undefined
-                            ? <div style={{ width: 9, height: 9, borderRadius: 2, flexShrink: 0,
-                                background: `#${color.toString(16).padStart(6,'0')}` }} />
-                            : <div style={{ width: 9, height: 9, borderRadius: 2, flexShrink: 0,
-                                border: '1px solid #adb5bd' }} />
-                          }
-                          <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#212529',
-                            flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {lnk.ctg_name}
-                          </span>
-                          <span style={{ fontSize: 10, color: '#adb5bd', whiteSpace: 'nowrap', fontFamily: 'sans-serif' }}>
-                            {lnk.haplotype === 0 ? 'ctg' : `hap${lnk.haplotype}`} · {lnk.shared_reads}r
-                          </span>
-                        </div>
-                      )
-                    })}
                   </div>
                 )}
               </div>

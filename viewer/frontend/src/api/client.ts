@@ -383,13 +383,6 @@ export async function fetchNodesByName(dbFile: string, names: string[]): Promise
   return res.json()
 }
 
-export interface CtgInfo {
-  ctg_name: string
-  haplotype: number   // 1 or 2
-  total_len: number
-  utg_count: number
-}
-
 export interface CtgPathNode {
   id: number
   node_name: string
@@ -426,31 +419,10 @@ export interface UtgCtgLink {
   shared_reads: number
 }
 
-export async function fetchCtgList(
-  dbFile: string,
-  opts: { hap?: number; search?: string; limit?: number; offset?: number } = {}
-): Promise<CtgInfo[]> {
-  const p = new URLSearchParams({ db: dbFile })
-  if (opts.hap !== undefined) p.set('hap', String(opts.hap))
-  if (opts.search) p.set('search', opts.search)
-  if (opts.limit !== undefined) p.set('limit', String(opts.limit))
-  if (opts.offset !== undefined) p.set('offset', String(opts.offset))
-  const res = await fetch(`/api/ctg_list?${p}`)
-  if (!res.ok) return []
-  return res.json()
-}
-
 export async function fetchCtgPath(dbFile: string, ctgName: string): Promise<CtgPath | null> {
   const p = new URLSearchParams({ db: dbFile, name: ctgName })
   const res = await fetch(`/api/ctg_path?${p}`)
   if (!res.ok) return null
-  return res.json()
-}
-
-export async function fetchUtgCtgs(dbFile: string, utgName: string): Promise<UtgCtgLink[]> {
-  const p = new URLSearchParams({ db: dbFile, utg: utgName })
-  const res = await fetch(`/api/utg_ctgs?${p}`)
-  if (!res.ok) return []
   return res.json()
 }
 

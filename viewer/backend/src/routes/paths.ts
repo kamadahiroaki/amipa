@@ -7,32 +7,6 @@ import { covFmt, rangeMaxFn, rangeSumFn } from '../covBlob'
 
 export const pathsRouter = Router()
 
-// CTG list: sorted by total_len DESC, filterable by haplotype and search
-pathsRouter.get('/ctg_list', (req, res) => {
-  const { db, hap, search, limit = '50', offset = '0' } = req.query as Record<string, string>
-  if (!db) { res.status(400).json({ error: 'Missing db' }); return }
-
-  const hasCols = (() => {
-    try {
-      getDb(db).prepare('SELECT ctg_name FROM ctg_paths LIMIT 1').get()
-      return true
-    } catch { return false }
-  })()
-  if (!hasCols) { res.json([]); return }
-
-  let sql = 'SELECT ctg_name, haplotype, total_len, utg_count FROM ctg_paths WHERE 1=1'
-  const params: (string | number)[] = []
-  if (hap && hap !== 'all') { sql += ' AND haplotype = ?'; params.push(Number(hap)) }
-  if (search) { sql += ' AND ctg_name LIKE ?'; params.push(`%${search}%`) }
-  sql += ' ORDER BY total_len DESC LIMIT ? OFFSET ?'
-  params.push(Number(limit), Number(offset))
-
-  try {
-    const rows = getDb(db).prepare(sql).all(...params)
-    res.json(rows)
-  } catch (e) { res.status(500).json({ error: String(e) }) }
-})
-
 // UTG positions and edge-aligned step coords for a CTG path
 pathsRouter.get('/ctg_path', (req, res) => {
   const { db, name } = req.query as Record<string, string>
@@ -754,19 +728,6 @@ pathsRouter.get('/gene_exons', (req, res) => {
       `WHERE t.kind = 'gene' AND f.name = ? ORDER BY ge.exon_no`).all(gene) as any[]
     res.json({ exons: rows })
   } catch { res.json({ exons: [] }) }
-})
-
-// CTGs containing a given UTG (for right panel Layer 2)
-pathsRouter.get('/utg_ctgs', (req, res) => {
-  const { db, utg } = req.query as Record<string, string>
-  if (!db || !utg) { res.status(400).json({ error: 'Missing db or utg' }); return }
-
-  try {
-    const rows = getDb(db)
-      .prepare('SELECT ctg_name, haplotype, shared_reads FROM utg_ctg_links WHERE utg_name = ? ORDER BY shared_reads DESC')
-      .all(utg)
-    res.json(rows)
-  } catch (e) { res.status(500).json({ error: String(e) }) }
 })
 
 // ノード編集の DB 反映。body = { db, gestures: [{ names, cos, sin, tx, ty, dAngle }, ...] }（適用順）。
