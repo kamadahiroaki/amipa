@@ -699,7 +699,15 @@ graphRouter.get('/read_alignments', (req, res) => {
   // オンデマンド: 転置索引がある DB は Python ヘルパで実体から取得（node ごとに 1 起動、並列）。
   if (readNodeAvail(getDb(db))) {
     const sample = (req.query as any).sample as string | undefined
+    // ★リードは**葉**にしか付かない（索引の鍵が GFA セグメント id）。クラスタ(G…/S…)を
+    //   渡されたらここで弾く。ヘルパも自衛するが、無駄なプロセスを起こさないため。
+    const isLeaf = (n: string) => /^n\d+$/.test(n)
+    const notes: Record<string, string> = {}
     Promise.all(nodeList.map(n => {
+      if (!isLeaf(n)) {
+        notes[n] = 'leaf-only'
+        return Promise.resolve({ reads: { [n]: [] }, totals: { [n]: 0 } })
+      }
       const a = ['--node', n, '--max', '5000']
       if (sample) a.push('--sample', sample)
       return readsHelper(db, a).catch(() => ({ reads: {}, totals: {} }))
@@ -709,7 +717,7 @@ graphRouter.get('/read_alignments', (req, res) => {
         if (p?.reads) Object.assign(reads, p.reads)
         if (p?.totals) Object.assign(totals, p.totals)
       }
-      res.json({ reads, totals })
+      res.json({ reads, totals, notes })
     }).catch(e => { console.error('read_alignments ondemand:', e); res.json({ reads: {}, totals: {} }) })
     return
   }

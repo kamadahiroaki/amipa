@@ -216,7 +216,15 @@ def main():
 
     if args.node or args.expand:
         name = args.node or args.expand
-        gid = int(name[1:])
+        # ★葉の名前 `n<数字>` だけを受け付ける。以前は `name[1:]` を無条件に整数化していたので、
+        #   クラスタ（`S36286860` 等）を渡すと **まったく別の葉 `n36286860` のリード**を、
+        #   要求されたクラスタの名前で返していた（実測で確認）。空を返すより悪い。
+        m = re.fullmatch(r'n(\d+)', name)
+        if not m:
+            print(json.dumps({"reads": {name: []}, "totals": {name: 0},
+                              "note": "leaf-only"}))
+            return
+        gid = int(m.group(1))
         # ★node→reads: node_reads(gfa_id)の posting blob を復号→aln_id 群→read_aln で (sample_no,voff)。
         prow = con.execute("SELECT postings FROM rd.node_reads WHERE gfa_id=?", (gid,)).fetchone()
         aln_ids = _decode_postings(prow[0]) if prow else []

@@ -2165,17 +2165,37 @@ export default function App() {
                     }
                     if (node) setSelectedReadAln(null)   // ノード選択でリード詳細を閉じる（直近選択優先）
                     if (!node || activeAlignRowId === null) return
-                    const activeRow = alignRows.find(r => r.id === activeAlignRowId)
-                    if (activeRow && activeRow.columns.length === 0) {
-                      // 最初のノードは位置選択不要 → そのまま1列目に追加
-                      setAlignRows(prev => prev.map(r =>
-                        r.id !== activeAlignRowId || r.columns.length > 0
-                          ? r
-                          : { ...r, columns: [[node]] }
-                      ))
+                    // ★アラインメントは**葉ノード**にしか付かない（リード索引の鍵が GFA の
+                    //   セグメント id で、クラスタには対応する実体が無い）。以前はクラスタでも
+                    //   そのまま列に足していたので、空のまま列幅が潰れ、塩基表示で落ちていた。
+                    if (!/^n\d+$/.test(node.node_name)) {
+                      showHint(`${node.node_name} はクラスタなので、リードの整列はありません。`
+                        + 'ズームして葉ノード（n…）を選んでください。')
+                      return
+                    }
+                    // ★描画の高速経路(nx=fast)は **size を返さない**。アラインビューは列幅と
+                    //   拡大段を size から決めるので、欠けたまま渡すと「列が最小幅のまま広げられない」
+                    //   「+ で塩基表示にすると落ちる」になる（実際にそうなった）。足りなければ補う。
+                    const addToAlign = (nd: NodeData) => {
+                      const activeRow = alignRows.find(r => r.id === activeAlignRowId)
+                      if (activeRow && activeRow.columns.length === 0) {
+                        // 最初のノードは位置選択不要 → そのまま1列目に追加
+                        setAlignRows(prev => prev.map(r =>
+                          r.id !== activeAlignRowId || r.columns.length > 0
+                            ? r
+                            : { ...r, columns: [[nd]] }
+                        ))
+                      } else {
+                        // 2個目以降は「保留中」にして配置先の + で確定
+                        setPendingNode(nd)
+                      }
+                    }
+                    if (node.size == null && selectedDb) {
+                      fetchNodeInfo(selectedDb, node.node_name)
+                        .then(info => addToAlign({ ...node, ...info } as NodeData))
+                        .catch(() => addToAlign(node))
                     } else {
-                      // 2個目以降は「保留中」にして配置先の + で確定
-                      setPendingNode(node)
+                      addToAlign(node)
                     }
                   }}
                   onLoadingChange={loading => { setIsLoading(loading); if (!loading) setFetchProg(null) }}

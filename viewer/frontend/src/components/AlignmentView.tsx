@@ -260,8 +260,12 @@ const ZOOM_TITLE: Record<ZoomMode, string> = {
   '10bp': '10 bp/px', '1bp': '1 bp/px（変異位置スキャン）', base: '0.1 bp/px（塩基文字）',
 }
 // fit + ノードが MIN_COL_PX 以上になるレベル。塩基(base)は小ノードでも選べるよう常に含める。
+// ★size が欠けている（描画の高速経路は size を返さない）と nodeSize*p が NaN になり、
+//   **fit と base の 2 段しか残らない**。列が最小幅から広がらず、+ を押すといきなり塩基表示へ
+//   飛んで落ちる、という形で出た。欠けているときは「大きいノード」とみなして全段を許す。
 function validZoomSteps(nodeSize: number): ZoomMode[] {
-  return ZOOM_ORDER.filter(z => { const p = PX_PER_BP[z]; return p === null || z === 'base' || nodeSize * p >= MIN_COL_PX })
+  const n = Number.isFinite(nodeSize) && nodeSize > 0 ? nodeSize : Infinity
+  return ZOOM_ORDER.filter(z => { const p = PX_PER_BP[z]; return p === null || z === 'base' || n * p >= MIN_COL_PX })
 }
 function stepZoom(z: ZoomMode, dir: 1 | -1, steps: ZoomMode[]): ZoomMode {
   let i = steps.indexOf(z); if (i < 0) i = 0   // 範囲外(fit以下にクランプ)は fit 扱い
