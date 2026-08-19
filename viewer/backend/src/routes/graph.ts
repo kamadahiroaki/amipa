@@ -294,14 +294,21 @@ graphRouter.get('/nodes_by_name', (req, res) => {
   const list = names.split(',').map(s => s.trim()).filter(Boolean)
   if (list.length === 0) { res.json([]); return }
   const ph = list.map(() => '?').join(',')
+  // ★以前は `AND n.layer_index = 1` を決め打ちしていた。多層 LOD では 1 葉が層ごとに複数行
+  //   持ち、**葉の名前を渡すと必ず空**が返っていた（リードの経路ノードは全部葉なので、
+  //   「経路ノードを view に追加」が何も起きない、という形で出ていた）。
+  //   名前ごとに **MAX(rowid)＝最深層の出現**を 1 行返す（read_alignments と同じ規約）。
+  const d0 = getDb(db)
+  const optCols = ['coverage', 'cov_hist', 'haplotype']
+    .filter(c => tableCols(d0, 'nodes').has(c)).map(c => `, n.${c}`).join('')
   const sel = (cols: string) =>
     `SELECT n.rowid AS id, n.node_name, n.is_bubble, n.size,
             n.xCoord, n.yCoord, n.angle, n.radius, n.color${cols},
             r.min_layer AS layer
      FROM nodes n LEFT JOIN nodes_rtree r ON n.rowid = r.rowid
-     WHERE n.node_name IN (${ph}) AND n.layer_index = 1`
+     WHERE n.rowid IN (SELECT MAX(rowid) FROM nodes WHERE node_name IN (${ph}) GROUP BY node_name)`
   try {
-    res.json(parseNodes(getDb(db).prepare(sel(', n.haplotype, n.coverage, n.cov_hist')).all(...list) as any[]))
+    res.json(parseNodes(getDb(db).prepare(sel(optCols)).all(...list) as any[]))
   } catch {
     try {
       res.json(getDb(db).prepare(sel('')).all(...list) as any[])
