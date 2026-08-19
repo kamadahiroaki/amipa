@@ -181,7 +181,30 @@ function computeReadLayout(
   //   縦は伸びる（リード数ぶんの段になる）ので、少数のリードを追跡したいときに使う。
   const spanRow = new Map<Span, number>()
   if (mode === 'unique') {
+    // ★packed の「_grp クラスタ化」はここでは**流用しない**。1 リード = 全列共通の 1 段なので
+    //   同一 aln_id の段は列を跨いでも動かず、コネクタは定義上つねに水平＝交差しえない。
+    //   つまり交差回避は自明に達成済みで、並べ替えで最適化すべきなのは別のこと＝
+    //   「どの経路を通ったリードか」が縦の塊として読めるかどうか。
+    //   キー: ①触れている列番号の列（辞書順）＝経路 → ②サンプル → ③開始座標 → ④aln_id
+    //   ①で分岐ごと、②で親子ごとにブロックになる（HG003 だけ空、が一目で分かる）。
+    //   サンプルより座標を先にしたければ ② と ③ を入れ替えるだけ。
+    const colOf = new Map<string, number>()
+    nodes.forEach((nd, i) => colOf.set(nd.node_name, i))
+    const pk = new Map<Span, number[]>()
+    for (const sp of spanArr) {
+      const s = new Set<number>()
+      for (const e of sp.entries) { const c = colOf.get(e.node_name); if (c != null) s.add(c) }
+      pk.set(sp, [...s].sort((a, b) => a - b))
+    }
+    // 列番号列の辞書順。前方一致なら短い方（＝先で止まるリード）が先。
+    const cmpPath = (a: number[], b: number[]) => {
+      const n = Math.min(a.length, b.length)
+      for (let i = 0; i < n; i++) if (a[i] !== b[i]) return a[i] - b[i]
+      return a.length - b.length
+    }
     const ordered = [...spanArr].sort((a, b) =>
+      cmpPath(pk.get(a)!, pk.get(b)!) ||
+      (a.entries[0].sample_id ?? '').localeCompare(b.entries[0].sample_id ?? '') ||
       a.gs - b.gs ||
       ((a.entries[0].aln_id ?? 0) - (b.entries[0].aln_id ?? 0)) ||
       a.entries[0].read_name.localeCompare(b.entries[0].read_name))
