@@ -400,18 +400,6 @@ export default function AlignmentView({
         >
           view +
         </button>
-        {activeRowId !== null && (
-          // ★使い方はここに出す。開いた直後に必ず目に入る唯一の場所で、
-          //   「⠿ で並べ替え・段分けができる」ことは触ってみるまで分からないため。
-          <span style={{ fontFamily: 'sans-serif', fontSize: 11, color: '#7950f2',
-            display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <span><b>①</b> グラフの葉ノード（n…）をクリック → 右へ並ぶ</span>
-            <span style={{ color: '#adb5bd' }}>│</span>
-            <span><b>②</b> <b style={{ color: '#0c8599' }}>⠿</b> を左右へドラッグ → 並べ替え</span>
-            <span style={{ color: '#adb5bd' }}>│</span>
-            <span><b>③</b> <b style={{ color: '#0c8599' }}>⠿</b> を列の上下へドラッグ → 段を分ける</span>
-          </span>
-        )}
       </div>
 
       {/* Rows — 縦スクロール対応 */}
@@ -1407,9 +1395,20 @@ ${parts.join('\n')}
                   ＋ ここに「{pendingNode.node_name}」を追加
                 </div>
               ) : (
+                // ★使い方はここ（空のビュー箱の中）だけに出す。ノードが入った時点で消えるので、
+                //   スクリーンショットに説明文が写り込まない。
+                //   「⠿ で並べ替え・段分けができる」は触ってみるまで分からないため必ず書く。
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: '#ced4da', fontFamily: 'sans-serif', fontSize: 12 }}>
-                  {isActive ? 'グラフのノードをクリックして追加' : 'node + でノードを追加'}
+                  fontFamily: 'sans-serif', fontSize: 12 }}>
+                  {isActive ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, color: '#7950f2' }}>
+                      <span><b>①</b> グラフの葉ノード（n…）をクリック → 右へ並ぶ</span>
+                      <span><b>②</b> <b style={{ color: '#0c8599' }}>⠿</b> を左右へドラッグ → 並べ替え</span>
+                      <span><b>③</b> <b style={{ color: '#0c8599' }}>⠿</b> を列の上下へドラッグ → 段を分ける</span>
+                    </div>
+                  ) : (
+                    <span style={{ color: '#ced4da' }}>node + でノードを追加</span>
+                  )}
                 </div>
               )
             ) : gridChildren}
