@@ -401,10 +401,15 @@ export default function AlignmentView({
           view +
         </button>
         {activeRowId !== null && (
-          <span style={{ fontFamily: 'sans-serif', fontSize: 11, color: '#7950f2' }}>
-            {pendingNode
-              ? `「${pendingNode.node_name}」の配置先 ＋ をクリック（Escでキャンセル）`
-              : 'グラフのノードをクリックして追加'}
+          // ★使い方はここに出す。開いた直後に必ず目に入る唯一の場所で、
+          //   「⠿ で並べ替え・段分けができる」ことは触ってみるまで分からないため。
+          <span style={{ fontFamily: 'sans-serif', fontSize: 11, color: '#7950f2',
+            display: 'inline-flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <span><b>①</b> グラフの葉ノード（n…）をクリック → 右へ並ぶ</span>
+            <span style={{ color: '#adb5bd' }}>│</span>
+            <span><b>②</b> <b style={{ color: '#0c8599' }}>⠿</b> を左右へドラッグ → 並べ替え</span>
+            <span style={{ color: '#adb5bd' }}>│</span>
+            <span><b>③</b> <b style={{ color: '#0c8599' }}>⠿</b> を列の上下へドラッグ → 段を分ける</span>
           </span>
         )}
       </div>

@@ -1001,11 +1001,15 @@ graphRouter.get('/expand_node', (req, res) => {
       const allNames = cols.flatMap(c => c.names)
       if (allNames.length === 0) { res.json({ total: totalRelated, added: [], columns: [] }); return }
       const nph = allNames.map(() => '?').join(',')
-      // coverage/cov_hist は emitter 産 LOD DB には無い（cov_hist 列なし）ので存在時のみ SELECT。
+      // ★列の有無は DB による。決め打ちで SELECT すると **機能ごと落ちる**。
+      //   実際 `haplotype` は意味が無いので emitter から外したのに、ここだけ残っていて
+      //   「no such column: haplotype」で /expand_node が 500 になり、UI では無反応に見えていた。
+      //   coverage/cov_hist も古い DB には無い。あるものだけ選ぶ。
       const nCols = tableCols(d, 'nodes')
-      const covSel = (nCols.has('coverage') ? ', coverage' : '') + (nCols.has('cov_hist') ? ', cov_hist' : '')
+      const optSel = ['coverage', 'cov_hist', 'haplotype']
+        .filter(c => nCols.has(c)).map(c => `, ${c}`).join('')
       const ndRows = d.prepare(
-        `SELECT rowid AS id, node_name, is_bubble, size, xCoord, yCoord, angle, radius, color, haplotype${covSel}
+        `SELECT rowid AS id, node_name, is_bubble, size, xCoord, yCoord, angle, radius, color${optSel}
          FROM nodes WHERE node_name IN (${nph})`).all(...allNames) as any[]
       const ndByName = new Map<string, any>()
       for (const r of ndRows) ndByName.set(r.node_name, r.cov_hist ? { ...r, cov_hist: JSON.parse(r.cov_hist) } : r)

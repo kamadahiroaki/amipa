@@ -153,7 +153,13 @@ const handleStyle: React.CSSProperties = {
   flexShrink: 0,
   background: '#d8dde3',
   userSelect: 'none',
+  // ★掴める範囲を広げるため、下の .amipa-grip-* が ::after で透明な帯を張り出す。
+  //   見た目の太さ(HANDLE_SIZE)は変えない。position/zIndex はその帯を隣より前に出すため。
+  position: 'relative',
+  zIndex: 5,
 }
+// 掴みしろ(px)。5px の線を掴むのは細すぎるので、上下(左右)にこれだけ透明な帯を足す。
+const GRIP_PAD = 6
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)
 
@@ -1939,6 +1945,7 @@ export default function App() {
       <div
         onMouseDown={onTopHandleDown}
         title="Drag to resize top panel"
+        className="amipa-grip-row"
         style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
       />
 
@@ -2067,6 +2074,7 @@ export default function App() {
             </div>
             {/* Left resize handle */}
             <div onMouseDown={onLeftHandleDown} title="Drag to resize path panel"
+              className="amipa-grip-col"
               style={{ ...handleStyle, width: HANDLE_SIZE, cursor: "col-resize", borderRight: "1px solid #c8cdd3" }} />
           </>
         )}
@@ -2079,6 +2087,11 @@ export default function App() {
           position: 'relative',
         }}>
           <style>{`
+            /* ★リサイズハンドルの当たり判定。見た目は 5px のままで、掴める帯だけ広げる */
+            .amipa-grip-row::after { content:''; position:absolute; left:0; right:0;
+              top:-${GRIP_PAD}px; bottom:-${GRIP_PAD}px; }
+            .amipa-grip-col::after { content:''; position:absolute; top:0; bottom:0;
+              left:-${GRIP_PAD}px; right:-${GRIP_PAD}px; }
             @keyframes hint-toast {
               0%   { opacity: 0; transform: translateY(-8px); }
               10%  { opacity: 1; transform: translateY(0); }
@@ -2502,6 +2515,7 @@ export default function App() {
         <div
           onMouseDown={onRightHandleDown}
           title="Drag to resize right panel"
+          className="amipa-grip-col"
           style={{ ...handleStyle, width: HANDLE_SIZE, cursor: 'col-resize', borderLeft: '1px solid #c8cdd3' }}
         />
 
@@ -2765,6 +2779,7 @@ export default function App() {
       <div
         onMouseDown={onBottomHandleDown}
         title="Drag to resize bottom panel"
+        className="amipa-grip-row"
         style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
       />
       {bottomH > 0 && (
@@ -2867,7 +2882,8 @@ export default function App() {
         <div
           onMouseDown={onMsaHandleDown}
           title="Drag to resize MSA panel"
-          style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
+          className="amipa-grip-row"
+        style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
         />
       )}
       {msaH > 0 && (
