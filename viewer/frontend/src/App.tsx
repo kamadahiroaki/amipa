@@ -258,6 +258,9 @@ export default function App() {
   const [showNodeNames, setShowNodeNames] = useState(false)
   const [showNodeBp, setShowNodeBp] = useState(false)   // ノードの bp 数(size)ラベル。クラスタは合計 bp
   const [showAlignColors, setShowAlignColors] = useState(false)
+  // ノード追加でリンク色を自動 ON にするが、利用者が自分で切ったらそれを尊重する。
+  // Alignment を閉じるとリセット（次に開いたらまた自動 ON になる）。
+  const alignColorsUserOff = useRef(false)
   const [coverageTextMode, setCoverageTextMode] = useState(false)
   // 全ラベル(ref bp/ノード名/遺伝子/バンド等)の一括サイズ倍率。Labels ポップオーバーの ± で調整。
   const [labelScale, setLabelScale] = useState(1)
@@ -1664,7 +1667,7 @@ export default function App() {
               </div>
             )}
           </div>
-          {toggleBtn(showAlignColors, () => setShowAlignColors(v => !v), 'Link colors', '#0c8599', '#e6fcf5',
+          {toggleBtn(showAlignColors, () => setShowAlignColors(v => { alignColorsUserOff.current = v; return !v }), 'Link colors', '#0c8599', '#e6fcf5',
             'アラインビューの各ノードを色分けし、マップ上の該当ノードも同色で塗る')}
           {divider()}
           {/* ── View: ノードサイズ・パネル・共有 ── */}
@@ -1813,7 +1816,12 @@ export default function App() {
           <button
             onClick={() => {
               setBottomH(h => {
-                if (h > 0) { setActiveAlignRowId(null); return 0 }
+                if (h > 0) {
+                  setActiveAlignRowId(null)
+                  setShowAlignColors(false)          // 閉じたらリンク色も戻す
+                  alignColorsUserOff.current = false // 次に開いたらまた自動 ON
+                  return 0
+                }
                 return 220
               })
             }}
@@ -2191,19 +2199,15 @@ export default function App() {
                     // ★描画の高速経路(nx=fast)は **size を返さない**。アラインビューは列幅と
                     //   拡大段を size から決めるので、欠けたまま渡すと「列が最小幅のまま広げられない」
                     //   「+ で塩基表示にすると落ちる」になる（実際にそうなった）。足りなければ補う。
+                    // ★選んだ端から**右端の列として足していく**。以前は 2 個目以降を「保留中」に
+                    //   して置き場所の + を押させていたが、複数ノードを並べるのに毎回 2 手かかった。
+                    //   位置と段は後から ⠿ のドラッグで直せるので、追加は 1 手でよい。
                     const addToAlign = (nd: NodeData) => {
-                      const activeRow = alignRows.find(r => r.id === activeAlignRowId)
-                      if (activeRow && activeRow.columns.length === 0) {
-                        // 最初のノードは位置選択不要 → そのまま1列目に追加
-                        setAlignRows(prev => prev.map(r =>
-                          r.id !== activeAlignRowId || r.columns.length > 0
-                            ? r
-                            : { ...r, columns: [[nd]] }
-                        ))
-                      } else {
-                        // 2個目以降は「保留中」にして配置先の + で確定
-                        setPendingNode(nd)
-                      }
+                      setAlignRows(prev => prev.map(r =>
+                        r.id !== activeAlignRowId ? r : { ...r, columns: [...r.columns, [nd]] }))
+                      // 追加を始めたらリンク色を自動で入れる（どのノードがどの列かを地図側でも追える）。
+                      // 自分で切った後は勝手に戻さない。Alignment を閉じたら解除する。
+                      if (!alignColorsUserOff.current) setShowAlignColors(true)
                     }
                     if (node.size == null && selectedDb) {
                       fetchNodeInfo(selectedDb, node.node_name)
