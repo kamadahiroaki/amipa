@@ -16,6 +16,9 @@ SciPy               BSD-3-Clause          https://scipy.org/
 Numba / llvmlite    BSD-2-Clause          https://numba.pydata.org/
 Biopython           Biopython License     https://biopython.org/
 Matplotlib          Matplotlib License    https://matplotlib.org/
+zstd (libzstd)      BSD-3-Clause          https://facebook.github.io/zstd/
+python-zstandard    BSD-3-Clause          https://github.com/indygreg/python-zstandard
+zstd crate (Rust)   MIT                   https://github.com/gyscos/zstd-rs
 PyO3 / rusqlite     MIT or Apache-2.0     https://pyo3.rs/ , https://github.com/rusqlite/rusqlite
 Node.js             MIT ほか              https://nodejs.org/
 better-sqlite3      MIT                   https://github.com/WiseLibs/better-sqlite3
@@ -41,3 +44,8 @@ GPL に基づき、同梱している GPL コンポーネントの**対応する
 
 Debian ベースイメージに含まれる GPL/LGPL のシステムパッケージについても同様に、
 Debian の公開アーカイブから対応するソースを入手できます。
+
+なお **zstd (libzstd) は BSD-3-Clause と GPL-2.0 の二重ライセンス**で公開されており、
+本プロジェクトは **BSD-3-Clause を選択**しています（上の表の表記はその選択を示します）。
+したがって zstd は GPL の義務を生じさせません。libzstd は python-zstandard および
+Rust の zstd クレート（zstd-sys）が同梱するものを使っており、いずれも無改変です。
