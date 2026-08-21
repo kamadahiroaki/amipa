@@ -51,8 +51,9 @@ git tag -a v0.1.0 -m "..."
 git push origin v0.1.0
 ```
 
-付くタグは `v0.1.0` / `0.1` / `latest` の 3 つ。`main` への push では `main` タグだけが
-動き、`latest` は触らない。アトラスの形式を変えたときは MINOR を上げ、
+イメージに付くタグは `0.1.0` / `0.1` / `latest` の 3 つ（git のタグは `v` 付き、
+コンテナのタグは慣例どおり `v` 無し）。`main` への push では `main` タグだけが動き、
+`latest` は触らない。アトラスの形式を変えたときは MINOR を上げ、
 `docs/atlas-format.md` に何が変わったかを書く。
 
 出す前に確かめること。
