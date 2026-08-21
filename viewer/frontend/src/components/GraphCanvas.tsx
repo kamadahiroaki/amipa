@@ -221,7 +221,7 @@ const ZT_MAX  = 30          // zt(L) 上限（暴走防止。2^30 グリッド�
 // 以前は 6000 で、超えると maybePromote が render() を呼ばずに警告だけ出していた。
 // これは UI から変えられない client 側の定数で、利用者が設定する「表示上限(maxRows)」とは
 // 別物のため「無制限にしたのに描かれない」という混乱を招いた。要望により既定で無効化する。
-const RENDER_CAP_NODES = Number((window as any).__ggbRenderCap ?? 0)
+const RENDER_CAP_NODES = Number((window as any).__amipaRenderCap ?? 0)
 
 function expandRect(r: Rect, factor: number): Rect {
   const w = r.x2 - r.x1, h = r.y2 - r.y1
@@ -776,7 +776,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         })
       }
 
-      const stamp = `ggb · ${dbFile} · cx=${((vp.x1 + vp.x2) / 2).toFixed(6)} cy=${((vp.y1 + vp.y2) / 2).toFixed(6)} vw=${W.toExponential(3)}`
+      const stamp = `amipa · ${dbFile} · cx=${((vp.x1 + vp.x2) / 2).toFixed(6)} cy=${((vp.y1 + vp.y2) / 2).toFixed(6)} vw=${W.toExponential(3)}`
 
       // ラベル: emitText を1回 render で捕捉→FigLabel[](screen→figure)。表示トグルどおり(showRefPos 等)出る。
       const figLabels: FigLabel[] = []
@@ -837,7 +837,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const svg = drawListToSvg(fig)
       const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }))
       const a = document.createElement('a')
-      a.href = url; a.download = `${(dbFile || 'ggb').replace(/[^\w.+-]+/g, '_')}_figure.svg`
+      a.href = url; a.download = `${(dbFile || 'amipa').replace(/[^\w.+-]+/g, '_')}_figure.svg`
       document.body.appendChild(a); a.click(); a.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
     }
@@ -2494,12 +2494,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
 
     // ── 診断: タイル格納の履歴（どのバッチが何件でそのタイルを確定させたか）─────────
     // 「応答は届いていて配り方も正しいのに cache が 0」という状態が確定したので、
-    // **0 件で上書きしたバッチ**を特定する。__ggbHistory(tx,ty) で引く。
+    // **0 件で上書きしたバッチ**を特定する。__amipaHistory(tx,ty) で引く。
     type StoreRec = { t: number; table: string; layer: number; gz: number; tx: number; ty: number
                       n: number; arrN: number; bbox: Rect; tiles: number }
     const storeLog: StoreRec[] = []
     const pushStore = (r: StoreRec) => { storeLog.push(r); if (storeLog.length > 2000) storeLog.shift() }
-    ;(window as any).__ggbHistory = (tx?: number, ty?: number) => {
+    ;(window as any).__amipaHistory = (tx?: number, ty?: number) => {
       const rows = storeLog
         .filter(r => tx === undefined || (r.tx === tx && (ty === undefined || r.ty === ty)))
         .map(r => ({ 時刻: new Date(r.t).toISOString().slice(11, 23), table: r.table,
@@ -2557,12 +2557,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           rows.filter((r: { cached: boolean; n: number }) => r.cached && r.n === 0).length
         out[`${table}_明細`] = rows
       }
-      console.log('[ggb dump]', out)
+      console.log('[amipa dump]', out)
       return out
     }
     // ゲートを迂回して強制描画する。これで領域が出るなら
     // 「データはキャッシュにあるが render() が呼ばれていない」が確定する。
-    ;(window as any).__ggbRedraw = () => { render(); return '描画した' }
+    ;(window as any).__amipaRedraw = () => { render(); return '描画した' }
 
     // ── 決定的な照合: 「キャッシュが空のタイル」を backend に問い直す ──────────
     // 空タイル自体は疎な領域では正常なので、空が **正しいか** は backend と比べるしかない。

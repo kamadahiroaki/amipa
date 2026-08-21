@@ -22,7 +22,7 @@ export interface NodeData {
   hb?: number | null              // A-2 hap-breadth: このノードを通る distinct haplotype 数（node_contig_cov.hb）
   max_mult?: number | null        // A-2 通過多重度: 配下の最大コピー数（node_contig_mult blob の max、mult>1 のみ）
   kind?: number | null            // ノード種別 0=葉/1=クラスタ/2=flubble(snarl)。無い旧 DB は node_name 接頭辞で判別
-  // アノテーション(ggb_annotate.py 産 node_attr)。無い DB では undefined。
+  // アノテーション(annotate.py 産 node_attr)。無い DB では undefined。
   band_id?: number | null         // ギムザバンド id（band_dict で名前/gie_stain→色）
   gene_count?: number | null      // このノードに重なる distinct 遺伝子数（粗ズームの密度表示用）
   region_class?: number | null    // 領域クラス id（region_dict で名前へ; CHM13 セントロ等）
@@ -173,7 +173,7 @@ export async function fetchLeafSeq(dbFile: string, name: string, full = false): 
   return res.json()
 }
 
-// 上部バー用の版情報。viewer=ggb git rev、db=ビルド由来(built_at/emitter_rev/mtime)+機能フラグ。
+// 上部バー用の版情報。viewer=git rev、db=ビルド由来(built_at/emitter_rev/mtime)+機能フラグ。
 export interface VersionInfo {
   viewer: string
   // 配信モード。readonly=true の配信では DB を書き換える経路（ノード編集の保存）が

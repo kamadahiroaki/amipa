@@ -48,7 +48,7 @@ databasesRouter.get('/version', (req, res) => {
       let mtime: string | null = null
       try { mtime = fs.statSync(`${getDbDir()}/${db.replace(/[^A-Za-z0-9._-]/g, '')}`).mtime.toISOString() } catch { /* */ }
       // ★rtree_built_at / rad も返す。db_meta.built_at は ④ emit の時刻で、後から
-      //   `ggb_hapidx --into-db` だけ回しても変わらない（radius 修正の再構築で実際に
+      //   `hap_index --into-db` だけ回しても変わらない（radius 修正の再構築で実際に
       //   「built_at が古いままだがこれで合っているのか」となった）。R-Tree は描画の
       //   高速経路が読む実体なので、そちらの時刻と rad の有無を上部バーで見せる。
       const hmeta: Record<string, string> = {}

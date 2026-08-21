@@ -28,7 +28,7 @@
 ■ エッジ(layer 毎): GFA 辺の両端の葉を、その層の代表 glyph(frontier-parent を climb)へ写像し、
   異なる glyph の対を 1 対 1 本に集約。端点は相手 glyph 中心方向に ±radius。
 
-入力: --typed X.unified.typed --npz X.sgdplain.npz --template <layered.db> --out-db <出力>
+入力: --typed X.unified.typed --npz X.sgdplain.npz --template <name>.db --out-db <出力>
       [--budget-floor 1000] [--gfa X.gfa(size=bp 用)] [--radius-frac 0.25]
 """
 import argparse
@@ -4243,7 +4243,7 @@ def main():
     #   密領域の遅さは R-Tree 探索(50ns/entry)ではなく候補全件の行の実体化(nodes 1.6us/行、
     #   node_contig_cov の太い blob 25us/行)なので、マスクを **細い %_rowid 影テーブル** に置いて
     #   棄却候補が太い nodes 行を読まないようにするのが要点(実測 functions/hapfilter/RESULTS.md)。
-    #   実装は scripts/ggb_hapidx.py を import して --into-db 相当を呼ぶ(サイドカー版と同一コード)。
+    #   実装は prep/amipa_prep/hap_index.py を import して --into-db 相当を呼ぶ(サイドカー版と同一コード)。
     if args.emit_hapidx:
         if not cur.execute("SELECT name FROM sqlite_master WHERE type='table' "
                            "AND name='node_contig_cov'").fetchone():
@@ -4253,7 +4253,7 @@ def main():
             try:
                 import subprocess
                 # GGB_HAPIDX_BIN で差し替え可（失敗時フォールバックの検証用。既定は同ディレクトリ）
-                _hx = (os.environ.get("AMIPA_HAPIDX_BIN") or os.environ.get("AMIPA_HAPIDX_BIN") or os.environ.get("GGB_HAPIDX_BIN")
+                _hx = (os.environ.get("AMIPA_HAPIDX_BIN") or os.environ.get("GGB_HAPIDX_BIN")
                        or os.path.join(os.path.dirname(os.path.abspath(__file__)), "hap_index.py"))
                 # --no-integrity-check: quick_check は **DB 全ページ読み**。この DB は今この
                 # プロセスが書いたので検査は無意味な重複で、共有FS 直書き(--build-tmp 無し)だと
@@ -4302,7 +4302,7 @@ def main():
 
     # ---- 8.7 ノード名 trigram 索引: viewer の Find>Node の部分一致を索引で引けるようにする ----
     #   無いと `node_name LIKE '%q%'` が nodes 全走査(chr22 590MB, ネットワーク FS で cold 48.7 秒)。
-    #   先頭ワイルドカードがあるので idx_nodes_node_name は原理的に使えない。詳細は ggb_nametri.py。
+    #   先頭ワイルドカードがあるので idx_nodes_node_name は原理的に使えない。詳細は name_index.py。
     #
     # ★名前は **メモリ上で生成する**（DB 読み取り 0）。名前はノード id の純関数 gname(v) なので
     #   atom_np/kind_np/id_map から作れる。初版は書き終えた DB に
@@ -4353,7 +4353,7 @@ def main():
             # 失敗しても他機能は無影響（部分一致だけ従来の全走査に落ちる）。
             log(f"WARN: nametri が失敗 ({type(_e).__name__}: {_e})。Find>Node の部分一致だけ"
                 f"低速な全走査にフォールバックする(他機能は無影響)。後から "
-                f"`python3 scripts/ggb_nametri.py --db {args.out_db} --into-db` で足せる。")
+                f"`python3 prep/amipa_prep/name_index.py --db {args.out_db} --into-db` で足せる。")
             try:
                 con.rollback()
             except Exception:
@@ -4407,7 +4407,7 @@ def main():
             _zoom_window = "square_side_W_over_s"
         except Exception as _e:
             log(f"ERROR: xy 較正が失敗 ({type(_e).__name__}: {_e}) → grid 版へフォールバック。"
-                f"DB は使えるが LOD 較正は最適でない(ggb_recalib_zoom.py --method xy で後から直せる)")
+                f"DB は使えるが LOD 較正は最適でない(`amipa prep run --only emit --force` で作り直せば再試行する)")
             layer_zoom = compute_layer_zoom(cur, out_maxlayer, layer_nodes,
                                             vb=args.zoom_budget, pct=args.zoom_percentile,
                                             grid=args.zoom_grid, d_floor=args.zoom_dfloor,
@@ -4516,7 +4516,7 @@ def main():
         cur.execute("INSERT OR REPLACE INTO db_meta(key,value) VALUES(?,?)", (_k, _v))
 
     # 起動時に viewer が全走査してイベントループを塞ぐ集計値を **ビルド時に db_meta へ**(起動負荷ゼロ化)。
-    # ここは build 固有(coverage/hb/mult)。annotation 由来(max_gene_cnt 等)は ggb_annotate が annot_meta に書く。
+    # ここは build 固有(coverage/hb/mult)。annotation 由来(max_gene_cnt 等)は annotate が annot_meta に書く。
     def _has_col(_t, _c):
         try:
             return any(r[1] == _c for r in cur.execute(f"PRAGMA table_info({_t})"))

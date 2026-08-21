@@ -119,7 +119,7 @@ export function nodeExtraSel(d: any, want: boolean): { sel: string; join: string
                  ' ON ncc.node_rowid = n.rowid' }
 }
 
-// アノテーション(band/gene/region)を node fetch に相乗り。ggb_annotate.py が付与する per-node 表
+// アノテーション(band/gene/region)を node fetch に相乗り。annotate.py が付与する per-node 表
 // node_annot(node_rowid PK; band_id/band_multi/region_class/gene_cnt/gene_blob)。無い DB では空(=graceful)。
 // coverage(node_contig_cov)と同型で **rowid 相乗り**(別 join 不要)。スカラーのみ載せ、gene 詳細 blob は
 // /node_features(選択ノード1件)で扱う。gene_cnt は旧名 gene_count に alias(frontend 無改修)。
@@ -145,7 +145,7 @@ export function nodeAttrSel(d: any, want: { band: boolean; region: boolean; gene
 // の 2 本を触る。実測（functions/covpack/RESULTS.md §12、同一ノード・未アクセス領域・約 2,000 行）:
 //   R-Tree だけ 0.014〜0.028 秒（読み 0 バイト）／`nodes` 行も読む 0.135〜0.206 秒 = **7.5〜9.3x**
 //
-// `ggb_hapidx --draw-aux` が載せた補助列（ang/nm/hb/bnd/gcn/rgn）があれば、
+// `hap_index --draw-aux` が載せた補助列（ang/nm/hb/bnd/gcn/rgn）があれば、
 // 描画に要る列を R-Tree だけで揃えられる:
 //   xCoord=(min_x+max_x)/2, yCoord=(min_y+max_y)/2, radius=(max_x-min_x)/2   ← 幾何から導出
 //   angle=ang/ANG_SCALE, node_name=nm, hb, band_id, gene_count, region_class ← 補助列
@@ -171,7 +171,7 @@ export function nodeAttrSel(d: any, want: { band: boolean; region: boolean; gene
 /** 高速経路(R-Tree)から **node_annot を直接** 引くための SELECT/JOIN 断片。
  *
  * ★なぜ補助列(bnd/gcn/rgn)を使わないか:
- *   補助列は `ggb_hapidx` が R-Tree を作る時に node_annot から焼き込む。emitter は hapidx を
+ *   補助列は `hap_index` が R-Tree を作る時に node_annot から焼き込む。emitter は hapidx を
  *   最後に走らせるので、**その後にアノテーションを足すと補助列は NULL のまま**になる
  *   （実際 chr22-fin で ref_bp は入っているのに band/gene/region だけ NULL だった）。
  *   毎回 R-Tree を作り直す(WG で 1h10m〜1h28m)のは後付け拡張の運用として重すぎるので、

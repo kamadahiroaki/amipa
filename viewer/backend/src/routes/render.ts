@@ -31,7 +31,7 @@ renderRouter.get('/render', (req, res) => {
       maxEdgeReads: num(q.maxEdgeReads, 0), edgeMin: num(q.edgeMin, 0),
       mapq: num(q.mapq, 0), widthMm: num(q.widthMm, 180),
     })
-    if (q.download === '1') res.setHeader('Content-Disposition', 'attachment; filename="ggb_figure.svg"')
+    if (q.download === '1') res.setHeader('Content-Disposition', 'attachment; filename="amipa_figure.svg"')
     res.type('image/svg+xml').send(svg)
   } catch (e) {
     res.status(500).json({ error: String(e) })

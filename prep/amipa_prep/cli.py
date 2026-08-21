@@ -443,7 +443,7 @@ def build_stages(b: Bundle, a) -> dict:
                 "--template", str(a.template), "--out-db", str(b.db),
                 # ★PID 等の毎回変わる値を入れない（コマンド行が変わると段の鍵が変わり、
                 #   何も変えていないのに emit がやり直しになる）。バンドル名で一意にする。
-                "--build-tmp", str(tmp / f"ggbprep-build-{b.name}"),
+                "--build-tmp", str(tmp / f"amipa-build-{b.name}"),
                 "--emit-inversion", "--emit-multiplicity",
                 "--budget-floor", "1000", "--budget-rmin", "2", "--budget-rmax", "2.5",
                 "--budget-shrink", "0.8", "--budget-span-weight", "1.0",
@@ -455,6 +455,9 @@ def build_stages(b: Bundle, a) -> dict:
         inputs=[b.typed, b.npz, b.distill, a.template],
         outputs=[b.db],
         env=thread_env(1),
+        # ★一時領域の場所は出力を変えない。鍵に入れると、$TMPDIR が違うノードで再開しただけで
+        #   emit(WG で 4.6h)がやり直しになる。上の「鍵に環境で変わる値を入れない」の実装。
+        key_exclude=["--build-tmp", "--ribbon-spill-dir"],
         note="多層 DB 化（hapidx/nametri/配列/リボンを内包）",
     )
 
@@ -659,7 +662,8 @@ def execute(b: Bundle, a, want: list[str]) -> None:
         b.save_state(state)
 
     log("完了。viewer で開く例:")
-    print(f"  apptainer exec --cleanenv -B {b.root}:/data ~/pangenome/ggb/sif/amipa-viewer.sif amipa check")
+    print(f"  docker run --rm -v {b.root}:/data:ro ghcr.io/kamadahiroaki/amipa-viewer check")
+    print(f"  apptainer exec --cleanenv -B {b.root}:/data:ro amipa-viewer.sif amipa check")
 
 
 # ─────────────────────── 資源の見積り（plan） ───────────────────────

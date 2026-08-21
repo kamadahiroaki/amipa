@@ -756,7 +756,7 @@ function AlignRowView({ row, dbFile, globalMapq, isActive, pendingNode, flippedI
       parts.push(s)
     })
 
-    const stamp = `ggb alignment view · ${new Date().toISOString().slice(0, 10)} · ${esc(dbFile)}`
+    const stamp = `amipa alignment view · ${new Date().toISOString().slice(0, 10)} · ${esc(dbFile)}`
     return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="${NS}" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <!-- ${stamp} -->

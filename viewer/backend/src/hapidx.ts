@@ -1,6 +1,6 @@
 // hap 絞り込み（選択サンプル/ハプロタイプ/コンティグが通るノード・エッジだけ返す）の共通ロジック。
 //
-// データは scripts/ggb_hapidx.py が作るサイドカー `<db>.hapidx`（db.ts が ix として ATTACH）:
+// データは prep/amipa_prep/hap_index.py が作るサイドカー `<db>.hapidx`（db.ts が ix として ATTACH）:
 //   ix.nodes_rtree_hm  rtree(id, min_x,max_x, min_y,max_y, min_layer,max_layer, +hm0..+hm{W-1})
 //   ix.edge_hm(edge_rowid PK, hm0..hm{W-1})
 //   ix.hap_dict(hap_id PK, name, sample, haplotype, cid_lo, cid_hi, n_contig)
@@ -15,7 +15,7 @@
 // 「棄却1件 = 細い表の1読み」で済み、太い nodes 行(20列)を読むより桁で安い。
 // 実測 (chr22 密領域, functions/hapfilter/RESULTS.md): 現行比 cold 1.7-4.7x / warm 2.5-2.7x。
 //
-// H(ハプロタイプ数)スケール: マスク幅 W は ggb_hapidx が H から決め上限で打ち止めるので、
+// H(ハプロタイプ数)スケール: マスク幅 W は hap_index が H から決め上限で打ち止めるので、
 //   mode=exact  → マスクだけで厳密
 //   mode=bucket → マスクは保守的(上位集合)。**必ず node_contig_cov / edge_contig_cov blob で
 //                 厳密判定を追加する**（needExact()）。誤りは出ない・効きが鈍るだけ。
@@ -33,7 +33,7 @@ export interface HapIdxInfo {
   rtree: string
   /** エッジマスク表の参照名。無ければ null（ノード絞り込みのみ） */
   edgeTable: string | null
-  /** 描画用補助列(ang/nm/hb/bnd/gcn/rgn)が R-Tree に載っているか（ggb_hapidx --draw-aux） */
+  /** 描画用補助列(ang/nm/hb/bnd/gcn/rgn)が R-Tree に載っているか（hap_index --draw-aux） */
   drawAux: boolean
   /** rad 補助列（= nodes.radius の真値）があるか。無い旧 DB は矩形から導出＝過大になる */
   hasRad: boolean
@@ -119,7 +119,7 @@ export function hapIdxEdgeOk(d: Database): boolean {
 }
 
 // contig_id → hap_id（distinct (sample,haplotype) を contig_id 昇順で採番）。
-// emitter `_build_contig2hap` / ggb_hapidx.build_hap_map と同一の採番。
+// emitter `_build_contig2hap` / hap_index.build_hap_map と同一の採番。
 const hapOfCache = new WeakMap<any, Int32Array>()
 export function contigToHap(d: Database): Int32Array {
   const cached = hapOfCache.get(d)

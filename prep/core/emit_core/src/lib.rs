@@ -645,7 +645,7 @@ fn emit_nodes<'py>(
     start: i64,
     maxlayer: i64,
     n: i64,
-    // true なら nodes_rtree への INSERT を **しない**。後段の hapidx 段(scripts/ggb_hapidx.py --into-db)
+    // true なら nodes_rtree への INSERT を **しない**。後段の hapidx 段(prep/amipa_prep/hap_index.py --into-db)
     // が hap マスク補助列つきで nodes_rtree を作るので、ここで入れると二重構築になる
     // (chrY 実測 9s→19.1s、WG 外挿 +約1.8h)。rtree の aux を後から UPDATE で埋める案は
     // 実測で 73k 行/s < aux 込み INSERT 146k 行/s と逆に遅かったので、挿入自体を飛ばす形にした。

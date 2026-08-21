@@ -114,7 +114,7 @@ export function renderGraphSvg(d: Database.Database, dbName: string, o: RenderOp
     edgeWidthMode: o.edgeWidthMode ?? 'off',
     maxHb: o.maxHb ?? 0, maxEdgePx: o.maxEdgePx ?? 12, maxEdgeReads: o.maxEdgeReads ?? 0, edgeMin: o.edgeMin ?? 0,
     widthMm: o.widthMm, legend, labels, labelMarks,
-    stamp: `ggb · ${dbName} · cx=${o.cx.toFixed(6)} cy=${o.cy.toFixed(6)} vw=${vw.toExponential(3)} · layer=${L}${annot !== 'none' ? ` · ${annot}` : ''}`,
+    stamp: `amipa · ${dbName} · cx=${o.cx.toFixed(6)} cy=${o.cy.toFixed(6)} vw=${vw.toExponential(3)} · layer=${L}${annot !== 'none' ? ` · ${annot}` : ''}`,
   })
   return drawListToSvg(fig)
 }

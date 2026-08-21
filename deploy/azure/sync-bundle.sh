@@ -2,7 +2,7 @@
 # HPC → Azure VM へバンドルを転送する（再開可能）。
 #
 #   使い方:  sync-bundle.sh <ローカルのバンドル or DB> <user@host> [リモートの置き場]
-#   例:      sync-bundle.sh ~/…/wg/mcgrch38.povu.fin.layered.db azureuser@amipa-demo.japaneast.cloudapp.azure.com
+#   例:      sync-bundle.sh ~/atlases/mc-grch38-wg.amipa azureuser@<公開ホスト名>
 #
 # ・WG は 250-350GB ある。**必ず qsub（計算ノード）から流す**。ログインノードで数時間流さない。
 #   計算ノードから外向き通信はできる（このプロジェクトでの実績あり）。
@@ -11,7 +11,7 @@
 # ・転送後は必ずリモートで `amipa-viewer check` を通すこと（README 参照）。
 set -euo pipefail
 
-SRC="${1:?転送元（バンドルのディレクトリ、または *.layered.db）}"
+SRC="${1:?転送元（アトラスのディレクトリ、または *.db）}"
 DEST_HOST="${2:?転送先 user@host}"
 DEST_DIR="${3:-/data/bundles}"
 

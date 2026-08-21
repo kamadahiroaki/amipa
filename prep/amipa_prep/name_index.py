@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ggb_nametri — ノード名の**部分一致**検索を索引で引けるようにする FTS5 trigram 索引を作る。
+"""name_index — ノード名の**部分一致**検索を索引で引けるようにする FTS5 trigram 索引を作る。
 
 出力先は 2 通り（hapidx と同じ流儀）:
   --into-db  … 対象 layered.db の中に `nmdict` / `nmfts` を作る（emitter の既定。要 DB 再ビルド）

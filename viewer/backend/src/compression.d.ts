@@ -12,7 +12,7 @@ declare module 'compression' {
   import type { RequestHandler, Request, Response } from 'express'
 
   interface CompressionOptions {
-    /** zlib の圧縮レベル 0-9。既定 -1(=6)。ggb は対話取得なので 1 を使う。 */
+    /** zlib の圧縮レベル 0-9。既定 -1(=6)。AMIPA は対話取得なので 1 を使う。 */
     level?: number
     /** これ未満のバイト数は圧縮しない。既定 1024。 */
     threshold?: number | string

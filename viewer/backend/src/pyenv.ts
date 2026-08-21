@@ -2,12 +2,12 @@ import path from 'path'
 
 // backend が子プロセスで呼ぶ Python ヘルパの在り処を 1 か所に集める。
 //
-// ★ここに絶対パス(`/home/kamada/miniconda3/...` 等)を埋めない。埋めると
+// ★ここに開発機の絶対パス(`/home/<user>/miniconda3/...` 等)を埋めない。埋めると
 //   コンテナ・他人のマシン・CI のどれでも動かなくなる（実際そうなっていた）。
 //   - 実行体: 既定は PATH 上の `python3`。SHIROKANE のログインシェルでは miniconda の
 //     python3(numpy あり)が先頭に来るので従来どおり動き、コンテナでは同梱の python3 が使われる。
 //   - スクリプト: viewer リポに **vendoring 済み**の `viewer/scripts/`。前処理リポ
-//     (`~/pangenome/ggb/superbubble/scripts`)への実行時依存を切るため。
+//     （開発機のスクリプト置き場）への実行時依存を切るため。
 //
 // 必要な Python 側の依存は numpy だけ(bubble_msa.py が distill の .npy を読む)。
 // reads_query.py / cs_ops.py は標準ライブラリのみ。

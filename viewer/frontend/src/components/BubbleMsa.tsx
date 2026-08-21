@@ -134,7 +134,7 @@ function toClustal(d: BubbleMsaResp): string {
   const seqs = rows.map(r => rowBaseSeq(r, keep))
   const L = seqs[0]?.length || 0
   const W = Math.min(30, Math.max(1, ...names.map(n => n.length)))
-  let out = "CLUSTAL W (ggb bubble MSA export; base columns only, '~' folded->N)\n\n"
+  let out = "CLUSTAL W (AMIPA bubble MSA export; base columns only, '~' folded->N)\n\n"
   for (let p = 0; p < L; p += 60) {
     for (let i = 0; i < rows.length; i++) out += names[i].slice(0, W).padEnd(W) + '  ' + seqs[i].slice(p, p + 60) + '\n'
     out += '\n'

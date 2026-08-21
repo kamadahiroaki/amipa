@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ggb_hapidx — 「選択サンプル/ハプロタイプが通るノード・エッジだけ描画する」ための取得索引を作る。
+"""hap_index — 「選択サンプル/ハプロタイプが通るノード・エッジだけ描画する」ための取得索引を作る。
 
 既存の layered.db を **一切書き換えず**、サイドカー DB `<db>.hapidx` を作る。
 backend は存在すれば ATTACH して viewport クエリにマスク条件を足す（無ければ従来動作＝graceful）。
@@ -67,9 +67,9 @@ SQLite の R-Tree 補助列(`+hm0`)は **リーフページ(%_node.data)では�
       edge_rowid = edges.rowid。cov 行が無いエッジ（誰も通らない）は行を作らない=マスク0扱い。
 
 使い方:
-  python3 ggb_hapidx.py --db path/to/x.layered.db                 # → x.layered.db.hapidx
-  python3 ggb_hapidx.py --db ... --resume                         # 中断から再開
-  python3 ggb_hapidx.py --db ... --verify 2000                    # 標本検証のみ
+  python3 hap_index.py --db path/to/x.db                 # → x.db.hapidx
+  python3 hap_index.py --db ... --resume                         # 中断から再開
+  python3 hap_index.py --db ... --verify 2000                    # 標本検証のみ
 """
 import argparse, os, sqlite3, struct, sys, time
 import numpy as np

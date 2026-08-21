@@ -598,12 +598,12 @@ pathsRouter.get('/ref_contigs', (req, res) => {
   } catch { res.json({ ref_key: null, contigs: [] }) }
 })
 
-// アノテーション辞書(band/region/track)を1回で返す。ggb_annotate.py 産の任意表。無い表は空配列(=graceful)。
+// アノテーション辞書(band/region/track)を1回で返す。annotate.py 産の任意表。無い表は空配列(=graceful)。
 // frontend は起動時に1回取得し、node_attr.band_id/region_class を色・名前へ解決する。
 // アノテ辞書の所在（サイドカー `<db>.annot` 優先 → 主 DB）。
 // ★node_annot の band_id / gene_cnt / region_class は **辞書の id** を指す。片方だけ差し替わると
 //   黙って違う色・違う名前になる（split-brain）ので、id と辞書は同じ所から読む。
-//   ggb_annotate は辞書をサイドカーへ同梱するので、在ればそちらが正。
+//   annotate は辞書をサイドカーへ同梱するので、在ればそちらが正。
 function annotQual(d: any): string {
   for (const schema of ['an', '']) {
     try {
@@ -629,7 +629,7 @@ pathsRouter.get('/annot_dicts', (req, res) => {
   const AQ = annotQual(d)
   let regions = q(`SELECT region_id, name, ref_key, cx, cy, layer FROM ${AQ}region_dict ORDER BY region_id`)
   if (!regions.length) regions = q(`SELECT region_id, name, ref_key FROM ${AQ}region_dict ORDER BY region_id`)
-  // annot_meta.max_gene_cnt があれば即返す(ggb_annotate が拡張時に書く)。無い旧 DB のみ MAX へフォールバック
+  // annot_meta.max_gene_cnt があれば即返す(annotate が拡張時に書く)。無い旧 DB のみ MAX へフォールバック
   // するが、巨大 DB では node_annot 全走査(索引なし)が同期でイベントループを塞ぐ(stats.ts の maxima と同じ理由)
   // ため省略し 0(frontend は maxGeneCount<=1 を graceful に既定スケール扱い)。
   const metaGC = one(`SELECT value AS m FROM ${AQ}annot_meta WHERE key='max_gene_cnt'`)?.m
@@ -771,7 +771,7 @@ pathsRouter.post('/save_edits', (req, res) => {
         yCoord = :sin*xCoord + :cos*yCoord + :ty,
         angle  = angle + :dAngle
       WHERE node_name IN (SELECT name FROM _edit_names)`)
-    // R-Tree の幾何。★`ggb_hapidx --draw-aux` で `ang`（angle×ANG_SCALE）補助列がある DB では
+    // R-Tree の幾何。★`hap_index --draw-aux` で `ang`（angle×ANG_SCALE）補助列がある DB では
     //   それも一緒に更新する。**触る行は増えない**（幾何が動く行＝ang も動く行）ので、
     //   上層ノードを動かして子孫全部を書き換えるケースでもコストは実質変わらない。
     //   （これがエッジに端点座標を持たせられない理由と対照的な点: あちらは行数の多い別の表を

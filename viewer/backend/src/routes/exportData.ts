@@ -20,7 +20,7 @@ function openDb(db?: string): any | null {
   return getDb(base)
 }
 function fnBase(db: string): string {
-  return path.basename(db).replace(/\.(layered\.)?db$/, '').replace(/[^\w.+-]+/g, '_') || 'ggb'
+  return path.basename(db).replace(/\.(layered\.)?db$/, '').replace(/[^\w.+-]+/g, '_') || 'amipa'
 }
 function bbox(q: any): { L: number; x1: number; y1: number; x2: number; y2: number } | null {
   const L = Number(q.layer), x1 = Number(q.x1), y1 = Number(q.y1), x2 = Number(q.x2), y2 = Number(q.y2)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ggb-annotate: 構築済み layered.db に外部アノテーショントラックを後付けする (Part B)。
+"""annotate: 構築済みのアトラス本体に外部アノテーショントラックを後付けする (Part B)。
 
 設計: ANNOTATION_IMPL_PLAN.md / ANNOTATE_HOWTO.md。本体 DB の nodes/edges/*_rtree は不変。
 アノテは **per-node の相乗り表 `node_annot`（node_rowid キー）** に保存する。これは coverage 系
@@ -229,7 +229,7 @@ class AnnotAccum:
         mcgrch38.povu.fin 11.6GB）、SQLite は新ページを **freelist から優先再利用**する。
         そのため rowid 昇順に書いても **物理配置が散る**。実測でその表の走査は
         4KB ランダム読み 0.4 MB/s まで落ち、被覆索引を張るだけで 7 時間見込みになった。
-        以前は「主 DB に書く → 別ジョブ ggb_annot_index/annot_sidecar が読み戻して
+        以前は「主 DB に書く → 別ジョブ annot_index / annotate が読み戻して
         サイドカーへ写す」構成にしていたが、**その読み戻しが散在読みそのもの**で、
         `dd` で主 DB を丸ごと順読みしてページキャッシュに載せる（77x）という
         当て物で凌いでいた。キャッシュ残留は保証されないので恒久策にならない。
@@ -291,7 +291,7 @@ class AnnotAccum:
             cur.executemany(sql, batch)
             total += len(batch)
             self.con.commit()
-        # ★被覆索引 idx_na_cov は **ここでは作らない**（別ジョブ scripts/ggb_annot_index.py）。
+        # ★被覆索引 idx_na_cov は **ここでは作らない**（別ジョブ prep/amipa_prep/annot_index.py）。
         #   viewer の高速経路は node_annot を rowid で点引きするので索引は必須だが、
         #   作成自体は速い（chr22 2,779,533 行で temp_store=MEMORY なら 0.98s）。
         #   分離したのは時間のためではなく、この実装が最後まで DB に書かないので
@@ -364,7 +364,7 @@ class AnnotAccum:
         dst.commit()
         dst.execute("DETACH DATABASE m")
         if n_dict:
-            print("[ggb-annotate] 辞書もサイドカーへ同梱: "
+            print("[annotate] 辞書もサイドカーへ同梱: "
                   + ", ".join(f"{k}={v:,}" for k, v in sorted(n_dict.items())))
         dst.close()
         os.replace(tmp, path)
@@ -432,7 +432,7 @@ def load_ref_contigs(con, ref_key):
         "SELECT contig_id, name FROM ref_contigs WHERE ref_key=?", (ref_key,)
     ).fetchall()
     if not rows:
-        sys.exit(f"[ggb-annotate] ref_contigs に ref_key={ref_key} が無い")
+        sys.exit(f"[annotate] ref_contigs に ref_key={ref_key} が無い")
     cid2name = {cid: name for cid, name in rows}
     # 完全一致(full name)を最優先。加えて染色体トークン('GRCh38.chr1'->'chr1')・小文字の別名キーを、
     # 曖昧でない範囲で張る(アノテーション入力 'chr1' を DB 命名 'GRCh38.chr1'/'grch38#chr1' に一致させる)。
@@ -473,7 +473,7 @@ def annotate_band(con, band_path, ref_key, source, acc):
     name2cid, cid2name = load_ref_contigs(con, ref_key)
     per = load_cytoband(band_path, name2cid)
     if not per:
-        sys.exit("[ggb-annotate] cytoBand に一致する contig 名が無い (PanSN 命名不一致?)")
+        sys.exit("[annotate] cytoBand に一致する contig 名が無い (PanSN 命名不一致?)")
 
     band_rows = []
     contig_bands = {}                  # cid -> (starts, ids)
@@ -537,7 +537,7 @@ def annotate_band(con, band_path, ref_key, source, acc):
     cur.execute("INSERT INTO annot_track VALUES (?,?,?,?,?)",
                 ("band", "band", ref_key, source, f"{n} rows / {len(band_rows)} bands"))
     con.commit()
-    print(f"[ggb-annotate band] node_annot rows(band)={n} band_dict={len(band_rows)} "
+    print(f"[annotate band] node_annot rows(band)={n} band_dict={len(band_rows)} "
           f"(ref={ref_key}, skipped {counters['skipped']} w/o band-ref contig)")
 
 
@@ -586,7 +586,7 @@ def annotate_gene(con, gtf_path, ref_key, source, acc, gene_types=None,
     name2cid, cid2name = load_ref_contigs(con, ref_key)
     genes, exons = load_gtf(gtf_path, name2cid, gene_types)
     if not genes:
-        sys.exit("[ggb-annotate] GTF に一致する contig の gene 行が無い (命名/型フィルタ?)")
+        sys.exit("[annotate] GTF に一致する contig の gene 行が無い (命名/型フィルタ?)")
 
     feat_rows, gene_list, gene_by_contig = [], [], {}
     fid = 0
@@ -904,7 +904,7 @@ def annotate_gene(con, gtf_path, ref_key, source, acc, gene_types=None,
     cur.execute("INSERT OR REPLACE INTO annot_meta VALUES ('max_gene_cnt', ?)", (stats["maxcnt"],))
     con.commit()
 
-    print(f"[ggb-annotate gene] track_id={track_id} genes={len(feat_rows)} exons={len(ge_rows)} "
+    print(f"[annotate gene] track_id={track_id} genes={len(feat_rows)} exons={len(ge_rows)} "
           f"assoc(gene-node)={stats['assoc']} (exonic={stats['exonic']}) "
           f"blob-nodes={stats['nodes']} wide={stats['wide']} ref={ref_key}"
           + (f" types={','.join(gene_types)}" if gene_types else ""))
@@ -1030,7 +1030,7 @@ def annotate_region(con, bed_path, ref_key, distill_dir, source, acc,
                 s = stats[cls]; s[0] += 1
                 s[1] = min(s[1], int(start[j])); s[2] = max(s[2], int(end[j]))
 
-    print(f"[ggb-annotate region] ref={ref_key} paths_walked={walked} "
+    print(f"[annotate region] ref={ref_key} paths_walked={walked} "
           f"leaf-hits(distinct node)={len(node_class)} classes={classes}")
     for c in classes:
         s = stats[c]
@@ -1170,7 +1170,7 @@ def annotate_region(con, bed_path, ref_key, distill_dir, source, acc,
 
 def main():
     ap = argparse.ArgumentParser(
-        description="ggb-annotate: 構築済み layered.db への後付けアノテーション (Part B, per-node blob)")
+        description="annotate: 構築済みのアトラス本体への後付けアノテーション (Part B, per-node blob)")
     ap.add_argument("db")
     ap.add_argument("--band", metavar="cytoBand.txt[.gz]")
     ap.add_argument("--band-ref", default="GRCh38")
@@ -1200,7 +1200,7 @@ def main():
                          "viewer に見せるものは <db>.annot に rename/symlink で切り替える")
     ap.add_argument("--into-db", action="store_true",
                     help="旧挙動: 主 DB 内に node_annot を作る。既定は <db>.annot サイドカーへ直接書く"
-                         "（主 DB の freelist で物理配置が散るのを避ける。ggb_annot_sidecar.py の"
+                         "（主 DB の freelist で物理配置が散るのを避ける。annotate.py の"
                          "読み戻し段が不要になる）")
     args = ap.parse_args()
 
@@ -1240,7 +1240,7 @@ def main():
             skip |= {"region_class"}
         nprev = acc.load_existing(skip=skip, sidecar_path=sc_path)
         if nprev:
-            print(f"[ggb-annotate] 既存 node_annot から {nprev:,} 行を引き継ぎ"
+            print(f"[annotate] 既存 node_annot から {nprev:,} 行を引き継ぎ"
                   f"（今回書く列 {sorted(skip)} は読み飛ばし）")
     if args.band:
         annotate_band(con, args.band, args.band_ref, args.source, acc)
@@ -1260,7 +1260,7 @@ def main():
         else:
             n = acc.write(sidecar_path=sc_path)   # 既定: <db>.annot へ直接（物理連続）
             where = f"{sc_path}（新規ファイル＝追記＝物理連続, 索引 idx_na_cov 込み）"
-        print(f"[ggb-annotate] node_annot を書き出し: {n:,} 行 / {time.time() - t0:.1f}s → {where}")
+        print(f"[annotate] node_annot を書き出し: {n:,} 行 / {time.time() - t0:.1f}s → {where}")
     if con is not None:
         con.close()
 

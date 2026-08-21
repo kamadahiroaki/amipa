@@ -489,7 +489,7 @@ export default function App() {
   const [ribbonSel, setRibbonSel] = useState<Map<string, { gids: number[]; color: number }>>(new Map())
   // hap 絞り込み描画: 選択したリボン群(サンプル/ハプロタイプ/コンティグ)を通るノード・エッジだけ取得する。
   // 密領域(gvar 等)では取得件数が桁で落ち、同じ予算でより深い層＝葉レベルまで降りられる。
-  // サイドカー `<db>.hapidx` (scripts/ggb_hapidx.py 産)がある DB でのみ有効。
+  // サイドカー `<db>.hapidx` (prep/amipa_prep/hap_index.py 産)がある DB でのみ有効。
   const [hapIdx, setHapIdx] = useState<NonNullable<StatsResult['hapidx']> | null>(null)
   const [hapFilter, setHapFilter] = useState(false)
   // LOD 安全弁: 1 リクエストで受け取る行数の上限（= 描いても読めない枚数）。**UX 値なので client が決める**。
@@ -867,7 +867,7 @@ export default function App() {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = `ggb_session_${(selectedDb || 'view').replace(/[^\w.+-]+/g, '_')}_${new Date().toISOString().slice(0, 10)}.json`
+    a.download = `amipa_session_${(selectedDb || 'view').replace(/[^\w.+-]+/g, '_')}_${new Date().toISOString().slice(0, 10)}.json`
     document.body.appendChild(a); a.click(); a.remove()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
     setShowExportMenu(false)
@@ -1307,11 +1307,11 @@ export default function App() {
           {databases.map(db => <option key={db} value={db}>{db}</option>)}
         </select>
 
-        {/* 版表示: viewer(ggb git rev) と 選択 DB のビルド由来 + 機能フラグ。staleness/機能有無の確認用。 */}
+        {/* 版表示: viewer(git rev) と 選択 DB のビルド由来 + 機能フラグ。staleness/機能有無の確認用。 */}
         {versionInfo && (
           <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#868e96', whiteSpace: 'nowrap',
             display: 'inline-flex', alignItems: 'center', gap: 8 }}
-            title={'viewer=ggb git rev / db=ビルド時刻・emitter rev・含む機能(seq/inv/mult)'
+            title={'viewer=git rev / db=ビルド時刻・emitter rev・含む機能(seq/inv/mult)'
               + (versionInfo.db?.rtree_built_at
                 ? `\nR-Tree(描画の高速経路が読む実体): ${versionInfo.db.rtree_built_at}`
                   + `\nrad 列: ${versionInfo.db.rad

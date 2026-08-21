@@ -116,13 +116,13 @@ private な GHCR を使う場合は VM で 1 回だけ
 #$ -cwd -j y -l s_vmem=4G -pe def_slot 1 -l ljob      # ★2日を超える見込みなら ljob
 <リポジトリ> \
   <リポジトリ> \
-  azureuser@amipa-demo.japaneast.cloudapp.azure.com /data/bundles
+  azureuser@<公開ホスト名> /data/bundles
 ```
 
 - DB を指定すると 同名のサイドカー（.annot / .hapidx / .nametri / .distill）も一緒に送る。
 - `-journal` / `-wal` は送らない（壊れた状態を持ち込まないため。スクリプトで除外済み）。
 - 転送レートが 30MB/s なら 276GB で約 2.6 時間、100MB/s なら約 45 分。
-- 送り終えたらリモートで名前を分かりやすく変えてよい（例 `mc-grch38-wg.layered.db`）。
+- 送り終えたらリモートで名前を分かりやすく変えてよい（例 `mc-grch38-wg.db`）。
   ★サイドカーも同じ名前に揃えて改名する（`<db>.annot` の規約で引くため）。
 
 ## 5. 起動して確認する
@@ -142,7 +142,7 @@ curl -s https://$AMIPA_DOMAIN/api/version
 
 API の総点検（35 endpoint）も回せる。HPC 側の `functions/reemit2/verify_api.sh` を使う:
 ```bash
-./verify_api.sh mc-grch38-wg.layered.db amipa-demo.japaneast.cloudapp.azure.com:443   # https 経由
+./verify_api.sh mc-grch38-wg.db <公開ホスト名>:443   # https 経由
 ```
 初回は cold なので遅い。これはウォームアップも兼ねる。
 
@@ -152,7 +152,7 @@ API の総点検（35 endpoint）も回せる。HPC 側の `functions/reemit2/ve
   その間ディスク帯域を食って利用者の操作が遅くなる。
 - 代わりに 代表的なビューポートを何回か叩いて温める（`verify_api.sh` か、よく見る領域の URL を curl）。
   よく触るページだけがページキャッシュに残る。
-- chr22（8.4GB）は RAM に載るので `AMIPA_PREWARM=chr22-fin.layered.db` を付けてよい。
+- chr22（8.4GB）は RAM に載るので `AMIPA_PREWARM=chr22.db` を付けてよい。
 
 ## 7. 更新のしかた
 

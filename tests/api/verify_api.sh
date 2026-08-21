@@ -4,7 +4,7 @@
 #
 #   使い方: ./verify_api.sh <db ファイル名（DB_DIR 相対）> <host:port>
 #   例:     ./verify_api.sh chrY.db localhost:3001
-#           PY=python3 ./verify_api.sh mc-grch38-v1.db pc058:33001
+#           PY=python3 ./verify_api.sh graph.db localhost:3001
 #
 # 判定は judge.py（200 かつ error キー無し かつ 空でない）。
 # ★空応答を失敗にするのが要点: 矩形の取り違えで [] が返り「速い!」と誤読した事故がある

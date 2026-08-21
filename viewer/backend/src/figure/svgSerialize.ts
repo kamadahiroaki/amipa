@@ -174,7 +174,7 @@ function legendSvg(d: FigDrawList, legW: number): { defs: string; body: string }
     out.push(`<text x="${fx(lx + sw * 0.4)}" y="${fx(yy)}" font-size="${lfs}" font-family="sans-serif" font-weight="600" fill="#495057">${esc(s.caption)}</text>`)
     yy += rowH                        // caption が 1 行を占有 → 内容は次行から(重なり防止)
     if (s.gradient) {
-      const gid = `ggbGrad${si}`
+      const gid = `amipaGrad${si}`
       defs.push(`<linearGradient id="${gid}" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="${s.gradient.lo}"/><stop offset="1" stop-color="${s.gradient.hi}"/></linearGradient>`)
       const gx = lx + sw * 0.4, gw = lw - sw * 0.8, gh = rowH * 0.7
       out.push(`<rect x="${fx(gx)}" y="${fx(yy)}" width="${fx(gw)}" height="${fx(gh)}" fill="url(#${gid})" stroke="#dee2e6" stroke-width="${(figW * 0.0006).toFixed(3)}"/>`)

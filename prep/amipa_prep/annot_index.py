@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""node_annot の被覆索引 idx_na_cov を作る（ggb_annotate.py から分離した段）。
+"""node_annot の被覆索引 idx_na_cov を作る（annotate.py から分離した段）。
 
 なぜ必要か:
   viewer の描画高速経路(nx=fast)は、アノテーション(band/region/gene)を R-Tree の補助列
-  ではなく **node_annot の rowid 点引き**で取る（補助列は ggb_hapidx が R-Tree 構築時に
+  ではなく **node_annot の rowid 点引き**で取る（補助列は hap_index が R-Tree 構築時に
   焼き込むので、後からアノテを足すと NULL のままになり、そのたびに R-Tree 再構築
   (WG で 1h10m〜1h28m)が要るため）。
   この点引きは被覆索引が無いと gene_blob(平均 51B)を含む太い行を読むことになり、
@@ -17,7 +17,7 @@
   ★以前ここに「283 秒」と書いていたのは誤り。annotate ログの差分を索引のコストと
     決めつけた数字で、単独で測れば上記のとおり桁が違う。
 
-使い方: ggb_annot_index.py <layered.db> [--drop]
+使い方: annot_index.py <name>.db [--drop]
 """
 import argparse
 import sqlite3

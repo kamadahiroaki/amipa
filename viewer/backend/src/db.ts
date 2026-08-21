@@ -62,7 +62,7 @@ export function getDb(filename: string): Database.Database {
   return db
 }
 
-// hap 絞り込み索引サイドカー `<db>.hapidx`（scripts/ggb_hapidx.py 産）があれば ix として ATTACH する。
+// hap 絞り込み索引サイドカー `<db>.hapidx`（prep/amipa_prep/hap_index.py 産）があれば ix として ATTACH する。
 // 無ければ何もしない（= 絞り込み機能だけ無効になり従来動作、graceful）。readonly 接続に ATTACH した
 // DB は SQLite が同じフラグで開くので書き込み不可のまま（SQLITE_READONLY を実測確認済）。
 // URI 形式は better-sqlite3 が SQLITE_USE_URI 無効でビルドされており CANTOPEN になるので素のパスで渡す。
@@ -78,7 +78,7 @@ function attachHapIdx(db: Database.Database, dbPath: string): void {
   }
 }
 
-// アノテーションのサイドカー `<db>.annot`（scripts/ggb_annot_sidecar.py 産）を an として ATTACH。
+// アノテーションのサイドカー `<db>.annot`（prep/amipa_prep/annotate.py 産）を an として ATTACH。
 //
 // ★なぜサイドカーが要るか（2026-08-10 実測）: 主 DB 内の node_annot は rowid 昇順に書いても
 //   **物理配置が散る**。SQLite が新ページを **freelist から再利用**するためで、実測で
@@ -100,7 +100,7 @@ function attachAnnot(db: Database.Database, dbPath: string): void {
   }
 }
 
-// リード索引のサイドカー `<db>.reads`（scripts/ggb_reads_ondemand.py 産）を rd として ATTACH。
+// リード索引のサイドカー `<db>.reads`（prep/amipa_prep/reads_attach.py 産）を rd として ATTACH。
 // 転置索引 node_reads(gfa_id→aln_id blob)・read_aln・read_cov・edge_read_support・read_src を持つ。
 // per-visit の read_node は廃止（WG で 73億行に膨張するため）。base の layered DB は改変しない。
 // 無ければ何もしない（= リード機能だけ無効で従来動作、graceful）。
@@ -135,7 +135,7 @@ export function readsSchema(db: Database.Database): string | null {
   return v
 }
 
-// ノード名 trigram 索引（scripts/ggb_nametri.py 産）。新しい DB は emitter が **本体内** に
+// ノード名 trigram 索引（prep/amipa_prep/name_index.py 産）。新しい DB は emitter が **本体内** に
 // nmdict/nmfts を作るので ATTACH 不要。旧 DB 向けにサイドカー `<db>.nametri` があれば tri として
 // ATTACH する（無ければ何もしない＝部分一致だけ従来の全走査にフォールバック、graceful）。
 // 解決順は nameTriSchema() が「本体 → サイドカー → 無し」で判定する。

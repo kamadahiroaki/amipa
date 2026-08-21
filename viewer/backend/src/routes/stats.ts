@@ -127,7 +127,7 @@ statsRouter.get('/stats', (req, res) => {
     catch { return false }
   })()
 
-  // アノテーション(band/gene/region)トラック: node_annot の各列があれば有効(ggb_annotate.py 産)。
+  // アノテーション(band/gene/region)トラック: node_annot の各列があれば有効(annotate.py 産)。
   // 有→frontend が color-by=バンド/領域トグル・遺伝子密度・ランドマークを出す。
   // ★アノテは サイドカー `an.node_annot`（物理連続で速い）を優先し、無ければ主 DB を見る。
   const annotQual = (() => {
@@ -146,10 +146,10 @@ statsRouter.get('/stats', (req, res) => {
   const regionAvail = has('region_class')
 
   // hap 絞り込み取得（選択サンプル/hap が通るノード・エッジだけ描画）: サイドカー `<db>.hapidx`
-  // (scripts/ggb_hapidx.py 産)が ATTACH できていれば有効。有→frontend が絞り込みトグルを出す。
+  // (prep/amipa_prep/hap_index.py 産)が ATTACH できていれば有効。有→frontend が絞り込みトグルを出す。
   // mode=bucket は「マスクが上位集合＝backend が blob で厳密判定を追加する」ことを表す(効きは鈍る)。
   // ★rad / rtreeBuiltAt も返す。db_meta.built_at は ④ emit の時刻で、後から
-  //   `ggb_hapidx --into-db` だけ回しても**変わらない**。実際に radius 修正の再構築後に
+  //   `hap_index --into-db` だけ回しても**変わらない**。実際に radius 修正の再構築後に
   //   「built_at が 05:59:04 のままだがこれで合っているのか」となったので、
   //   R-Tree 側の時刻と rad の有無を別に出して見分けられるようにする。
   //   rad=false は「radius を矩形から導出＝深層で相対 174% 過大」の DB。

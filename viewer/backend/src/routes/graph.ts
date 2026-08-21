@@ -47,7 +47,7 @@ function sendWorkerReply(res: any, r: WorkerReply) {
   res.type('application/json').send(r.body)
 }
 
-// リード表そのものが在るか。emitter が出す素の DB には無い（reads は ggb_reads で後付する）。
+// リード表そのものが在るか。emitter が出す素の DB には無い（reads は reads_attach.py で後付する）。
 // PRAGMA table_info は表が無くても空を返すだけで例外にならないので、それでは判定できない。
 function raTableExists(d: any): boolean {
   try {
@@ -171,7 +171,7 @@ graphRouter.get('/search', (req, res) => {
         ? runNodeSearch(d, `n.node_name IN (${triNameSubquery(schema)})`,
                         [pat, NODE_SEARCH_LIMIT])
         // trigram 索引の無い旧 DB。nodes 全走査になるので巨大 DB では走らせない
-        // （サーバ全体が数分〜数十分止まるため。ggb_nametri.py で後付けできる）。
+        // （サーバ全体が数分〜数十分止まるため。name_index.py で後付けできる）。
         : dbBytes(db) >= HUGE_DB_BYTES
           ? []
           : runNodeSearch(d, "n.node_name LIKE ? ESCAPE '\\'", [pat])
@@ -752,7 +752,7 @@ graphRouter.get('/read_alignments', (req, res) => {
   if (raHasNodeId(d)) {
     try {
       // 多層 LOD DB では 1 葉が層ごとに複数 rowid を持つ。read_alignments.node_id は葉の
-      // maxlayer(最深層)出現 rowid に統一されている(ggb_reads)。MAX(rowid)=その maxlayer 出現なので
+      // maxlayer(最深層)出現 rowid に統一されている(reads_attach.py)。MAX(rowid)=その maxlayer 出現なので
       // 名前→id 解決もそれに固定する。層無指定だと複数 rowid が返り、node_name キーの reads/totals が
       // last-write-win で「空結果に本物が上書き」されて 0 件化する不具合を防ぐ。
       const nameRows = d.prepare(
@@ -1168,7 +1168,7 @@ graphRouter.get('/node_sequence', (req, res) => {
       if (row && row.sequence != null) { res.json({ sequence: row.sequence }); return }
     } catch { /* node_sequences 表が無い → leaf_seq へフォールバック */ }
     // 2) leaf_seq(leaf_id, seq) フォールバック。葉 node_name 'n{id}' の id で引く(=元 GFA セグメント id)。
-    //    ggb_annotate --emit-seq 系 DB は leaf_seq を持ち、AlignmentView の塩基行はこちらで解決できる。
+    //    annotate --emit-seq 系 DB は leaf_seq を持ち、AlignmentView の塩基行はこちらで解決できる。
     const m = /^n(\d+)$/.exec(name)
     if (m) {
       try {
