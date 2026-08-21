@@ -76,7 +76,7 @@ ssh $HOST 'chmod +x /opt/amipa/update.sh'
 
 # .env を作る
 ssh $HOST 'cat > /opt/amipa/.env' <<EOF
-AMIPA_IMAGE=ghcr.io/kamadahiroaki/amipa-viewer:v0.1
+AMIPA_IMAGE=ghcr.io/kamadahiroaki/amipa-viewer:0.1
 AMIPA_DOMAIN=${DNS}.${LOC}.cloudapp.azure.com
 AMIPA_ACME_EMAIL=you@example.ac.jp
 AMIPA_DATA=/data/bundles
@@ -100,7 +100,7 @@ ACR を使う場合:
 ```bash
 az acr create -g $RG -n amipareg --sku Basic
 az acr login -n amipareg
-docker tag amipa-viewer:dev amipareg.azurecr.io/amipa-viewer:v0.1 && docker push amipareg.azurecr.io/amipa-viewer:v0.1
+docker tag amipa-viewer:dev amipareg.azurecr.io/amipa-viewer:0.1 && docker push amipareg.azurecr.io/amipa-viewer:0.1
 az aks/vm ...   # VM からは: az acr login -n amipareg（マネージド ID を付けるとパスワード不要）
 ```
 private な GHCR を使う場合は VM で 1 回だけ
@@ -148,7 +148,7 @@ API の総点検（35 endpoint）も回せる。HPC 側の `functions/reemit2/ve
 
 ## 6. ウォームアップの方針（WG では特に重要）
 
-- `AMIPA_PREWARM` は WG では使わない。253GB を順読みしても RAM(64GiB) には載りきらず、
+- `AMIPA_PREWARM` は WG では `off` にする（★空文字は「無効」ではなく「既定＝全部温める」になる）。253GB を順読みしても RAM(64GiB) には載りきらず、
   その間ディスク帯域を食って利用者の操作が遅くなる。
 - 代わりに 代表的なビューポートを何回か叩いて温める（`verify_api.sh` か、よく見る領域の URL を curl）。
   よく触るページだけがページキャッシュに残る。
