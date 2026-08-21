@@ -19,8 +19,12 @@ case "$cmd" in
      printf '{\n  "version": "%s",\n  "commit": %s,\n  "runtime": "%s"\n}\n' "$rev" "$commit" "${rt:-unknown}" ;;
   bash|sh|python3|node) exec "$cmd" "$@" ;;
   licenses)
-     # 同梱物のライセンス表示（GPL 準拠のため配布物から必ず参照できるようにする）
-     cat "$APP/NOTICE" 2>/dev/null || { echo "NOTICE がイメージ内に見つかりません" >&2; exit 1; } ;;
+     # 同梱物の一覧（NOTICE）と、AMIPA 本体のライセンス全文（LICENSE）。
+     # 頒布物だけで条件を確認できる必要があるので、どちらか欠けたら失敗させる。
+     cat "$APP/NOTICE"  2>/dev/null || { echo "NOTICE がイメージ内に見つかりません" >&2; exit 1; }
+     printf '\n%s\n' "--------------------------------------------------------------------------------"
+     printf '%s\n\n' "AMIPA 本体のライセンス全文（$APP/LICENSE）"
+     cat "$APP/LICENSE" 2>/dev/null || { echo "LICENSE がイメージ内に見つかりません" >&2; exit 1; } ;;
   help|--help|-h)
      echo "amipa prep  ...   前処理（GFA → アトラス）"; echo "amipa serve       ビューアを起動"; echo "amipa check [db]  データの点検"; echo "amipa licenses    同梱物のライセンス表示"; echo "amipa version     版の刻印"; exit 0 ;;
   *) echo "unknown subcommand: $cmd (amipa help)" >&2; exit 2 ;;

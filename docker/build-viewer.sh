@@ -39,9 +39,10 @@ for m in cs_ops.py zstd_seek.py; do
   fi
 done
 rm -rf "$APP/viewer/scripts/__pycache__"
-# 同梱物のライセンス表示（amipa licenses が読む）。GPL/LGPL のシステムパッケージを含む以上、
-# 配布物から必ず参照できる必要があるので、無ければ落とす。
-install -m 0644 "$SRC/NOTICE" "$APP/NOTICE"
+# 同梱物のライセンス表示（amipa licenses が読む）と、AMIPA のコードのライセンス全文。
+# MIT も「著作権表示と許諾表示を複製物に含めること」を求めるので、無ければ落とす。
+install -m 0644 "$SRC/NOTICE"        "$APP/NOTICE"
+install -m 0644 "$SRC/viewer/LICENSE" "$APP/LICENSE"
 ( cd "$APP/viewer/backend" && yarn install --frozen-lockfile --production )
 rm -rf "$YARN_CACHE_FOLDER"
 echo "[build-viewer] done: $(du -sh "$APP/viewer" | cut -f1)"

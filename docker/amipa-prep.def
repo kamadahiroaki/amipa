@@ -13,6 +13,7 @@ From: python:3.9-slim-bookworm
 %files
     prep /src/prep
     NOTICE /src/NOTICE
+    LICENSE /src/LICENSE
     docker/requirements.txt /src/docker/requirements.txt
     docker/build-prep.sh /usr/local/bin/build-prep.sh
     docker/amipa         /usr/local/bin/amipa

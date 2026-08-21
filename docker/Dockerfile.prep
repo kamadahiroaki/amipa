@@ -23,8 +23,10 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-too
 ENV PATH=/root/.cargo/bin:$PATH
 WORKDIR /src
 COPY docker/requirements.txt ./docker/requirements.txt
-COPY prep   ./prep
-COPY NOTICE ./NOTICE
+COPY prep    ./prep
+COPY NOTICE  ./NOTICE
+# GPL 第4条: 頒布物にライセンス全文を添える
+COPY LICENSE ./LICENSE
 COPY docker/build-prep.sh /usr/local/bin/build-prep.sh
 RUN chmod 0755 /usr/local/bin/build-prep.sh && /usr/local/bin/build-prep.sh /src /opt/amipa
 # maturin は wheel を焼くためだけの物。runtime へ持ち出さない

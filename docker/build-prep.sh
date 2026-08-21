@@ -57,8 +57,10 @@ echo "[build-prep] 4/4 コード配置"
 mkdir -p "$APP/prep"
 cp -r "$SRC/prep/amipa_prep" "$APP/prep/amipa_prep"
 # ★ホストの umask がそのまま入るとコンテナの実行ユーザから読めない。全ユーザ可にする。
-# ★NOTICE が入らないまま焼けてしまうと GPL の表示義務を満たせないので、失敗させる
-install -m 0644 "$SRC/NOTICE" "$APP/NOTICE"
+# ★NOTICE とライセンス全文が入らないまま焼けると頒布の条件を満たせないので、失敗させる。
+#   prep は GPL-3.0-or-later（GPL 第4条が全文の添付を要求する）。
+install -m 0644 "$SRC/NOTICE"  "$APP/NOTICE"
+install -m 0644 "$SRC/LICENSE" "$APP/LICENSE"
 chmod -R a+rX "$APP"
 rm -rf /tmp/wheels /tmp/povu "${CARGO_HOME}" "$APP"/prep/amipa_prep/__pycache__
 echo "[build-prep] done: $(du -sh "$APP" | cut -f1)"
