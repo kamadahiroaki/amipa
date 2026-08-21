@@ -1,12 +1,12 @@
 # 例: ヒト chrY で一通り試す
 
-**まずこれを通す。** 全ゲノムは 11 時間かかるが、chrY なら数分で ①GFA →
+まずこれを通す。全ゲノムは 11 時間かかるが、chrY なら数分で ①GFA →
 ②アトラス → ③ブラウザで表示 まで行ける。導入が正しくできているかの確認にも使う。
 
 | | |
 |---|---|
 | 入力 GFA | 83 MB（HPRC MC-GRCh38 v1.0 の chrY 部分） |
-| 所要 | **2〜4 分**（8 スレッド。コンテナ内で 2.6 分の実測） |
+| 所要 | 2〜4 分（8 スレッド。コンテナ内で 2.6 分の実測） |
 | 出力 | 約 250 MB のアトラス |
 | メモリ | 8 GB あれば足りる |
 
@@ -42,7 +42,7 @@ apptainer exec --cleanenv -B "$PWD:/work" amipa-prep.sif \
   amipa prep run --gfa /work/chrY.gfa --out /work/chrY.amipa --threads 8
 ```
 
-途中で失敗しても、直したあと同じコマンドを打てば**終わった段は飛ばして続きから**走る
+途中で失敗しても、直したあと同じコマンドを打てば終わった段は飛ばして続きから走る
 （`amipa prep status --out chrY.amipa` で確認できる）。
 
 ## 3. 点検して開く
@@ -79,6 +79,6 @@ chrY.amipa/
 vg chunk -x hprc-v1.0-mc-grch38.gbz -p GRCh38#0#chrY -c 0 | vg view - > chrY.gfa
 ```
 
-★リードも表示したい場合は、**GAF の path のノード ID がこの GFA のものと一致**している
+リードも表示したい場合は、GAF の path のノード ID がこの GFA のものと一致している
 必要がある。切り出した GFA で ID を振り直すと合わなくなるので、整列も同じ GFA
 （同じ ID 空間）に対して行うこと。ずれていると `skip` の割合が高いと報告される。

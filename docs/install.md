@@ -1,8 +1,8 @@
 # 導入
 
-必要なのは **Docker（または Apptainer）だけ**。Node も Python も conda も要らない。
+必要なのは Docker（または Apptainer）だけ。Node も Python も conda も要らない。
 
-> ★**イメージの公開は最初のリリース時から**。それまでは下の「ソースからビルドする」を使うこと。
+> イメージの公開は最初のリリースから。それまでは下の「ソースからビルドする」を使うこと。
 
 ## Docker
 
@@ -18,7 +18,7 @@ apptainer pull amipa-viewer.sif docker://ghcr.io/kamadahiroaki/amipa-viewer
 apptainer pull amipa-prep.sif   docker://ghcr.io/kamadahiroaki/amipa-prep
 ```
 
-実行時は **`--cleanenv` を必ず付ける**。Apptainer は PATH/LD_LIBRARY_PATH 以外の環境変数を
+実行時は `--cleanenv` を必ず付ける。Apptainer は PATH/LD_LIBRARY_PATH 以外の環境変数を
 引き継ぐため、ホスト側の conda や `PYTHONPATH`、`~/.local` のパッケージがコンテナ内の
 Python を壊すことがある。
 
@@ -28,7 +28,7 @@ apptainer exec --cleanenv -B /path/to/atlas:/data amipa-viewer.sif amipa check
 
 ## ソースからビルドする
 
-**context はリポジトリのルート**（末尾の `.`）。`.dockerignore` で実データを外してあるので
+context はリポジトリのルート（末尾の `.`）。`.dockerignore` で実データを外してあるので
 context は数 MB に収まる。
 
 ```bash
@@ -40,11 +40,11 @@ docker build -f docker/Dockerfile.prep   -t amipa-prep \
 ```
 
 `AMIPA_REV` は版の刻印（`amipa version` と、アトラスの `db_meta.emitter_rev` に入る）。
-`.git` は context から外してあるので、**渡さないと `unknown`** になる。
+`.git` は context から外してあるので、渡さないと `unknown` になる。
 
-どちらのイメージも**最終段で自己テストする**（povu が起動するか、ネイティブモジュールが
+どちらのイメージも最終段で自己テストする（povu が起動するか、ネイティブモジュールが
 require できるか、python の依存が揃っているか）。共有ライブラリの取りこぼしは
-実行時ではなく **`docker build` の時点で**落ちる。
+実行時ではなく `docker build` の時点で落ちる。
 
 Apptainer なら:
 
@@ -55,12 +55,12 @@ env -u APPTAINER_BINDPATH apptainer build --fakeroot amipa-viewer.sif docker/ami
 
 `env -u APPTAINER_BINDPATH` は、サイト設定で共有ディレクトリを bind している環境で必要
 （イメージ側に同名のディレクトリが無いとコンテナ作成に失敗するため）。
-**ビルドには外向き通信が要る**（povu の依存取得・PyPI・crates.io）。
+ビルドには外向き通信が要る（povu の依存取得・PyPI・crates.io）。
 
 ビルド手順の実体は `docker/build-prep.sh` / `docker/build-viewer.sh` の 2 本だけで、
 Docker と Apptainer の両方がこれを呼ぶ（手順が二重化しないようにしてある）。
 Dockerfile はマルチステージ（コンパイラを含む段と、実行に要る物だけの段）、
-Apptainer def は単一ステージという違いだけがある。**この差で過去に事故がある**ので
+Apptainer def は単一ステージという違いだけがある。この差で過去に事故があるので
 （`libncurses-dev` が残る Apptainer 版では気付けない依存の抜けが Docker 版だけで出た）、
 runtime 段に何を入れるかを変えたら両方で焼き直して確かめること。
 
@@ -70,5 +70,5 @@ runtime 段に何を入れるかを変えたら両方で焼き直して確かめ
 docker run --rm -v /path/to/atlas:/data:ro ghcr.io/kamadahiroaki/amipa-viewer check
 ```
 
-`RESULT: OK` なら、そのアトラスは開ける状態にある。この点検は**巨大なアトラスでも数秒**で終わる
+`RESULT: OK` なら、そのアトラスは開ける状態にある。この点検は巨大なアトラスでも数秒で終わる
 （全走査を一切しない）。

@@ -13,7 +13,7 @@ AMIPA は以下を利用している。それぞれのライセンスは各プ�
 | PixiJS / React | 描画と画面 | — |
 | better-sqlite3 / Express | 閲覧側のサーバ | — |
 
-リード実体の容器は **zstd seekable format v0.1.0** の仕様に沿った自前実装
+リード実体の容器は zstd seekable format v0.1.0 の仕様に沿った自前実装
 （`prep/amipa_prep/zstd_seek.py` と `prep/core/reads_core/`）で、zstd の contrib
 コードは取り込んでいない。圧縮・伸長そのものは上記の libzstd を使う。
 

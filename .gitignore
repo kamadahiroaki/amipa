@@ -11,6 +11,7 @@ data/
 out/
 *.log
 
-# セッション固有のメモ（サイト固有の運用など。公開しない）
+# エージェント用のローカル指示（開発の約束ごとは CONTRIBUTING.md 側にある）
+CLAUDE.md
 CLAUDE.local.md
 .claude/

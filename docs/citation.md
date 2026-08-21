@@ -1,6 +1,6 @@
 # 引用のしかた
 
-AMIPA を使った結果を発表するときは、**AMIPA 本体**と、**実際に使った工程の外部ツール**を引用してください。
+AMIPA を使った結果を発表するときは、AMIPA 本体と、実際に使った工程の外部ツールを引用してください。
 図の隅に出る版の刻印（`amipa version` / `GET /api/version` でも確認できます）を Methods に添えると、
 再現に必要な情報が揃います。
 
@@ -12,19 +12,19 @@ AMIPA を使った結果を発表するときは、**AMIPA 本体**と、**実�
 
 | 工程 | ツール | 引用 |
 |---|---|---|
-| バブル分解 | **povu** | Mwaniki MN, Garrison E, Pisanti N. *Popping Bubbles in Pangenome Graphs.* arXiv:2410.20932 (2024) |
-| 解像度階層 | **Infomap** | Rosvall M, Bergstrom CT. *Maps of random walks on complex networks reveal community structure.* PNAS 105:1118–1123 (2008) — あわせて Infomap ソフトウェア本体（mapequation.org）も参照 |
-| 数値計算 | **NumPy** | Harris CR, et al. *Array programming with NumPy.* Nature 585:357–362 (2020) |
-| 同上 | **SciPy** | Virtanen P, et al. *SciPy 1.0.* Nature Methods 17:261–272 (2020) |
-| 同上 | **Numba** | Lam SK, Pitrou A, Seibert S. *Numba: a LLVM-based Python JIT compiler.* LLVM-HPC (2015) |
-| 配列の入出力 | **Biopython** | Cock PJA, et al. *Biopython.* Bioinformatics 25:1422–1423 (2009) |
-| 図 | **Matplotlib** | Hunter JD. *Matplotlib: A 2D graphics environment.* Comput Sci Eng 9:90–95 (2007) |
+| バブル分解 | povu | Mwaniki MN, Garrison E, Pisanti N. *Popping Bubbles in Pangenome Graphs.* arXiv:2410.20932 (2024) |
+| 解像度階層 | Infomap | Rosvall M, Bergstrom CT. *Maps of random walks on complex networks reveal community structure.* PNAS 105:1118–1123 (2008) — あわせて Infomap ソフトウェア本体（mapequation.org）も参照 |
+| 数値計算 | NumPy | Harris CR, et al. *Array programming with NumPy.* Nature 585:357–362 (2020) |
+| 同上 | SciPy | Virtanen P, et al. *SciPy 1.0.* Nature Methods 17:261–272 (2020) |
+| 同上 | Numba | Lam SK, Pitrou A, Seibert S. *Numba: a LLVM-based Python JIT compiler.* LLVM-HPC (2015) |
+| 配列の入出力 | Biopython | Cock PJA, et al. *Biopython.* Bioinformatics 25:1422–1423 (2009) |
+| 図 | Matplotlib | Hunter JD. *Matplotlib: A 2D graphics environment.* Comput Sci Eng 9:90–95 (2007) |
 
 SQLite は引用を求めていません（パブリックドメイン）。
 
 ## AMIPA の外で使ったもの
 
-AMIPA はグラフ（GFA）と整列（GAF）を**入力として受け取る**だけなので、それらを作った
+AMIPA はグラフ（GFA）と整列（GAF）を入力として受け取るだけなので、それらを作った
 ツールとデータは利用者側で引用してください。例:
 
 - グラフ構築（Minigraph-Cactus / PGGB など）
