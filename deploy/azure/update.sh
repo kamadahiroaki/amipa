@@ -1,7 +1,7 @@
 #!/bin/bash
 # 公開インスタンスを新しい viewer イメージへ更新する（VM 上で実行）。
 #   /opt/amipa/update.sh [イメージタグ]
-#     例: /opt/amipa/update.sh ghcr.io/<org>/amipa-viewer:v0.2.0
+#     例: /opt/amipa/update.sh ghcr.io/kamadahiroaki/amipa-viewer:v0.2.0
 #   引数を省くと .env の AMIPA_IMAGE をそのまま pull し直す（:edge 運用向け）。
 #
 # DB は触らないので、更新はイメージの入れ替えだけ。数十秒で戻る。

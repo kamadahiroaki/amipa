@@ -41,7 +41,25 @@ tests/run.sh api  <db ファイル名> <host:port> # 起動中の backend に問
 - 重い経路はコールドの I/O で決まる。全走査を足すときは、共有ファイルシステム上の
   数百 GB でも終わるかを考える（終わらないものは実際にいくつもあった）
 
-## リリース前に
+## リリースの出し方
 
-`amipa licenses` で同梱物の表示が出ること、`docs/citation.md` と `CITATION.cff` の版が
-合っていること、`manifest.json` に必要なサイドカーが載ること。
+版は `vMAJOR.MINOR.PATCH`（`v0.1.0` から）。タグを打つと GitHub Actions が
+2 つのイメージを焼いて GHCR へ置く（`.github/workflows/images.yml`）。
+
+```bash
+git tag -a v0.1.0 -m "..."
+git push origin v0.1.0
+```
+
+付くタグは `v0.1.0` / `0.1` / `latest` の 3 つ。`main` への push では `main` タグだけが
+動き、`latest` は触らない。アトラスの形式を変えたときは MINOR を上げ、
+`docs/atlas-format.md` に何が変わったかを書く。
+
+出す前に確かめること。
+
+- `amipa licenses` で同梱物の表示が出る（イメージの自己テストにも入れてあるので、
+  NOTICE が入っていなければビルドが落ちる）
+- `docs/citation.md` と `CITATION.cff` の版が合っている
+- `manifest.json` に必要なサイドカーが載る
+- 最初の公開時は、GHCR のパッケージをリポジトリと同じ公開範囲に切り替える
+  （private リポジトリで焼いたパッケージは private のまま）

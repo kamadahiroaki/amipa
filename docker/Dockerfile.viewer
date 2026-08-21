@@ -53,12 +53,17 @@ RUN node -e "require('/opt/amipa/viewer/backend/node_modules/better-sqlite3')" \
  && test -f /opt/amipa/viewer/frontend/dist/index.html \
  && python3 -c "import numpy, zstandard, Bio.bgzf" \
  && python3 -c "import sys; sys.path.insert(0,'/opt/amipa/viewer/scripts'); import zstd_seek, cs_ops" \
+ && amipa licenses > /dev/null \
+ && amipa version > /dev/null \
  && echo "runtime self-test OK"
 
 EXPOSE 3001
 ENTRYPOINT ["amipa"]
 CMD ["serve"]
 
+# AMIPA のコードは MIT（共有している cs_ops.py / zstd_seek.py も MIT）。
+# Debian のシステムパッケージなど同梱物のライセンスは NOTICE を参照。
 LABEL org.opencontainers.image.title="amipa-viewer" \
       org.opencontainers.image.description="AMIPA viewer (serves a prebuilt atlas)" \
-      org.opencontainers.image.licenses="GPL-3.0-or-later"
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.source="https://github.com/kamadahiroaki/amipa"

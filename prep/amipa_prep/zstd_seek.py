@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# このファイルは prep/ にあるが MIT で提供する。閲覧側（viewer/, MIT）が同じ形式を
+# 読むために複製して使うファイルであり、GPL の依存（Infomap）とは無関係なため。
+# 詳細は docs/licensing.md を参照。
 """seekable zstd — 行単位のランダム取得ができる zstd 容器（読み書き）。
 
 オンデマンドのリード整列は「巨大な GAF から**1 行だけ**取り出す」用途なので、実体は

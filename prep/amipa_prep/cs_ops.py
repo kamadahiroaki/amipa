@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# このファイルは prep/ にあるが MIT で提供する。閲覧側（viewer/, MIT）が同じ形式を
+# 読むために複製して使うファイルであり、GPL の依存（Infomap）とは無関係なため。
+# 詳細は docs/licensing.md を参照。
 """
 cs_ops.py — GAF path / cs:Z / CIGAR の共有ヘルパ（numpy 非依存）。
 

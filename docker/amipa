@@ -10,13 +10,18 @@ case "$cmd" in
   prep)    exec python3 "$APP/prep/amipa_prep/cli.py" "$@" ;;
   serve)   exec node "$APP/viewer/backend/dist/server.js" ;;
   check)   exec node "$APP/viewer/backend/dist/check.js" "$@" ;;
-  version) exec node -e 'console.log(JSON.stringify({version:process.env.AMIPA_VERSION||"dev",commit:process.env.AMIPA_COMMIT||null,node:process.version},null,2))' 2>/dev/null \
-             || python3 -c 'import os,json;print(json.dumps({"version":os.environ.get("AMIPA_VERSION","dev")}))' ;;
+  version)
+     # ★node にも python にも依存させない。prep イメージには node が無く、`exec node` が
+     #   失敗すると非対話シェルはその場で終了するので `||` の待避に落ちない（実際に 127 で死んでいた）。
+     rev=${AMIPA_VERSION:-${AMIPA_EMITTER_REV:-dev}}
+     if [[ $rev == dev || $rev == unknown || $rev == container ]]; then commit=null; else commit="\"$rev\""; fi
+     rt=$( (node -v || python3 -V) 2>/dev/null | head -1 )
+     printf '{\n  "version": "%s",\n  "commit": %s,\n  "runtime": "%s"\n}\n' "$rev" "$commit" "${rt:-unknown}" ;;
   bash|sh|python3|node) exec "$cmd" "$@" ;;
   licenses)
      # 同梱物のライセンス表示（GPL 準拠のため配布物から必ず参照できるようにする）
      cat "$APP/NOTICE" 2>/dev/null || { echo "NOTICE がイメージ内に見つかりません" >&2; exit 1; } ;;
   help|--help|-h)
-     echo "amipa prep  ...   前処理（GFA → アトラス）"; echo "amipa serve       ビューアを起動"; echo "amipa check [db]  データの点検"; echo "amipa licenses    同梱物のライセンス表示"; exit 0 ;;
+     echo "amipa prep  ...   前処理（GFA → アトラス）"; echo "amipa serve       ビューアを起動"; echo "amipa check [db]  データの点検"; echo "amipa licenses    同梱物のライセンス表示"; echo "amipa version     版の刻印"; exit 0 ;;
   *) echo "unknown subcommand: $cmd (amipa help)" >&2; exit 2 ;;
 esac

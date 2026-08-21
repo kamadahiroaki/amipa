@@ -76,7 +76,7 @@ ssh $HOST 'chmod +x /opt/amipa/update.sh'
 
 # .env を作る
 ssh $HOST 'cat > /opt/amipa/.env' <<EOF
-AMIPA_IMAGE=ghcr.io/<org>/amipa-viewer:v0.1
+AMIPA_IMAGE=ghcr.io/kamadahiroaki/amipa-viewer:v0.1
 AMIPA_DOMAIN=${DNS}.${LOC}.cloudapp.azure.com
 AMIPA_ACME_EMAIL=you@example.ac.jp
 AMIPA_DATA=/data/bundles
@@ -157,7 +157,7 @@ API の総点検（35 endpoint）も回せる。HPC 側の `functions/reemit2/ve
 ## 7. 更新のしかた
 
 ```bash
-ssh $HOST /opt/amipa/update.sh ghcr.io/<org>/amipa-viewer:v0.2.0
+ssh $HOST /opt/amipa/update.sh ghcr.io/kamadahiroaki/amipa-viewer:v0.2.0
 ```
 `pull` → `up -d` → `/healthz` 確認まで自動。失敗したら `.env.bak` に旧タグが残っているので
 `cp -f .env.bak .env && docker compose up -d` で戻せる。DB は無関係なので触らない。

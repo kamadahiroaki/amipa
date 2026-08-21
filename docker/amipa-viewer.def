@@ -44,6 +44,8 @@ From: node:20-bookworm
     test -f /opt/amipa/viewer/frontend/dist/index.html && echo "frontend OK"
     python3 -c "import numpy, zstandard, Bio.bgzf" && echo "python deps OK"
     python3 -c "import sys; sys.path.insert(0,'/opt/amipa/viewer/scripts'); import zstd_seek, cs_ops" && echo "shared modules OK"
+    amipa licenses > /dev/null && echo "NOTICE OK"
+    amipa version && echo "version OK"
 
 %labels
     Name amipa-viewer

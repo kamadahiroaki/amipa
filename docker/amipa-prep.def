@@ -54,6 +54,8 @@ From: python:3.9-slim-bookworm
     python3 -c "import emit_core, reads_core, numpy, scipy, numba, infomap, Bio, zstandard; print('imports OK')"
     test -f /opt/amipa/prep/amipa_prep/templates/schema.db && echo "template OK"
     python3 /opt/amipa/prep/amipa_prep/cli.py --help >/dev/null && echo "amipa prep OK"
+    amipa licenses > /dev/null && echo "NOTICE OK"
+    amipa version && echo "version OK"
 
 %labels
     Name amipa-prep

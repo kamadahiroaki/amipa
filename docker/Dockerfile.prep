@@ -52,6 +52,8 @@ RUN chmod 0755 /usr/local/bin/amipa /usr/local/bin/povu && chmod -R a+rX /opt/am
 # 版の刻印。.dockerignore で .git を外してあるので build-arg で渡す
 ARG AMIPA_REV=unknown
 ENV AMIPA_EMITTER_REV=$AMIPA_REV \
+    AMIPA_VERSION=$AMIPA_REV \
+    AMIPA_COMMIT=$AMIPA_REV \
     AMIPA_POVU=/usr/local/bin/povu \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONNOUSERSITE=1 \
@@ -64,6 +66,8 @@ RUN povu -h >/dev/null \
  && python3 -c "import emit_core, reads_core, numpy, scipy, numba, infomap, Bio, zstandard" \
  && test -f /opt/amipa/prep/amipa_prep/templates/schema.db \
  && python3 /opt/amipa/prep/amipa_prep/cli.py --help >/dev/null \
+ && amipa licenses > /dev/null \
+ && amipa version > /dev/null \
  && echo "runtime self-test OK"
 
 # 一時領域は**呼び出す側が決めて渡す**（イメージ内では場所を決め打ちしない）。
@@ -74,4 +78,5 @@ CMD ["help"]
 
 LABEL org.opencontainers.image.title="amipa-prep" \
       org.opencontainers.image.description="AMIPA preprocessing (GFA -> multi-resolution atlas)" \
-      org.opencontainers.image.licenses="GPL-3.0-or-later"
+      org.opencontainers.image.licenses="GPL-3.0-or-later" \
+      org.opencontainers.image.source="https://github.com/kamadahiroaki/amipa"
