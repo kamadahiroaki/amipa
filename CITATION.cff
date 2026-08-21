@@ -3,10 +3,13 @@ title: "AMIPA — Annotated Multi-resolution Interactive Pangenome Atlas"
 message: "このソフトウェアを使った場合は以下を引用してください。"
 type: software
 authors:
-  - family-names: "(著者名)"
-    given-names: "(名)"
+  # ★表記（ローマ字綴り）・所属・ORCID は本人が確認して確定させること。
+  - family-names: "Kamada"
+    given-names: "Hiroaki"
+    affiliation: "The University of Tokyo"
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
 license: GPL-3.0-or-later
-repository-code: "https://github.com/<org>/amipa"
+repository-code: "https://github.com/kamadahiroaki/amipa"
 abstract: >-
   パンゲノムグラフ（GFA）を多解像度のアトラスに前処理し、
   ハプロタイプ・アノテーション・リード整列を重ねて対話的に閲覧するためのツール。
@@ -15,3 +18,7 @@ keywords:
   - graph genome
   - visualization
   - bioinformatics
+# ★最初のリリースで以下を追加する。GitHub と Zenodo を連携させると DOI が自動で付く。
+# version: "0.1.0"
+# date-released: "YYYY-MM-DD"
+# doi: "10.5281/zenodo.XXXXXXX"

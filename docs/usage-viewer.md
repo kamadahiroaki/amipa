@@ -1,7 +1,7 @@
 # アトラスを見る（`amipa serve`）
 
 ```bash
-docker run --rm -p 3001:3001 -v /path/to/graph.amipa:/data:ro <registry>/amipa-viewer serve
+docker run --rm -p 3001:3001 -v /path/to/graph.amipa:/data:ro ghcr.io/kamadahiroaki/amipa-viewer serve
 # → http://localhost:3001
 ```
 

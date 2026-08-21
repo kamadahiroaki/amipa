@@ -2,18 +2,20 @@
 
 必要なのは **Docker（または Apptainer）だけ**。Node も Python も conda も要らない。
 
+> ★**イメージの公開は最初のリリース時から**。それまでは下の「ソースからビルドする」を使うこと。
+
 ## Docker
 
 ```bash
-docker pull <registry>/amipa-viewer     # 閲覧だけならこれで足りる
-docker pull <registry>/amipa-prep       # 自分の GFA からアトラスを作るなら
+docker pull ghcr.io/kamadahiroaki/amipa-viewer     # 閲覧だけならこれで足りる
+docker pull ghcr.io/kamadahiroaki/amipa-prep       # 自分の GFA からアトラスを作るなら
 ```
 
 ## Apptainer / Singularity（HPC など docker が使えない環境）
 
 ```bash
-apptainer pull amipa-viewer.sif docker://<registry>/amipa-viewer
-apptainer pull amipa-prep.sif   docker://<registry>/amipa-prep
+apptainer pull amipa-viewer.sif docker://ghcr.io/kamadahiroaki/amipa-viewer
+apptainer pull amipa-prep.sif   docker://ghcr.io/kamadahiroaki/amipa-prep
 ```
 
 実行時は **`--cleanenv` を必ず付ける**。Apptainer は PATH/LD_LIBRARY_PATH 以外の環境変数を
@@ -30,7 +32,7 @@ apptainer exec --cleanenv -B /path/to/atlas:/data amipa-viewer.sif amipa check
 context は数 MB に収まる。
 
 ```bash
-git clone <repo> amipa && cd amipa
+git clone https://github.com/kamadahiroaki/amipa.git && cd amipa
 docker build -f docker/Dockerfile.viewer -t amipa-viewer \
     --build-arg AMIPA_REV=$(git rev-parse --short HEAD) .    # 3-5 分
 docker build -f docker/Dockerfile.prep   -t amipa-prep \
@@ -65,7 +67,7 @@ runtime 段に何を入れるかを変えたら両方で焼き直して確かめ
 ## 動作確認
 
 ```bash
-docker run --rm -v /path/to/atlas:/data:ro <registry>/amipa-viewer check
+docker run --rm -v /path/to/atlas:/data:ro ghcr.io/kamadahiroaki/amipa-viewer check
 ```
 
 `RESULT: OK` なら、そのアトラスは開ける状態にある。この点検は**巨大なアトラスでも数秒**で終わる

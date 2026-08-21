@@ -2,7 +2,7 @@
 
 ```bash
 docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" -e HOME=/tmp \
-  <registry>/amipa-prep prep run \
+  ghcr.io/kamadahiroaki/amipa-prep prep run \
     --gfa  /work/graph.gfa \
     --out  /work/graph.amipa \
     --threads 8

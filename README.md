@@ -13,12 +13,12 @@
 
 ```bash
 # 閲覧だけ（配布されているアトラスを見る）
-docker run --rm -p 3001:3001 -v /path/to/atlas:/data:ro <registry>/amipa-viewer serve
+docker run --rm -p 3001:3001 -v /path/to/atlas:/data:ro ghcr.io/kamadahiroaki/amipa-viewer serve
 # → http://localhost:3001
 
 # 自分の GFA からアトラスを作る
 docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" \
-  <registry>/amipa-prep prep run --gfa /work/graph.gfa --out /work/graph.amipa --threads 8
+  ghcr.io/kamadahiroaki/amipa-prep prep run --gfa /work/graph.gfa --out /work/graph.amipa --threads 8
 ```
 
 詳細は [docs/](docs/) を参照。
