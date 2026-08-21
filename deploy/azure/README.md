@@ -66,6 +66,19 @@ az network nsg rule update -g $RG --nsg-name ${VM}NSG -n default-allow-ssh --sou
 `cloud-init.yaml` が Docker の導入とデータディスクの `/data` マウントまでやる
 （既にファイルシステムがあれば mkfs しない＝DB を消さない）。
 
+## 2.5 カスタムデータが使えなかったとき
+
+ポータルの「カスタムデータ」に `cloud-init.yaml` を貼ると検証で弾かれることがある。
+その場合は VM を素のまま作り、あとから同じ内容を流す。
+
+```bash
+scp deploy/azure/setup.sh azureuser@<host>:
+ssh azureuser@<host> 'sudo bash setup.sh'
+```
+
+`cloud-init.yaml` と中身は同じ（Docker / `/data` のマウント / systemd unit）。
+既にファイルシステムがあれば `mkfs` しないので、動いている VM に流しても安全。
+
 ## 3. 設定ファイルを置く
 
 ```bash
