@@ -3,7 +3,6 @@ title: "AMIPA — Annotated Multi-resolution Interactive Pangenome Atlas"
 message: "このソフトウェアを使った場合は以下を引用してください。"
 type: software
 authors:
-  # ★表記（ローマ字綴り）・所属・ORCID は本人が確認して確定させること。
   - family-names: "Kamada"
     given-names: "Hiroaki"
     affiliation: "The University of Tokyo"
