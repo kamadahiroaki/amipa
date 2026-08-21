@@ -27,8 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false          # prep が落ちても viewer の結果は見たい
-      matrix:
-        image: [viewer, prep]   # viewer は 3-5 分、prep は 15-25 分
+      matrix:                   # viewer は 3-5 分、prep は 15-25 分
+        include:
+          - image: viewer
+            license: MIT
+            desc: AMIPA viewer - serves a prebuilt multi-resolution pangenome atlas
+          - image: prep
+            license: GPL-3.0-or-later
+            desc: AMIPA preprocessing - turns a GFA into a multi-resolution pangenome atlas
     steps:
       - uses: actions/checkout@v4
 
@@ -42,10 +48,20 @@ jobs:
 
       # タグの決め方は docker/metadata-action に任せる。
       #   v タグ → そのタグ + semver の短縮 + latest / main への push → main
+      #
+      # ★labels を明示するのが肝心。metadata-action は既定でリポジトリのメタ情報から
+      #   OCI ラベルを組み立て、build-push-action がそれを渡すと **Dockerfile の LABEL を
+      #   上書きする**。放っておくと 2 つのイメージが同じラベルになり、
+      #   viewer まで licenses=GPL-3.0（リポジトリ直下の LICENSE 由来）title=amipa
+      #   description=空 になる。実際に一度そうなっていた。
       - id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/amipa-${{ matrix.image }}
+          labels: |
+            org.opencontainers.image.title=amipa-${{ matrix.image }}
+            org.opencontainers.image.description=${{ matrix.desc }}
+            org.opencontainers.image.licenses=${{ matrix.license }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
