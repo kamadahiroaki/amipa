@@ -18,7 +18,7 @@ keywords:
   - graph genome
   - visualization
   - bioinformatics
-# ★最初のリリースで以下を追加する。GitHub と Zenodo を連携させると DOI が自動で付く。
-# version: "0.1.0"
-# date-released: "YYYY-MM-DD"
+version: "0.1.0"
+date-released: "2026-08-21"
+# ★DOI は GitHub と Zenodo を連携させてリリースを作ると発行される。取れたらここに書く。
 # doi: "10.5281/zenodo.XXXXXXX"
