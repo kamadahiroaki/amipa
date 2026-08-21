@@ -5,6 +5,7 @@ import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, 
 import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
 import BubbleMsa from './components/BubbleMsa'
 import { fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
+import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
 
@@ -1319,6 +1320,19 @@ export default function App() {
                     : 'なし → radius を矩形から導出＝深層で過大。ノード/エッジがリボンに対してずれる'}`
                 : '')}>
             <span>viewer <b style={{ color: '#495057' }}>{versionInfo.viewer}</b></span>
+            {/* 使い方。★この版に固定した URL を作る（docsLink.ts）。動いているビルドと
+                説明が食い違わないため。外部サイトが開くので別タブにする。 */}
+            <a
+              href={docsUrl('viewer', versionInfo.viewer)}
+              target="_blank" rel="noreferrer"
+              title="使い方を開く（この版のドキュメント。GitHub が別タブで開きます）"
+              style={{
+                fontFamily: 'sans-serif', fontSize: 11, lineHeight: '14px', fontWeight: 700,
+                width: 16, height: 16, borderRadius: 8, textAlign: 'center',
+                border: '1px solid #adb5bd', color: '#495057', textDecoration: 'none',
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >?</a>
             {/* ★速いときは何も出さない（常時出ていると意味を失う）。遅くなる設定を
                 自分で入れている間だけ、**何が原因で・どうすれば戻るか**を出す。 */}
             {!fastPath.on && (
