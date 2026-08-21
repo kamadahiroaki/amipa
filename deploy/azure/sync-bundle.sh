@@ -33,7 +33,8 @@ COMMON=(-a --copy-links --no-owner --no-group --info=progress2
         -e "ssh $SSH_OPTS")
 
 echo "[sync] $SRC"
-du -shL --apparent-size "$SRC" 2>/dev/null || true
+# ★除外後の量を出す（work/ を含めた値を出すと「思ったより多い」と混乱するため）
+du -shL --apparent-size --exclude=work "$SRC" 2>/dev/null | sed 's/^/[sync] 送る量 /' || true
 
 if [[ -d "$SRC" ]]; then
   # アトラスのディレクトリごと。work/ は配信に不要なので落とす。
