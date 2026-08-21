@@ -22,6 +22,8 @@ DEST_DIR="${3:-/data/bundles}"
 
 SRC="$(readlink -f "$SRC")"
 SSH_OPTS="-o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o StrictHostKeyChecking=accept-new"
+# 既定の名前でない鍵を使うとき（ジョブから呼ぶときは ~/.ssh/config に頼れない）
+[[ -n ${SSH_KEY:-} ]] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY -o IdentitiesOnly=yes"
 Z=(); [[ ${RSYNC_Z:-0} == 1 ]] && Z=(-z)
 
 # ★--append-verify: 送信元は不変なので、既に届いている先頭を検証して続きだけ送る。
