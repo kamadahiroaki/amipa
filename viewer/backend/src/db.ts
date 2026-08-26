@@ -58,6 +58,7 @@ export function getDb(filename: string): Database.Database {
   attachNameTri(db, dbPath)
   attachAnnot(db, dbPath)
   attachReads(db, dbPath)
+  attachTiled(db, dbPath)
   cache.set(filename, db)
   return db
 }
@@ -104,6 +105,25 @@ function attachAnnot(db: Database.Database, dbPath: string): void {
 // 転置索引 node_reads(gfa_id→aln_id blob)・read_aln・read_cov・edge_read_support・read_src を持つ。
 // per-visit の read_node は廃止（WG で 73億行に膨張するため）。base の layered DB は改変しない。
 // 無ければ何もしない（= リード機能だけ無効で従来動作、graceful）。
+// タイル順サイドカー `<db>.tiled`（prep/amipa_prep/tile_index.py 産）を tl として ATTACH。
+// 描画用のノード/エッジ取得を R-Tree から置き換える（詳細 tiled.ts）。無ければ従来の R-Tree 経路。
+// data/db は実体への symlink で運用しているので、symlink 側と実体側の両方を探す。
+export const TILED_SUFFIX = '.tiled'
+function attachTiled(db: Database.Database, dbPath: string): void {
+  const cands = [dbPath + TILED_SUFFIX]
+  try { const rp = fs.realpathSync(dbPath); if (rp !== dbPath) cands.push(rp + TILED_SUFFIX) } catch { /* */ }
+  for (const p of cands) {
+    try {
+      if (!fs.existsSync(p)) continue
+      db.prepare('ATTACH DATABASE ? AS tl').run(p)
+      return
+    } catch (e) {
+      console.warn('tiled attach failed (R-Tree 経路で続行):', p, String(e))
+      return
+    }
+  }
+}
+
 export const READS_SUFFIX = '.reads'
 export function readsPath(dbPath: string): string { return dbPath + READS_SUFFIX }
 function attachReads(db: Database.Database, dbPath: string): void {

@@ -2250,8 +2250,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             for (const n of nodeStore.values()) if (n.layer === layer) byName.set(n.node_name, n)
             const out: EdgeData[] = []
             for (const it of arr as EdgeData[]) {
-              const ns = byName.get(it.source), nt = byName.get(it.target)
-              if (!ns || !nt) continue
+              // タイル経路は端点を id で返す（名前なし）。id なら nodeStore を直接引く（層は id に含意）。
+              const ns = it.src_id != null ? nodeStore.get(it.src_id) : byName.get(it.source)
+              const nt = it.tgt_id != null ? nodeStore.get(it.tgt_id) : byName.get(it.target)
+              if (!ns || !nt || ns.layer !== layer || nt.layer !== layer) continue
+              if (it.src_id != null) { it.source = ns.node_name; it.target = nt.node_name }
               const [sx, sy] = rodEndpoint(ns, it.src_sign ?? 0, nt)
               const [ex, ey] = rodEndpoint(nt, it.tgt_sign ?? 0, ns)
               it.start_x = sx; it.start_y = sy; it.end_x = ex; it.end_y = ey

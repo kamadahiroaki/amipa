@@ -43,6 +43,10 @@ export interface EdgeData {
   endc_x: number
   endc_y: number
   src_sign?: number | null   // signed スキーマのみ。+1/-1=ロッド端(±radius·角度), 0=相手中心方向
+  // タイル順サイドカー経路(backend tiled.ts)は端点を **node id** で返す（名前は持たない）。
+  // GraphCanvas は src_id/tgt_id があれば nodeStore から id で端点を引き、source/target 名を埋める。
+  src_id?: number | null
+  tgt_id?: number | null
   tgt_sign?: number | null
   read_support?: number | null
   edge_hb?: number | null   // A-2 hap-breadth: このエッジを通る distinct haplotype 数（edge_contig_cov.hb）

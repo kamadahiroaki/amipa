@@ -8,6 +8,8 @@ import { guardedAll, guardedFold, cappedCount, FETCH_MS, PROBE_CAP, type GuardRe
 import { buildSelection, maskWhere, exactFilterRowids, hapIdxEdgeOk, hapIdxInfo } from './hapidx'
 import path from 'path'
 import { dbBytes, HUGE_DB_BYTES, readsSchema } from './db'
+import { tiledInfo, TILED_OFF, zranges, buildTiledNodesSql, tiledNodesParams, tiledNodeMask,
+         buildTiledEdgesSql, rangesParams } from './tiled'
 
 /**
  * 高速経路(nx=fast)を実際に使うか。
@@ -25,8 +27,7 @@ function fastPathWorthIt(d: Database): boolean {
   } catch { return true }
 }
 import {
-  tableCols, nodeCovExprs, refPosSel, compSel, kindSel, nodeExtraSel, nodeAttrSel,
-  buildNodesSql, buildNodesSqlLegacy, buildNodesSqlFast, fastAnnotSel, parseNodes,
+  tableCols, nodeCovExprs, refPosSel, compSel, kindSel, nodeExtraSel, nodeAttrSel, buildNodesSql, buildNodesSqlLegacy, buildNodesSqlFast, fastAnnotSel, parseNodes, maxLayerOf,
 } from './nodeQuery'
 import {
   edgesHasSigns, edgeRsExpr, edgeExtraSel, buildSignedEdgesSql, signedEdgeBranchParams,
@@ -247,6 +248,22 @@ function nodesViewport(d: Database, job: Extract<QueryJob, { kind: 'nodes' }>, c
     { x1: job.x1, y1: job.y1, x2: job.x2, y2: job.y2 },
     sel ? maskWhere('r', sel).sql : '', sel ? maskWhere('r', sel).params : []))
 
+  // ── タイル順サイドカー経路（nx に 'fast' が入っていて <db>.tiled がある場合）────────────
+  // R-Tree を一切読まない。矩形 → Z-order 範囲（数十本）→ clustered 表の順次スキャン。
+  // 実測(WG cold) ノード 1.7〜12.7x / warm 1.5x。返す列は高速経路と同じ（frontend 無改修）。
+  // 絞り込み(sel)はサイドカーのマスク語 hm0.. で行う。語数が足りない古いサイドカーなら R-Tree 経路へ。
+  if (nx.has('fast') && !TILED_OFF) {
+    const ti = tiledInfo(d)
+    const tm = ti ? tiledNodeMask(sel, ti) : null
+    if (ti && tm && L < ti.g.length) {
+      const rg = zranges(job.x1, job.x2, job.y1, job.y2, ti.g[L])
+      const fa = (wantAttr.band || wantAttr.region || wantAttr.gene) ? fastAnnotSel(d, wantAttr, 'n', 'id') : null
+      const g = ctx.guard(d.prepare(buildTiledNodesSql(rg.length, tm.sql, fa && fa.sel ? fa : null)),
+        tiledNodesParams(rg, L, job.x1, job.x2, job.y1, job.y2, tm.params), gopt)
+      return done(g, post(g.rows as any[]))
+    }
+  }
+
   // ── 描画専用の高速経路（nx に 'fast' が入っていて、R-Tree に描画用補助列がある場合）──
   // `nodes` 行を一切読まないので WG cold で 7.5〜9.3x（実測 §12）。
   // 返らない列: size / coverage / cov_hist / is_bubble / color / haplotype。
@@ -323,6 +340,35 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
     let sel = null
     try { sel = job.sel ? buildSelection(d, job.sel) : null } catch { sel = null }
     const ex = edgeExtraSel(d)   // A-2: edge hap-breadth(edge_hb)を相乗り(無い DB は空)
+
+    // ── タイル順サイドカー経路 ───────────────────────────────────────────────
+    // 可視ノード名で TEXT 索引を 2V 回 probe する代わりに、ノードと同じ Z-order 範囲で
+    // edges_t（端点タイルで格納、端点は id）を順次読む。実測(WG) edges cold 2.6〜4.8x / warm 3.7〜4.7x。
+    // 端点 id だけ返し、viewer が nodeStore から復元する（両端が無い辺は捨てる＝従来と同じ契約）。
+    // 使わない条件（従来経路へ）:
+    //   ・リード支持(edge_read_support)が要る層 … 鍵が葉の名前で、tiled 行に名前が無い
+    //   ・sel あり かつ 辺マスク表(edge_hm)が無い … 従来は可視ノード側で絞っていた
+    {
+      const ti = !TILED_OFF ? tiledInfo(d) : null
+      const needRs = edgesHasSigns(d) && edgeHasRs(d, job.mapq) && L >= maxLayerOf(d)
+      const edgeMaskOk = !sel || hapIdxEdgeOk(d)
+      if (ti && L < ti.g.length && !needRs && edgeMaskOk) {
+        ctx.setPhase?.(1)
+        const rg = zranges(job.x1, job.x2, job.y1, job.y2, ti.g[L])
+        const em = sel ? maskWhere('ehm', sel) : { sql: '', params: [] as bigint[] }
+        const ej = sel ? ` JOIN ${sel.edgeTable} ehm ON ehm.edge_rowid = e.eid` : ''
+        const g = ctx.guard(d.prepare(buildTiledEdgesSql(rg.length, ej, em.sql)),
+          [...rangesParams(rg), L, job.x1, job.x2, job.y1, job.y2, ...em.params], gopt)
+        const seen = new Set<number>(); let rows: any[] = []
+        for (const r of g.rows as any[]) { if (!seen.has(r.id)) { seen.add(r.id); rows.push(r) } }
+        if (sel && rows.length > 0 && sel.exact) {
+          const keep = exactFilterRowids(d, 'edge_contig_cov', 'edge_rowid', rows.map(r => r.id as number), sel)
+          rows = rows.filter(r => keep.has(r.id))
+        }
+        return { payload: rows, rows: rows.length, ms: g.ms, truncated: g.truncated ? g.reason : null, layer: L }
+      }
+    }
+
     if (edgesHasSigns(d)) {
       const hasRs = edgeHasRs(d, job.mapq)
       // ★層を渡す。葉以外では edge_read_support を結合しない（鍵が葉名なので当たらない）。

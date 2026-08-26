@@ -190,7 +190,7 @@ export function annotSource(d: any): { qual: string; cols: Set<string> } | null 
   return null
 }
 
-export function fastAnnotSel(d: any, want: { band: boolean; region: boolean; gene: boolean }):
+export function fastAnnotSel(d: any, want: { band: boolean; region: boolean; gene: boolean }, alias = 'r', idCol = 'rowid'):
   { sel: string; join: string } {
   const srcA = annotSource(d)
   if (!srcA) return { sel: '', join: '' }
@@ -202,7 +202,7 @@ export function fastAnnotSel(d: any, want: { band: boolean; region: boolean; gen
   if (!sel) return { sel: '', join: '' }
   // 索引は在る側にしか無いので、INDEXED BY はサイドカーを使う時だけ付ける
   const idx = srcA.qual ? indexedByIfExists(d, 'idx_na_cov', 'an') : indexedByIfExists(d, 'idx_na_cov')
-  return { sel, join: ` LEFT JOIN ${srcA.qual}node_annot na${idx} ON na.node_rowid = r.rowid` }
+  return { sel, join: ` LEFT JOIN ${srcA.qual}node_annot na${idx} ON na.node_rowid = ${alias}.${idCol}` }
 }
 
 // stats.maxlayer（＝葉の層）。接続ごとに 1 回だけ引いてキャッシュする。

@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3'
 import { hapIdxInfo, hapIdxEdgeOk } from '../hapidx'
 import { getDb, dbBytes, HUGE_DB_BYTES, readsSchema } from '../db'
 import { startPrewarm, prewarmState, PREWARM_ON_OPEN } from '../prewarm'
+import { tiledInfo, TILED_OFF } from '../tiled'
 
 export const statsRouter = Router()
 
@@ -168,8 +169,10 @@ statsRouter.get('/stats', (req, res) => {
   })()
 
   // layer_nodes は stats.data 由来のみ尊重（無い旧 DB は GROUP BY 全走査せず frontend の pow フォールバック）。
+  // タイル順サイドカー(<db>.tiled)が付いていれば描画取得は R-Tree でなくそちら（tiled.ts）。
+  const tiled = !TILED_OFF && !!tiledInfo(d)
   res.json({ spec, maxLayer, ...data, world, hapcov, contigcov, refpos, hbAvail, multAvail,
-    bandAvail, geneAvail, regionAvail, hapidx })
+    bandAvail, geneAvail, regionAvail, hapidx, tiled })
 })
 
 // coverage ヒートマップの最大値。nodes 全走査（数秒・イベントループを塞ぐ）なので、
