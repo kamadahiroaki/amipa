@@ -150,9 +150,13 @@ export function guardedFold(
   stmt: Statement, params: any[],
   onRow: (row: any) => void,
   opts: { maxRows?: number; timeMs?: number; exemptTime?: boolean; cancelled?: () => boolean;
-          onProgress?: (rows: number) => void } = {},
+          onProgress?: (rows: number) => void
+          /** 生の行数の上限を呼び側が決める（HARD_ROW_CAP を超えてよい）。fold は行を溜めないので、
+           *  onRow 側が重複排除や集約でメモリを抑えているなら絶対上限に縛る理由がない。
+           *  タイル経路のエッジ（端点ごとに 1 行＝辺の 2 倍の生行）が使う。 */
+          rawCap?: number } = {},
 ): { rows: number; truncated: boolean; reason: GuardResult<any>['reason']; ms: number } {
-  const maxRows = effectiveMaxRows(opts.maxRows ?? 0)   // 無制限は許さない（メモリ保護）
+  const maxRows = opts.rawCap ?? effectiveMaxRows(opts.maxRows ?? 0)   // 無制限は許さない（メモリ保護）
   const timeMs = opts.exemptTime ? Infinity : (opts.timeMs ?? FETCH_MS)
   const cancelled = opts.cancelled
   const t0 = Date.now()

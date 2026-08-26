@@ -4,7 +4,7 @@
 // worker プールが使えない環境（起動失敗など）ではメインで同じ関数を呼んでフォールバックする。
 // 違いは guard の中身だけ（worker はキャンセル旗を見る、メインは見ない）。
 import type { Database, Statement } from 'better-sqlite3'
-import { guardedAll, guardedFold, cappedCount, FETCH_MS, PROBE_CAP, type GuardResult } from './fetchGuard'
+import { guardedAll, guardedFold, cappedCount, FETCH_MS, PROBE_CAP, HARD_ROW_CAP, type GuardResult } from './fetchGuard'
 import { buildSelection, maskWhere, exactFilterRowids, hapIdxEdgeOk, hapIdxInfo } from './hapidx'
 import path from 'path'
 import { dbBytes, HUGE_DB_BYTES, readsSchema } from './db'
@@ -40,7 +40,7 @@ export type GuardFn = (stmt: Statement, params: any[],
                       => GuardResult<any>
 
 export type FoldFn = (stmt: Statement, params: any[], onRow: (r: any) => void,
-                      opts?: { maxRows?: number; timeMs?: number; exemptTime?: boolean })
+                      opts?: { maxRows?: number; timeMs?: number; exemptTime?: boolean; rawCap?: number })
                      => { rows: number; truncated: boolean; reason: string; ms: number }
 
 export interface JobCtx {
@@ -376,7 +376,7 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
         const g = ctx.fold(d.prepare(buildTiledEdgesSql(rg.length, xsel, xjoin, ej, em.sql, hasNames)),
           [...rangesParams(rg), L, job.x1, job.x2, job.y1, job.y2, ...em.params],
           (r: any) => { if (!seen.has(r.id)) { seen.add(r.id); rows.push(r) } },
-          { maxRows: job.maxRows > 0 ? 2 * job.maxRows : 0, timeMs: FETCH_MS, exemptTime: L <= 0 })
+          { rawCap: job.maxRows > 0 ? 2 * job.maxRows : 2 * HARD_ROW_CAP, timeMs: FETCH_MS, exemptTime: L <= 0 })
         let trunc: string | null = g.truncated ? g.reason : null
         if (job.maxRows > 0 && rows.length > job.maxRows) { rows = rows.slice(0, job.maxRows); trunc = 'rows' }
         if (trunc === 'cancel') return { payload: [], rows: 0, ms: g.ms, truncated: 'cancel', layer: L }
