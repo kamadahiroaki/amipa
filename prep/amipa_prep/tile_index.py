@@ -28,7 +28,7 @@ import numpy as np
 K_TILES = 2.5
 CHUNK = 2_000_000
 SENT = -(1 << 62)
-SCHEMA = "tiled-v3.1"
+SCHEMA = "tiled-v3.2"
 
 
 def log(t0, m): print(f"[tile-index {time.time()-t0:7.1f}s] {m}", flush=True)
@@ -122,7 +122,7 @@ CREATE TABLE nodes_t(layer INTEGER, mkey INTEGER, id INTEGER, {ncols_common}, PR
 CREATE TABLE nodes_big(layer INTEGER, id INTEGER, {ncols_common}, PRIMARY KEY(layer, id)) WITHOUT ROWID;
 CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
   src_id INTEGER, tgt_id INTEGER, src_sign INTEGER, tgt_sign INTEGER,
-  ex REAL, ey REAL, er REAL,
+  ex REAL, ey REAL, er REAL, source TEXT, target TEXT,
   PRIMARY KEY(layer, mkey, eid, side)) WITHOUT ROWID;
 """)
     for k, v in (("schema", SCHEMA), ("world", json.dumps([x0, x1, y0, y1])), ("g_L", json.dumps(gL)),
@@ -206,9 +206,12 @@ CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
         pend = np.concatenate([ps, pt])                 # その行の端点（source or target）の nodes 添字
         idx = np.concatenate([np.arange(eid.size), np.arange(eid.size)])
         order = np.lexsort((side, e2, key))
-        dst.executemany("INSERT INTO edges_t VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        # source/target の名前も持つ: 葉層のリード支持(rd.edge_read_support)は **名前鍵**なので、
+        # これが無いと reads 表示のたびに従来経路（可視ノード名で 2V 回 probe）へ落ちる。
+        dst.executemany("INSERT INTO edges_t VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             ((L, int(key[i]), int(e2[i]), int(side[i]), int(sid[idx[i]]), int(tid[idx[i]]), nz(ss[idx[i]]), nz(ts[idx[i]]),
-              float(nx_[pend[i]]), float(ny_[pend[i]]), float(nr_[pend[i]])) for i in order))
+              float(nx_[pend[i]]), float(ny_[pend[i]]), float(nr_[pend[i]]),
+              s[idx[i]].decode(), t[idx[i]].decode()) for i in order))
         dst.commit()
         tot_e += eid.size; tot_erows += order.size
         log(t0, f"  edges L{L:2} e={eid.size:>11,} rows={order.size:>11,} (+{100*(order.size/max(1,eid.size)-1):.1f}%) 未解決={miss}")

@@ -22,6 +22,7 @@ export interface TiledInfo {
   hmCols: string[]                  // hap マスク語の列名（hm0..）。空なら絞り込み不可
   hasHb: boolean
   nodeCols: Set<string>
+  edgeCols: Set<string>            // v3.2 以降は source/target（端点名）を持つ＝葉層のリード支持 join が可能
 }
 const cache = new WeakMap<object, TiledInfo | null>()
 export function tiledInfo(d: Database.Database): TiledInfo | null {
@@ -30,7 +31,7 @@ export function tiledInfo(d: Database.Database): TiledInfo | null {
   try {
     const meta = new Map<string, string>()
     for (const r of d.prepare('SELECT key, value FROM tl.meta').all() as { key: string; value: string }[]) meta.set(r.key, r.value)
-    if ((meta.get('schema') || '') === 'tiled-v3.1') {
+    if (['tiled-v3.1', 'tiled-v3.2'].includes(meta.get('schema') || '')) {
       const w = JSON.parse(meta.get('world') || '[0,1,0,1]') as number[]
       info = {
         g: JSON.parse(meta.get('g_L') || '[]'),
@@ -38,6 +39,7 @@ export function tiledInfo(d: Database.Database): TiledInfo | null {
         hmCols: JSON.parse(meta.get('hm_cols') || '[]'),
         hasHb: meta.get('has_hb') === '1',
         nodeCols: tableCols(d, 'nodes_t', 'tl'),
+        edgeCols: tableCols(d, 'edges_t', 'tl'),
       }
     }
   } catch { info = null }
@@ -126,9 +128,14 @@ export function tiledNodeMask(sel: Selection | null, info: TiledInfo): { sql: st
 // ★その行の端点 (ex,ey,er) が viewport に重なる行だけ返す（R-Tree 経路の「可視ノードの辺」と同じ意味）。
 //   これが無いと外側 1 タイルの環にある密な領域の辺まで全部返し、chr22 L10 で 4〜12 倍の余分を転送した。
 const ERECT = 'e.ex+e.er>=? AND e.ex-e.er<=? AND e.ey+e.er>=? AND e.ey-e.er<=?'
-export function buildTiledEdgesSql(nRanges: number, edgeMaskJoin: string, edgeMaskSql: string): string {
+// extraSel/extraJoin: edge_hb(edge_contig_cov)・read_support(rd.edge_read_support) を**要求された時だけ**
+// 相乗りさせる。従来経路は常に両方を join していたが、葉層の read_support は 1 辺 ~8ms の点引き
+// （18GB サイドカーの葉ページを 1 枚ずつ拾う）で、これが「エッジが出るまで数十秒」の正体だった。
+export function buildTiledEdgesSql(nRanges: number, extraSel: string, extraJoin: string,
+                                   edgeMaskJoin: string, edgeMaskSql: string, hasNames: boolean): string {
+  const names = hasNames ? ', e.source AS source, e.target AS target' : ''
   return `${rangesCte(nRanges)}
-  SELECT e.eid AS id, e.src_id AS src_id, e.tgt_id AS tgt_id, e.src_sign AS src_sign, e.tgt_sign AS tgt_sign
-  FROM rg CROSS JOIN tl.edges_t e ON e.layer=? AND e.mkey BETWEEN rg.a AND rg.b${edgeMaskJoin}
+  SELECT e.eid AS id, e.src_id AS src_id, e.tgt_id AS tgt_id, e.src_sign AS src_sign, e.tgt_sign AS tgt_sign${names}${extraSel}
+  FROM rg CROSS JOIN tl.edges_t e ON e.layer=? AND e.mkey BETWEEN rg.a AND rg.b${extraJoin}${edgeMaskJoin}
   WHERE ${ERECT}${edgeMaskSql}`
 }

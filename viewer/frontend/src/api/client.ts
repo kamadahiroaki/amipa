@@ -699,7 +699,7 @@ export async function fetchFlood(
 export async function fetchEdges(layer: number, bbox: Rect, dbFile: string, mapq = 0,
                                  sel = '', maxRows = 0,
                                  signal?: AbortSignal, pid?: string,
-                                 guard?: GuardSink): Promise<EdgeData[]> {
+                                 guard?: GuardSink, ex = ''): Promise<EdgeData[]> {
   const p = new URLSearchParams({
     layer: String(layer),
     x1: String(bbox.x1), x2: String(bbox.x2),
@@ -710,6 +710,9 @@ export async function fetchEdges(layer: number, bbox: Rect, dbFile: string, mapq
   if (sel) p.set('sel', sel)
   if (maxRows > 0) p.set('maxRows', String(maxRows))
   if (pid) p.set('pid', pid)
+  // 相乗り列の要求（hb=edge_hb, rs=read_support）。タイル経路は要求された時だけ join する。
+  // 葉層の read_support は 1 辺 ~8ms の点引きなので、Reads 表示でないときに払わない。
+  if (ex) p.set('ex', ex)
   const res = await fetch(`/api/edges?${p}`, { signal })
   if (!res.ok) throw new Error('Failed to fetch edges')
   reportGuard('edges', res, guard)

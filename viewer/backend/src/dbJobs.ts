@@ -27,7 +27,7 @@ function fastPathWorthIt(d: Database): boolean {
   } catch { return true }
 }
 import {
-  tableCols, nodeCovExprs, refPosSel, compSel, kindSel, nodeExtraSel, nodeAttrSel, buildNodesSql, buildNodesSqlLegacy, buildNodesSqlFast, fastAnnotSel, parseNodes, maxLayerOf,
+  tableCols, nodeCovExprs, refPosSel, compSel, kindSel, nodeExtraSel, nodeAttrSel, buildNodesSql, buildNodesSqlLegacy, buildNodesSqlFast, fastAnnotSel, parseNodes, maxLayerOf, hbCoveringIdx,
 } from './nodeQuery'
 import {
   edgesHasSigns, edgeRsExpr, edgeExtraSel, buildSignedEdgesSql, signedEdgeBranchParams,
@@ -92,6 +92,7 @@ export type QueryJob =
       mapq: number
       maxRows: number
       sel?: string
+      ex?: string          // 相乗り列の要求（'hb','rs' のカンマ区切り）。タイル経路のみ参照
     }
   | {
       kind: 'nodes'
@@ -350,14 +351,24 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
     //   ・sel あり かつ 辺マスク表(edge_hm)が無い … 従来は可視ノード側で絞っていた
     {
       const ti = !TILED_OFF ? tiledInfo(d) : null
-      const needRs = edgesHasSigns(d) && edgeHasRs(d, job.mapq) && L >= maxLayerOf(d)
+      const exq = new Set(String(job.ex || '').split(',').filter(Boolean))
+      // read_support は葉層でだけ意味を持つ（鍵が葉名）。要求されていて、サイドカーに端点名があれば join。
+      // 名前を持たない v3.1 サイドカーで rs を要求されたときだけ従来経路へ（reads 表示の時だけ遅い）。
+      const wantRs = exq.has('rs') && edgesHasSigns(d) && edgeHasRs(d, job.mapq) && L >= maxLayerOf(d)
+      const hasNames = !!ti && ti.edgeCols.has('source') && ti.edgeCols.has('target')
       const edgeMaskOk = !sel || hapIdxEdgeOk(d)
-      if (ti && L < ti.g.length && !needRs && edgeMaskOk) {
+      if (ti && L < ti.g.length && edgeMaskOk && (!wantRs || hasNames)) {
         ctx.setPhase?.(1)
         const rg = zranges(job.x1, job.x2, job.y1, job.y2, ti.g[L])
         const em = sel ? maskWhere('ehm', sel) : { sql: '', params: [] as bigint[] }
         const ej = sel ? ` JOIN ${sel.edgeTable} ehm ON ehm.edge_rowid = e.eid` : ''
-        const g = ctx.guard(d.prepare(buildTiledEdgesSql(rg.length, ej, em.sql)),
+        let xsel = '', xjoin = ''
+        if (exq.has('hb') && tableCols(d, 'edge_contig_cov').has('hb')) {
+          xsel += ', ecc.hb AS edge_hb'
+          xjoin += ` LEFT JOIN edge_contig_cov ecc${hbCoveringIdx(d, 'edge_contig_cov')} ON ecc.edge_rowid = e.eid`
+        }
+        if (wantRs) { xsel += `, ${edgeRsExpr(d, job.mapq, L)} AS read_support`; xjoin += edgeRsJoin(d, L) }
+        const g = ctx.guard(d.prepare(buildTiledEdgesSql(rg.length, xsel, xjoin, ej, em.sql, hasNames)),
           [...rangesParams(rg), L, job.x1, job.x2, job.y1, job.y2, ...em.params], gopt)
         const seen = new Set<number>(); let rows: any[] = []
         for (const r of g.rows as any[]) { if (!seen.has(r.id)) { seen.add(r.id); rows.push(r) } }

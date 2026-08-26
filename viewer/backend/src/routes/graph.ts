@@ -1197,6 +1197,7 @@ graphRouter.get('/edges', (req, res) => {
     mapq: Math.max(0, Number(q.mapq) || 0),
     maxRows: Math.max(0, Number(q.maxRows) || 0),
     sel: q.sel || undefined,
+    ex: String(q.ex || ''),   // 相乗り列（hb=edge_hb, rs=read_support）。タイル経路は要求時だけ join する
   }
   if (poolAvailable()) {
     runOnWorker(job, res, q.pid)

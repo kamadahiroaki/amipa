@@ -347,6 +347,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   // reload(=その列付きで取り直す)。モードを off にしても縮小・reload はしない(単調増加=off 切替で無駄取得しない)。
   // 何も使わない通常ブラウジングでは nx が空のまま → backend は node_contig_cov/node_annot への JOIN を一切しない。
   const fetchedNxRef = useRef<Set<string>>(new Set())
+  // エッジ側の相乗り列（hb=edge_hb は Paths 幅、rs=read_support は Reads 幅）。同じく単調増加＋reload。
+  // 従来経路は常に両方を返していたが、タイル経路では要求時だけ join する（葉層の read_support は
+  // 1 辺 ~8ms の点引きで「エッジが出るまで数十秒」の正体だった）。
+  const fetchedExRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     const need: string[] = []
     if (breadthMode) need.push('hb')
@@ -355,8 +359,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     if (geneMode) need.push('gene')
     let grew = false
     for (const g of need) if (!fetchedNxRef.current.has(g)) { fetchedNxRef.current.add(g); grew = true }
+    const needEx: string[] = []
+    if (breadthMode) needEx.push('hb')
+    if (detailDepthMode) needEx.push('rs')
+    for (const g of needEx) if (!fetchedExRef.current.has(g)) { fetchedExRef.current.add(g); grew = true }
     if (grew) reloadRef.current?.()   // 新しい列が要る → キャッシュを取り直す(mapq 変更と同じ扱い)
-  }, [breadthMode, bandMode, regionMode, geneMode])
+  }, [breadthMode, bandMode, regionMode, geneMode, detailDepthMode])
 
   // `fast` は上の nx 群と **極性が逆**の宣言: 「幾何だけあれば描ける」＝ backend は
   // `nodes` 表を読まず R-Tree の補助列だけで返す（WG cold 実測で /nodes が 7.5-9.3x、
@@ -2229,7 +2237,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         ? fetchNodes(layer, bbox, dbFile, mapq,
             [...(fastOkRef.current ? ['fast'] : []), ...fetchedNxRef.current].join(','),
             sel, mr, ctrl.signal, pid, guard)   // D2: 必要な annotation 群のみ（+ fast=幾何だけで足りる宣言）
-        : fetchEdges(layer, bbox, dbFile, mapq, sel, mr, ctrl.signal, pid, guard)
+        : fetchEdges(layer, bbox, dbFile, mapq, sel, mr, ctrl.signal, pid, guard,
+                     [...fetchedExRef.current].join(','))
 
       const p = fetchFn
         .then(items => {
