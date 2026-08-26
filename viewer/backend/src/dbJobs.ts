@@ -368,15 +368,23 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
           xjoin += ` LEFT JOIN edge_contig_cov ecc${hbCoveringIdx(d, 'edge_contig_cov')} ON ecc.edge_rowid = e.eid`
         }
         if (wantRs) { xsel += `, ${edgeRsExpr(d, job.mapq, L)} AS read_support`; xjoin += edgeRsJoin(d, L) }
-        const g = ctx.guard(d.prepare(buildTiledEdgesSql(rg.length, xsel, xjoin, ej, em.sql, hasNames)),
-          [...rangesParams(rg), L, job.x1, job.x2, job.y1, job.y2, ...em.params], gopt)
+        // ★edges_t は端点ごとに 1 行（同じ辺が最大 2 回出る）。ガードの行数上限は**生の行**を数えるので、
+        //   利用者の上限 maxRows をそのまま渡すと辺数がその半分で 'rows' 打ち切りになる。
+        //   fold で流しながら eid で重複排除し、上限は**辺の数**で判定する（生の行の上限は 2 倍で渡す）。
+        //   maxRows=0(無制限)のときはガードの絶対上限(HARD_ROW_CAP=生 100 万行 ≒ 50 万辺)が効く。
         const seen = new Set<number>(); let rows: any[] = []
-        for (const r of g.rows as any[]) { if (!seen.has(r.id)) { seen.add(r.id); rows.push(r) } }
+        const g = ctx.fold(d.prepare(buildTiledEdgesSql(rg.length, xsel, xjoin, ej, em.sql, hasNames)),
+          [...rangesParams(rg), L, job.x1, job.x2, job.y1, job.y2, ...em.params],
+          (r: any) => { if (!seen.has(r.id)) { seen.add(r.id); rows.push(r) } },
+          { maxRows: job.maxRows > 0 ? 2 * job.maxRows : 0, timeMs: FETCH_MS, exemptTime: L <= 0 })
+        let trunc: string | null = g.truncated ? g.reason : null
+        if (job.maxRows > 0 && rows.length > job.maxRows) { rows = rows.slice(0, job.maxRows); trunc = 'rows' }
+        if (trunc === 'cancel') return { payload: [], rows: 0, ms: g.ms, truncated: 'cancel', layer: L }
         if (sel && rows.length > 0 && sel.exact) {
           const keep = exactFilterRowids(d, 'edge_contig_cov', 'edge_rowid', rows.map(r => r.id as number), sel)
           rows = rows.filter(r => keep.has(r.id))
         }
-        return { payload: rows, rows: rows.length, ms: g.ms, truncated: g.truncated ? g.reason : null, layer: L }
+        return { payload: rows, rows: rows.length, ms: g.ms, truncated: trunc, layer: L }
       }
     }
 
