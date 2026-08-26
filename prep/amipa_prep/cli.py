@@ -58,7 +58,7 @@ DEFAULT_TEMPLATE = PKG / "templates" / "schema.db"
 DEFAULT_POVU = Path(os.environ.get("AMIPA_POVU") or os.environ.get("GGB_POVU") or "povu")
 
 # 実行順。annot / reads は入力が指定された時だけ走る。
-STAGES = ["distill", "decompose", "lod", "layout", "emit", "annot", "reads", "bundle"]
+STAGES = ["distill", "decompose", "lod", "layout", "emit", "annot", "tiled", "reads", "bundle"]
 
 STATE_VERSION = 1
 
@@ -227,6 +227,7 @@ class Bundle:
           <name>.db                    本体（多層 SQLite）
           <name>.db.distill/           MSA 用（**実体ディレクトリ**。symlink にしない）
           <name>.db.annot              アノテ（--band/--gene/--region 指定時）
+          <name>.db.tiled              描画用タイル索引（既定で作る。--no-tiled で省く）
           reads/                       リード実体（seekable zstd の GAF。--reads 指定時）
           manifest.json                版・能力・sha256
           work/                        中間物（typed/npz/pvst/tree）と log。部分やり直しに要る
@@ -243,6 +244,7 @@ class Bundle:
         self.db = self.root / f"{self.name}.db"
         self.distill = Path(str(self.db) + ".distill")
         self.annot = Path(str(self.db) + ".annot")
+        self.tiled = Path(str(self.db) + ".tiled")     # 描画用タイル索引（tile_index.py）
         self.reads_dir = self.root / "reads"
         self.state_path = self.root / "state.json"
         self.povu_dir = self.work / "povu"
@@ -258,7 +260,7 @@ class Bundle:
         if self.root.is_dir():
             for suf in (".layered.db", ".db"):
                 found = sorted(q for q in self.root.glob(f"*{suf}")
-                               if q.is_file() and not q.name.endswith((".reads", ".annot",
+                               if q.is_file() and not q.name.endswith((".reads", ".annot", ".tiled",
                                                                        ".hapidx", ".nametri")))
                 if found:
                     return found[0].name[: -len(suf)]
@@ -487,6 +489,17 @@ def build_stages(b: Bundle, a) -> dict:
 
     # リード（任意）: オンデマンド。GAF を seekable zstd に詰め替え、索引だけをサイドカーに持つ。
     #   表示に使わない大きなタグ（既定 bq:Z=塩基クオリティ）は保存しない＝BGZF の 1/8 になる。
+    # タイル索引（既定で作る）: 描画用のノード/エッジ取得を R-Tree でなくこちらで行う。
+    #   矩形 → Z-order の連続範囲 → 順次読み。全ゲノムで表示範囲の取得が cold 2.4〜8 倍、
+    #   最も遅い範囲で 17 倍速くなった（2026-08-26）。DB 本体は不変。
+    if not getattr(a, "no_tiled", False):
+        st["tiled"] = Stage(
+            "tiled",
+            [[py, str(PKG / "tile_index.py"), str(b.db), "--force"]],
+            inputs=[b.db], outputs=[b.tiled], env=thread_env(1),
+            note="描画用タイル索引（Z-order clustered サイドカー）",
+        )
+
     if a.reads:
         rcmd = [py, str(PKG / "reads_attach.py"), str(b.db),
                 "--out-dir", str(b.reads_dir), "--level", str(a.reads_level)]
@@ -548,7 +561,7 @@ def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
     con.close()
 
     files = []
-    for p in [b.db, b.annot] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
+    for p in [b.db, b.annot, b.tiled] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
             + sorted(b.root.glob(f"{b.db.name}.nametri")) \
             + sorted(b.root.glob(f"{b.db.name}.reads")):
         if not p.exists():
@@ -696,6 +709,8 @@ def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
         "layout":    dict(slots=t, total=clamp(1.4 * g, 8, 300), hours=0.2 + g / 58),
         "emit":      dict(slots=1, total=clamp(3.3 * g, 24, 480), hours=0.2 + g / 10),
         "annot":     dict(slots=1, total=clamp(1.6 * g, 8, 200), hours=0.1 + g / 26),
+        # tiled は Python 実装の実測: chr22(GFA 2.5GB) 4.4 分・3.7GB / WG(48GB) 90 分・46GB(maxrss)。
+        "tiled":     dict(slots=1, total=clamp(1.0 * g + 4, 8, 160), hours=0.1 + g / 32),
         # reads は GFA ではなく **GAF の量**で決まる（葉ごとの転置索引をメモリに持つため）。
         # 実測: GAF.gz 60.1GB / 葉 8140 万 / のべ通過 52.8 億回 → 28.3G・1.1h。
         # 通過を delta+varint でその場で畳むので、GAF.gz 1GB あたり ~0.47GB に収まる。
@@ -746,6 +761,8 @@ def add_common(p, need_gfa=False):
     p.add_argument("--out", required=True, type=Path, help="バンドル（出力ディレクトリ）")
     p.add_argument("--gfa", type=Path, required=need_gfa, help="入力 GFA")
     p.add_argument("--name", help="DB のベース名（既定: GFA 名 or 既存 DB 名）")
+    p.add_argument("--no-tiled", action="store_true",
+                   help="描画用タイル索引 <name>.db.tiled を作らない（既定は作る。無いと表示範囲の取得が本体の空間索引になり遅い）")
     p.add_argument("--threads", type=int, default=len(os.sched_getaffinity(0)),
                    help="並列度（②は決定性のため常に 1）")
     p.add_argument("--spill", default=os.environ.get("AMIPA_SPILL"),
@@ -802,6 +819,9 @@ def main():
 
     p_rd = sub.add_parser("add-reads", help="既存バンドルにリード整列を足す")
     add_common(p_rd)
+
+    p_tl = sub.add_parser("add-tiled", help="既存バンドルに描画用タイル索引を足す（DB は作り直さない）")
+    add_common(p_tl)
 
     p_pl = sub.add_parser("plan", help="段ごとの資源の目安を出す（ジョブスクリプトは利用者が書く）")
     add_common(p_pl, need_gfa=True)
@@ -864,6 +884,9 @@ def main():
         if not a.reads:
             die("--reads SAMPLE=GAF を指定する")
         execute(b, a, ["reads", "bundle"])
+        return
+    if a.cmd == "add-tiled":
+        execute(b, a, ["tiled", "bundle"])
         return
 
     # run

@@ -28,6 +28,7 @@ amipa prep run --gfa graph.gfa --out graph.amipa --threads 16 \
 ```bash
 amipa prep add-annot --out graph.amipa --gene gencode.gtf.gz
 amipa prep add-reads --out graph.amipa --reads HG002=HG002.gaf
+amipa prep add-tiled --out graph.amipa            # 表示範囲の取得を速くするタイル索引を足す
 ```
 
 アノテーションは生のファイルをそのまま渡してよい。事前に別のツールでグラフへ射影しておく
