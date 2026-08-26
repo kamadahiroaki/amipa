@@ -127,11 +127,13 @@ function checkDb(dbPath: string): void {
       hapidx: have.has('hapidx_meta') && rtreeCols.has('hm0'),
       nametri: have.has('nmfts') || have.has('nmfts_data'),
       annot: have.has('node_annot'),
+      tiled: false,     // タイル索引はサイドカーにしか置かない
     }
     for (const [suffix, feat, what] of [
       ['.hapidx', 'hapidx', 'ハプロタイプ絞り込み'],
       ['.nametri', 'nametri', 'ノード名の部分一致検索'],
       ['.annot', 'annot', 'アノテーション'],
+      ['.tiled', 'tiled', '描画用タイル索引（表示範囲の取得が速くなる。無ければ本体の空間索引で動く）'],
     ] as [string, string, string][]) {
       const p = side(suffix)
       if (p) ok(`${feat}: サイドカー${suffix} (${gb(fs.statSync(p).size)}) — ${what}`)

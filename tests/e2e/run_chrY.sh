@@ -64,8 +64,11 @@ if [ "$RUNNER" = host ]; then
   "$PY" "$REPO/prep/amipa_prep/cli.py" run --gfa "$GFA" --out "$OUT" --name "$NAME" \
       --threads "$THREADS" --tmp "$TMP" "${EXTRA[@]}" > "$TMP/again.log" 2>&1
   # bundle は毎回作り直す仕様なので、それ以外が飛べば正しい
-  if grep -qE "^\[amipa .*\] \[(distill|decompose|lod|layout|emit)\]" "$TMP/again.log"; then
-    echo "NG  変えていないのに走り直した段がある:"; grep -E "\[(distill|decompose|lod|layout|emit)\]" "$TMP/again.log"; exit 1
+  # ★「[段] 変更なし → 飛ばす」の行も同じ形なので、それを除いた上で段の行が残るかを見る
+  #   （以前は除いていなかったので、全段が正しく飛んでも NG と出ていた）。tiled も対象に含める。
+  if grep -E "^\[amipa .*\] \[(distill|decompose|lod|layout|emit|tiled)\]" "$TMP/again.log" | grep -qv "変更なし"; then
+    echo "NG  変えていないのに走り直した段がある:"
+    grep -E "\[(distill|decompose|lod|layout|emit|tiled)\]" "$TMP/again.log" | grep -v "変更なし"; exit 1
   fi
   echo "  OK  全段「変更なし」で飛んだ"
 fi
