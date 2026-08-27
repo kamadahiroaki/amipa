@@ -86,6 +86,8 @@ def main():
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--k-tiles", type=float, default=K_TILES)
     ap.add_argument("--wmax", type=int, default=8, help="hap マスクの語数上限（超えたら bucket モード）")
+    ap.add_argument("--python", action="store_true",
+                    help="Rust core(tiled_core)があっても numpy 実装で作る（参照実装。出力は同一）")
     a = ap.parse_args()
     out = a.out or (a.db + ".tiled")
     if os.path.exists(out) and not a.force:
@@ -95,6 +97,26 @@ def main():
     src.execute("PRAGMA cache_size=-1000000")
     st = json.loads(src.execute("SELECT data FROM stats ORDER BY id LIMIT 1").fetchone()[0])
     lz = st["layer_zoom"]; maxL = len(lz) - 1
+
+    # ── Rust core（tiled_core）があればそちらで。出力は本実装と行単位で同一（chr22 で検証）。
+    #    層ごとの常駐で WG でも数 GB、Python 実装（全層の名前表を持つ）の 48GB / 113 分より桁で軽い。
+    if not a.python:
+        try:
+            import tiled_core
+        except ImportError:
+            tiled_core = None
+            log(t0, "tiled_core(Rust) が無いので numpy 実装で作る（prep コンテナには入っている）")
+        if tiled_core is not None and st.get("layer_nodes"):
+            tmp = out + ".part"
+            for q in (tmp, tmp + "-journal"):
+                if os.path.exists(q): os.unlink(q)
+            src.close()
+            rd = a.db + ".reads"
+            meta = tiled_core.build(a.db, tmp, [float(v) for v in lz], [int(v) for v in st["layer_nodes"]],
+                                    st.get("world"), a.k_tiles, a.wmax, rd if os.path.exists(rd) else None)
+            os.replace(tmp, out)
+            log(t0, f"完了(tiled_core): {out} {os.path.getsize(out)/1e9:.2f} GB  nodes {meta['node_rows']:,} / edges {meta['edges']:,}")
+            return 0
     x0, x1, y0, y1 = world_of(src, st, t0); W = x1 - x0
     gL = [max(0, min(30, int(round(np.log2(a.k_tiles * lz[L] / W))))) for L in range(maxL + 1)]
     n_ids = int(src.execute("SELECT MAX(rowid) FROM nodes").fetchone()[0])

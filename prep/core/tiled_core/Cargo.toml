@@ -1,0 +1,19 @@
+[package]
+name = "tiled_core"
+version = "0.1.0"
+edition = "2021"
+# <db>.tiled（タイル順サイドカー）の生成 hot path を所有する Rust core。
+# tile_index.py（numpy 実装＝参照実装）と**同一の出力**を、1 層ずつの常駐で速く作る。
+# emit_core / reads_core と同流儀（PyO3 + maturin, rusqlite bundled）。
+
+[lib]
+name = "tiled_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"

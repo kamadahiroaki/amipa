@@ -3,7 +3,7 @@
 #   $1 = リポジトリのルート（build context） 既定 /src
 #   $2 = 配置先                              既定 /opt/amipa
 #
-# ①povu をビルド ②Rust core(emit_core/reads_core)を wheel 化 ③Python 依存 ④コード配置。
+# ①povu をビルド ②Rust core(emit_core/reads_core/tiled_core)を wheel 化 ③Python 依存 ④コード配置。
 # ネットワークが要る（povu の CPM 依存と PyPI / crates.io）。
 set -euo pipefail
 
@@ -43,7 +43,7 @@ export CARGO_HOME=${CARGO_HOME:-/tmp/cargo}
 #   （新しい crate は edition2024 を要求する）。maturin も同時代の物にする。
 pip install --no-cache-dir maturin==1.14.1 >/dev/null
 mkdir -p /tmp/wheels
-for c in emit_core reads_core; do
+for c in emit_core reads_core tiled_core; do
   ( cd "$SRC/prep/core/$c" && maturin build --release --out /tmp/wheels >/dev/null )
   echo "[build-prep]   -> $c ok"
 done
@@ -51,7 +51,7 @@ done
 echo "[build-prep] 3/4 Python 依存"
 pip install --no-cache-dir -r "$SRC/docker/requirements.txt"
 pip install --no-cache-dir /tmp/wheels/*.whl
-python3 -c "import emit_core, reads_core, numpy, scipy, numba, infomap, Bio, zstandard; print('[build-prep]   imports ok')"
+python3 -c "import emit_core, reads_core, tiled_core, numpy, scipy, numba, infomap, Bio, zstandard; print('[build-prep]   imports ok')"
 
 echo "[build-prep] 4/4 コード配置"
 mkdir -p "$APP/prep"

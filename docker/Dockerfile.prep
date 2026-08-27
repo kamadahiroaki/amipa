@@ -5,7 +5,7 @@
 #   実行  : docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" -w /work amipa-prep \
 #             prep run --gfa /work/graph.gfa --out /work/graph.amipa --threads 8
 #
-# 中身: povu(C++) / emit_core・reads_core(Rust) / Python 3.9 ＋ numpy・scipy・numba・infomap・
+# 中身: povu(C++) / emit_core・reads_core・tiled_core(Rust) / Python 3.9 ＋ numpy・scipy・numba・infomap・
 #       biopython・zstandard ＋ 前処理のコードと空テンプレ DB。
 # ★ビルド手順の実体は docker/build-prep.sh の 1 本だけで、**Apptainer def と共用**している
 #   （手順が二重化して片方だけ腐るのを避けるため）。
@@ -65,7 +65,7 @@ ENV AMIPA_EMITTER_REV=$AMIPA_REV \
 #   実行時まで気付かないと「distill だけ通って povu で止まる」ことになる。
 RUN povu -h >/dev/null \
  && ! ldd /usr/local/bin/povu | grep -q "not found" \
- && python3 -c "import emit_core, reads_core, numpy, scipy, numba, infomap, Bio, zstandard" \
+ && python3 -c "import emit_core, reads_core, tiled_core, numpy, scipy, numba, infomap, Bio, zstandard" \
  && test -f /opt/amipa/prep/amipa_prep/templates/schema.db \
  && python3 /opt/amipa/prep/amipa_prep/cli.py --help >/dev/null \
  && amipa licenses > /dev/null \
