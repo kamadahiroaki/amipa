@@ -307,6 +307,75 @@ def build_short(A, n, H, cap, log_prefix=""):
     return I, J, Dd, cnt
 
 
+def build_path(distill, ids, n, log_prefix=""):
+    """distill から path-guided 項の材料を作る: (rows, p_off, cum_bp)。
+
+    rows   … 各ステップのノード行番号（p_tok の dense id を parse_distill と同じ行番号へ）
+    p_off  … パス境界（p_off[k]..p_off[k+1] が k 番目のパス）
+    cum_bp … ステップ先頭までの累積 bp。**同一パス内の差分だけを使う**ので大域 cumsum でよい
+
+    ★なぜ要るか: 現行の項（pivot / エッジ / hop2..H / 球）は全部**トポロジのみ**で、
+    しかも重み 1/d^2 のため遠い対の寄与がほぼ消える。結果「局所的には正しいが全体が
+    とぐろを巻く」配置が低 stress 解になる（ecoli50 実測: 83% のノードが面積の 10% に集中、
+    箱カウントの実効次元 0.73）。パスは「全ゲノムがこの順に流れる」という**長距離の
+    1 次元拘束**を与えるので、これを潰せる。
+    """
+    import os
+    need = ["p_tok.npy", "p_off.npy", "s_bp.npy"]
+    for f in need:
+        if not os.path.exists(os.path.join(distill, f)):
+            log(f"{log_prefix}path 項: {f} が無いので無効")
+            return None
+    p_tok = np.load(os.path.join(distill, "p_tok.npy"))
+    p_off = np.load(os.path.join(distill, "p_off.npy")).astype(np.int64)
+    s_bp = np.load(os.path.join(distill, "s_bp.npy")).astype(np.int64)
+    if p_tok.size == 0 or p_off.size < 2:
+        log(f"{log_prefix}path 項: パスが無いので無効")
+        return None
+    M = int(ids.max()) if n else 0
+    id2row = np.empty(M + 1, np.int64)
+    id2row[ids] = np.arange(n, dtype=np.int64)
+    rows = id2row[p_tok].astype(np.int32)
+    cum = np.zeros(rows.size + 1, np.int64)
+    np.cumsum(s_bp[rows], out=cum[1:])
+    log(f"{log_prefix}path 項: {p_off.size - 1} パス / {rows.size:,} ステップ / "
+        f"{cum[-1]:,} bp ({(rows.nbytes + cum.nbytes) / 2**30:.3f}GiB)")
+    return rows, p_off, cum
+
+
+def sample_path_pairs(rows, p_off, cum, g2l, npairs, mode, rng):
+    """パス上の対を npairs 個サンプルし (li, lj, d) を返す（成分ローカル index）。
+
+    距離のとり方を mode で選べる:
+      'hop' … ステップ数 |j-i|            （エッジ項の ideal=1 と同じ尺度）
+      'bp'  … 塩基距離 |cum[j]-cum[i]|/s  （odgi layout と同じ考え方。s は 1 ステップの平均 bp）
+    区間幅は **log 一様**（1..パス長）で引く。近距離だけ引くと大域が拘束されず、
+    遠距離だけ引くと局所が壊れるため、全スケールを対数等分で覆う。
+    """
+    T = rows.size
+    i = rng.integers(0, T, size=npairs)
+    pi = np.searchsorted(p_off, i, side='right') - 1
+    lo = p_off[pi]; hi = p_off[pi + 1]
+    span = np.maximum(hi - lo - 1, 1)
+    delta = np.exp(rng.random(npairs) * np.log(span.astype(np.float64) + 1.0)).astype(np.int64)
+    delta = np.maximum(delta, 1)
+    sgn = rng.integers(0, 2, size=npairs) * 2 - 1
+    j = np.clip(i + sgn * delta, lo, hi - 1)
+    keep = j != i
+    i = i[keep]; j = j[keep]
+    li = g2l[rows[i]]; lj = g2l[rows[j]]
+    ok = (li >= 0) & (lj >= 0)                     # 成分外のステップは捨てる
+    li = li[ok]; lj = lj[ok]; i = i[ok]; j = j[ok]
+    if li.size == 0:
+        return None
+    if mode == 'bp':
+        d = np.abs(cum[j] - cum[i]).astype(np.float64)
+    else:
+        d = np.abs(j - i).astype(np.float64)
+    np.maximum(d, 1.0, out=d)
+    return li.astype(np.int64), lj.astype(np.int64), d
+
+
 def build_csr(n, ei, ej):
     # ノード index < 2^31 なので int32 で持つ(concat 一時と CSR indices を半減)。
     I = np.concatenate([ei, ej]).astype(np.int32, copy=False)
@@ -444,7 +513,8 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
                x_init=None, eta_max=None, ball=None, ball_tau=0.3, short=None,
                repel=3.0, repel_strength=0.15, repel_anneal=1.0, repel_cap=64, A=None,
                converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
-               anneal_epochs=0, converge_rel=0.0, converge_window=10):
+               anneal_epochs=0, converge_rel=0.0, converge_window=10,
+               path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None):
     """epochs は **アニールの地平**（eta と斥力の減衰は ep/epochs で決まる）であって
     「必ず回す回数」ではない。converge_eps>0 なら、1 epoch あたりのノード変位が十分小さく
     なった時点で打ち切る（残りを回しても絵は変わらないため）。
@@ -580,6 +650,30 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
                 gx[:, 0] += np.bincount(si, d2s[:, 0], n) - np.bincount(sj, d2s[:, 0], n)
                 gx[:, 1] += np.bincount(si, d2s[:, 1], n) - np.bincount(sj, d2s[:, 1], n)
             X += gx / SHC[:, None]
+        # ---- (a'') path-guided 項。パス上の対を毎 epoch サンプルし直す（SGD なので固定不要）。
+        #      更新式と重み mu=min(eta/d^2,1) は他の項と同一。距離の尺度だけ mode で変える。
+        if path is not None and path_pairs > 0:
+            sp = sample_path_pairs(path[0], path[1], path[2], g2l, path_pairs, path_mode, rng)
+            if sp is not None:
+                pi_, pj_, pd_ = sp
+                if path_mode == 'bp':
+                    pd_ = pd_ / max(path_scale, 1e-9)   # 1 ステップ ≒ 1 単位に揃える
+                    np.maximum(pd_, 1.0, out=pd_)
+                gxp = np.zeros((n, 2))
+                vp = X[pj_] - X[pi_]
+                mpr = np.sqrt((vp * vp).sum(1))
+                dgn = mpr < 1e-9                        # 同一座標は角度ハッシュで割る(他項と同じ)
+                if dgn.any():
+                    ang = ((pi_[dgn] * 2654435761 + pj_[dgn] * 40503) % 6283) * 0.001
+                    vp[dgn, 0] = 1e-6 * np.cos(ang); vp[dgn, 1] = 1e-6 * np.sin(ang)
+                    mpr[dgn] = 1e-6
+                mp = mpr + 1e-9
+                mup = np.minimum(eta / (pd_ * pd_), 1.0)
+                dps = ((mp - pd_) * 0.5 / mp * mup)[:, None] * vp
+                gxp[:, 0] += np.bincount(pi_, dps[:, 0], n) - np.bincount(pj_, dps[:, 0], n)
+                gxp[:, 1] += np.bincount(pi_, dps[:, 1], n) - np.bincount(pj_, dps[:, 1], n)
+                cntp = np.maximum(np.bincount(pi_, None, n) + np.bincount(pj_, None, n), 1.0)
+                X += gxp / cntp[:, None]
         # ---- (b') 球 pivot(局所)。毎 epoch 1/sub だけサンプルする(SGD は元々確率的で、
         #      全球を毎回使う必要はない。1/4 で ~2.7× 速く、局所エッジはむしろ改善)。
         #      ★エッジ+短距離の**後**に掛ける。前に掛けると可読領域の交差が悪化する
@@ -696,7 +790,8 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                      pivot_mem_gib=0.0, pivot_floor=32,
                      repel=3.0, repel_strength=0.15, repel_anneal=1.0, repel_cap=64,
                      converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
-                     anneal_epochs=0, converge_rel=0.0, converge_window=10):
+                     anneal_epochs=0, converge_rel=0.0, converge_window=10,
+                     path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None):
     """1連結成分をレイアウトし、PCA で長軸=x に整える局所座標 [subn,2] を返す。
     numba_min: **廃止**(引数は後方互換で残すが無視)。njit は cache=True で JIT はプロセス跨ぎに
     キャッシュされるため降格の利得が無い一方、この閾値は「エンジン選択」の顔をして **球 pivot の
@@ -738,7 +833,9 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                    repel_anneal=repel_anneal, repel_cap=repel_cap,
                    converge_eps=converge_eps, converge_patience=converge_patience,
                    converge_min_frac=converge_min_frac, anneal_epochs=anneal_epochs,
-                   converge_rel=converge_rel, converge_window=converge_window)
+                   converge_rel=converge_rel, converge_window=converge_window,
+                   path=path, path_mode=path_mode, path_pairs=path_pairs,
+                   path_scale=path_scale, g2l=g2l)
     Xc = X - X.mean(0)
     _, S, Vt = np.linalg.svd(Xc, full_matrices=False)
     return Xc @ Vt.T
@@ -779,6 +876,13 @@ def main():
     ap.add_argument("--epochs", type=int, default=30,
                     help="アニールの地平かつ上限。eta と斥力の減衰は ep/epochs で決まるので、"
                          "この値を変えると 1 epoch あたりの進み方も変わる（単に長く回すのではない）")
+    ap.add_argument("--path-term", choices=["off", "hop", "bp"], default="off",
+                    help="path-guided 項。パス上の対をサンプルして距離を拘束する（--distill が要る）。"
+                         "hop=ステップ数を目標距離に / bp=塩基距離（odgi layout と同じ考え方）/ "
+                         "off(既定)=従来どおりトポロジのみ。★これを使うとレイアウトは "
+                         "topology-only ではなくなる")
+    ap.add_argument("--path-pairs", type=int, default=2_000_000, metavar="M",
+                    help="path 項で 1 epoch あたりにサンプルする対の数（既定 200 万）")
     ap.add_argument("--anneal-epochs", type=int, default=0, metavar="T",
                     help="アニール長。eta を T epoch で eta_min まで落とし、以降は据え置く。"
                          "0(既定)は --epochs と同じ＝従来どおり。**--converge-eps と併用するときは "
@@ -885,6 +989,17 @@ def main():
         log(f"parsing {args.gfa}")
         ids, n, ei, ej, su, sv = parse_gfa(args.gfa)
     log(f"nodes={n:,} edges={len(ei):,}")
+    # path-guided 項の材料（--path-term off なら作らない = 従来と完全に同じ経路）
+    pathdat = None; path_scale = 1.0
+    if args.path_term != "off":
+        if not args.distill:
+            sys.exit("--path-term には --distill が必要（パスの並びが要る）")
+        pathdat = build_path(args.distill, ids, n, log_prefix="")
+        if pathdat is not None:
+            path_scale = float(pathdat[2][-1]) / max(pathdat[0].size, 1)   # 1 ステップの平均 bp
+            log(f"path 項: mode={args.path_term} pairs/epoch={args.path_pairs:,} "
+                f"1 ステップ平均 {path_scale:.2f} bp")
+
     A = build_csr(n, ei, ej)
     ncomp, lab = connected_components(A, directed=False)
     del A                                   # 全体 CSR は成分分解にしか使わない → 即解放(16·E_total)
@@ -902,12 +1017,14 @@ def main():
 
     # 成分抽出(共有 lab/ei/ej を使うので main 側で逐次に。重い layout_component だけを並列化する)。
     tasks = []                                    # (ci, idx, subn, sei, sej)
+    task_g2l = []                                 # path 項用（成分ローカルへの写像）
     for ci in major_comps:
         idx = np.where(lab == ci)[0]
         subn = len(idx)
         g2l = -np.ones(n, np.int64); g2l[idx] = np.arange(subn)
         em = (lab[ei] == ci) & (lab[ej] == ci)
         tasks.append((ci, idx, subn, g2l[ei[em]], g2l[ej[em]]))
+        task_g2l.append(g2l if pathdat is not None else None)
         log(f"  major comp {ci}: nodes={subn:,} edges={int(em.sum()):,}")
 
     # レイアウト本体(BFS+SGD)は成分ごとに完全独立 → プロセス並列で品質厳密に不変。
@@ -928,14 +1045,18 @@ def main():
         with ProcessPoolExecutor(max_workers=args.jobs) as ex:
             futs = [ex.submit(layout_component, subn, sei, sej,
                               args.pivots, args.epochs, args.seed, engine, 0,
-                              args.init, **bkw)
-                    for (_, _, subn, sei, sej) in tasks]
+                              args.init, path=pathdat, path_mode=args.path_term,
+                              path_pairs=(args.path_pairs if pathdat is not None else 0),
+                              path_scale=path_scale, g2l=gl, **bkw)
+                    for (_, _, subn, sei, sej), gl in zip(tasks, task_g2l)]
             results = [f.result() for f in futs]
     else:
         results = [layout_component(subn, sei, sej,
                                     args.pivots, args.epochs, args.seed, engine, 0,
-                                    args.init, **bkw)
-                   for (_, _, subn, sei, sej) in tasks]
+                                    args.init, path=pathdat, path_mode=args.path_term,
+                                    path_pairs=(args.path_pairs if pathdat is not None else 0),
+                                    path_scale=path_scale, g2l=gl, **bkw)
+                   for (_, _, subn, sei, sej), gl in zip(tasks, task_g2l)]
 
     # ---- 配置: サイズ順 shelf packing で目標アスペクト R(既定16:9)へ詰める ----
     #   横一列(帯状)をやめ、各成分/デブリ塊を1つの箱として大きい順に行折り返し。画面を面で使う。
