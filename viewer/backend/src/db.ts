@@ -195,7 +195,10 @@ export function nameTriSchema(db: Database.Database): string | null {
 export function getWritableDb(filename: string): Database.Database {
   const safeName = path.basename(filename)
   const dbPath = path.join(DB_DIR, safeName)
-  return new Database(dbPath)
+  const d = new Database(dbPath)
+  // 編集の書き戻しはタイル索引（<db>.tiled）にも及ぶ（save_edits が nodes_t / edges_t の行を動かす）
+  attachTiled(d, dbPath)
+  return d
 }
 
 export function getDbDir(): string {

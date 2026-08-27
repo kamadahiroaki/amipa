@@ -3307,8 +3307,14 @@ def main():
     ap.add_argument("--ribbon-spill-dir", dest="ribbon_spill_dir", default=None,
                     help="--ribbon-disk の run/merged 一時ファイル置き場(既定=out-db の隣)。WG は spill が "
                          "~run合計140GB+merged70GB になるので、job-local /tmp でなく容量のある共有FSを指定推奨。")
-    ap.add_argument("--hapidx", dest="emit_hapidx", action="store_true", default=True,
-                    help="[既定ON] hap 絞り込み取得の索引を書く。nodes_rtree を『hap ビットマスクを補助列に持つ』"
+    ap.add_argument("--rtree", dest="emit_rtree", action="store_true", default=False,
+                    help="[既定OFF] 3D R-Tree nodes_rtree を本体に書く。現行 viewer は描画・件数・絞り込みを "
+                         "サイドカー <db>.tiled（tile_index.py、prep の tiled 段）だけで賄うので不要。"
+                         "旧 viewer 向け、または .tiled を作れない場合だけ ON にする（WG で数十分〜の追加）。")
+    ap.add_argument("--no-rtree", dest="emit_rtree", action="store_false")
+    ap.add_argument("--hapidx", dest="emit_hapidx", action="store_true", default=False,
+                    help="[既定OFF — hap マスクは .tiled v4 が node_contig_cov から自前計算するので不要] "
+                         "hap 絞り込み取得の索引を書く（--rtree を含意）。nodes_rtree を『hap ビットマスクを補助列に持つ』"
                          "形で作り直し、edge_hm(edge_rowid PK, hm0..) を足す。viewer の「選択サンプル/ハプロタイプが"
                          "通るノード・エッジだけ描画」モードが使うもの。密領域の取得が cold 1.7-4.7x / warm 2.5-2.7x、"
                          "エッジは warm 最大 31x 速くなる(実測 functions/hapfilter/RESULTS.md)。ついでに nodes_rtree が"
@@ -3860,7 +3866,12 @@ def main():
     # ⚠ 飛ばした場合、hapidx が失敗すると nodes_rtree が **空** のまま残り viewer が表示不能になる。
     #   §8.6 に「失敗したら素の nodes_rtree をここで作る」フォールバックを必ず置く（下記 _rtree_pending）。
     _rtree_pending = bool(args.emit_hapidx and args.emit_ribbon_contig and (args.gfa or args.distill))
-    if _rtree_pending:
+    # ★既定は R-Tree を作らない。描画・件数・絞り込みはサイドカー <db>.tiled（tiled 段）が担う。
+    #   hapidx を頼まれたときは R-Tree が要る（補助列の載せ先）ので含意する。
+    _want_rtree = bool(args.emit_rtree or args.emit_hapidx)
+    if not _want_rtree:
+        log("nodes_rtree: 作らない（--no-rtree 既定。空間索引は prep の tiled 段が <db>.tiled に作る）")
+    elif _rtree_pending:
         log("nodes_rtree: §7 では入れず hapidx 段で補助列つきに一括構築する(二重構築の回避)")
     born = np.where(birth >= 0)[0]                       # 出現するノードのみ
     b_born = birth[born]; d_born = death[born]
@@ -3922,7 +3933,7 @@ def main():
                     ang[s:e].tolist(), rad[s:e].tolist(), isbub[s:e].tolist(),
                     cov[s:e].tolist(), pn))
         rids = np.arange(rid0 + 1, rid0 + 1 + k); rid += k
-        if not _rtree_pending:
+        if _want_rtree and not _rtree_pending:
             rminx = cx - rad; rmaxx = cx + rad; rminy = cy - rad; rmaxy = cy + rad
             for s in range(0, k, CHUNK):
                 e = min(s + CHUNK, k)
@@ -4426,7 +4437,12 @@ def main():
                                         grid=args.zoom_grid, d_floor=args.zoom_dfloor,
                                         ceil_ratio=args.zoom_ceil_ratio)
         _zoom_window = "world_aspect_W_over_s"
+    # world = 全層の外接矩形 [x0, x1, y0, y1]（cx±rad の min/max）。viewer の z_fit と tile_index の格子が
+    # 使う。従来は R-Tree のルートノードから取っていたが、R-Tree を作らない DB ではここが唯一の出所。
+    _bx0 = float(np.min(CX[born] - RAD[born])); _bx1 = float(np.max(CX[born] + RAD[born]))
+    _by0 = float(np.min(CY[born] - RAD[born])); _by1 = float(np.max(CY[born] + RAD[born]))
     _sd = {"maxlayer": out_maxlayer, "layer_nodes": layer_nodes,
+           "world": [_bx0, _bx1, _by0, _by1],
            "layer_zoom": layer_zoom,
            "layer_zoom_budget": args.zoom_budget,
            "layer_zoom_percentile": args.zoom_percentile,
@@ -4463,6 +4479,11 @@ def main():
                                   capture_output=True, text=True, timeout=10).stdout.strip() or "unknown"
         except Exception:
             _rev = "unknown"
+    if not _want_rtree:
+        # テンプレ由来の空の nodes_rtree を残すと viewer/check が「R-Tree あり（中身は空）」と誤認して
+        # 空の表示になる。無いなら無いと分かる形にする（viewer は <db>.tiled を使う）。
+        cur.execute("DROP TABLE IF EXISTS nodes_rtree"); con.commit()
+        log("nodes_rtree: テンプレの空表を除去した（空間索引は <db>.tiled）")
     _build_hb_covering_idx(cur, con, t0)
     _feat = [t for t in ("leaf_seq", "node_hap_mult", "node_contig_inv", "node_contig_cov")
              if cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()]
@@ -4544,9 +4565,13 @@ def main():
             f"中央値較正(50)がグラフ間/層間で唯一安定という実測(functions/hapfilter/LOD_REDESIGN.md)"
             f"があるので、意図が無ければ外して既定(50)にしてください。")
 
-    # rowid 整合の最終検証(VACUUM しないので挿入順=rowid のはず)
-    (mm,) = cur.execute("SELECT count(*) FROM nodes n JOIN nodes_rtree r ON n.rowid=r.rowid "
-                        "WHERE n.layer_index<>r.min_layer").fetchone()
+    # rowid 整合の最終検証(VACUUM しないので挿入順=rowid のはず)。R-Tree を作らない既定では
+    # 比較相手が無いので 0（tiled 段の tile_index.py が nodes を rowid 順に読んで層ごとに束ねる際に整合を見る）
+    if _want_rtree:
+        (mm,) = cur.execute("SELECT count(*) FROM nodes n JOIN nodes_rtree r ON n.rowid=r.rowid "
+                            "WHERE n.layer_index<>r.min_layer").fetchone()
+    else:
+        mm = 0
     con.close()
     # synchronous=OFF / journal_mode=OFF は build 中の速度優先設定。完成 DB は viewer が編集を
     # 書き戻す永続成果物なので、最後に明示 fsync でディスクへ確定(内容バイト不変=bit-identical維持)。

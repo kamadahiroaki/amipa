@@ -58,7 +58,8 @@ DEFAULT_TEMPLATE = PKG / "templates" / "schema.db"
 DEFAULT_POVU = Path(os.environ.get("AMIPA_POVU") or os.environ.get("GGB_POVU") or "povu")
 
 # 実行順。annot / reads は入力が指定された時だけ走る。
-STAGES = ["distill", "decompose", "lod", "layout", "emit", "annot", "tiled", "reads", "bundle"]
+# tiled は reads の後: 葉層のリード支持(rs)を edges_t に焼き込むため。reads を後から足したら tiled も作り直す
+STAGES = ["distill", "decompose", "lod", "layout", "emit", "annot", "reads", "tiled", "bundle"]
 
 STATE_VERSION = 1
 
@@ -434,7 +435,8 @@ def build_stages(b: Bundle, a) -> dict:
         note="向き付きレイアウト（pmds init）",
     )
 
-    # ④ emit: 多層 DB 化。hapidx / nametri / emit-seq / contig リボンは emitter 既定 ON。
+    # ④ emit: 多層 DB 化。nametri / emit-seq / contig リボンは emitter 既定 ON。
+    #    R-Tree と hapidx は作らない（既定）。空間索引と hap マスクは tiled 段の <db>.tiled が持つ。
     #    ・--template は**スキーマ供給用**（内容は使わない。空テンプレを同梱している）
     #    ・--build-tmp / --ribbon-spill-dir は**ノードローカルの速いディスク**に置く
     #    ・--no-distill-sidecar: distill は最初からバンドル内の最終位置にあるので symlink を張らせない
@@ -460,7 +462,7 @@ def build_stages(b: Bundle, a) -> dict:
         # ★一時領域の場所は出力を変えない。鍵に入れると、$TMPDIR が違うノードで再開しただけで
         #   emit(WG で 4.6h)がやり直しになる。上の「鍵に環境で変わる値を入れない」の実装。
         key_exclude=["--build-tmp", "--ribbon-spill-dir"],
-        note="多層 DB 化（hapidx/nametri/配列/リボンを内包）",
+        note="多層 DB 化（nametri/配列/リボンを内包。空間索引は tiled 段）",
     )
 
     # アノテ（任意）: <db>.annot サイドカーへ書き、被覆索引を張る。DB 本体は不変。
@@ -489,17 +491,6 @@ def build_stages(b: Bundle, a) -> dict:
 
     # リード（任意）: オンデマンド。GAF を seekable zstd に詰め替え、索引だけをサイドカーに持つ。
     #   表示に使わない大きなタグ（既定 bq:Z=塩基クオリティ）は保存しない＝BGZF の 1/8 になる。
-    # タイル索引（既定で作る）: 描画用のノード/エッジ取得を R-Tree でなくこちらで行う。
-    #   矩形 → Z-order の連続範囲 → 順次読み。全ゲノムで表示範囲の取得が cold 2.4〜8 倍、
-    #   最も遅い範囲で 17 倍速くなった（2026-08-26）。DB 本体は不変。
-    if not getattr(a, "no_tiled", False):
-        st["tiled"] = Stage(
-            "tiled",
-            [[py, str(PKG / "tile_index.py"), str(b.db), "--force"]],
-            inputs=[b.db], outputs=[b.tiled], env=thread_env(1),
-            note="描画用タイル索引（Z-order clustered サイドカー）",
-        )
-
     if a.reads:
         rcmd = [py, str(PKG / "reads_attach.py"), str(b.db),
                 "--out-dir", str(b.reads_dir), "--level", str(a.reads_level)]
@@ -515,6 +506,19 @@ def build_stages(b: Bundle, a) -> dict:
         st["reads"] = Stage(
             "reads", [rcmd], inputs=ins, outputs=[b.reads_dir], env=thread_env(1),
             note=f"リード整列（{len(a.reads)} サンプル, オンデマンド索引）",
+        )
+
+    # タイル索引（既定で作る。★本体は R-Tree を持たないので、viewer にはこれが唯一の空間索引）:
+    #   ノード/エッジをタイル順（Z-order）に並べ直し、hap マスク語・辺の hb・葉層のリード支持も焼き込む。
+    #   矩形 → Z-order の連続範囲 → 順次読み。全ゲノムで表示範囲の取得が cold 2.4〜8 倍、
+    #   最も遅い範囲で 17 倍、Reads 幅の葉層は 12〜17 秒 → 30ms（2026-08-27）。DB 本体は不変。
+    #   reads の後に置く（rs を焼くため）。入力に reads を含めるので、リードを足すと作り直される。
+    if not getattr(a, "no_tiled", False):
+        st["tiled"] = Stage(
+            "tiled",
+            [[py, str(PKG / "tile_index.py"), str(b.db), "--force"]],
+            inputs=[b.db] + ([b.reads_dir] if a.reads else []), outputs=[b.tiled], env=thread_env(1),
+            note="描画用タイル索引（Z-order clustered サイドカー。空間索引・hap マスク・辺の hb/rs）",
         )
 
     # manifest（最後に必ず作り直す）
@@ -762,7 +766,8 @@ def add_common(p, need_gfa=False):
     p.add_argument("--gfa", type=Path, required=need_gfa, help="入力 GFA")
     p.add_argument("--name", help="DB のベース名（既定: GFA 名 or 既存 DB 名）")
     p.add_argument("--no-tiled", action="store_true",
-                   help="描画用タイル索引 <name>.db.tiled を作らない（既定は作る。無いと表示範囲の取得が本体の空間索引になり遅い）")
+                   help="描画用タイル索引 <name>.db.tiled を作らない（既定は作る。★本体は R-Tree を持たないので、"
+                        "無いと viewer で開けない。試験目的以外では付けない）")
     p.add_argument("--threads", type=int, default=len(os.sched_getaffinity(0)),
                    help="並列度（②は決定性のため常に 1）")
     p.add_argument("--spill", default=os.environ.get("AMIPA_SPILL"),
@@ -883,7 +888,8 @@ def main():
     if a.cmd == "add-reads":
         if not a.reads:
             die("--reads SAMPLE=GAF を指定する")
-        execute(b, a, ["reads", "bundle"])
+        # リード支持は edges_t に焼き込んであるので、タイル索引も作り直す（無ければ作る）
+        execute(b, a, ["reads", "tiled", "bundle"])
         return
     if a.cmd == "add-tiled":
         execute(b, a, ["tiled", "bundle"])

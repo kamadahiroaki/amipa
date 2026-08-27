@@ -4,6 +4,7 @@ import { dbEdgesSigned, edgeXYSelect, EDGE_NODE_JOIN } from '../edgeGeom'
 // contig_id→hap_id の採番は hap 絞り込みと同一定義を使う（重複実装で採番がズレるのを防ぐ）
 import { contigToHap, buildSelection, maskWhere, hapIdxEdgeOk, type Selection } from '../hapidx'
 import { spatialSource } from '../spatial'
+import { tiledInfo, TILED_OFF, morton } from '../tiled'
 import { covFmt, rangeMaxFn, rangeSumFn } from '../covBlob'
 
 export const pathsRouter = Router()
@@ -784,18 +785,21 @@ pathsRouter.post('/save_edits', (req, res) => {
     //   上層ノードを動かして子孫全部を書き換えるケースでもコストは実質変わらない。
     //   （これがエッジに端点座標を持たせられない理由と対照的な点: あちらは行数の多い別の表を
     //     追加で更新することになるが、こちらは既に更新している行に列が 1 つ増えるだけ。）
-    const rtHasAng = (() => {
-      try {
-        return (w.prepare('PRAGMA table_info(nodes_rtree)').all() as any[]).some(c => c.name === 'ang')
-      } catch { return false }
+    // 空間索引の書き戻し先: 本体の nodes_rtree（旧 DB。無い DB では触らない）と、<db>.tiled（あれば）。
+    const rtCols = (() => {
+      try { return (w.prepare('PRAGMA table_info(nodes_rtree)').all() as any[]).map(c => String(c.name)) }
+      catch { return [] as string[] }
     })()
+    const hasRtree = rtCols.includes('min_layer')
+    const rtHasAng = rtCols.includes('ang')
+    const ti = !TILED_OFF ? tiledInfo(w) : null
     const angScale = (() => {
       try {
         const v = (w.prepare("SELECT value FROM hapidx_meta WHERE key='ang_scale'").get() as any)?.value
         return Number(v) || 1000000
       } catch { return 1000000 }
     })()
-    const updNodesRtree = w.prepare(`
+    const updNodesRtree = !hasRtree ? null : w.prepare(`
       UPDATE nodes_rtree SET
         min_x = (SELECT xCoord - radius FROM nodes WHERE nodes.rowid = nodes_rtree.rowid),
         max_x = (SELECT xCoord + radius FROM nodes WHERE nodes.rowid = nodes_rtree.rowid),
@@ -828,6 +832,34 @@ pathsRouter.post('/save_edits', (req, res) => {
         max_y = (SELECT max(max(start_y,end_y),max(startc_y,endc_y)) FROM edges WHERE edges.rowid=edges_rtree.rowid)
       WHERE rowid IN (SELECT rowid FROM edges WHERE source IN (SELECT name FROM _edit_names) OR target IN (SELECT name FROM _edit_names))`)
 
+    // ── タイル索引（<db>.tiled）の書き戻し ──
+    // nodes_t / edges_t は (layer, mkey, …) が主キーの clustered 表で、mkey は中心座標のタイル。
+    // ノードが動くとタイルも変わりうるので、旧座標から旧 mkey を出し、その行を新 mkey・新座標で書き換える
+    // （WITHOUT ROWID 表の PK 列の UPDATE は SQLite が消して入れ直す）。辺の端点行は端点ノードの
+    // タイルに置いてあり (ex,ey)=端点ノードの中心なので、同じ旧タイルから引いて同様に書き換える。
+    // 半径は不変なので nodes_big の所属は変わらない。
+    const oldGeom = w.prepare(`
+      SELECT n.rowid AS id, n.layer_index AS L, n.xCoord AS x, n.yCoord AS y, n.radius AS r
+      FROM nodes n WHERE n.node_name IN (SELECT name FROM _edit_names)`)
+    const updTiledNode = ti ? w.prepare(`
+      UPDATE tl.nodes_t SET mkey = :nk,
+        x = (SELECT xCoord FROM nodes WHERE rowid = :id), y = (SELECT yCoord FROM nodes WHERE rowid = :id),
+        ang = (SELECT angle FROM nodes WHERE rowid = :id)
+      WHERE layer = :L AND mkey = :ok AND id = :id`) : null
+    const updTiledBig = ti ? w.prepare(`
+      UPDATE tl.nodes_big SET
+        x = (SELECT xCoord FROM nodes WHERE rowid = :id), y = (SELECT yCoord FROM nodes WHERE rowid = :id),
+        ang = (SELECT angle FROM nodes WHERE rowid = :id)
+      WHERE layer = :L AND id = :id`) : null
+    const updTiledEdges = ti ? w.prepare(`
+      UPDATE tl.edges_t SET mkey = :nk,
+        ex = (SELECT xCoord FROM nodes WHERE rowid = :id), ey = (SELECT yCoord FROM nodes WHERE rowid = :id)
+      WHERE layer = :L AND mkey = :ok AND ((side = 0 AND src_id = :id) OR (side = 1 AND tgt_id = :id))`) : null
+    const tileKey = (L: number, x: number, y: number): bigint => {
+      const g = ti!.g[L], n = 1 << g
+      const cl = (v: number) => Math.max(0, Math.min(n - 1, Math.floor(v * n)))
+      return morton(cl(x), cl(y))
+    }
     let totalNodes = 0
     const apply = w.transaction((gs: any[]) => {
       for (const g of gs) {
@@ -837,11 +869,24 @@ pathsRouter.post('/save_edits', (req, res) => {
         if (![p.cos, p.sin, p.tx, p.ty, p.dAngle].every(Number.isFinite)) continue
         clearNames.run()
         fillNames.run(JSON.stringify(names))
+        // ★タイル索引は旧座標が要るので、nodes を書き換える**前**に旧幾何を読み、書き換え後に適用する
+        const olds = ti ? (oldGeom.all() as { id: number; L: number; x: number; y: number; r: number }[]) : []
         totalNodes += updNodes.run(p).changes
-        updNodesRtree.run()
+        updNodesRtree?.run()
         updEdgesSrc?.run(p)
         updEdgesTgt?.run(p)
         updEdgesRtree?.run()
+        if (ti) {
+          for (const o of olds) {
+            if (o.L < 0 || o.L >= ti.g.length) continue
+            const nx = p.cos * o.x - p.sin * o.y + p.tx, ny = p.sin * o.x + p.cos * o.y + p.ty
+            const ok = tileKey(o.L, o.x, o.y), nk = tileKey(o.L, nx, ny)
+            const tw = 1 / (1 << ti.g[o.L])
+            if (o.r > tw / 2) updTiledBig!.run({ id: o.id, L: o.L })
+            else updTiledNode!.run({ id: o.id, L: o.L, ok, nk })
+            updTiledEdges!.run({ id: o.id, L: o.L, ok, nk })
+          }
+        }
       }
     })
     apply(gestures)

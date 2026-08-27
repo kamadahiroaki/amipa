@@ -69,7 +69,7 @@ docker run --rm -p 3001:3001 -v /path/to/graph.amipa:/data:ro ghcr.io/kamadahiro
 順読みが 2.6 GB/s なのに対しランダム 4 KB は 1 回 8〜13 ms で、散ったページを 1 枚ずつ引くより
 全部を順に読む方が桁で安かった（全ゲノム 230 GB を 88 秒で読み切れる）。
 
-- 本体だけでなくサイドカー（`.reads` `.annot` `.hapidx` `.nametri`）も読む。
+- 本体だけでなくサイドカー（`.tiled` `.reads` `.annot` `.nametri`）も読む。
   本体だけ温めても、深い層の `/edges` は 18 GB のリード索引を引くので冷たいままだった（実測 100 秒）
 - 4 GiB 未満のアトラスは対象外。放っておいても温まる
 - 速度が出ないときは自動で見切る（`AMIPA_PREWARM_MIN_MBPS`、既定 300 MB/s）

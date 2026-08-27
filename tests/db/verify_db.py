@@ -49,6 +49,22 @@ class Checker:
                     self.stats = {}
         self.maxlayer = self.stats.get("maxlayer")
         self.world = self.stats.get("world") or {}
+        # 空間索引はサイドカー <db>.tiled（現行の既定。本体は R-Tree を持たない）。あれば tl として ATTACH し
+        # meta を読む。無い旧 DB は本体の nodes_rtree で従来どおり検査する。
+        import os
+        self.tl = {}
+        for cand in (path + ".tiled", os.path.realpath(path) + ".tiled"):
+            if os.path.exists(cand):
+                try:
+                    self.con.execute("ATTACH DATABASE ? AS tl", (f"file:{cand}?mode=ro",))
+                    self.tl = dict(self.q("SELECT key, value FROM tl.meta"))
+                    self.tl["_path"] = cand
+                except Exception as e:
+                    self.tl = {"_err": str(e)}
+                break
+
+    def tl_cols(self, table):
+        return {r[1] for r in self.q(f"PRAGMA tl.table_info({table})") if r and r[0] != "!ERR"}
 
     def rt_rows(self):
         """R-Tree の行数。
@@ -110,11 +126,25 @@ class Checker:
         return True
 
     def check_core(self):
-        f = "① 基本(nodes/edges/層)"
-        if not self.need_tables(f, "nodes", "edges", "nodes_rtree"):
+        f = "① 基本(nodes/edges/層/空間索引)"
+        if not self.need_tables(f, "nodes", "edges"):
             return
         n = self.n_rows("nodes")
         e = self.n_rows("edges")
+        if self.tl.get("schema"):
+            # 現行: 空間索引は .tiled。行数は meta に記録されている（nodes_t は WITHOUT ROWID で COUNT が全走査）
+            tn = int(self.tl.get("node_rows") or 0); te = int(self.tl.get("edges") or 0)
+            if not n or not e:
+                self.rec(f, NG, f"空: nodes={n} edges={e}")
+            elif tn != n or te != e:
+                self.rec(f, WARN, f"nodes {n:,}/edges {e:,} と .tiled の {tn:,}/{te:,} が違う（作り直しが要る）")
+            else:
+                self.rec(f, OK, f"nodes {n:,} / edges {e:,} / 層 L0..L{self.maxlayer} / .tiled {self.tl.get('schema')}"
+                                f"{' (+旧 nodes_rtree も本体に残存)' if 'nodes_rtree' in self.tabs else ''}")
+            return
+        if "nodes_rtree" not in self.tabs:
+            self.rec(f, NG, "空間索引が無い（.tiled サイドカーも nodes_rtree も無い → amipa prep add-tiled）")
+            return
         # ★層の範囲を DB に数えさせてはいけない。`MIN/MAX(layer_index) FROM nodes` は
         #   layer_index に索引が無いので 200M 行の全走査、`MIN/MAX(min_layer) FROM nodes_rtree` は
         #   仮想表の集約なのでやはり全走査（どちらも WG で実際に踏んで verify を止めた）。
@@ -155,7 +185,20 @@ class Checker:
                  + ("" if mono else " ★単調でない"))
 
     def check_drawaux(self):
-        f = "③ /nodes 高速経路(R-Tree 補助列, nx=fast)"
+        f = "③ /nodes 高速経路(描画列, nx=fast)"
+        if self.tl.get("schema"):
+            need = ("name", "x", "y", "r", "ang", "kind", "hb", "ref_contig_id", "ref_bp", "ref_bp_end",
+                    "is_anchor", "ref_multi", "ref_strand")
+            have = self.tl_cols("nodes_t")
+            miss = [c for c in need if c not in have]
+            if miss:
+                self.rec(f, NG, f".tiled nodes_t に列が無い: {', '.join(miss)}")
+                return
+            v = self.q("SELECT ang, name, hb, ref_bp FROM tl.nodes_t WHERE layer=? LIMIT 3", (self.maxlayer,))
+            nulls = sum(1 for row in v for x in row[:3] if x is None)
+            self.rec(f, OK if nulls == 0 else WARN,
+                     f".tiled nodes_t {len(need)} 列あり / 標本 {v[:1]}" + (f" ★NULL {nulls} 個" if nulls else ""))
+            return
         # rad は後から足した列。無いと radius を矩形から導出することになり、深層で相対 174% 過大
         # → ノード/エッジがリボンに対してずれる（⑬ が相対誤差で検出する）。
         need = ("cx", "cy", "ang", "rad", "nm", "hb", "bnd", "gcn", "rgn",
@@ -184,6 +227,21 @@ class Checker:
 
     def check_hapfilter(self):
         f = "④ hap 絞り込み描画(hap マスク)"
+        if self.tl.get("hap_layout") == "tiled":
+            W = int(self.tl.get("words") or 0); H = self.tl.get("n_hap")
+            nc, ec = self.tl_cols("nodes_t"), self.tl_cols("edges_t")
+            miss = [c for c in (f"hm{i}" for i in range(W)) if c not in nc]
+            emiss = [c for c in (f"hm{i}" for i in range(W)) if c not in ec]
+            if W == 0:
+                self.rec(f, WARN, ".tiled に hap マスクが無い（node_contig_cov 無しの DB なら正常）")
+            elif miss:
+                self.rec(f, NG, f".tiled nodes_t にマスク列が無い: {', '.join(miss)}")
+            elif not self.q("SELECT 1 FROM tl.nodes_t WHERE layer=? AND hm0<>0 LIMIT 1", (self.maxlayer,)):
+                self.rec(f, NG, "hm0 が全て 0 = マスクが埋まっていない")
+            else:
+                self.rec(f, OK, f"H={H} / W={W} / mode={self.tl.get('mode')} / hm0≠0 の行あり"
+                                + (" / 辺マスクも edges_t に焼き込み" if not emiss else " / ★edges_t にマスク無し"))
+            return
         if not self.need_tables(f, "hapidx_meta", "hap_dict", "nodes_rtree_rowid"):
             return
         meta = dict(self.q("SELECT key,value FROM hapidx_meta"))
@@ -341,6 +399,23 @@ class Checker:
           WG cold では 1 行 ≒ 3 ページのランダム読みなので標本を 800 に落とす
           （5000 だと 15,000 回の 4KB ランダム読み＝分オーダー）。"""
         f = "⑬ 高速経路 == 従来経路(件数/幾何)"
+        if self.tl.get("schema"):
+            # .tiled の描画列は nodes の真値の写しなので**完全一致**が条件（float32 丸めは介在しない）
+            L = self.maxlayer
+            fast = self.q(f"SELECT id, name, x, y, ang, r FROM tl.nodes_t WHERE layer=? LIMIT {800 if FAST else 5000}", (L,))
+            if not fast or fast[0][0] == "!ERR":
+                self.rec(f, NG, f".tiled の読み出しが失敗: {fast[:1]}")
+                return
+            ids = [r[0] for r in fast]; ph = ",".join("?" * len(ids))
+            leg = {r[0]: r[1:] for r in self.q(
+                f"SELECT rowid, node_name, xCoord, yCoord, angle, radius FROM nodes WHERE rowid IN ({ph})", ids)}
+            if len(leg) != len(ids):
+                self.rec(f, NG, f"rowid の対応が取れない: tiled {len(ids)} / nodes {len(leg)}")
+                return
+            bad = sum(1 for r in fast if leg[r[0]][0] != r[1] or leg[r[0]][1] != r[2] or leg[r[0]][2] != r[3]
+                      or abs((leg[r[0]][3] or 0) - (r[4] or 0)) > 1e-12 or abs((leg[r[0]][4] or 0) - (r[5] or 0)) > 1e-18)
+            self.rec(f, NG if bad else OK, f"L{L} {len(ids)} 行比較(.tiled vs nodes) / 不一致 {bad}")
+            return
         if "nodes_rtree" not in self.tabs or "ang" not in self.cols("nodes_rtree"):
             self.rec(f, WARN, "補助列が無いので比較しない")
             return
