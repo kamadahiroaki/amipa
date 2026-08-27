@@ -19,6 +19,9 @@ R-Tree の矩形検索は木を降りて探すので cold で 80〜100 ページ
 ・viewer 側は範囲表を CTE で渡し **CROSS JOIN** で結合順を固定すること（範囲 20 本超で planner が
   層全体走査に落ちる。EQP で確認済み）
 ・hap 絞り込みのマスク語 hm0..hm{W-1} と hb は R-Tree（または <db>.hapidx）から写す
+・v3.3: edges_t に辺の hb（edge_contig_cov.hb）と葉層のリード支持 rs（<db>.reads の edge_read_support、
+  または旧式の edges.read_support 列）を焼き込む。viewer が Paths 幅 / Reads 幅のたびに主 DB・.reads を
+  辺ごとに join していた（WG 葉層 cold で hb 0.4〜1.2 秒、rs 12〜17 秒＝1 辺 20ms のシーク）のを無くす
 
 使い方: tile_index.py <name>.db [--out <path>] [--force]
 """
@@ -28,7 +31,7 @@ import numpy as np
 K_TILES = 2.5
 CHUNK = 2_000_000
 SENT = -(1 << 62)
-SCHEMA = "tiled-v3.2"
+SCHEMA = "tiled-v3.3"
 
 
 def log(t0, m): print(f"[tile-index {time.time()-t0:7.1f}s] {m}", flush=True)
@@ -107,6 +110,33 @@ def main():
             n += len(rows)
         log(t0, f"R-Tree から hb={'有' if has_hb else '無'} hm={hm_cols} を {n:,} 行写した ({rt})")
 
+    # ---- 辺の hap-breadth(edge_contig_cov.hb) を写す ----
+    n_eids = int(src.execute("SELECT MAX(rowid) FROM edges").fetchone()[0] or 0)
+    ehb = np.full(n_eids + 1, SENT, np.int64)
+    ecc_cols = {r[1] for r in src.execute("PRAGMA table_info(edge_contig_cov)")}
+    has_ehb = "hb" in ecc_cols
+    if has_ehb:
+        has_idx = src.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_ecc_hb'").fetchone() is not None
+        cur = src.execute("SELECT edge_rowid, hb FROM edge_contig_cov" + (" INDEXED BY idx_ecc_hb" if has_idx else ""))
+        n = 0
+        while True:
+            rows = cur.fetchmany(CHUNK)
+            if not rows: break
+            arr = np.array(rows, dtype=object)
+            ehb[arr[:, 0].astype(np.int64)] = np.array([SENT if v is None else v for v in arr[:, 1]], np.int64)
+            n += len(rows)
+        log(t0, f"edge_contig_cov から hb を {n:,} 行写した" + ("（被覆索引 idx_ecc_hb を順読み）" if has_idx else ""))
+    # ---- リード支持 read_support の出所（葉層だけ意味を持つ）----
+    rs_mode = None
+    rd_path = a.db + ".reads"
+    if os.path.exists(rd_path):
+        src.execute("ATTACH DATABASE ? AS rd", (f"file:{rd_path}?mode=ro",))
+        if src.execute("SELECT 1 FROM rd.sqlite_master WHERE type='table' AND name='edge_read_support'").fetchone():
+            rs_mode = "sidecar"
+    ecols = {r[1] for r in src.execute("PRAGMA table_info(edges)")}
+    if rs_mode is None and "read_support" in ecols: rs_mode = "column"
+    log(t0, f"edge hb={'有' if has_ehb else '無'} read_support={rs_mode or '無し'}")
+
     tmp = out + ".part"
     for q in (tmp, tmp + "-journal"):
         if os.path.exists(q): os.unlink(q)
@@ -122,11 +152,12 @@ CREATE TABLE nodes_t(layer INTEGER, mkey INTEGER, id INTEGER, {ncols_common}, PR
 CREATE TABLE nodes_big(layer INTEGER, id INTEGER, {ncols_common}, PRIMARY KEY(layer, id)) WITHOUT ROWID;
 CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
   src_id INTEGER, tgt_id INTEGER, src_sign INTEGER, tgt_sign INTEGER,
-  ex REAL, ey REAL, er REAL, source TEXT, target TEXT,
+  ex REAL, ey REAL, er REAL, source TEXT, target TEXT, hb INTEGER, rs INTEGER,
   PRIMARY KEY(layer, mkey, eid, side)) WITHOUT ROWID;
 """)
     for k, v in (("schema", SCHEMA), ("world", json.dumps([x0, x1, y0, y1])), ("g_L", json.dumps(gL)),
                  ("K_TILES", str(a.k_tiles)), ("hm_cols", json.dumps(hm_cols)), ("has_hb", "1" if has_hb else "0"),
+                 ("has_ehb", "1" if has_ehb else "0"), ("rs", rs_mode or ""),
                  ("source", os.path.abspath(a.db))):
         dst.execute("INSERT INTO meta VALUES(?,?)", (k, v))
     NV = 3 + 13 + len(hm_cols)
@@ -185,7 +216,8 @@ CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
     log(t0, f"nodes 完了 {tot_nodes:,}（big {tot_big:,}）")
 
     # ---- edges: rowid 順 1 パス、層ごとに flush（端点は名前→id を層内 sorted+searchsorted で解く）----
-    ecur = src.execute("SELECT rowid, layer_index, source, target, src_sign, tgt_sign FROM edges NOT INDEXED")
+    ecur = src.execute("SELECT rowid, layer_index, source, target, src_sign, tgt_sign, "
+                       + ("read_support" if rs_mode == "column" else "NULL") + " FROM edges NOT INDEXED")
     eacc, tot_e, tot_erows = {}, 0, 0
 
     def flush_edges(L):
@@ -193,13 +225,36 @@ CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
         parts = eacc.pop(L)
         eid = np.concatenate([p[0] for p in parts]); s = np.concatenate([p[1] for p in parts]); t = np.concatenate([p[2] for p in parts])
         ss = np.concatenate([p[3] for p in parts]); ts = np.concatenate([p[4] for p in parts])
+        rsc = np.concatenate([p[5] for p in parts])
         nm, mk, rid, nx_, ny_, nr_ = layer_index[L]
         def resolve(names):
             pos = np.clip(np.searchsorted(nm, names), 0, nm.size - 1); return pos, nm[pos] == names
         ps, oks = resolve(s); pt, okt = resolve(t); ok = oks & okt
         miss = int((~ok).sum())
-        eid, ss, ts, ps, pt = eid[ok], ss[ok], ts[ok], ps[ok], pt[ok]
+        eid, ss, ts, ps, pt, rsv = eid[ok], ss[ok], ts[ok], ps[ok], pt[ok], rsc[ok]
         ks, kt = mk[ps], mk[pt]; sid, tid = rid[ps], rid[pt]
+        if rs_mode == "sidecar" and L == maxL:
+            # <db>.reads の edge_read_support(source,target,support) は葉名が鍵。層内の名前→rowid 表で
+            # (sid,tid) に解き、鍵 sid*(n_ids+1)+tid で sorted+searchsorted。viewer の join と同じく向きは区別する
+            keys, vals, nrs = [], [], 0
+            rcur = src.execute("SELECT source, target, support FROM rd.edge_read_support")
+            while True:
+                rr = rcur.fetchmany(CHUNK)
+                if not rr: break
+                p1, o1 = resolve(np.array([q[0] for q in rr], dtype="S24"))
+                p2, o2 = resolve(np.array([q[1] for q in rr], dtype="S24")); o = o1 & o2
+                keys.append(rid[p1[o]] * (n_ids + 1) + rid[p2[o]])
+                vals.append(np.fromiter(((q[2] or 0) for q in rr), np.int64, len(rr))[o])
+                nrs += len(rr)
+            if keys:
+                K = np.concatenate(keys); V = np.concatenate(vals)
+                o = np.lexsort((V, K)); K, V = K[o], V[o]
+                last = np.r_[K[1:] != K[:-1], True]; K, V = K[last], V[last]   # 重複鍵は最大値
+                ek = sid * (n_ids + 1) + tid
+                pos = np.clip(np.searchsorted(K, ek), 0, K.size - 1); hit = K[pos] == ek
+                rsv = np.where(hit, V[pos], SENT)
+                log(t0, f"  read_support {nrs:,} 行 → 葉辺 {int(hit.sum()):,}/{eid.size:,} に付与")
+            del keys, vals
         # 端点ごとに 1 行（畳まない）。同タイルでも 2 行にする方が、端点座標で厳密に選べて単純。
         key = np.concatenate([ks, kt]); e2 = np.concatenate([eid, eid])
         side = np.concatenate([np.zeros(eid.size, np.int8), np.ones(eid.size, np.int8)])
@@ -208,10 +263,10 @@ CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
         order = np.lexsort((side, e2, key))
         # source/target の名前も持つ: 葉層のリード支持(rd.edge_read_support)は **名前鍵**なので、
         # これが無いと reads 表示のたびに従来経路（可視ノード名で 2V 回 probe）へ落ちる。
-        dst.executemany("INSERT INTO edges_t VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        dst.executemany("INSERT INTO edges_t VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             ((L, int(key[i]), int(e2[i]), int(side[i]), int(sid[idx[i]]), int(tid[idx[i]]), nz(ss[idx[i]]), nz(ts[idx[i]]),
               float(nx_[pend[i]]), float(ny_[pend[i]]), float(nr_[pend[i]]),
-              s[idx[i]].decode(), t[idx[i]].decode()) for i in order))
+              s[idx[i]].decode(), t[idx[i]].decode(), nz(ehb[eid[idx[i]]]), nz(rsv[idx[i]])) for i in order))
         dst.commit()
         tot_e += eid.size; tot_erows += order.size
         log(t0, f"  edges L{L:2} e={eid.size:>11,} rows={order.size:>11,} (+{100*(order.size/max(1,eid.size)-1):.1f}%) 未解決={miss}")
@@ -231,7 +286,8 @@ CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
                 np.fromiter((r[0] for r in sel), np.int64, len(sel)),
                 np.array([r[2] for r in sel], dtype="S24"), np.array([r[3] for r in sel], dtype="S24"),
                 np.fromiter(((SENT if r[4] is None else r[4]) for r in sel), np.int64, len(sel)),
-                np.fromiter(((SENT if r[5] is None else r[5]) for r in sel), np.int64, len(sel))))
+                np.fromiter(((SENT if r[5] is None else r[5]) for r in sel), np.int64, len(sel)),
+                np.fromiter(((SENT if r[6] is None else r[6]) for r in sel), np.int64, len(sel))))
     for L in sorted(eacc): flush_edges(L)
     for k, v in (("node_rows", str(tot_nodes)), ("edge_rows", str(tot_erows)), ("edges", str(tot_e))):
         dst.execute("INSERT INTO meta VALUES(?,?)", (k, v))

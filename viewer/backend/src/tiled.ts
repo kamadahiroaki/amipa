@@ -22,7 +22,7 @@ export interface TiledInfo {
   hmCols: string[]                  // hap マスク語の列名（hm0..）。空なら絞り込み不可
   hasHb: boolean
   nodeCols: Set<string>
-  edgeCols: Set<string>            // v3.2 以降は source/target（端点名）を持つ＝葉層のリード支持 join が可能
+  edgeCols: Set<string>            // v3.2 以降は source/target（端点名）、v3.3 以降は hb / rs（焼き込み済み）を持つ
 }
 const cache = new WeakMap<object, TiledInfo | null>()
 export function tiledInfo(d: Database.Database): TiledInfo | null {
@@ -31,7 +31,7 @@ export function tiledInfo(d: Database.Database): TiledInfo | null {
   try {
     const meta = new Map<string, string>()
     for (const r of d.prepare('SELECT key, value FROM tl.meta').all() as { key: string; value: string }[]) meta.set(r.key, r.value)
-    if (['tiled-v3.1', 'tiled-v3.2'].includes(meta.get('schema') || '')) {
+    if (['tiled-v3.1', 'tiled-v3.2', 'tiled-v3.3'].includes(meta.get('schema') || '')) {
       const w = JSON.parse(meta.get('world') || '[0,1,0,1]') as number[]
       info = {
         g: JSON.parse(meta.get('g_L') || '[]'),

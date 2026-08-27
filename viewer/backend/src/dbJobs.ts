@@ -356,18 +356,29 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
       // 名前を持たない v3.1 サイドカーで rs を要求されたときだけ従来経路へ（reads 表示の時だけ遅い）。
       const wantRs = exq.has('rs') && edgesHasSigns(d) && edgeHasRs(d, job.mapq) && L >= maxLayerOf(d)
       const hasNames = !!ti && ti.edgeCols.has('source') && ti.edgeCols.has('target')
+      const bakedRs = !!ti && ti.edgeCols.has('rs')      // v3.3: read_support を焼き込み済み（join 不要）
+      const bakedHb = !!ti && ti.edgeCols.has('hb')      // v3.3: edge_hb を焼き込み済み
       const edgeMaskOk = !sel || hapIdxEdgeOk(d)
-      if (ti && L < ti.g.length && edgeMaskOk && (!wantRs || hasNames)) {
+      if (ti && L < ti.g.length && edgeMaskOk && (!wantRs || hasNames || bakedRs)) {
         ctx.setPhase?.(1)
         const rg = zranges(job.x1, job.x2, job.y1, job.y2, ti.g[L])
         const em = sel ? maskWhere('ehm', sel) : { sql: '', params: [] as bigint[] }
         const ej = sel ? ` JOIN ${sel.edgeTable} ehm ON ehm.edge_rowid = e.eid` : ''
         let xsel = '', xjoin = ''
-        if (exq.has('hb') && tableCols(d, 'edge_contig_cov').has('hb')) {
-          xsel += ', ecc.hb AS edge_hb'
-          xjoin += ` LEFT JOIN edge_contig_cov ecc${hbCoveringIdx(d, 'edge_contig_cov')} ON ecc.edge_rowid = e.eid`
+        // ★v3.3 サイドカーは hb / rs を辺の行に持つので join しない。WG 葉層 cold の実測: 主 DB の
+        //   edge_contig_cov を eid で引くと 0.4〜1.2 秒、.reads の edge_read_support を名前で引くと 12〜17 秒
+        //   （1 辺 20ms のランダム読み）。焼き込みで両方ともタイルの順読みだけになる。
+        if (exq.has('hb')) {
+          if (bakedHb) xsel += ', e.hb AS edge_hb'
+          else if (tableCols(d, 'edge_contig_cov').has('hb')) {
+            xsel += ', ecc.hb AS edge_hb'
+            xjoin += ` LEFT JOIN edge_contig_cov ecc${hbCoveringIdx(d, 'edge_contig_cov')} ON ecc.edge_rowid = e.eid`
+          }
         }
-        if (wantRs) { xsel += `, ${edgeRsExpr(d, job.mapq, L)} AS read_support`; xjoin += edgeRsJoin(d, L) }
+        if (wantRs) {
+          if (bakedRs) xsel += ', e.rs AS read_support'
+          else { xsel += `, ${edgeRsExpr(d, job.mapq, L)} AS read_support`; xjoin += edgeRsJoin(d, L) }
+        }
         // ★edges_t は端点ごとに 1 行（同じ辺が最大 2 回出る）。ガードの行数上限は**生の行**を数えるので、
         //   利用者の上限 maxRows をそのまま渡すと辺数がその半分で 'rows' 打ち切りになる。
         //   fold で流しながら eid で重複排除し、上限は**辺の数**で判定する（生の行の上限は 2 倍で渡す）。
