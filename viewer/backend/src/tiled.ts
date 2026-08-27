@@ -31,7 +31,7 @@ export function tiledInfo(d: Database.Database): TiledInfo | null {
   try {
     const meta = new Map<string, string>()
     for (const r of d.prepare('SELECT key, value FROM tl.meta').all() as { key: string; value: string }[]) meta.set(r.key, r.value)
-    if (['tiled-v3.1', 'tiled-v3.2', 'tiled-v3.3'].includes(meta.get('schema') || '')) {
+    if (['tiled-v3.1', 'tiled-v3.2', 'tiled-v3.3', 'tiled-v4'].includes(meta.get('schema') || '')) {
       const w = JSON.parse(meta.get('world') || '[0,1,0,1]') as number[]
       info = {
         g: JSON.parse(meta.get('g_L') || '[]'),

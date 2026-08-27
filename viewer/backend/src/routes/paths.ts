@@ -2,7 +2,8 @@ import { Router } from 'express'
 import { getDb, getWritableDb, dbBytes, HUGE_DB_BYTES } from '../db'
 import { dbEdgesSigned, edgeXYSelect, EDGE_NODE_JOIN } from '../edgeGeom'
 // contig_id→hap_id の採番は hap 絞り込みと同一定義を使う（重複実装で採番がズレるのを防ぐ）
-import { contigToHap, buildSelection, maskWhere, hapIdxEdgeOk } from '../hapidx'
+import { contigToHap, buildSelection, maskWhere, hapIdxEdgeOk, type Selection } from '../hapidx'
+import { spatialSource } from '../spatial'
 import { covFmt, rangeMaxFn, rangeSumFn } from '../covBlob'
 
 export const pathsRouter = Router()
@@ -205,11 +206,12 @@ pathsRouter.get('/ribbon', (req, res) => {
   const bx = ['x1', 'y1', 'x2', 'y2'].map(k => Number(req.query[k as keyof typeof req.query]))
   const hasBbox = bx.every(v => Number.isFinite(v))
   const [x1, y1, x2, y2] = bx
-  // R-tree 矩形重なり: rt.max_x>=qx1 AND rt.min_x<=qx2 AND …（層は min_layer==max_layer==L）。
-  const rtWhere = 'rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?'
-  const rtParams = [L, L, x1, x2, y1, y2]
+  const rect = { x1, x2, y1, y2 }
   try {
     const d = getDb(db)
+    // 空間ソース（tiled / R-Tree）。層・矩形（・マスク）を内包した部分問い合わせ `rt` を返す。
+    // bbox 無しなら層全体（従来どおり nodes.layer_index で）。
+    const spOf = (sel: Selection | null = null) => spatialSource(d, L, rect, sel)
     const signed = dbEdgesSigned(d)
     // 対象エッジ集合。
     //  signed: 座標非保存 → 可視/被覆ノード名の集合を種に source 枝を PK probe し、nodes を JOIN して
@@ -224,10 +226,13 @@ pathsRouter.get('/ribbon', (req, res) => {
            FROM edges e ${EDGE_NODE_JOIN}
            WHERE e.layer_index = ? AND e.source IN (${ph})`).all(L, ...names) as any[]
       }
+      // 座標保存スキーマ（旧 DB）は edges_rtree を持つ。層は min_layer==max_layer==L
       return hasBbox
         ? d.prepare(
           `SELECT e.source, e.target, e.start_x, e.start_y, e.end_x, e.end_y
-           FROM edges_rtree rt JOIN edges e ON e.rowid = rt.rowid WHERE ${rtWhere}`).all(...rtParams) as any[]
+           FROM edges_rtree rt JOIN edges e ON e.rowid = rt.rowid
+           WHERE rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?`)
+          .all(L, L, x1, x2, y1, y2) as any[]
         : d.prepare(
           `SELECT source, target, start_x, start_y, end_x, end_y
            FROM edges WHERE layer_index = ?`).all(L) as any[]
@@ -267,31 +272,37 @@ pathsRouter.get('/ribbon', (req, res) => {
       const useMask = !!rsel && !rsel.exact
       let covered: { id: number; name: string; x: number; y: number; a: number; r: number; frac: number }[] = []
       if (useMask && rsel) {
-        const mw = maskWhere('rt', rsel)
-        // ★CROSS JOIN で結合順を固定する（WG でプランナが nodes を外側に選び 10 分超になる件。
-        //   nodeQuery.ts rtreeFrom のコメント参照）。
+        // ★CROSS JOIN で結合順を固定する（WG でプランナが nodes を外側に選び 10 分超になる件。spatial.ts 参照）。
+        //   bbox 無し（層全体）はマスク付き索引を層だけで走査する: tiled なら nodes_t の層全体、R-Tree なら rtree
         const rows = (hasBbox
-          ? d.prepare(
+          ? (() => { const sp = spOf(rsel); return d.prepare(
             `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
                     n.angle AS a, n.radius AS r
-             FROM ${rsel.rtree} rt CROSS JOIN nodes n ON n.rowid = rt.rowid
-             WHERE ${rtWhere}${mw.sql}`).all(...rtParams, ...mw.params)
-          : d.prepare(
-            `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
-                    n.angle AS a, n.radius AS r
-             FROM ${rsel.rtree} rt CROSS JOIN nodes n ON n.rowid = rt.rowid
-             WHERE rt.min_layer = ? AND rt.max_layer = ?${mw.sql}`).all(L, L, ...mw.params)) as CRow[]
+             FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid`).all(...sp.params) })()
+          : (() => {
+            const mw = maskWhere('rt', rsel)
+            if (rsel.tiledNodes) return d.prepare(
+              `SELECT rt.id AS id, rt.name AS name, rt.x AS x, rt.y AS y, rt.ang AS a, rt.r AS r
+               FROM tl.nodes_t rt WHERE rt.layer = ?${mw.sql}
+               UNION ALL
+               SELECT rt.id AS id, rt.name AS name, rt.x AS x, rt.y AS y, rt.ang AS a, rt.r AS r
+               FROM tl.nodes_big rt WHERE rt.layer = ?${mw.sql}`).all(L, ...mw.params, L, ...mw.params)
+            return d.prepare(
+              `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
+                      n.angle AS a, n.radius AS r
+               FROM ${rsel.rtree} rt CROSS JOIN nodes n ON n.rowid = rt.rowid
+               WHERE rt.min_layer = ? AND rt.max_layer = ?${mw.sql}`).all(L, L, ...mw.params)
+          })()) as CRow[]
         // θ=0 の通過判定なので frac は「通る」の 1 でよい（frac は frontend の描画では未使用）。
         covered = rows.map(r => ({ id: r.id, name: r.name, x: r.x, y: r.y, a: r.a, r: r.r, frac: 1 }))
       } else {
       const allRows = (hasBbox
-        ? d.prepare(
+        ? (() => { const sp = spOf(); return d.prepare(
           `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
                   n.angle AS a, n.radius AS r, ncc.blob
-           FROM nodes_rtree rt
-           JOIN nodes n ON n.rowid = rt.rowid
-           JOIN node_contig_cov ncc ON ncc.node_rowid = rt.rowid
-           WHERE ${rtWhere}`).all(...rtParams)
+           FROM ${sp.from}
+           CROSS JOIN nodes n ON n.rowid = rt.rowid
+           JOIN node_contig_cov ncc ON ncc.node_rowid = rt.rowid`).all(...sp.params) })()
         : d.prepare(
           `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
                   n.angle AS a, n.radius AS r, ncc.blob
@@ -312,9 +323,9 @@ pathsRouter.get('/ribbon', (req, res) => {
       if (hasNodeContigInv(d) && covered.length) {
         const coveredIds = new Set(covered.map(c => c.id))
         const irows = (hasBbox
-          ? d.prepare(
-            `SELECT nci.node_rowid AS id, nci.blob FROM nodes_rtree rt
-             JOIN node_contig_inv nci ON nci.node_rowid = rt.rowid WHERE ${rtWhere}`).all(...rtParams)
+          ? (() => { const sp = spOf(); return d.prepare(
+            `SELECT nci.node_rowid AS id, nci.blob FROM ${sp.from}
+             CROSS JOIN node_contig_inv nci ON nci.node_rowid = rt.rowid`).all(...sp.params) })()
           : d.prepare(
             `SELECT nci.node_rowid AS id, nci.blob FROM node_contig_inv nci
              JOIN nodes n ON n.rowid = nci.node_rowid WHERE n.layer_index = ?`).all(L)) as any[]
@@ -328,7 +339,7 @@ pathsRouter.get('/ribbon', (req, res) => {
       let edges: any[]
       if (idByName.size === 0) {
         edges = []
-      } else if (useMask && rsel && rsel.edgeTable && signed) {
+      } else if (useMask && rsel && rsel.edgeTable && signed) {   // edge_hm(edge_rowid) を持つ旧 DB だけ。tiled v4 の辺マスクは名前では引けないので blob 経路へ
         // エッジ側もマスクで済ませる（`edge_contig_cov` は 161 B/行なので触らずに済むと大きい）。
         // ノード側と同じ条件（θ=0 かつ hap 単位選択）でマスクは厳密なので blob 再確認は不要。
         // `edge_hm(edge_rowid PK, hm0..)` は 1 行が細いので rowid 点引きでも安い。
@@ -376,7 +387,7 @@ pathsRouter.get('/ribbon', (req, res) => {
               `SELECT ${cols} FROM edge_contig_cov ecc
                JOIN edges_rtree rt ON rt.rowid = ecc.edge_rowid
                JOIN edges e ON e.rowid = ecc.edge_rowid
-               WHERE ${rtWhere}`).all(...rtParams)
+               WHERE rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?`).all(L, L, x1, x2, y1, y2)
             : d.prepare(
               `SELECT ${cols} FROM edge_contig_cov ecc
                JOIN edges e ON e.rowid = ecc.edge_rowid
@@ -409,13 +420,12 @@ pathsRouter.get('/ribbon', (req, res) => {
       type HapRow = { id: number; name: string; x: number; y: number; a: number; r: number; cov: Buffer }
       // bbox 有→nodes_rtree で層 L ∩ 矩形のノードだけ、無→層全体。cov BLOB を JS で θ 判定。
       const allRows = (hasBbox
-        ? d.prepare(
+        ? (() => { const sp = spOf(); return d.prepare(
           `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
                   n.angle AS a, n.radius AS r, nhc.cov
-           FROM nodes_rtree rt
-           JOIN nodes n ON n.rowid = rt.rowid
-           JOIN node_hap_cov nhc ON nhc.node_rowid = rt.rowid
-           WHERE ${rtWhere}`).all(...rtParams)
+           FROM ${sp.from}
+           CROSS JOIN nodes n ON n.rowid = rt.rowid
+           JOIN node_hap_cov nhc ON nhc.node_rowid = rt.rowid`).all(...sp.params) })()
         : d.prepare(
           `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
                   n.angle AS a, n.radius AS r, nhc.cov
@@ -450,7 +460,7 @@ pathsRouter.get('/ribbon', (req, res) => {
               `SELECT ${cols} FROM edge_hap_cov ehc
                JOIN edges_rtree rt ON rt.rowid = ehc.edge_rowid
                JOIN edges e ON e.rowid = ehc.edge_rowid
-               WHERE ${rtWhere}`).all(...rtParams)
+               WHERE rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?`).all(L, L, x1, x2, y1, y2)
             : d.prepare(
               `SELECT ${cols} FROM edge_hap_cov ehc
                JOIN edges e ON e.rowid = ehc.edge_rowid
@@ -478,15 +488,15 @@ pathsRouter.get('/ribbon', (req, res) => {
     // 旧スキーマ（node_group_cov テーブル）。bbox 有→nodes_rtree を JOIN して矩形に絞る。
     const ph = gids.map(() => '?').join(',')
     const nrows = (hasBbox
-      ? d.prepare(
+      ? (() => { const sp = spOf(); return d.prepare(
         `SELECT c.node_rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
                 n.angle AS a, n.radius AS r, n.size AS bp, SUM(c.covered_bp) AS cov
-         FROM node_group_cov c
+         FROM ${sp.from}
+         CROSS JOIN node_group_cov c ON c.node_rowid = rt.rowid
          JOIN nodes n ON n.rowid = c.node_rowid
-         JOIN nodes_rtree rt ON rt.rowid = c.node_rowid
-         WHERE c.layer_index = ? AND c.group_id IN (${ph}) AND ${rtWhere}
+         WHERE c.layer_index = ? AND c.group_id IN (${ph})
          GROUP BY c.node_rowid
-         HAVING cov >= ? * bp`).all(L, ...gids, ...rtParams, theta)
+         HAVING cov >= ? * bp`).all(...sp.params, L, ...gids, theta) })()
       : d.prepare(
         `SELECT c.node_rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
                 n.angle AS a, n.radius AS r, n.size AS bp, SUM(c.covered_bp) AS cov
@@ -520,22 +530,21 @@ pathsRouter.get('/cnv', (req, res) => {
   const bx = ['x1', 'y1', 'x2', 'y2'].map(k => Number(req.query[k as keyof typeof req.query]))
   const hasBbox = bx.every(v => Number.isFinite(v))
   const [x1, y1, x2, y2] = bx
-  const rtWhere = 'rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?'
-  const rtParams = [L, L, x1, x2, y1, y2]
   try {
     const d = getDb(db)
     if (!hasNodeHapMult(d)) { res.json({ nodes: [], available: false }); return }
+    const sp = hasBbox ? spatialSource(d, L, { x1, x2, y1, y2 }) : null
     const hapOf = contigToHap(d)
     const maxHapId = hapOf.length - 1
     const uHap = unitRanges.map(([lo, hi]) => {
       const clamp = (c: number) => (c >= 0 && c < hapOf.length ? hapOf[c] : (c < 0 ? 0 : maxHapId))
       return [clamp(Math.min(lo, hi)), clamp(Math.max(lo, hi))] as [number, number]
     })
-    const rows = (hasBbox
+    const rows = (sp
       ? d.prepare(
         `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y, nhm.blob
-         FROM nodes_rtree rt JOIN nodes n ON n.rowid = rt.rowid
-         JOIN node_hap_mult nhm ON nhm.node_rowid = rt.rowid WHERE ${rtWhere}`).all(...rtParams)
+         FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid
+         JOIN node_hap_mult nhm ON nhm.node_rowid = rt.rowid`).all(...sp.params)
       : d.prepare(
         `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y, nhm.blob
          FROM node_hap_mult nhm JOIN nodes n ON n.rowid = nhm.node_rowid
@@ -566,13 +575,12 @@ pathsRouter.get('/leaf_bases', (req, res) => {
     const d = getDb(db)
     if (!hasLeafSeq(d)) { res.json({ bases: [], available: false }); return }
     const rows = (hasBbox
-      ? d.prepare(
+      ? (() => { const sp = spatialSource(d, L, { x1: bx[0], y1: bx[1], x2: bx[2], y2: bx[3] }); return d.prepare(
         `SELECT n.node_name AS name, ls.seq AS base
-         FROM nodes_rtree rt JOIN nodes n ON n.rowid = rt.rowid
+         FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid
          JOIN leaf_seq ls ON ls.leaf_id = CAST(SUBSTR(n.node_name, 2) AS INTEGER)
-         WHERE rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?
-           AND n.node_name LIKE 'n%' AND n.size <= ? LIMIT ?`)
-        .all(L, L, bx[0], bx[2], bx[1], bx[3], ms, CAP + 1)
+         WHERE n.node_name LIKE 'n%' AND n.size <= ? LIMIT ?`)
+        .all(...sp.params, ms, CAP + 1) })()
       : d.prepare(
         `SELECT n.node_name AS name, ls.seq AS base
          FROM nodes n JOIN leaf_seq ls ON ls.leaf_id = CAST(SUBSTR(n.node_name, 2) AS INTEGER)

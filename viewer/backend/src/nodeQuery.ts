@@ -5,6 +5,7 @@
 // これらは全て (Database, パラメータ) の純粋関数なのでそのまま共有できる。
 // 中身は graph.ts から**無改変で移動**しただけ（コメントも含む）。
 import { maskWhere, type Selection } from './hapidx'
+import type { SpatialSource } from './spatial'
 
 // テーブルの列名集合を接続単位でメモ化（mapq別 coverage_qN 列の有無判定に使う）。
 const colCache = new WeakMap<any, Map<string, Set<string>>>()
@@ -237,54 +238,28 @@ export function buildNodesSqlFast(rtree: string, angScale: number, maskSql = '',
     AND r.min_y <= ? AND r.max_y >= ?${maskSql}`
 }
 
-// ビューポート検索の空間索引部。sel あり=マスク付き R-Tree(Selection.rtree)を外側ループにし、
-// マスク条件を先に評価して生存分だけ nodes を rowid 点引きする（棄却行の太い nodes 行を読まない）。
-// sel なし=従来の nodes_rtree。どちらも WHERE のパラメータ順は [L, x2, x1, y2, y1] で始まる。
-export function rtreeFrom(sel: Selection | null): { from: string; where: string; params: bigint[] } {
-  if (!sel) {
-    return {
-      from: 'FROM nodes n JOIN nodes_rtree r ON n.rowid = r.rowid',
-      where: '', params: [],
-    }
-  }
-  const mw = maskWhere('r', sel)
-  return {
-    // ★CROSS JOIN で結合順を固定する（SQLite は CROSS JOIN の左を必ず外側ループにする）。
-    //   通常の JOIN だと **WG(nodes 2億行)でプランナが nodes を外側に選び、rtree の bbox 制約すら
-    //   使わない**プラン（SCAN n → SCAN r VIRTUAL TABLE INDEX 1:）になり 10 分以上返らなかった。
-    //   サイドカーだけ ANALYZE 済で main に stat1 が無い非対称が引き金。chr22 では正しいプランに
-    //   なっていたので **WG 規模でしか出ない**。CROSS JOIN で 10分超 → cold 6.9s / warm 87ms。
-    from: `FROM ${sel.rtree} r CROSS JOIN nodes n ON n.rowid = r.rowid`,
-    where: mw.sql, params: mw.params,
-  }
-}
-
+// ビューポート検索の空間索引部は spatial.ts の spatialSource に集約した（tiled / R-Tree の二本立て）。
+// 部分問い合わせ `rt` を外側にし（CROSS JOIN で結合順を固定）、生存分だけ nodes を rowid 点引きする。
+// ★通常の JOIN だと WG(nodes 2億行)でプランナが nodes を外側に選び 10 分以上返らなかった（実測）。
+// パラメータは sp.params だけ（層・矩形・マスクは全部 sp に内包）。
 export function buildNodesSql(cov: string, hist: string, refSel: string, extraSel = '', extraJoin = '',
-                       sel: Selection | null = null): string {
-  const rt = rtreeFrom(sel)
+                       sp: SpatialSource): string {
   return `
   SELECT n.rowid AS id, n.node_name, n.is_bubble, n.size,
          n.xCoord, n.yCoord, n.angle, n.radius, n.color,
-         ${cov} AS coverage, ${hist} AS cov_hist, r.min_layer AS layer${refSel}${extraSel}
-  ${rt.from}${extraJoin}
-  WHERE r.min_layer = ?
-    AND r.min_x <= ? AND r.max_x >= ?
-    AND r.min_y <= ? AND r.max_y >= ?${rt.where}
+         ${cov} AS coverage, ${hist} AS cov_hist, rt.min_layer AS layer${refSel}${extraSel}
+  FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid${extraJoin}
 `
 }
 
 // レガシー経路（cov_hist 等を持たない LOD DB。emitter 産の layered.db はこちら）。
 // これらの DB こそ ref_bp 列を持つので、フォールバックにも refSel を通す。
 export function buildNodesSqlLegacy(refSel: string, extraSel = '', extraJoin = '',
-                             sel: Selection | null = null): string {
-  const rt = rtreeFrom(sel)
+                             sp: SpatialSource): string {
   return `
   SELECT n.rowid AS id, n.node_name, n.is_bubble, n.size,
-         n.xCoord, n.yCoord, n.angle, n.radius, n.color, r.min_layer AS layer${refSel}${extraSel}
-  ${rt.from}${extraJoin}
-  WHERE r.min_layer = ?
-    AND r.min_x <= ? AND r.max_x >= ?
-    AND r.min_y <= ? AND r.max_y >= ?${rt.where}
+         n.xCoord, n.yCoord, n.angle, n.radius, n.color, rt.min_layer AS layer${refSel}${extraSel}
+  FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid${extraJoin}
 `
 }
 

@@ -18,7 +18,10 @@ R-Tree の矩形検索は木を降りて探すので cold で 80〜100 ページ
 ・新規ファイルなので物理連続（主 DB の freelist に左右されない）。プリウォームは順読み 44GB ≒ 25 秒
 ・viewer 側は範囲表を CTE で渡し **CROSS JOIN** で結合順を固定すること（範囲 20 本超で planner が
   層全体走査に落ちる。EQP で確認済み）
-・hap 絞り込みのマスク語 hm0..hm{W-1} と hb は R-Tree（または <db>.hapidx）から写す
+・v4: hap 絞り込みのマスク語 hm0..hm{W-1} は node_contig_cov / edge_contig_cov の blob から **自前計算**する
+  （hap_index.py の MaskCalc を流用。R-Tree の補助列や <db>.hapidx には依存しない → emit は R-Tree も
+  hapidx も作らなくてよい）。諸元 n_hap/words/bits/mode は meta に置く（hapidx_meta の代替）。
+  world は stats.world（emit が書く）→ 無ければ R-Tree ルート → 無ければ nodes 全走査
 ・v3.3: edges_t に辺の hb（edge_contig_cov.hb）と葉層のリード支持 rs（<db>.reads の edge_read_support、
   または旧式の edges.read_support 列）を焼き込む。viewer が Paths 幅 / Reads 幅のたびに主 DB・.reads を
   辺ごとに join していた（WG 葉層 cold で hb 0.4〜1.2 秒、rs 12〜17 秒＝1 辺 20ms のシーク）のを無くす
@@ -31,7 +34,7 @@ import numpy as np
 K_TILES = 2.5
 CHUNK = 2_000_000
 SENT = -(1 << 62)
-SCHEMA = "tiled-v3.3"
+SCHEMA = "tiled-v4"
 
 
 def log(t0, m): print(f"[tile-index {time.time()-t0:7.1f}s] {m}", flush=True)
@@ -51,6 +54,21 @@ def morton(tx, ty): return (part1by1(tx) | (part1by1(ty) << np.uint64(1))).astyp
 def nz(v): return None if v == SENT else int(v)
 
 
+def world_of(con, st, t0):
+    """全層の外接矩形 (x0,x1,y0,y1)。stats.world → R-Tree ルート → nodes 全走査 の順に試す。"""
+    w = st.get("world")
+    if isinstance(w, (list, tuple)) and len(w) == 4:
+        return tuple(float(v) for v in w)
+    try:
+        return world_from_rtree(con)
+    except Exception:
+        pass
+    log(t0, "world: stats.world も nodes_rtree も無いので nodes を全走査する（巨大 DB では emit に world を書かせること）")
+    r = con.execute("SELECT MIN(xCoord-radius), MAX(xCoord+radius), MIN(yCoord-radius), MAX(yCoord+radius) "
+                    "FROM nodes NOT INDEXED").fetchone()
+    return float(r[0]), float(r[1]), float(r[2]), float(r[3])
+
+
 def world_from_rtree(con):
     buf = con.execute("SELECT data FROM nodes_rtree_node WHERE nodeno=1").fetchone()[0]
     n = int.from_bytes(buf[2:4], "big"); x0 = y0 = 1e9; x1 = y1 = -1e9
@@ -67,6 +85,7 @@ def main():
     ap.add_argument("--out", default=None, help="既定 <db>.tiled")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--k-tiles", type=float, default=K_TILES)
+    ap.add_argument("--wmax", type=int, default=8, help="hap マスクの語数上限（超えたら bucket モード）")
     a = ap.parse_args()
     out = a.out or (a.db + ".tiled")
     if os.path.exists(out) and not a.force:
@@ -76,56 +95,66 @@ def main():
     src.execute("PRAGMA cache_size=-1000000")
     st = json.loads(src.execute("SELECT data FROM stats ORDER BY id LIMIT 1").fetchone()[0])
     lz = st["layer_zoom"]; maxL = len(lz) - 1
-    x0, x1, y0, y1 = world_from_rtree(src); W = x1 - x0
+    x0, x1, y0, y1 = world_of(src, st, t0); W = x1 - x0
     gL = [max(0, min(30, int(round(np.log2(a.k_tiles * lz[L] / W))))) for L in range(maxL + 1)]
     n_ids = int(src.execute("SELECT MAX(rowid) FROM nodes").fetchone()[0])
     log(t0, f"{a.db}: world W={W:.4f} layers={maxL+1} g_L={gL} max_rowid={n_ids:,}")
 
-    # ---- hap マスク語 / hb を R-Tree（main か <db>.hapidx）から写す ----
-    rcols = {r[1] for r in src.execute("PRAGMA table_info(nodes_rtree)")}
-    hm_cols = sorted(c for c in rcols if c.startswith("hm") and c[2:].isdigit())
-    rt = "nodes_rtree"
-    if not hm_cols and os.path.exists(a.db + ".hapidx"):
-        src.execute("ATTACH DATABASE ? AS ix", (a.db + ".hapidx",))
-        rcols = {r[1] for r in src.execute("PRAGMA ix.table_info(nodes_rtree_hm)")}
-        hm_cols = sorted(c for c in rcols if c.startswith("hm") and c[2:].isdigit())
-        rt = "ix.nodes_rtree_hm" if hm_cols else rt
-    has_hb = "hb" in rcols
+    # ---- hap マスク語 / hb を node_contig_cov から自前計算（R-Tree / .hapidx に依存しない）----
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from hap_index import build_hap_map, MaskCalc
+    ncc_cols = {r[1] for r in src.execute("PRAGMA table_info(node_contig_cov)")}
+    has_hb = "hb" in ncc_cols
+    c2h, haps = build_hap_map(src) if ncc_cols else (None, None)
+    n_hap = len(haps) if haps else 0
+    words, mode = 0, "exact"
+    if n_hap > 0:
+        words = (n_hap + 63) // 64
+        if words > a.wmax:
+            words, mode = a.wmax, "bucket"
+    hm_cols = [f"hm{i}" for i in range(words)]
+    mc = MaskCalc(c2h, n_hap, words, mode) if words else None
     hb = np.full(n_ids + 1, SENT, np.int64)
-    hm = np.zeros((n_ids + 1, len(hm_cols)), np.int64)
-    if has_hb or hm_cols:
-        cols = (["hb"] if has_hb else []) + hm_cols
-        cur = src.execute(f"SELECT id, {', '.join(cols)} FROM {rt}")
+    hm = np.zeros((n_ids + 1, words), np.int64)
+    if ncc_cols and (has_hb or words):
+        cur = src.execute("SELECT node_rowid, " + ("hb" if has_hb else "NULL") + ", "
+                          + ("blob" if words else "NULL") + " FROM node_contig_cov")
         n = 0
         while True:
-            rows = cur.fetchmany(CHUNK)
+            rows = cur.fetchmany(CHUNK // 4)
             if not rows: break
-            arr = np.array(rows, dtype=object)
-            ids = arr[:, 0].astype(np.int64)
-            k = 1
+            ids = np.fromiter((r[0] for r in rows), np.int64, len(rows))
             if has_hb:
-                hb[ids] = np.array([SENT if v is None else v for v in arr[:, 1]], np.int64); k = 2
-            for j, _ in enumerate(hm_cols):
-                hm[ids, j] = np.array([0 if v is None else v for v in arr[:, k + j]], np.int64)
+                hb[ids] = np.fromiter(((SENT if r[1] is None else r[1]) for r in rows), np.int64, len(rows))
+            if words:
+                hm[ids] = mc.compute([r[2] for r in rows]).view(np.int64)
             n += len(rows)
-        log(t0, f"R-Tree から hb={'有' if has_hb else '無'} hm={hm_cols} を {n:,} 行写した ({rt})")
+        log(t0, f"node_contig_cov から hb={'有' if has_hb else '無'} hm={hm_cols}({mode}, H={n_hap}) を {n:,} 行計算した")
 
     # ---- 辺の hap-breadth(edge_contig_cov.hb) を写す ----
     n_eids = int(src.execute("SELECT MAX(rowid) FROM edges").fetchone()[0] or 0)
     ehb = np.full(n_eids + 1, SENT, np.int64)
     ecc_cols = {r[1] for r in src.execute("PRAGMA table_info(edge_contig_cov)")}
     has_ehb = "hb" in ecc_cols
-    if has_ehb:
-        has_idx = src.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_ecc_hb'").fetchone() is not None
-        cur = src.execute("SELECT edge_rowid, hb FROM edge_contig_cov" + (" INDEXED BY idx_ecc_hb" if has_idx else ""))
+    ehm = np.zeros((n_eids + 1, words), np.int64)
+    if ecc_cols and (has_ehb or words):
+        # hm も要るなら blob を読む＝表本体を順読み。hb だけなら被覆索引 idx_ecc_hb の方が細い
+        has_idx = (not words) and src.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_ecc_hb'").fetchone() is not None
+        cur = src.execute("SELECT edge_rowid, " + ("hb" if has_ehb else "NULL") + ", " + ("blob" if words else "NULL")
+                          + " FROM edge_contig_cov" + (" INDEXED BY idx_ecc_hb" if has_idx else ""))
         n = 0
         while True:
-            rows = cur.fetchmany(CHUNK)
+            rows = cur.fetchmany(CHUNK // 4)
             if not rows: break
-            arr = np.array(rows, dtype=object)
-            ehb[arr[:, 0].astype(np.int64)] = np.array([SENT if v is None else v for v in arr[:, 1]], np.int64)
+            ids = np.fromiter((r[0] for r in rows), np.int64, len(rows))
+            if has_ehb:
+                ehb[ids] = np.fromiter(((SENT if r[1] is None else r[1]) for r in rows), np.int64, len(rows))
+            if words:
+                ehm[ids] = mc.compute([r[2] for r in rows]).view(np.int64)
             n += len(rows)
-        log(t0, f"edge_contig_cov から hb を {n:,} 行写した" + ("（被覆索引 idx_ecc_hb を順読み）" if has_idx else ""))
+        log(t0, f"edge_contig_cov から hb={'有' if has_ehb else '無'} hm を {n:,} 行計算した"
+            + ("（被覆索引 idx_ecc_hb を順読み）" if has_idx else ""))
     # ---- リード支持 read_support の出所（葉層だけ意味を持つ）----
     rs_mode = None
     rd_path = a.db + ".reads"
@@ -152,12 +181,14 @@ CREATE TABLE nodes_t(layer INTEGER, mkey INTEGER, id INTEGER, {ncols_common}, PR
 CREATE TABLE nodes_big(layer INTEGER, id INTEGER, {ncols_common}, PRIMARY KEY(layer, id)) WITHOUT ROWID;
 CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
   src_id INTEGER, tgt_id INTEGER, src_sign INTEGER, tgt_sign INTEGER,
-  ex REAL, ey REAL, er REAL, source TEXT, target TEXT, hb INTEGER, rs INTEGER,
+  ex REAL, ey REAL, er REAL, source TEXT, target TEXT, hb INTEGER, rs INTEGER{hmdecl},
   PRIMARY KEY(layer, mkey, eid, side)) WITHOUT ROWID;
 """)
     for k, v in (("schema", SCHEMA), ("world", json.dumps([x0, x1, y0, y1])), ("g_L", json.dumps(gL)),
                  ("K_TILES", str(a.k_tiles)), ("hm_cols", json.dumps(hm_cols)), ("has_hb", "1" if has_hb else "0"),
                  ("has_ehb", "1" if has_ehb else "0"), ("rs", rs_mode or ""),
+                 ("n_hap", str(n_hap)), ("words", str(words)), ("bits", str(64 * words)), ("mode", mode),
+                 ("n_contig", str(int(c2h.size) if c2h is not None else 0)), ("hap_layout", "tiled"),
                  ("source", os.path.abspath(a.db))):
         dst.execute("INSERT INTO meta VALUES(?,?)", (k, v))
     NV = 3 + 13 + len(hm_cols)
@@ -263,10 +294,11 @@ CREATE TABLE edges_t(layer INTEGER, mkey INTEGER, eid INTEGER, side INTEGER,
         order = np.lexsort((side, e2, key))
         # source/target の名前も持つ: 葉層のリード支持(rd.edge_read_support)は **名前鍵**なので、
         # これが無いと reads 表示のたびに従来経路（可視ノード名で 2V 回 probe）へ落ちる。
-        dst.executemany("INSERT INTO edges_t VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        dst.executemany(f"INSERT INTO edges_t VALUES({','.join('?' * (15 + words))})",
             ((L, int(key[i]), int(e2[i]), int(side[i]), int(sid[idx[i]]), int(tid[idx[i]]), nz(ss[idx[i]]), nz(ts[idx[i]]),
               float(nx_[pend[i]]), float(ny_[pend[i]]), float(nr_[pend[i]]),
-              s[idx[i]].decode(), t[idx[i]].decode(), nz(ehb[eid[idx[i]]]), nz(rsv[idx[i]])) for i in order))
+              s[idx[i]].decode(), t[idx[i]].decode(), nz(ehb[eid[idx[i]]]), nz(rsv[idx[i]]),
+              *(int(v) for v in ehm[eid[idx[i]]])) for i in order))
         dst.commit()
         tot_e += eid.size; tot_erows += order.size
         log(t0, f"  edges L{L:2} e={eid.size:>11,} rows={order.size:>11,} (+{100*(order.size/max(1,eid.size)-1):.1f}%) 未解決={miss}")

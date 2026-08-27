@@ -48,6 +48,11 @@ function worldBboxFromRtree(d: Database.Database):
   return undefined
 }
 
+function tiledBuiltAt(d: Database.Database): string | null {
+  try { return (d.prepare("SELECT value FROM tl.meta WHERE key='built_at'").get() as any)?.value ?? null }
+  catch { return null }
+}
+
 // /stats は**軽量クエリのみ**（stats 1 行 + R-tree ルート読み）。nodes 全走査はしない。
 // これで DB 選択直後の「Connecting...」が長引かない（全 DB で数十 ms）。maxCoverage は
 // coverage モードでしか要らないので別エンドポイントに分離（下記 /max_coverage）。
@@ -75,6 +80,9 @@ statsRouter.get('/stats', (req, res) => {
   try { d = getDb(db) }
   catch (e) { res.json({ spec: 'incompatible', reason: 'DB を開けません: ' + String(e) }); return }
 
+  // 空間索引は「タイルサイドカー `<db>.tiled`」か「3D R-Tree（旧 DB）」のどちらか。
+  // 新しい DB は R-Tree を持たず tiled だけを持つ（spatial.ts）。
+  const ti = !TILED_OFF ? tiledInfo(d) : null
   let rtree3D = false
   try {
     rtree3D = (d.prepare('PRAGMA table_info(nodes_rtree)').all() as { name: string }[])
@@ -89,7 +97,9 @@ statsRouter.get('/stats', (req, res) => {
     return
   }
   if (!row) { res.json({ spec: 'incompatible', reason: 'stats が空です' }); return }
-  if (!rtree3D) { res.json({ spec: 'incompatible', reason: '3D R-tree（nodes_rtree.min_layer）がありません' }); return }
+  if (!rtree3D && !ti) {
+    res.json({ spec: 'incompatible', reason: '空間索引がありません（<db>.tiled サイドカーも 3D R-tree（nodes_rtree.min_layer）も無い。amipa prep add-tiled で作れる）' }); return
+  }
 
   const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data
   const maxLayer: number = row.maxlayer ?? data?.maxlayer ?? 0
@@ -98,7 +108,8 @@ statsRouter.get('/stats', (req, res) => {
 
   // world bbox（z_fit 用）は R-tree ルートから O(1)。取れなければ frontend は W=1 でフォールバック。
   let world: { x0: number; x1: number; y0: number; y1: number } | undefined
-  try { world = worldBboxFromRtree(d) } catch { /* ignore */ }
+  if (ti) world = ti.world
+  else { try { world = worldBboxFromRtree(d) } catch { /* ignore */ } }
 
   const hapcov = (() => {
     try { d.prepare('SELECT n_hap FROM hapcov_meta LIMIT 1').get(); return true }
@@ -163,14 +174,15 @@ statsRouter.get('/stats', (req, res) => {
           .map(r => [r.key, r.value]))
       } catch { return {} as Record<string, string> }
     })()
+    // tiled(v4) のマスクなら radius は真値（rad 警告は R-Tree 由来の話）。built_at はサイドカーの meta から
     return { nHap: i.nHap, words: i.words, mode: i.mode, edges: hapIdxEdgeOk(d),
-             rad: i.hasRad,
-             rtreeBuiltAt: hm.rtree_built_at ?? hm.built_at ?? null }
+             rad: i.hasRad || i.tiledNodes,
+             rtreeBuiltAt: hm.rtree_built_at ?? hm.built_at ?? (i.tiledNodes ? tiledBuiltAt(d) : null) }
   })()
 
   // layer_nodes は stats.data 由来のみ尊重（無い旧 DB は GROUP BY 全走査せず frontend の pow フォールバック）。
   // タイル順サイドカー(<db>.tiled)が付いていれば描画取得は R-Tree でなくそちら（tiled.ts）。
-  const tiled = !TILED_OFF && !!tiledInfo(d)
+  const tiled = !!ti
   res.json({ spec, maxLayer, ...data, world, hapcov, contigcov, refpos, hbAvail, multAvail,
     bandAvail, geneAvail, regionAvail, hapidx, tiled })
 })

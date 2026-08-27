@@ -3,6 +3,7 @@ import fs from 'fs'
 import { execSync } from 'child_process'
 import { READONLY } from '../config'
 import { getDb, getDbDir } from '../db'
+import { tiledInfo, TILED_OFF } from '../tiled'
 
 export const databasesRouter = Router()
 
@@ -66,7 +67,8 @@ databasesRouter.get('/version', (req, res) => {
         emitter_rev: meta.emitter_rev ?? null,
         mtime,
         rtree_built_at: hmeta.rtree_built_at ?? hmeta.built_at ?? null,
-        rad: rtreeCols.includes('rad'),
+        // rad 警告は「R-Tree の矩形から radius を導出している旧 DB」だけ。tiled は真値を持つ
+        rad: rtreeCols.includes('rad') || (!TILED_OFF && !!tiledInfo(d)),
         features: {
           seq: has('leaf_seq'),
           inv: has('node_contig_inv'),

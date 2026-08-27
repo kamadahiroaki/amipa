@@ -73,7 +73,7 @@ function safeName(db: string): string | null {
 //   同じ要求の 2 回目が 0.17 秒（588x）。原因は本体ではなく **サイドカー**で、
 //   `/edges` が `rd.edge_read_support`（1.2 億行・18GB）を葉層で毎回引くため。
 //   本体だけ温めても一番痛い所が冷たいままなので、隣のサイドカーも順に読む。
-const SIDECARS = ['.reads', '.annot', '.hapidx', '.nametri']
+const SIDECARS = ['.tiled', '.reads', '.annot', '.hapidx', '.nametri']   // .tiled が描画の主役なので先頭
 function prewarmFiles(real: string): string[] {
   const out = [real]
   for (const suf of SIDECARS) {

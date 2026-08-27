@@ -103,7 +103,7 @@ function checkDb(dbPath: string): void {
   catch (e) { bad(`SQLite として開けない: ${(e as Error).message}`); return }
 
   try {
-    const need = ['nodes', 'edges', 'nodes_rtree', 'stats', 'db_meta']
+    const need = ['nodes', 'edges', 'stats', 'db_meta']   // 空間索引は .tiled か nodes_rtree のどちらか（下で判定）
     const have = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table')").all() as { name: string }[]).map(r => r.name))
     const miss = need.filter(t => !have.has(t))
     miss.length ? bad(`必須テーブルが無い: ${miss.join(', ')}`) : ok(`必須テーブル (${need.length})`)
@@ -115,14 +115,24 @@ function checkDb(dbPath: string): void {
     console.log(`  feat  ${feats.join(' ') || '(none)'}`)
     const maxlayer = (db.prepare('SELECT maxlayer FROM stats LIMIT 1').get() as { maxlayer: number } | undefined)?.maxlayer
     maxlayer == null ? bad('stats が空（層情報が無い）') : ok(`layers 0..${maxlayer}`)
-    db.prepare('SELECT rowid FROM nodes_rtree LIMIT 1').get()   // R-Tree が引けるか（全走査しない）
-    ok('R-Tree 参照')
+    // 空間索引: サイドカー .tiled（新しい DB はこれだけ）か、本体の nodes_rtree（旧 DB）
+    const realForTiled = fs.realpathSync(dbPath)
+    const tiledPath = [dbPath + '.tiled', realForTiled + '.tiled'].find(p => fs.existsSync(p)) || null
+    if (have.has('nodes_rtree')) {
+      db.prepare('SELECT rowid FROM nodes_rtree LIMIT 1').get()   // R-Tree が引けるか（全走査しない）
+      ok('空間索引: R-Tree（本体）' + (tiledPath ? '＋ .tiled' : ''))
+    } else if (tiledPath) {
+      ok('空間索引: .tiled サイドカーのみ（R-Tree 無し＝現行の既定）')
+    } else {
+      bad('空間索引が無い（.tiled も nodes_rtree も無い。amipa prep add-tiled で作れる）')
+    }
 
     // 索引の在り処は「DB 本体に内蔵」か「サイドカーを ATTACH」の 2 通り（db.ts と同じ判定）。
     // features に書いてあるのにどちらも無い＝機能が**黙って**落ちる状態なので、それを検出する。
     const real = fs.realpathSync(dbPath)
     const side = (suffix: string) => [dbPath + suffix, real + suffix].find(p => fs.existsSync(p)) || null
-    const rtreeCols = new Set((db.prepare('PRAGMA table_info(nodes_rtree)').all() as { name: string }[]).map(r => r.name))
+    const rtreeCols = new Set(have.has('nodes_rtree')
+      ? (db.prepare('PRAGMA table_info(nodes_rtree)').all() as { name: string }[]).map(r => r.name) : [])
     const inMain: Record<string, boolean> = {
       hapidx: have.has('hapidx_meta') && rtreeCols.has('hm0'),
       nametri: have.has('nmfts') || have.has('nmfts_data'),

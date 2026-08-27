@@ -3,6 +3,7 @@ import path from 'path'
 import fs from 'fs'
 import { getDb, getDbDir } from '../db'
 import { tableCols } from '../nodeQuery'
+import { spatialSource } from '../spatial'
 
 // 8.3「持ち出せる出力」: 表示中の部分グラフを GFA、ノード集合を参照座標 BED へ書き出す。
 // クエリは /nodes と同じ R-Tree(層 L ∩ bbox)。WHERE 引数順は [L, x2, x1, y2, y1]。
@@ -37,11 +38,11 @@ exportRouter.get('/export/gfa', (req, res) => {
   if (!b) { res.status(400).type('text/plain').send('# need layer,x1,y1,x2,y2\n'); return }
   try {
     const hasKind = tableCols(d, 'nodes').has('kind')
+    const sp = spatialSource(d, b.L, b)
     const rows = d.prepare(
       `SELECT n.node_name AS nm${hasKind ? ', n.kind AS kind' : ''}
-       FROM nodes_rtree r JOIN nodes n ON n.rowid = r.rowid
-       WHERE r.min_layer = ? AND r.min_x <= ? AND r.max_x >= ? AND r.min_y <= ? AND r.max_y >= ?`
-    ).all(b.L, b.x2, b.x1, b.y2, b.y1) as { nm: string; kind?: number }[]
+       FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid`
+    ).all(...sp.params) as { nm: string; kind?: number }[]
     // 葉のみ(配列を持つ)。kind 列があれば kind=0、無ければ node_name 'n{digits}' で判定。
     const leaves = rows.filter(r => (hasKind ? r.kind === 0 : /^n\d+$/.test(r.nm)))
     if (leaves.length > GFA_MAX_NODES) {
@@ -107,14 +108,14 @@ exportRouter.get('/export/bed', (req, res) => {
     if (!tableCols(d, 'nodes').has('ref_bp')) {
       res.status(400).type('text/plain').send('# this DB has no ref_bp track\n'); return
     }
+    const sp = spatialSource(d, b.L, b)
     const rows = d.prepare(
       `SELECT n.node_name AS nm, n.ref_contig_id AS rci, n.ref_bp AS rb, n.ref_bp_end AS rbe,
               n.ref_strand AS rs, n.ref_multi AS rm
-       FROM nodes_rtree r JOIN nodes n ON n.rowid = r.rowid
-       WHERE r.min_layer = ? AND r.min_x <= ? AND r.max_x >= ? AND r.min_y <= ? AND r.max_y >= ?
-         AND n.ref_bp IS NOT NULL
+       FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid
+       WHERE n.ref_bp IS NOT NULL
        LIMIT ?`
-    ).all(b.L, b.x2, b.x1, b.y2, b.y1, BED_MAX_ROWS + 1) as any[]
+    ).all(...sp.params, BED_MAX_ROWS + 1) as any[]
     const truncated = rows.length > BED_MAX_ROWS
     const use = truncated ? rows.slice(0, BED_MAX_ROWS) : rows
 

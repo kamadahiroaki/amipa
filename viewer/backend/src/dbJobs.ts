@@ -5,9 +5,10 @@
 // 違いは guard の中身だけ（worker はキャンセル旗を見る、メインは見ない）。
 import type { Database, Statement } from 'better-sqlite3'
 import { guardedAll, guardedFold, cappedCount, FETCH_MS, PROBE_CAP, HARD_ROW_CAP, type GuardResult } from './fetchGuard'
-import { buildSelection, maskWhere, exactFilterRowids, hapIdxEdgeOk, hapIdxInfo } from './hapidx'
+import { buildSelection, maskWhere, exactFilterRowids, hapIdxEdgeOk, hapIdxInfo, type Selection } from './hapidx'
 import path from 'path'
 import { dbBytes, HUGE_DB_BYTES, readsSchema } from './db'
+import { spatialSource, spatialCount } from './spatial'
 import { tiledInfo, TILED_OFF, zranges, buildTiledNodesSql, tiledNodesParams, tiledNodeMask,
          buildTiledEdgesSql, rangesParams } from './tiled'
 
@@ -66,11 +67,11 @@ export const plainCtx: JobCtx = {
 //   そのまま分母にすると rows がすぐ分母を追い越して進捗が壊れる（実測 rows=278,192 / total=100,000）。
 //   正確に数え切れたときだけ返し、頭打ちなら 0（＝不明）にする。クライアントは 0 のとき
 //   パーセントではなく「取得済み N 行」だけ出す。
-function estimateTotal(d: Database, rtree: string, layer: number,
+function estimateTotal(d: Database, layer: number,
                        rect: { x1: number; x2: number; y1: number; y2: number },
-                       mask: string, maskParams: any[]): number {
+                       sel: Selection | null): number {
   try {
-    const n = cappedCount(d, rtree, layer, rect, PROBE_CAP, mask, maskParams)
+    const n = spatialCount(d, layer, rect, sel, PROBE_CAP)
     return n >= PROBE_CAP ? 0 : n
   } catch { return 0 }
 }
@@ -141,28 +142,23 @@ function nodesGrid(d: Database, job: Extract<QueryJob, { kind: 'nodes_grid' }>, 
   const w = ax2 - ax1, h = ay2 - ay1
   let sel = null
   try { sel = job.sel ? buildSelection(d, job.sel) : null } catch { sel = null }
-  const rtree = sel ? sel.rtree : 'nodes_rtree'
-  const mw = sel ? maskWhere('r', sel) : { sql: '', params: [] as bigint[] }
+  const rect = { x1: ax1, y1: ay1, x2: ax2, y2: ay2 }
+  const sp = spatialSource(d, L, rect, sel, 'r')   // tiled か R-Tree か（spatial.ts）。列名は両者で同じ
 
   // ★SQL で GROUP BY しない。すると `USE TEMP B-TREE FOR GROUP BY` になり 1 行目が出る前に
   //   全集計が終わってしまい、時間ガードもキャンセル旗も一度も評価されない（実測: 重い矩形で
   //   51.5 秒かかったのに FETCH_MS=15s で打ち切られていなかった）。生の rtree 行を流して
   //   **JS 側でセルに畳む**。こうすれば行ごとにガードが効き、途中で止められる。
   //   メモリも O(セル数) で済む（行は貯めない）。
-  const sql =
-    `SELECT r.min_x AS x1, r.max_x AS x2, r.min_y AS y1, r.max_y AS y2
-     FROM ${rtree} r
-     WHERE r.min_layer = ? AND r.max_layer = ?
-       AND r.max_x >= ? AND r.min_x <= ? AND r.max_y >= ? AND r.min_y <= ?${mw.sql}`
+  const sql = `SELECT r.min_x AS x1, r.max_x AS x2, r.min_y AS y1, r.max_y AS y2 FROM ${sp.from}`
   ctx.setPhase?.(1)
-  ctx.setTotal?.(estimateTotal(d, rtree, L, { x1: ax1, y1: ay1, x2: ax2, y2: ay2 },
-    mw.sql, mw.params as any[]))
+  ctx.setTotal?.(estimateTotal(d, L, rect, sel))
 
   interface Cell { gx: number; gy: number; c: number; sx: number; sy: number; sw: number }
   const cells = new Map<number, Cell>()
   const clamp = (v: number, hi: number) => (v < 0 ? 0 : v > hi ? hi : v)
   const g = ctx.fold(d.prepare(sql),
-    [L, L, ax1, ax2, ay1, ay2, ...mw.params],
+    sp.params,
     (r: { x1: number; x2: number; y1: number; y2: number }) => {
       const cx = (r.x1 + r.x2) / 2, cy = (r.y1 + r.y2) / 2
       const gx = clamp(Math.floor((cx - ax1) / w * gw), gw - 1)
@@ -184,13 +180,12 @@ function nodesGrid(d: Database, job: Extract<QueryJob, { kind: 'nodes_grid' }>, 
   if (!g.truncated) {
     const bigW = GRID_BIG_PX * (w / gw)
     const remainMs = Math.max(1000, FETCH_MS - g.ms)
-    const bg = ctx.guard(d.prepare(
-      `SELECT n.xCoord AS x, n.yCoord AS y, n.radius AS r, n.angle AS a
-       FROM ${rtree} r JOIN nodes n ON n.rowid = r.rowid
-       WHERE r.min_layer = ? AND r.max_layer = ?
-         AND r.max_x >= ? AND r.min_x <= ? AND r.max_y >= ? AND r.min_y <= ?
-         AND (r.max_x - r.min_x) >= ?${mw.sql}`),
-      [L, L, ax1, ax2, ay1, ay2, bigW, ...mw.params],
+    // 角度は空間ソースが持てば（tiled / 補助列つき R-Tree）nodes を触らない
+    const bg = ctx.guard(d.prepare(sp.tiled || sp.hasNm
+      ? `SELECT r.cx AS x, r.cy AS y, r.rad AS r, r.ang AS a FROM ${sp.from} WHERE (r.max_x - r.min_x) >= ?`
+      : `SELECT n.xCoord AS x, n.yCoord AS y, n.radius AS r, n.angle AS a
+         FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = r.rowid WHERE (r.max_x - r.min_x) >= ?`),
+      [...sp.params, bigW],
       { maxRows: GRID_BIG_CAP, timeMs: remainMs })
     big = bg.rows
     bigTrunc = bg.truncated
@@ -223,13 +218,15 @@ function nodesGrid(d: Database, job: Extract<QueryJob, { kind: 'nodes_grid' }>, 
 function nodesViewport(d: Database, job: Extract<QueryJob, { kind: 'nodes' }>, ctx: JobCtx): JobResult {
   const L = job.layer
   const baseArgs = [L, job.x2, job.x1, job.y2, job.y1]
+  const rect = { x1: job.x1, y1: job.y1, x2: job.x2, y2: job.y2 }
   const gopt = { maxRows: job.maxRows, timeMs: FETCH_MS, exemptTime: L <= 0 }
   const nx = new Set(String(job.nx || '').split(',').filter(Boolean))
   const wantAttr = { band: nx.has('band'), region: nx.has('region'), gene: nx.has('gene') }
 
   let sel = null
   try { sel = job.sel ? buildSelection(d, job.sel) : null } catch { sel = null }
-  const args = sel ? [...baseArgs, ...maskWhere('r', sel).params] : baseArgs
+  // 空間ソース（tiled / R-Tree）。層・矩形・マスクを内包するので、以降のクエリのパラメータは sp.params だけ
+  const sp = spatialSource(d, L, rect, sel)
 
   // bucket モード/コンティグ粒度ではマスクは上位集合 → 生存行だけ blob で厳密判定する。
   const post = (rows: any[]) => {
@@ -245,9 +242,7 @@ function nodesViewport(d: Database, job: Extract<QueryJob, { kind: 'nodes' }>, c
 
   // 進捗の分母（ビュー内の想定ノード数）。安いので毎回出す。
   ctx.setPhase?.(1)
-  ctx.setTotal?.(estimateTotal(d, sel ? sel.rtree : 'nodes_rtree', L,
-    { x1: job.x1, y1: job.y1, x2: job.x2, y2: job.y2 },
-    sel ? maskWhere('r', sel).sql : '', sel ? maskWhere('r', sel).params : []))
+  ctx.setTotal?.(estimateTotal(d, L, rect, sel))
 
   // ── タイル順サイドカー経路（nx に 'fast' が入っていて <db>.tiled がある場合）────────────
   // R-Tree を一切読まない。矩形 → Z-order 範囲（数十本）→ clustered 表の順次スキャン。
@@ -269,9 +264,9 @@ function nodesViewport(d: Database, job: Extract<QueryJob, { kind: 'nodes' }>, c
   // `nodes` 行を一切読まないので WG cold で 7.5〜9.3x（実測 §12）。
   // 返らない列: size / coverage / cov_hist / is_bubble / color / haplotype。
   // 呼び側（frontend）がそれらを使わないと分かっているときだけ 'fast' を付ける契約。
-  if (nx.has('fast') && fastPathWorthIt(d)) {
+  if (nx.has('fast') && fastPathWorthIt(d) && !sp.tiled) {
     const info = hapIdxInfo(d)
-    if (info?.drawAux) {
+    if (info?.drawAux && info.rtree && (!sel || sel.rtree)) {
       // 絞り込みがあればマスクも同じ R-Tree に載っているのでそのまま AND できる
       const mw = sel ? maskWhere('r', sel) : { sql: '', params: [] as bigint[] }
       // ★アノテーション(band/region/gene)だけは R-Tree の補助列ではなく node_annot を直接引く。
@@ -282,7 +277,7 @@ function nodesViewport(d: Database, job: Extract<QueryJob, { kind: 'nodes' }>, c
       const fa = (wantAttr.band || wantAttr.region || wantAttr.gene)
         ? fastAnnotSel(d, wantAttr) : null
       const g = ctx.guard(d.prepare(
-        buildNodesSqlFast(info.rtree, info.angScale, mw.sql, info.hasRad, info.hasXY,
+        buildNodesSqlFast(sel ? sel.rtree! : info.rtree, info.angScale, mw.sql, info.hasRad, info.hasXY,
                           fa && fa.sel ? fa : null)), [...baseArgs, ...mw.params], gopt)
       return done(g, post(g.rows as any[]))
     }
@@ -300,18 +295,18 @@ function nodesViewport(d: Database, job: Extract<QueryJob, { kind: 'nodes' }>, c
   if (hasRc) {
     // 新 read_cov は node_name PK。葉 node_name で LEFT JOIN。
     const g = ctx.guard(d.prepare(buildNodesSql('rc.depth', 'NULL', refsel, ex.sel + attr.sel,
-      ex.join + attr.join + ` LEFT JOIN ${rcSchema}.read_cov rc ON rc.node_name = n.node_name`, sel)), args, gopt)
+      ex.join + attr.join + ` LEFT JOIN ${rcSchema}.read_cov rc ON rc.node_name = n.node_name`, sp)), sp.params, gopt)
     return done(g, post(parseNodes(g.rows)))
   }
   try {
     const { cov, hist } = nodeCovExprs(d, job.mapq)
     const g = ctx.guard(d.prepare(buildNodesSql(cov, hist, refsel,
-      ex.sel + attr.sel, ex.join + attr.join, sel)), args, gopt)
+      ex.sel + attr.sel, ex.join + attr.join, sp)), sp.params, gopt)
     return done(g, post(parseNodes(g.rows)))
   } catch {
     // レガシー経路（cov_hist 等を持たない LOD DB）。
     const g2 = ctx.guard(d.prepare(buildNodesSqlLegacy(refsel,
-      ex.sel + attr.sel, ex.join + attr.join, sel)), args, gopt)
+      ex.sel + attr.sel, ex.join + attr.join, sp)), sp.params, gopt)
     let rows = g2.rows as any[]
     if (sel && sel.exact && rows.length > 0) {
       const keep = exactFilterRowids(d, 'node_contig_cov', 'node_rowid',
@@ -358,12 +353,14 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
       const hasNames = !!ti && ti.edgeCols.has('source') && ti.edgeCols.has('target')
       const bakedRs = !!ti && ti.edgeCols.has('rs')      // v3.3: read_support を焼き込み済み（join 不要）
       const bakedHb = !!ti && ti.edgeCols.has('hb')      // v3.3: edge_hb を焼き込み済み
-      const edgeMaskOk = !sel || hapIdxEdgeOk(d)
+      // 辺マスク: v4 サイドカーなら edges_t の hm0.. を直接（join 無し）。旧サイドカーは edge_hm を eid で JOIN
+      const edgeMaskOk = !sel || sel.tiledEdges || !!sel.edgeTable
       if (ti && L < ti.g.length && edgeMaskOk && (!wantRs || hasNames || bakedRs)) {
         ctx.setPhase?.(1)
         const rg = zranges(job.x1, job.x2, job.y1, job.y2, ti.g[L])
-        const em = sel ? maskWhere('ehm', sel) : { sql: '', params: [] as bigint[] }
-        const ej = sel ? ` JOIN ${sel.edgeTable} ehm ON ehm.edge_rowid = e.eid` : ''
+        const inlineMask = !!sel && sel.tiledEdges && ti.edgeCols.has('hm0')
+        const em = sel ? maskWhere(inlineMask ? 'e' : 'ehm', sel) : { sql: '', params: [] as bigint[] }
+        const ej = sel && !inlineMask ? ` JOIN ${sel.edgeTable} ehm ON ehm.edge_rowid = e.eid` : ''
         let xsel = '', xjoin = ''
         // ★v3.3 サイドカーは hb / rs を辺の行に持つので join しない。WG 葉層 cold の実測: 主 DB の
         //   edge_contig_cov を eid で引くと 0.4〜1.2 秒、.reads の edge_read_support を名前で引くと 12〜17 秒
@@ -404,20 +401,19 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
       // ★層を渡す。葉以外では edge_read_support を結合しない（鍵が葉名なので当たらない）。
       const rsSel = hasRs ? `, ${edgeRsExpr(d, job.mapq, L)} AS read_support` : ''
       const rsJoin = hasRs ? edgeRsJoin(d, L) : ''
-      const edgeMask = !!sel && hapIdxEdgeOk(d)
+      const edgeMask = !!sel && !!sel.edgeTable
 
       // ── phase 1: 可視ノード名を**自分で**流して集める ─────────────────────
       // 以前は `IN (サブクエリ)` で SQLite に丸投げしていたが、それだと LIST SUBQUERY として
       // 1 行目より前に全部実体化され、中断も進捗も不可能だった（WG で 16.4 秒／16 行）。
       ctx.setPhase?.(1)
-      const vq = visibleNodesSql(d, sel)
+      const rect = { x1: job.x1, y1: job.y1, x2: job.x2, y2: job.y2 }
+      const vq = visibleNodesSql(d, L, rect, sel)
       const visCap = job.maxRows > 0 ? Math.max(job.maxRows, VIS_MIN_CAP) : VIS_DEFAULT_CAP
-      ctx.setTotal?.(estimateTotal(d, sel ? sel.rtree : 'nodes_rtree', L,
-        { x1: job.x1, y1: job.y1, x2: job.x2, y2: job.y2 },
-        sel ? maskWhere('r', sel).sql : '', sel ? maskWhere('r', sel).params : []))
+      ctx.setTotal?.(estimateTotal(d, L, rect, sel))
       const names: string[] = []
       const g1 = ctx.fold(d.prepare(vq.sql),
-        [L, job.x2, job.x1, job.y2, job.y1, ...vq.params],
+        vq.params,
         (r: { node_name: string }) => { names.push(r.node_name) },
         { maxRows: visCap, timeMs: FETCH_MS, exemptTime: L <= 0 })
       if (g1.reason === 'cancel') {
@@ -465,8 +461,8 @@ function edgesViewport(d: Database, job: Extract<QueryJob, { kind: 'edges' }>, c
       }
       return { payload: rows, rows: rows.length, ms: msSum, truncated: trunc, layer: L }
     }
-    if (sel && (hapIdxEdgeOk(d) || tableCols(d, 'edge_contig_cov').size > 0)) {
-      const useMask = hapIdxEdgeOk(d)
+    if (sel && (!!sel.edgeTable || tableCols(d, 'edge_contig_cov').size > 0)) {
+      const useMask = !!sel.edgeTable
       const em = useMask ? maskWhere('ehm', sel) : { sql: '', params: [] as bigint[] }
       const gl = ctx.guard(d.prepare(buildEdgesSql(edgeRsExpr(d, job.mapq, L), ex.sel,
         ex.join + edgeRsJoin(d, L) + (useMask ? ` JOIN ${sel.edgeTable} ehm ON ehm.edge_rowid = e.rowid` : '')) + em.sql),

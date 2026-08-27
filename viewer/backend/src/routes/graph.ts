@@ -15,6 +15,7 @@ import {
   buildEdgesSql, edgesQueryLegacy,
 } from '../edgeQuery'
 import { hasSignSchema, VISIBLE_NODE_SUBQUERY } from '../edgeGeom'
+import { spatialSource, spatialCount } from '../spatial'
 import {
   buildSelection, maskWhere, hapIdxEdgeOk, exactFilterRowids, type Selection,
 } from '../hapidx'
@@ -244,11 +245,12 @@ graphRouter.get('/goto', (req, res) => {
     }
     // LOD DB に必ずある列のみ（haplotype/coverage は legacy 経路と同じく含めない）。
     // 候補選択は nodes 単独（＝索引だけで決まる）で行い、rtree JOIN は確定した 1 行にだけ効かせる。
+    // layer は nodes.layer_index（= R-Tree の min_layer と同値。R-Tree を持たない DB でも動く）
     const COLS = `n.rowid AS id, n.node_name, n.is_bubble, n.size,
                   n.xCoord, n.yCoord, n.angle, n.radius, n.color,
-                  r.min_layer AS layer,
+                  n.layer_index AS layer,
                   n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.is_anchor, n.ref_multi`
-    const FROM = 'FROM nodes n JOIN nodes_rtree r ON n.rowid = r.rowid'
+    const FROM = 'FROM nodes n'
 
     // 1) 含有。★勝者の rowid だけを **被覆索引の中で** 決め、太い表アクセスはその 1 行に限定する。
     //    表示列や nodes_rtree を最初から JOIN すると候補ごとに表を引くことになり、
@@ -304,8 +306,8 @@ graphRouter.get('/nodes_by_name', (req, res) => {
   const sel = (cols: string) =>
     `SELECT n.rowid AS id, n.node_name, n.is_bubble, n.size,
             n.xCoord, n.yCoord, n.angle, n.radius, n.color${cols},
-            r.min_layer AS layer
-     FROM nodes n LEFT JOIN nodes_rtree r ON n.rowid = r.rowid
+            n.layer_index AS layer
+     FROM nodes n
      WHERE n.rowid IN (SELECT MAX(rowid) FROM nodes WHERE node_name IN (${ph}) GROUP BY node_name)`
   try {
     res.json(parseNodes(getDb(db).prepare(sel(optCols)).all(...list) as any[]))
@@ -342,26 +344,15 @@ graphRouter.get('/node_info', (req, res) => {
   }
 })
 
-// LOD-A: layer L・ビューポート矩形内のグリフ数を R-tree で厳密カウント（§5）。
-// 予算 V_max による層の hard cap 判定に使う。深すぎる層を広ビューで数えないよう、
+// LOD-A: layer L・ビューポート矩形内のグリフ数を厳密カウント（§5）。空間ソース（tiled / R-Tree）は
+// spatial.ts が選ぶ。予算 V_max による層の hard cap 判定に使う。深すぎる層を広ビューで数えないよう、
 // フロントは d_world 予測で候補層を絞ってから叩くこと。
-const nodeCountSql = `
-  SELECT COUNT(*) AS n FROM nodes_rtree
-   WHERE min_layer <= ? AND max_layer >= ?
-     AND max_x >= ? AND min_x <= ? AND max_y >= ? AND min_y <= ?`
-// 絞り込み時のカウント。層自動選択がこの値を見るので、絞り込むと同じ予算でより深い層に降りられる
+// 絞り込み時は層自動選択がこの値を見るので、絞り込むと同じ予算でより深い層に降りられる
 // （実測: V_max=20000 の密ビューで L7 止まり → 1 hap 絞り込みで L12=葉レベル）。
 // bucket モード/コンティグ粒度では上位集合カウント（真値以上）になる点に注意（層選択には安全側）。
-function countStmtFor(d: any, sel: Selection | null) {
-  if (!sel) return { sql: nodeCountSql, extra: [] as bigint[] }
-  // maskWhere は別名前置きなので、テーブル名（schema 付き）をそのまま別名として使う
-  const mw = maskWhere(sel.rtree, sel)
-  return {
-    sql: `SELECT COUNT(*) AS n FROM ${sel.rtree}
-   WHERE min_layer <= ? AND max_layer >= ?
-     AND max_x >= ? AND min_x <= ? AND max_y >= ? AND min_y <= ?` + mw.sql,
-    extra: mw.params,
-  }
+const EXACT_COUNT_CAP = 1 << 30
+function exactCount(d: any, L: number, rect: { x1: number; x2: number; y1: number; y2: number }, sel: Selection | null) {
+  return spatialCount(d, L, rect, sel, EXACT_COUNT_CAP)
 }
 graphRouter.get('/node_count', (req, res) => {
   const { db, layer, x1, x2, y1, y2 } = req.query as Record<string, string>
@@ -372,10 +363,7 @@ graphRouter.get('/node_count', (req, res) => {
   try {
     const d = getDb(db)
     const sel = selOf(d, req)
-    const q = countStmtFor(d, sel)
-    const row = d.prepare(q.sql)
-      .get(L, L, Number(x1), Number(x2), Number(y1), Number(y2), ...q.extra) as { n: number }
-    res.json({ n: row?.n ?? 0 })
+    res.json({ n: exactCount(d, L, { x1: Number(x1), x2: Number(x2), y1: Number(y1), y2: Number(y2) }, sel) })
   } catch (e) {
     res.status(500).json({ error: String(e) })
   }
@@ -392,12 +380,9 @@ graphRouter.get('/node_counts', (req, res) => {
   try {
     const d = getDb(db)
     const sel = selOf(d, req)
-    const q = countStmtFor(d, sel)
-    const stmt = d.prepare(q.sql)
-    const bx1 = Number(x1), bx2 = Number(x2), by1 = Number(y1), by2 = Number(y2)
+    const rect = { x1: Number(x1), x2: Number(x2), y1: Number(y1), y2: Number(y2) }
     const counts: Record<number, number> = {}
-    for (const L of Ls)
-      counts[L] = (stmt.get(L, L, bx1, bx2, by1, by2, ...q.extra) as { n: number })?.n ?? 0
+    for (const L of Ls) counts[L] = exactCount(d, L, rect, sel)
     res.json({ counts })
   } catch (e) {
     res.status(500).json({ error: String(e) })
@@ -435,21 +420,19 @@ graphRouter.get('/pick_layer', (req, res) => {
   try {
     const d = getDb(db)
     const sel = selOf(d, req)
-    const rtree = sel ? sel.rtree : 'nodes_rtree'
     const cap = probeCapFor(maxRows)
     const counts: Record<number, number> = {}
     let L = requested
     for (; L > 0; L--) {
-      const n = cappedCount(d, rtree, L, rect, cap)   // 素のカウント（絞り込み条件なし＝O(cap)）
+      const n = spatialCount(d, L, rect, null, cap)   // 素のカウント（絞り込み条件なし＝O(cap)）
       counts[L] = n
       if (n <= maxRows) break
     }
     // 絞り込み中は実際の件数がさらに減るので、素のカウントで棄却された層でも収まることがある。
     // L_zoom へ向かって絞り込みカウントで再挑戦する（1 段ずつ。O(候補) なので深追いしない）。
     if (sel && L < requested) {
-      const mw = maskWhere('r', sel)
       for (let M = L + 1; M <= requested; M++) {
-        const n = cappedCount(d, rtree, M, rect, cap, mw.sql, mw.params)
+        const n = spatialCount(d, M, rect, sel, cap)
         counts[M] = n
         if (n > maxRows) break
         L = M
@@ -602,9 +585,8 @@ graphRouter.get('/nodes_grid', (req, res) => {
     // hap 絞り込みも同じ rtree のマスク補助列(hm0/hm1)で効く。従来ミニマップは sel を渡しておらず
     // **絞り込み中でも絞り込み前の絵**を描いていた（速度以前に表示が食い違っていた）。
     const sel = selOf(d, req)
-    const rtree = sel ? sel.rtree : 'nodes_rtree'
-    const mw = sel ? maskWhere('r', sel) : { sql: '', params: [] }
-    // セル添字は「矩形内へクランプ」する。R-Tree は矩形と**重なる**ものを返すので、
+    const sp = spatialSource(d, L, { x1: ax1, x2: ax2, y1: ay1, y2: ay2 }, sel, 'r')   // tiled / R-Tree
+    // セル添字は「矩形内へクランプ」する。空間索引は矩形と**重なる**ものを返すので、
     // 中心が矩形外のノードが入りうる（クランプしないと負や gw 以上の添字が出る）。
     const gx = `MAX(0, MIN(${gw - 1}, CAST((r.min_x + r.max_x) / 2.0 - ? AS REAL) / ? * ${gw}))`
     const gy = `MAX(0, MIN(${gh - 1}, CAST((r.min_y + r.max_y) / 2.0 - ? AS REAL) / ? * ${gh}))`
@@ -612,27 +594,23 @@ graphRouter.get('/nodes_grid', (req, res) => {
       `SELECT CAST(${gx} AS INT) AS gx, CAST(${gy} AS INT) AS gy, COUNT(*) AS c,
               AVG((r.min_x + r.max_x) / 2.0) AS x, AVG((r.min_y + r.max_y) / 2.0) AS y,
               AVG(r.max_x - r.min_x) AS w
-       FROM ${rtree} r
-       WHERE r.min_layer = ? AND r.max_layer = ?
-         AND r.max_x >= ? AND r.min_x <= ? AND r.max_y >= ? AND r.min_y <= ?${mw.sql}
+       FROM ${sp.from}
        GROUP BY gx, gy`
     // 時間ガードは掛ける（病的な領域で同期ブロックしないため）。行数上限は不要
     // ＝出力はセル数 ≤ gw×gh で構造的に有界。
     const g = guardedAll(d.prepare(sql),
-      [ax1, w, ay1, h, L, L, ax1, ax2, ay1, ay2, ...mw.params],
+      [ax1, w, ay1, h, ...sp.params],
       { timeMs: FETCH_MS, exemptTime: L <= 0 })
     setGuardHeaders(res, g, L, 'nodes_grid')
-    // 1 画素より大きく描かれるノードだけ、向き(angle)込みで個別に返す。ここだけ nodes を引く
-    // （angle は rtree の bbox には無い）。件数が少ないので安い（上のコメントの実測参照）。
+    // 1 画素より大きく描かれるノードだけ、向き(angle)込みで個別に返す。角度を空間ソースが持たない
+    // （補助列の無い R-Tree）ときだけ nodes を引く。件数が少ないので安い（上のコメントの実測参照）。
     const bigW = GRID_BIG_PX * (w / gw)
-    const big = d.prepare(
-      `SELECT n.xCoord AS x, n.yCoord AS y, n.radius AS r, n.angle AS a
-       FROM ${rtree} r JOIN nodes n ON n.rowid = r.rowid
-       WHERE r.min_layer = ? AND r.max_layer = ?
-         AND r.max_x >= ? AND r.min_x <= ? AND r.max_y >= ? AND r.min_y <= ?
-         AND (r.max_x - r.min_x) >= ?${mw.sql}
-       LIMIT ?`
-    ).all(L, L, ax1, ax2, ay1, ay2, bigW, ...mw.params, GRID_BIG_CAP + 1) as any[]
+    const big = d.prepare(sp.tiled || sp.hasNm
+      ? `SELECT r.cx AS x, r.cy AS y, r.rad AS r, r.ang AS a FROM ${sp.from} WHERE (r.max_x - r.min_x) >= ? LIMIT ?`
+      : `SELECT n.xCoord AS x, n.yCoord AS y, n.radius AS r, n.angle AS a
+         FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = r.rowid
+         WHERE (r.max_x - r.min_x) >= ? LIMIT ?`
+    ).all(...sp.params, bigW, GRID_BIG_CAP + 1) as any[]
     // world 座標は 0..1 の正規化座標なので 7 桁で 1e-7 の分解能。ミニマップは高々 1024 画素なので
     // 過剰なほど十分で、JSON をそのまま返すより素直に小さくなる（実測 640KB → 300KB 台）。
     const r7 = (v: number) => Math.round(v * 1e7) / 1e7

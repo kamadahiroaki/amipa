@@ -5,6 +5,7 @@ import { hasSignSchema, VISIBLE_NODE_SUBQUERY } from './edgeGeom'
 import { hapIdxInfo, maskWhere, type Selection } from './hapidx'
 import { tableCols, hbCoveringIdx, maxLayerOf } from './nodeQuery'
 import { readsSchema } from './db'
+import { spatialSource, visibleNamesSql } from './spatial'
 
 // リード由来のエッジ太さ(read_support)がこの DB にあるか。新スキーム= rd.edge_read_support(サイドカー),
 // レガシー= base edges.read_support 列。どちらも無ければ false(=太さ機能オフ、描画は壊れない)。
@@ -35,7 +36,9 @@ export function edgeRsJoin(d: any, layer?: number): string {
 
 // 絞り込み時の可視ノード集合（マスク付き R-Tree を引く）。rtree の第1列は rowid 別名なので
 // main/サイドカーどちらでも rt.rowid で書ける。パラメータ順 = [L, x2, x1, y2, y1, ...mask]。
+// ★旧 buildSignedEdgesSql（一括版）専用。バッチ版 phase 1 は spatial.ts の visibleNamesSql を使う。
 export function visibleNodeSubquerySel(sel: Selection): { sql: string; params: bigint[] } {
+  if (!sel.rtree) throw new Error('visibleNodeSubquerySel: マスク付き R-Tree が無い（tiled 経路を使うこと）')
   const mw = maskWhere('rt', sel)
   return {
     sql: `SELECT n.node_name FROM ${sel.rtree} rt CROSS JOIN nodes n ON n.rowid = rt.rowid ` +
@@ -43,22 +46,6 @@ export function visibleNodeSubquerySel(sel: Selection): { sql: string; params: b
          'AND rt.min_y <= ? AND rt.max_y >= ?' + mw.sql,
     params: mw.params,
   }
-}
-
-// ★R-Tree に描画補助列 `nm`（node_name）があるなら、可視ノード名は **R-Tree だけで出せる**。
-//   従来は必ず `JOIN nodes` していたので、ノード側の高速経路がせっかく避けている
-//   「%_node のランダム読み」をエッジ取得のたびに踏んでいた（コールドで支配的）。
-//   nm が無い DB では従来どおり（機能は落ちない・速度だけ従来どおり）。
-function rtreeWithNm(d: any, sel: Selection | null): string | null {
-  const rt = sel ? sel.rtree : (hapIdxInfo(d)?.rtree ?? null)
-  if (!rt) return null
-  const bare = rt.includes('.') ? rt.split('.')[1] : rt
-  const schema = rt.includes('.') ? rt.split('.')[0] + '.' : ''
-  try {
-    const cols = new Set((d.prepare(`PRAGMA ${schema}table_info(${bare})`).all() as any[])
-      .map(c => String(c.name)))
-    return cols.has('nm') ? rt : null
-  } catch { return null }
 }
 
 export function edgeRsExpr(d: any, mapq: number, layer?: number): string {
@@ -180,17 +167,10 @@ export function buildSignedEdgesBatchSql(n: number, rsSel: string, extraSel = ''
   return `${branch('source')} UNION ALL ${branch('target')}`
 }
 
-/** 可視ノード名を流すクエリ（バッチ版 phase 1 用）。パラメータ順 [L, x2, x1, y2, y1, ...mask]。 */
-export function visibleNodesSql(d: any, sel: Selection | null): { sql: string; params: bigint[] } {
-  const rt = rtreeWithNm(d, sel)
-  if (rt) {
-    const mw = sel ? maskWhere('rt', sel) : { sql: '', params: [] as bigint[] }
-    return {
-      sql: `SELECT rt.nm AS node_name FROM ${rt} rt ` +
-           'WHERE rt.min_layer = ? AND rt.min_x <= ? AND rt.max_x >= ? ' +
-           'AND rt.min_y <= ? AND rt.max_y >= ?' + mw.sql,
-      params: mw.params,
-    }
-  }
-  return sel ? visibleNodeSubquerySel(sel) : { sql: VISIBLE_NODE_SUBQUERY, params: [] }
+/** 可視ノード名を流すクエリ（バッチ版 phase 1 用）。パラメータは sp.params（層・矩形・マスク内包）。
+ *  nm（node_name）を空間ソースが持つなら nodes を触らない（%_node のランダム読みを踏まない）。 */
+export function visibleNodesSql(d: any, L: number, rect: { x1: number; x2: number; y1: number; y2: number },
+                                sel: Selection | null): { sql: string; params: any[] } {
+  const sp = spatialSource(d, L, rect, sel)
+  return { sql: visibleNamesSql(sp), params: sp.params }
 }

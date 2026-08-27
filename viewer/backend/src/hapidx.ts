@@ -29,10 +29,14 @@ export interface HapIdxInfo {
   mode: 'exact' | 'bucket'
   bits: number
   nHap: number
-  /** マスク付き R-Tree の参照名。'nodes_rtree'(emitter 統合) か 'ix.nodes_rtree_hm'(サイドカー) */
-  rtree: string
-  /** エッジマスク表の参照名。無ければ null（ノード絞り込みのみ） */
+  /** マスク付き R-Tree の参照名。'nodes_rtree'(emitter 統合) か 'ix.nodes_rtree_hm'(サイドカー)。
+   *  タイルサイドカー(v4)がマスクを持つ DB では null（R-Tree を使わない） */
+  rtree: string | null
+  /** エッジマスク表の参照名。無ければ null（ノード絞り込みのみ / タイル側に焼き込み済み） */
   edgeTable: string | null
+  /** マスク語が `<db>.tiled` の nodes_t / edges_t に焼き込まれているか（v4）。spatial.ts はこちらを優先 */
+  tiledNodes: boolean
+  tiledEdges: boolean
   /** 描画用補助列(ang/nm/hb/bnd/gcn/rgn)が R-Tree に載っているか（hap_index --draw-aux） */
   drawAux: boolean
   /** rad 補助列（= nodes.radius の真値）があるか。無い旧 DB は矩形から導出＝過大になる */
@@ -67,10 +71,33 @@ function tableExists(d: Database, table: string): boolean {
   try { d.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get(); return true } catch { return false }
 }
 
+// C) タイルサイドカー v4: tl.meta(hap_layout=tiled, words, bits, n_hap, mode) ＋ nodes_t.hm0.. / edges_t.hm0..
+//    R-Tree も .hapidx も無い新しい DB はこれだけを持つ。tiled.ts を import すると循環になるので直接引く。
+function tiledMaskInfo(d: Database): HapIdxInfo | null {
+  if (process.env.AMIPA_TILED === '0') return null
+  try {
+    const m = new Map((d.prepare('SELECT key, value FROM tl.meta').all() as { key: string; value: string }[])
+      .map(r => [r.key, r.value]))
+    if (m.get('hap_layout') !== 'tiled') return null
+    const words = Number(m.get('words')), bits = Number(m.get('bits')), nHap = Number(m.get('n_hap'))
+    if (!Number.isInteger(words) || words < 1 || words > 64 || bits !== 64 * words || !(nHap > 0)) return null
+    const cols = (t: string) => new Set((d.prepare(`PRAGMA tl.table_info(${t})`).all() as any[]).map(c => String(c.name)))
+    const nc = cols('nodes_t'), ec = cols('edges_t')
+    const has = (c: Set<string>) => Array.from({ length: words }, (_, i) => `hm${i}`).every(h => c.has(h))
+    if (!has(nc)) return null
+    return {
+      words, bits, nHap, mode: m.get('mode') === 'bucket' ? 'bucket' : 'exact',
+      rtree: null, edgeTable: null, tiledNodes: true, tiledEdges: has(ec),
+      drawAux: false, hasRad: false, hasXY: false, angScale: 1000000,
+    }
+  } catch { return null }
+}
+
 /** マスクが使える形なら諸元を返す。無ければ null（呼び側は従来経路へ）。 */
 export function hapIdxInfo(d: Database): HapIdxInfo | null {
   if (infoCache.has(d)) return infoCache.get(d)!
-  let out: HapIdxInfo | null = null
+  let out: HapIdxInfo | null = tiledMaskInfo(d)
+  if (out) { infoCache.set(d, out); return out }
   for (const [schema, bare, edge] of [
     ['', 'nodes_rtree', 'edge_hm'],                 // A) emitter 統合（main の nodes_rtree に補助列）
     ['ix.', 'nodes_rtree_hm', 'edge_hm'],           // B) サイドカー（<db>.hapidx を ATTACH）
@@ -102,6 +129,7 @@ export function hapIdxInfo(d: Database): HapIdxInfo | null {
       words, mode, bits, nHap, rtree,
       edgeTable: (m.get('edge_done') === '1' && tableExists(d, schema + edge))
         ? schema + edge : null,
+      tiledNodes: false, tiledEdges: false,
       drawAux,
       hasRad,
       hasXY,
@@ -115,7 +143,8 @@ export function hapIdxInfo(d: Database): HapIdxInfo | null {
 
 /** エッジ側マスクが使えるか（--skip-edges や edge_contig_cov 無し DB では無い）。 */
 export function hapIdxEdgeOk(d: Database): boolean {
-  return !!hapIdxInfo(d)?.edgeTable
+  const i = hapIdxInfo(d)
+  return !!(i && (i.edgeTable || i.tiledEdges))
 }
 
 // contig_id → hap_id（distinct (sample,haplotype) を contig_id 昇順で採番）。
@@ -156,10 +185,13 @@ function hapContigCount(d: Database): Int32Array {
 export interface Selection {
   /** 選択された contig_id レンジ（両端含む・正規化済み） */
   ranges: [number, number][]
-  /** マスク付き R-Tree の参照名（'nodes_rtree' か 'ix.nodes_rtree_hm'）。SQL は r.rowid で統一する */
-  rtree: string
+  /** マスク付き R-Tree の参照名（'nodes_rtree' か 'ix.nodes_rtree_hm'）。タイル側にマスクがある DB では null */
+  rtree: string | null
   /** エッジマスク表の参照名（無ければ null） */
   edgeTable: string | null
+  /** マスクが `<db>.tiled` の nodes_t / edges_t にある（spatial.ts / dbJobs の tiled 経路が使う） */
+  tiledNodes: boolean
+  tiledEdges: boolean
   /** マスク語（SQLite の signed INTEGER 表現。長さ = words） */
   mask: bigint[]
   /** true なら blob による厳密判定が必要（bucket モード or hap の一部だけ選択） */
@@ -229,6 +261,8 @@ export function buildSelection(d: Database, raw: unknown): Selection | null {
     ranges,
     rtree: info.rtree,
     edgeTable: info.edgeTable,
+    tiledNodes: info.tiledNodes,
+    tiledEdges: info.tiledEdges,
     mask: words.map(toSigned),
     exact: info.mode === 'bucket' || partial,
     haps: [...picked.keys()].sort((x, y) => x - y),
