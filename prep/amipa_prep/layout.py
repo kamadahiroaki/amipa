@@ -442,7 +442,35 @@ def build_balls(A, n, D, coverage=170.0, rfrac=3.0, coveff=42.0, min_nodes=20000
 
 def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy",
                x_init=None, eta_max=None, ball=None, ball_tau=0.3, short=None,
-               repel=3.0, repel_strength=0.15, repel_anneal=1.0, repel_cap=64, A=None):
+               repel=3.0, repel_strength=0.15, repel_anneal=1.0, repel_cap=64, A=None,
+               converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
+               anneal_epochs=0, converge_rel=0.0, converge_window=10):
+    """epochs は **アニールの地平**（eta と斥力の減衰は ep/epochs で決まる）であって
+    「必ず回す回数」ではない。converge_eps>0 なら、1 epoch あたりのノード変位が十分小さく
+    なった時点で打ち切る（残りを回しても絵は変わらないため）。
+
+    収束の指標 d999 = (1 epoch のノード変位の p99.9) / (辺長の中央値)。
+    最大変位ではなく p99.9 を使うのは、球 pivot を毎 epoch 間引いている(sub<1)ぶん
+    1 ノードだけ跳ねることがあり、max だと止まらないため。
+    converge_patience 回連続で d999 < converge_eps、かつ anneal_epochs の converge_min_frac を
+    過ぎていれば停止する（アニール途中のたまたま静かな epoch で止まらないようにする）。
+
+    ★anneal_epochs（アニール長）と epochs（上限）は**別物**にしてある。
+    旧実装は schedule を epochs 全体に張っていたので eta は **必ず最終 epoch で eta_min に達し**、
+    1 epoch あたりの変位も終端で同じ床に落ちる。つまり「変位が小さくなったら止める」判定が
+    epochs の取り方に依存してしまい、早期停止が原理的に発火しなかった
+    （ecoli50 実測: epochs=30/100/300 のいずれでも終端 d999 = 0.069/0.052/0.048 と同水準）。
+    anneal_epochs を過ぎたら eta は eta_min のまま据え置き、斥力も 0 のままにする。
+    その状態で系が釣り合うと変位は自然に 0 へ向かうので、収束判定が意味を持つ。
+    anneal_epochs=0（既定）なら anneal_epochs=epochs = 旧挙動。
+
+    停止条件は 2 つあり、どちらか先に満たした方で止まる:
+      converge_eps  … d999 < eps（絶対）。閾値をグラフごとに知っている場合向け。
+      converge_rel  … stress の改善が頭打ちになったら（相対・自己較正）。
+    ★実務では converge_rel を使う。d999 には **球 pivot を毎 epoch 間引くことによる雑音の床**が
+    あり（ecoli50/denv200 いずれも 0.03 前後で頭打ち）、その床より小さい eps は永久に満たされない。
+    stress は固定サンプルで測っているので、窓の中央値どうしを比べれば床の影響を受けずに
+    「もう良くならない」を判定できる。"""
     rng = np.random.default_rng(seed)
     use_numba = (engine == "numba") and HAVE_NUMBA
     piv64 = np.ascontiguousarray(piv, np.int64)
@@ -455,7 +483,11 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
     k = len(piv)
     if eta_max is None:
         eta_max = dmax * dmax  # 1/min_w, min_w = 1/dmax^2
-    schedule = eta_max * (eta_min / eta_max) ** (np.arange(epochs) / max(epochs - 1, 1))
+    T = anneal_epochs if anneal_epochs and anneal_epochs > 0 else epochs
+    # アニールは T epoch で eta_min まで落とし、以降は eta_min に据え置く。
+    # anneal_epochs 未指定(=epochs)なら clip は恒等なので旧実装と bit-identical。
+    _t = np.minimum(np.arange(epochs), max(T - 1, 1))
+    schedule = eta_max * (eta_min / eta_max) ** (_t / max(T - 1, 1))
     # 冗長な Dc=D.copy() と W[k,n] を廃止しメモリを 1/3 に(3×4kn → 4kn)。
     # D をその場で下限クランプして Dc として使い、重み 1/(d*d) は pivot ループ内で都度計算する
     # (演算順序も同じで数値は旧 W[pi] と bit-identical)。D は dmax 算出後は他で使わないので破壊可。
@@ -477,6 +509,18 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
         rip = np.ascontiguousarray(A.indptr, np.int64)
         rind = np.ascontiguousarray(A.indices, np.int64)
         rfx = np.zeros(n); rfy = np.zeros(n); rfn = np.zeros(n, np.int64)
+    # ---- 診断: stress は **毎 epoch 同じ対**で測る。旧実装は epoch ごとに 20,000 対を引き直して
+    #      いたので、1/d^2 重みの裾が効いて値が epoch 間で比較できず、収束したかどうかが読めなかった
+    #      (ecoli50 で「終盤に 6 倍悪化」に見えていたのはこの推定ノイズが主). 抽出は専用 rng で行い、
+    #      共有 rng のストリームには触らない。
+    _diag = np.random.default_rng((seed * 2654435761) & 0xFFFFFFFF)
+    _sm = 20000
+    _spi = _diag.integers(k, size=_sm); _sj = _diag.integers(n, size=_sm)
+    hit = 0                      # d999 < eps が連続した回数
+    rhit = 0                     # stress の改善が閾値未満だった回数
+    shist = []                   # 固定サンプル stress の履歴（頭打ち判定用）
+    stop_reason = f"epochs={epochs} を回し切った（アニール長 T={T}）"
+    Xprev = X.copy()
     for ep in range(epochs):
         eta = schedule[ep]
         # ---- (b) pivot block updates: pivot FIXED, each node = independent 1-term
@@ -546,10 +590,12 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
             nb = bsrc.size
             sel = rng.permutation(nb)[:max(1, nb // bsub)]
             _ball_epoch_numba(X, sel, bstart, bidx, bdist, bsrc, bmax, float(ball_tau), float(eta))
+        # 辺長の中央値。斥力の尺度と収束判定の正規化で共用する（1 epoch に 1 回だけ計算）。
+        # ★位置は斥力ブロックの直前のまま = 旧実装が L0c を測っていた時点と同じ X。
+        elc = np.hypot(X[ei, 0] - X[ej, 0], X[ei, 1] - X[ej, 1])
+        L0c = float(np.median(elc[elc > 0])) if (elc > 0).any() else 1.0
         # ---- (c) 一様斥力。**epoch 内**で pivot/エッジ項と同時に釣り合わせる ----
         if use_repel:
-            elc = np.hypot(X[ei, 0] - X[ej, 0], X[ei, 1] - X[ej, 1])
-            L0c = float(np.median(elc[elc > 0])) if (elc > 0).any() else 1.0
             rr = repel * L0c
             gxr = np.floor(X[:, 0] / rr).astype(np.int64)
             gyr = np.floor(X[:, 1] / rr).astype(np.int64)
@@ -559,17 +605,58 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
             usr = np.r_[us0, csr_.size].astype(np.int64)
             _repel_forces(np.ascontiguousarray(X), rip, rind, usr, ucr,
                           oc.astype(np.int64), rr, repel_cap, rfx, rfy, rfn, BIGr, gxr, gyr)
-            fr = 1.0 - ep / max(epochs - 1, 1)
+            fr = max(0.0, 1.0 - ep / max(T - 1, 1))
             st_ = repel_strength * (fr ** repel_anneal if repel_anneal > 0 else 1.0)
             rdx = st_ * rfx; rdy = st_ * rfy
             cl = (0.2 + 1.8 * fr) * L0c if repel_anneal > 0 else 1.0 * L0c
             nr = np.hypot(rdx, rdy); bg = nr > cl
             rdx[bg] *= cl / nr[bg]; rdy[bg] *= cl / nr[bg]
             X[:, 0] += rdx; X[:, 1] += rdy
+        # ---- 収束判定と診断 ----
+        # 変位は L0c(辺長の中央値)で割って尺度不変にする。上で計算済みのものを使い回す。
+        _dsp = np.hypot(X[:, 0] - Xprev[:, 0], X[:, 1] - Xprev[:, 1])
+        # p99.9 は full sort を避けて partition で取る（n=155 万で毎 epoch 効く）。
+        _kth = max(0, min(n - 1, int(n * 0.999)))
+        d999 = float(np.partition(_dsp, _kth)[_kth]) / (L0c or 1.0)
+        dmaxs = float(_dsp.max()) / (L0c or 1.0)
+        np.copyto(Xprev, X)
+        s_fix = stress_fixed(X, piv, Dc, _spi, _sj)
         if ep % 5 == 0 or ep == epochs - 1:
-            s = stress_sample(X, piv, Dc, rng)
-            log(f"  epoch {ep+1}/{epochs} eta={eta:.3g} stress~{s:.4g}")
+            # ★旧実装と同じ乱数消費を保つ（共有 rng のストリームがずれると球の間引きが変わり、
+            #   既存グラフのレイアウトが再現しなくなる）。値そのものは固定サンプル版を使う。
+            rng.integers(k, size=_sm); rng.integers(n, size=_sm)
+        log(f"  epoch {ep+1}/{epochs} eta={eta:.3g} stress={s_fix:.6g} "
+            f"d999={d999:.4g} dmax={dmaxs:.4g}")
+        shist.append(s_fix)
+        ready = (ep + 1) >= max(10, int(T * converge_min_frac))
+        if converge_eps > 0 and ready:
+            hit = hit + 1 if d999 < converge_eps else 0
+            if hit >= converge_patience:
+                stop_reason = (f"収束: d999<{converge_eps:g} が {hit} epoch 連続"
+                               f"（{ep+1}/{epochs} epoch で停止, {epochs-ep-1} epoch 節約）")
+                log(f"  {stop_reason}"); break
+        if converge_rel > 0 and ready and len(shist) >= 2 * converge_window:
+            W = converge_window
+            new_m = float(np.median(shist[-W:]))
+            old_m = float(np.median(shist[-2 * W:-W]))
+            imp = (old_m - new_m) / abs(old_m) if old_m else 0.0
+            rhit = rhit + 1 if imp < converge_rel else 0
+            if rhit >= converge_patience:
+                stop_reason = (f"収束: 直近 {W} epoch の stress 中央値 {new_m:.6g} が、その前 {W} epoch "
+                               f"の {old_m:.6g} から {imp*100:.3f}% しか改善しない状態が {rhit} epoch 連続"
+                               f"（{ep+1}/{epochs} epoch で停止, {epochs-ep-1} epoch 節約）")
+                log(f"  {stop_reason}"); break
+    if (converge_eps > 0 or converge_rel > 0) and not stop_reason.startswith("収束"):
+        log(f"  ★未収束のまま {stop_reason}。--epochs を増やすか --converge-eps を緩める")
     return X
+
+def stress_fixed(X, piv, Dc, pi, j):
+    """stress_sample と同じ量を、**呼ぶたびに同じ対**で測る版（epoch 間で比較できる）。"""
+    d = Dc[pi, j]
+    dd = np.sqrt(((X[piv[pi]] - X[j]) ** 2).sum(1)) + 1e-9
+    w = 1.0 / (d * d)
+    return float((w * (dd - d) ** 2).sum() / w.sum())
+
 
 def stress_sample(X, piv, Dc, rng, m=20000):
     k, n = Dc.shape
@@ -607,7 +694,9 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                      ball_coverage=170.0, ball_rfrac=3.0, ball_coveff=42.0, ball_min_nodes=20000,
                      ball_tau=0.3, ball_kpct=10.0, short_h=3, short_cap=64,
                      pivot_mem_gib=0.0, pivot_floor=32,
-                     repel=3.0, repel_strength=0.15, repel_anneal=1.0, repel_cap=64):
+                     repel=3.0, repel_strength=0.15, repel_anneal=1.0, repel_cap=64,
+                     converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
+                     anneal_epochs=0, converge_rel=0.0, converge_window=10):
     """1連結成分をレイアウトし、PCA で長軸=x に整える局所座標 [subn,2] を返す。
     numba_min: **廃止**(引数は後方互換で残すが無視)。njit は cache=True で JIT はプロセス跨ぎに
     キャッシュされるため降格の利得が無い一方、この閾値は「エンジン選択」の顔をして **球 pivot の
@@ -646,7 +735,10 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
     X = sgd_layout(subn, sei, sej, piv, D, epochs=epochs, seed=seed, engine=eng, x_init=x0,
                    ball=ball, ball_tau=ball_tau, short=short, A=A,
                    repel=repel, repel_strength=repel_strength,
-                   repel_anneal=repel_anneal, repel_cap=repel_cap)
+                   repel_anneal=repel_anneal, repel_cap=repel_cap,
+                   converge_eps=converge_eps, converge_patience=converge_patience,
+                   converge_min_frac=converge_min_frac, anneal_epochs=anneal_epochs,
+                   converge_rel=converge_rel, converge_window=converge_window)
     Xc = X - X.mean(0)
     _, S, Vt = np.linalg.svd(Xc, full_matrices=False)
     return Xc @ Vt.T
@@ -684,7 +776,28 @@ def main():
                          "最大成分が大きいグラフ（稀エッジで全染色体が連結した場合など）で使う。")
     ap.add_argument("--pivot-floor", type=int, default=32,
                     help="メモリ予算で縛るときの pivots 下限（既定 32）")
-    ap.add_argument("--epochs", type=int, default=30)
+    ap.add_argument("--epochs", type=int, default=30,
+                    help="アニールの地平かつ上限。eta と斥力の減衰は ep/epochs で決まるので、"
+                         "この値を変えると 1 epoch あたりの進み方も変わる（単に長く回すのではない）")
+    ap.add_argument("--anneal-epochs", type=int, default=0, metavar="T",
+                    help="アニール長。eta を T epoch で eta_min まで落とし、以降は据え置く。"
+                         "0(既定)は --epochs と同じ＝従来どおり。**--converge-eps と併用するときは "
+                         "これを短く(例 30)、--epochs を上限として大きく(例 400)取る**。"
+                         "そうしないと変位は必ず最終 epoch で床に達するので収束判定が発火しない")
+    ap.add_argument("--converge-eps", type=float, default=0.0, metavar="E",
+                    help="収束したら epochs を待たずに止める。指標は 1 epoch のノード変位の p99.9 を"
+                         "辺長の中央値で割った値 d999。0(既定)で無効＝従来どおり epochs 回し切る。"
+                         "目安 0.01（見た目が動かなくなる水準）")
+    ap.add_argument("--converge-rel", type=float, default=0.0, metavar="R",
+                    help="**推奨の停止条件**。直近 W epoch の stress 中央値が、その前の W epoch から"
+                         "R 未満しか改善しなくなったら止める（例 0.001 = 0.1%%）。0(既定)で無効。"
+                         "d999 の絶対閾値と違い、球 pivot の間引きが作る雑音の床に影響されない")
+    ap.add_argument("--converge-window", type=int, default=10, metavar="W",
+                    help="--converge-rel の窓幅(既定 10)。中央値どうしを比べる")
+    ap.add_argument("--converge-patience", type=int, default=3, metavar="P",
+                    help="d999<eps が P epoch 連続したら停止（球 pivot の間引きによる揺れを吸収）")
+    ap.add_argument("--converge-min-frac", type=float, default=0.25, metavar="F",
+                    help="早期停止を許すのは epochs の F 倍を過ぎてから（アニール途中で止めない）")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out", required=True, help="出力 prefix（.npz と .png）")
     ap.add_argument("--min-comp", type=int, default=1000,
@@ -806,7 +919,10 @@ def main():
                pivot_mem_gib=args.pivot_mem_gib / max(args.jobs, 1),
                pivot_floor=args.pivot_floor,
                repel=args.repel, repel_strength=args.repel_strength,
-               repel_anneal=args.repel_anneal, repel_cap=args.repel_cap)
+               repel_anneal=args.repel_anneal, repel_cap=args.repel_cap,
+               converge_eps=args.converge_eps, converge_patience=args.converge_patience,
+               converge_min_frac=args.converge_min_frac, anneal_epochs=args.anneal_epochs,
+               converge_rel=args.converge_rel, converge_window=args.converge_window)
     if args.jobs > 1 and len(tasks) > 1:
         log(f"  laying out {len(tasks)} major comps with {args.jobs} processes…")
         with ProcessPoolExecutor(max_workers=args.jobs) as ex:
@@ -860,7 +976,13 @@ def main():
                                   pivot_mem_gib=args.pivot_mem_gib / max(args.jobs, 1),
                                   pivot_floor=args.pivot_floor,
                                   repel=args.repel, repel_strength=args.repel_strength,
-                                  repel_anneal=args.repel_anneal, repel_cap=args.repel_cap)
+                                  repel_anneal=args.repel_anneal, repel_cap=args.repel_cap,
+                                  converge_eps=args.converge_eps,
+                                  converge_patience=args.converge_patience,
+                                  converge_min_frac=args.converge_min_frac,
+                                  anneal_epochs=args.anneal_epochs,
+                                  converge_rel=args.converge_rel,
+                                  converge_window=args.converge_window)
             Xp = (Xp - Xp.min(0)) * unit              # 原点基準・本体と同スケール
             blobs.append((idx, Xp, float(Xp[:, 0].max()), float(Xp[:, 1].max())))
         row_w = np.sqrt(sum(max(w, unit) * max(h, unit) for _, _, w, h in blobs)) * 1.2
