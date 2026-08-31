@@ -106,9 +106,14 @@ def load_leaves(con):
     if len(ids) == 0:
         raise SystemExit("FATAL: 葉 n{id} が無い（対象 DB が多層アトラスか確認）")
     if bad:
-        # 現行パイプラインの葉は必ず n<整数>。それ以外が居る=前提が変わっているので黙って進めない。
-        raise SystemExit(f"FATAL: n<整数> でない葉が {bad:,} 個ある。"
-                         "このアトラスの葉の名前空間には未対応（reads-node-id-space 計画を参照）")
+        # is_bubble=0 には葉 n<整数> のほかに少数の S/G クラスタ行（kind=2 の連鎖・単独クラスタ）が
+        # 混ざる。少数なら照合対象から除外するだけでよい（旧実装の GLOB も同じ挙動）。
+        # **大半が n<整数> でない**ときは前提（leaf_key='orig-int'）が崩れているので黙って進めない。
+        if bad > len(ids):
+            raise SystemExit(f"FATAL: is_bubble=0 の行の大半（{bad:,}/{bad + len(ids):,}）が n<整数> でない。"
+                             "このアトラスの葉の名前空間には未対応（reads-node-id-space 計画を参照）")
+        print(f"  葉走査: n<整数> でない is_bubble=0 行 {bad:,} 個（S/G クラスタ）を照合対象から除外",
+              file=sys.stderr)
     ids = np.frombuffer(ids, dtype=np.int64); szs = np.frombuffer(szs, dtype=np.int64)
     o = np.argsort(ids, kind="stable")
     ids, szs = ids[o], szs[o]

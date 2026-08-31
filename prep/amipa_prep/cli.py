@@ -528,6 +528,14 @@ def build_stages(b: Bundle, a) -> dict:
                 "--out-dir", str(b.reads_dir), "--level", str(a.reads_level)]
         if a.reads_keep_tags:
             rcmd += ["--drop-tags", ""]
+        if getattr(a, "reads_append", False):
+            rcmd += ["--append"]
+        if getattr(a, "reads_chunk_visits", None):
+            rcmd += ["--chunk-visits", str(a.reads_chunk_visits)]
+        if getattr(a, "reads_no_names", False):
+            rcmd += ["--no-name-index"]
+        if getattr(a, "reads_force_mismatch", False):
+            rcmd += ["--force-mismatch"]
         ins = [b.db]
         for spec in a.reads:
             if "=" not in spec:
@@ -537,7 +545,8 @@ def build_stages(b: Bundle, a) -> dict:
             ins.append(Path(gaf))
         st["reads"] = Stage(
             "reads", [rcmd], inputs=ins, outputs=[b.reads_dir], env=thread_env(1),
-            note=f"リード整列（{len(a.reads)} サンプル, オンデマンド索引）",
+            note=f"リード整列（{len(a.reads)} サンプル, オンデマンド索引"
+                 + ("・追記" if getattr(a, "reads_append", False) else "") + "）",
         )
 
     # タイル索引（既定で作る。★本体は R-Tree を持たないので、viewer にはこれが唯一の空間索引）:
@@ -662,7 +671,7 @@ def execute(b: Bundle, a, want: list[str]) -> None:
     if a.dry_run:
         log("--dry-run なので実行しない")
         for name in plan:
-            if decisions[name] == "run":
+            if not is_fresh(name, stages[name]):
                 for c in stages[name].cmds:
                     print("   ", " ".join(shlex.quote(str(x)) for x in c))
         return
@@ -752,8 +761,9 @@ def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
         "tiled":     dict(slots=1, total=clamp(1.0 * g + 4, 8, 160), hours=0.1 + g / 32),
         # reads は GFA ではなく **GAF の量**で決まる（葉ごとの転置索引をメモリに持つため）。
         # 実測: GAF.gz 60.1GB / 葉 8140 万 / のべ通過 52.8 億回 → 28.3G・1.1h。
-        # 通過を delta+varint でその場で畳むので、GAF.gz 1GB あたり ~0.47GB に収まる。
-        "reads":     dict(slots=1, total=clamp(0.7 * q + 0.1 * g, 8, 300),
+        # v2(チャンク型): メモリは「固定床(葉数比例)＋1 チャンク」で頭打ち＝リード量に非依存。
+        # 実測: WG トリオ(GAF.gz 60GB) ピーク RSS 16.2GiB。--reads-chunk-visits で下げられる。
+        "reads":     dict(slots=1, total=clamp(0.3 * g + 8, 8, 48),
                           hours=0.2 + q / 50),
         "bundle":    dict(slots=1, total=8, hours=0.1),
     }
@@ -839,6 +849,18 @@ def add_common(p, need_gfa=False):
                         "（閲覧側は遅くならない）")
     p.add_argument("--reads-keep-tags", action="store_true",
                    help="GAF のタグを全部保存する（既定は表示に使わない bq:Z を捨てる）")
+    p.add_argument("--reads-append", action="store_true",
+                   help="add-reads 用: 既存のリード索引に**サンプルを追記**する（--reads には新しい"
+                        "サンプルだけを書く）。既存の索引チャンク・実体は触らない。"
+                        "指定しない add-reads は列挙したサンプルで索引を作り直す（従来どおり）")
+    p.add_argument("--reads-chunk-visits", type=int, default=None,
+                   help="リード索引 1 チャンクのノード通過数予算（既定 5 億 ≒ 構築ピーク 16GB/WG）。"
+                        "半分にするとメモリが 1.5GB ほど減り、チャンク数（読み出し時の blob 数）が倍になる")
+    p.add_argument("--reads-no-names", action="store_true",
+                   help="リード名の列と検索索引を作らない。表示は変わらず、名前検索だけ不可になる。"
+                        "数十億本のショートリードでは索引だけで数百 GB になるため、その場合に指定する")
+    p.add_argument("--reads-force-mismatch", action="store_true",
+                   help="構築前検査（GAF ノード名と葉の一致率）が低くても続行する")
     p.add_argument("--hash-limit-gb", type=float, default=2.0,
                    help="manifest で sha256 を計算する上限サイズ（既定 2GB。大きい DB は省略）")
     p.add_argument("--force", action="store_true", help="全段やり直す")
@@ -924,6 +946,8 @@ def main():
             die("--band / --gene / --region のいずれかを指定する")
         execute(b, a, ["annot", "bundle"])
         return
+    if getattr(a, "reads_append", False) and a.cmd != "add-reads":
+        die("--reads-append は add-reads でだけ使える（run は最初から作るので追記するものが無い）")
     if a.cmd == "add-reads":
         if not a.reads:
             die("--reads SAMPLE=GAF を指定する")
