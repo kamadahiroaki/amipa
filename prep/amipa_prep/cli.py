@@ -59,7 +59,7 @@ DEFAULT_POVU = Path(os.environ.get("AMIPA_POVU") or os.environ.get("GGB_POVU") o
 
 # 実行順。annot / reads は入力が指定された時だけ走る。
 # tiled は reads の後: 葉層のリード支持(rs)を edges_t に焼き込むため。reads を後から足したら tiled も作り直す
-STAGES = ["distill", "decompose", "lod", "layout", "emit", "annot", "reads", "tiled", "bundle"]
+STAGES = ["distill", "collapse", "decompose", "lod", "layout", "emit", "annot", "reads", "tiled", "bundle"]
 
 STATE_VERSION = 1
 
@@ -254,6 +254,12 @@ class Bundle:
         self.npz_prefix = self.work / "graph"          # layout は prefix を取り .npz を付ける
         self.npz = self.work / "graph.npz"
         self.dense_gfa = self.work / "dense.gfa"
+        # 畳み込み（--collapse）。distill_src = 元 GFA の中間、collapse_gfa = 畳み込み後の GFA。
+        # 畳み込みを使うときは distill_src → collapse → distill という順になり、
+        # 以降の段は「畳み込みグラフの distill 中間」だけを見る（下流は変更不要）。
+        self.distill_src = self.work / "distill_src"
+        self.collapse_gfa = self.work / "collapse.gfa"
+        self.collapse_sidecar = Path(str(self.db) + ".collapse")
 
     def _infer_name(self, gfa: Path | None) -> str:
         # 既存バンドルなら中の本体、次に state.json、無ければ GFA のファイル名から決める。
@@ -378,19 +384,45 @@ def build_stages(b: Bundle, a) -> dict:
     # ⓪ distill: GFA を 1 回だけ走査して dense-id numpy 中間にする。
     #    以降の段は GFA を再パースしない（WG では I/O 律速の主因だった）。
     #    --emit-dense-gfa は「dense≠identity のときだけ」書かれる → ① の入力選択に使う。
+    #    ★--collapse のときは元 GFA の中間を distill_src へ出す（collapse 段の入力）。
+    #      collapse 段が畳み込み GFA を作り、それを distill し直して b.distill に置くので、
+    #      以降の段は「畳み込みグラフの中間」だけを見る（下流は変更不要）。
+    collapsing = bool(getattr(a, "collapse", False))
     if a.gfa:
+        d0 = b.distill_src if collapsing else b.distill
         st["distill"] = Stage(
             "distill",
             [[py, str(PKG / "distill.py"), "--gfa", str(a.gfa),
-              "--out", str(b.distill), "--emit-dense-gfa", str(b.dense_gfa)]],
+              "--out", str(d0), "--emit-dense-gfa", str(b.dense_gfa)]],
             inputs=[a.gfa],
-            outputs=[b.distill / "meta.json", b.distill / "p_tok.npy"],
+            outputs=[d0 / "meta.json", d0 / "p_tok.npy"],
             env=thread_env(1),
-            note="GFA → dense-id numpy 中間（以降の段は GFA を読まない）",
+            note="GFA → dense-id numpy 中間（以降の段は GFA を読まない）"
+                 + ("＝畳み込みの入力" if collapsing else ""),
+        )
+
+    # ⓪b collapse: 自明バブルの連鎖を 1 ノードに畳む（可逆）。
+    #    畳み込み GFA を作り、それを distill し直す。**下流の段は畳み込みグラフだけを見る**。
+    #    アレルの差分と元ノードとの対応は <db>.collapse サイドカーに入る。
+    if a.gfa and collapsing:
+        st["collapse"] = Stage(
+            "collapse",
+            [[py, str(PKG / "collapse.py"), "--distill", str(b.distill_src),
+              "--out", str(b.collapse_gfa), "--sidecar", str(b.collapse_sidecar)],
+             [py, str(PKG / "distill.py"), "--gfa", str(b.collapse_gfa),
+              "--out", str(b.distill), "--emit-dense-gfa", str(b.dense_gfa)]],
+            inputs=[b.distill_src],
+            outputs=[b.collapse_sidecar, b.distill / "p_tok.npy"],
+            env=thread_env(1),
+            note="自明バブルの連鎖を畳む（可逆。差分は <db>.collapse へ）",
         )
 
     # ① povu decompose: 元 GFA の整数 node id が必須。非 identity なら ⓠ が書いた dense GFA を使う。
-    povu_gfa = b.dense_gfa if b.dense_gfa.exists() else (a.gfa or b.dense_gfa)
+    #    ★畳み込みを使うときは畳み込み GFA が入力（下流は全部畳み込みグラフで揃える）。
+    if a.gfa and collapsing:
+        povu_gfa = b.dense_gfa if b.dense_gfa.exists() else b.collapse_gfa
+    else:
+        povu_gfa = b.dense_gfa if b.dense_gfa.exists() else (a.gfa or b.dense_gfa)
     st["decompose"] = Stage(
         "decompose",
         [[str(a.povu), "-v", "2", "-t", str(threads), "decompose",
@@ -565,7 +597,7 @@ def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
     con.close()
 
     files = []
-    for p in [b.db, b.annot, b.tiled] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
+    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
             + sorted(b.root.glob(f"{b.db.name}.nametri")) \
             + sorted(b.root.glob(f"{b.db.name}.reads")):
         if not p.exists():
@@ -708,6 +740,9 @@ def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
     t = max(1, threads)
     return {
         "distill":   dict(slots=1, total=clamp(1.0 * g, 8, 320), hours=0.2 + g / 140),
+        # collapse は distill 中間をメモリに載せて全パスを 1 周する。
+        # 実測: ecoli50 (GFA 0.39GB) 47 s / 3.7GB。distill をもう 1 回回す分も込み。
+        "collapse":  dict(slots=1, total=clamp(9.5 * g, 8, 400), hours=0.2 + g / 30),
         "decompose": dict(slots=min(8, t), total=clamp(3.4 * g, 8, 400), hours=0.2 + g / 80),
         "lod":       dict(slots=1, total=clamp(3.1 * g, 8, 400), hours=0.2 + g / 45),
         "layout":    dict(slots=t, total=clamp(1.4 * g, 8, 300), hours=0.2 + g / 58),
@@ -765,6 +800,10 @@ def add_common(p, need_gfa=False):
     p.add_argument("--out", required=True, type=Path, help="バンドル（出力ディレクトリ）")
     p.add_argument("--gfa", type=Path, required=need_gfa, help="入力 GFA")
     p.add_argument("--name", help="DB のベース名（既定: GFA 名 or 既存 DB 名）")
+    p.add_argument("--collapse", action="store_true",
+                   help="自明バブルの連鎖を 1 ノードに畳んでからアトラスを作る（可逆）。"
+                        "ノードが 4〜6 倍減り、SNP が画素を食わなくなる。"
+                        "アレルの差分と元ノードとの対応は <db>.collapse に入る")
     p.add_argument("--no-tiled", action="store_true",
                    help="描画用タイル索引 <name>.db.tiled を作らない（既定は作る。★本体は R-Tree を持たないので、"
                         "無いと viewer で開けない。試験目的以外では付けない）")

@@ -96,7 +96,8 @@ def _ragged(lens):
 
 
 def collapse(distill: Path, out_gfa: Path, wildcard: bool = True,
-             sidecar: Path | None = None, msa_cap: int = 4_000_000):
+             sidecar: Path | None = None, msa_cap: int = 4_000_000,
+             rep_mode: str = "consensus", ref_key: str | None = None):
     t0 = time.time()
     d = lambda n: np.load(str(distill / n))
 
@@ -108,6 +109,15 @@ def collapse(distill: Path, out_gfa: Path, wildcard: bool = True,
     seq_off = d("s_seq_off.npy").astype(np.int64)
     seqa = np.array(np.memmap(str(distill / "s_seq.bin"), dtype=np.uint8, mode="r"))
     names = [l.rstrip("\n") for l in open(distill / "p_names.txt")]
+
+    ref_paths = set()
+    if rep_mode == "ref":
+        if not ref_key:
+            raise SystemExit("--rep ref には --ref-key が要る")
+        ref_paths = {i for i, nm in enumerate(names)
+                     if nm == ref_key or nm.split("#", 1)[0] == ref_key}
+        if not ref_paths:
+            raise SystemExit(f"--ref-key {ref_key} に一致するパスが無い")
 
     n = s_id.size
     id2row = np.empty(int(s_id.max()) + 1, np.int64)
@@ -331,10 +341,80 @@ def collapse(distill: Path, out_gfa: Path, wildcard: bool = True,
     nvar = int(((POPC[mask] > 1) & ~isN).sum())
     nN = int(isN.sum())
     _log(t0, f"置換 {sub_off.size:,} / プール {uk2.size:,} / 区間あたり {sub_off.size / R:.2f}")
+    run_path_of = np.repeat(np.arange(P), np.diff(path_run_ptr))
     _log(t0, f"変異する位置 {nvar:,} / N を除く {int(rep_off[-1]) - nN:,} bp "
              f"({100 * nvar / max(1, int(rep_off[-1]) - nN):.3f}%)  ［入力の N {nN:,}］")
 
-    # ── 7. 書き出し ─────────────────────────────────────────────
+    # ── 7. ノード内 MSA を作り、代表配列を列ごとの多数決で決め直す ──
+    #    ★代表を「最初のパスの区間」にすると、条件 2 で全区間が同じ長さになる以上
+    #      事実上いつもパス 0 が選ばれ、そのハプロタイプだけが畳み込みグラフと一致する
+    #      （実測: ecoli50 のパス 0 は相違 501 bp、他は 5.6 万 bp）。
+    #      マッピングの基準として偏るうえ、置換の総数も最小でない。
+    #      列ごとの多数決は「代表と異なる区間の数」を最小にする最適解。
+    order = np.argsort(RG, kind="stable")
+    gptr = np.searchsorted(RG[order], np.arange(G + 1))
+    row_of_run = np.empty(R, np.int64)
+    row_of_run[order] = np.arange(R) - gptr[RG[order]]
+    sub_len = (pool_off[np.asarray(sub_pool, np.int64) + 1]
+               - pool_off[np.asarray(sub_pool, np.int64)]).astype(np.int64)
+    msa = {}
+    ncells = nskip = nflip = nref = 0
+    for g in range(G):
+        rr = order[gptr[g]:gptr[g + 1]]
+        if rr.size == 0:
+            continue
+        cols = set()
+        for i in rr:
+            for j in range(run_ptr[i], run_ptr[i + 1]):
+                o = int(sub_off[j])
+                cols.update(range(o, o + int(sub_len[j])))
+        if not cols:
+            continue
+        cols = np.array(sorted(cols), np.int32)
+        if rr.size * cols.size > msa_cap:
+            nskip += 1
+            continue
+        pos = {int(c): t for t, c in enumerate(cols)}
+        base0 = rep_off[g] + cols
+        cells = np.tile(repcat[base0], rr.size)            # まず代表の塩基で埋める
+        for t, i in enumerate(rr):
+            off0 = t * cols.size
+            for j in range(run_ptr[i], run_ptr[i + 1]):
+                o, q = int(sub_off[j]), int(sub_pool[j])
+                sq = pool_val[pool_off[q]:pool_off[q + 1]]
+                for x in range(sq.size):
+                    cells[off0 + pos[o + x]] = sq[x]
+        # 代表の塩基を決める。ref モードでは参照パスの区間の塩基を採り、
+        # 参照がそのノードを通らないところだけ多数決に落ちる。
+        M = cells.reshape(rr.size, cols.size)
+        pr = run_path_of[rr]
+        rrow = -1
+        if ref_paths:
+            w = np.flatnonzero(np.isin(pr, list(ref_paths)))
+            if w.size:
+                rrow = int(w[0])
+                nref += 1
+        for t in range(cols.size):
+            if rrow >= 0:
+                b = int(M[rrow, t])
+            else:
+                v, c = np.unique(M[:, t], return_counts=True)
+                b = int(v[int(np.argmax(c))])
+            if b != repcat[base0[t]]:
+                repcat[base0[t]] = b
+                nflip += 1
+        M = np.where(M == repcat[base0][None, :], np.uint8(0x2E), M)   # '.' = 代表と同じ
+        ncells += M.size
+        msa[g + 1] = (int(rr.size), int(cols.size), cols, M.reshape(-1),
+                      run_path_of[rr].astype(np.int32))
+    nsub2 = int(sum((v[3] != 0x2E).sum() for v in msa.values()))
+    _log(t0, f"ノード内 MSA: セル {ncells:,} / 省いたノード {nskip} / "
+             f"代表を入れ替えた列 {nflip:,}"
+             + (f" / 参照が通るノード {nref:,} / MSA を持つノード {len(msa):,}"
+                if ref_paths else "（多数決）"))
+    _log(t0, f"  代表と異なるセル {nsub2:,}（多数決の前は {int(sub_off.size):,} ステップ分）")
+
+    # ── 8. 書き出し ─────────────────────────────────────────────
     def write_gfa(path, base):
         with open(path, "wb") as fh:
             fh.write(b"H\tVN:Z:1.0\n")
@@ -362,36 +442,27 @@ def collapse(distill: Path, out_gfa: Path, wildcard: bool = True,
         write_gfa(str(out_gfa) + ".wildcard", IUPAC[mask])
 
     sc = Path(sidecar or (str(out_gfa) + ".collapse"))
-    _write_sidecar(sc, t0, G, P, R, n, names, s_id, grp, node_off, node_ori, s_bp,
-                   RG, RO, replen, rep_off, path_run_ptr, run_ptr, sub_off, sub_pool,
-                   pool_val, pool_off, msa_cap,
+    _write_sidecar(sc, t0, G, P, names, s_id, grp, node_off, node_ori, s_bp,
+                   RG, RO, path_run_ptr, row_of_run, msa,
                    dict(nodes_before=n, nodes_after=G, chain_groups=G0, runs=R,
-                        bubbles=int(bidx.size), subs=int(sub_off.size),
-                        rep_bp=int(rep_off[-1]), var_pos=nvar, n_bases=nN))
+                        bubbles=int(bidx.size), subs=nsub2, rep_bp=int(rep_off[-1]),
+                        var_pos=nvar, n_bases=nN, msa_cells=ncells, msa_skipped=nskip,
+                        rep_flips=nflip, rep_mode=rep_mode,
+                        ref_key=ref_key, ref_covered_nodes=nref))
     _log(t0, f"-> {out_gfa}" + (f" / {out_gfa}.wildcard" if wildcard else "") + f" / {sc}")
     return sc
 
 
-def _write_sidecar(path, t0, G, P, R, n, names, s_id, grp, node_off, node_ori, s_bp,
-                   RG, RO, replen, rep_off, path_run_ptr, run_ptr, sub_off, sub_pool,
-                   pool_val, pool_off, msa_cap, meta):
+def _write_sidecar(path, t0, G, P, names, s_id, grp, node_off, node_ori, s_bp,
+                   RG, RO, path_run_ptr, row_of_run, msa, meta):
     _log(t0, "サイドカーを書く…")
     if os.path.exists(path):
         os.unlink(path)
     con = sqlite3.connect(str(path))
     con.executescript(SCHEMA)
-
     con.executemany("INSERT INTO orig_node VALUES(?,?,?,?,?)",
                     zip(s_id.tolist(), (grp + 1).tolist(), node_off.tolist(),
                         s_bp.tolist(), node_ori.tolist()))
-
-    # グループ -> 区間（大域の区間番号の昇順 = パス順・位置順）
-    order = np.argsort(RG, kind="stable")
-    gptr = np.searchsorted(RG[order], np.arange(G + 1))
-    row_of_run = np.empty(R, np.int64)
-    row_of_run[order] = np.arange(R) - gptr[RG[order]]
-
-    # 各パスが辿る畳み込みノード（P 行と同じ順）
     for k in range(P):
         i0, i1 = int(path_run_ptr[k]), int(path_run_ptr[k + 1])
         con.execute("INSERT INTO path_runs VALUES(?,?,?,?,?,?)",
@@ -399,54 +470,20 @@ def _write_sidecar(path, t0, G, P, R, n, names, s_id, grp, node_off, node_ori, s
                      (RG[i0:i1] + 1).astype(np.int32).tobytes(),
                      RO[i0:i1].astype(np.uint8).tobytes(),
                      row_of_run[i0:i1].astype(np.int32).tobytes()))
-
-    # ノード内 MSA（変異する列だけ）。非変異列は代表配列そのものなので、
-    # これだけで各区間の配列を完全に復元できる。
-    run_path = np.repeat(np.arange(P), np.diff(path_run_ptr))
-    sub_len = (pool_off[np.asarray(sub_pool, np.int64) + 1]
-               - pool_off[np.asarray(sub_pool, np.int64)]).astype(np.int64)
-    batch, ncells, nskip = [], 0, 0
-    for g in range(G):
-        rr = order[gptr[g]:gptr[g + 1]]
-        if rr.size == 0:
-            continue
-        cols = set()
-        for i in rr:
-            lo, hi = run_ptr[i], run_ptr[i + 1]
-            for j in range(lo, hi):
-                o = int(sub_off[j])
-                cols.update(range(o, o + int(sub_len[j])))
-        if not cols:
-            continue
-        cols = np.array(sorted(cols), np.int32)
-        if rr.size * cols.size > msa_cap:
-            nskip += 1
-            continue
-        pos = {int(c): t for t, c in enumerate(cols)}
-        cells = np.repeat(np.frombuffer(b".", np.uint8), rr.size * cols.size).copy()
-        for t, i in enumerate(rr):
-            base = t * cols.size
-            for j in range(run_ptr[i], run_ptr[i + 1]):
-                o, q = int(sub_off[j]), int(sub_pool[j])
-                sq = pool_val[pool_off[q]:pool_off[q + 1]]
-                for x in range(sq.size):
-                    cells[base + pos[o + x]] = sq[x]
-        ncells += cells.size
-        batch.append((g + 1, int(rr.size), int(cols.size), cols.tobytes(),
-                      cells.tobytes(), run_path[rr].astype(np.int32).tobytes()))
+    batch = []
+    for gid, (nrun, ncol, cols, cells, paths) in msa.items():
+        batch.append((gid, nrun, ncol, cols.tobytes(), cells.tobytes(), paths.tobytes()))
         if len(batch) >= 20000:
             con.executemany("INSERT INTO node_msa VALUES(?,?,?,?,?,?)", batch)
             batch = []
     if batch:
         con.executemany("INSERT INTO node_msa VALUES(?,?,?,?,?,?)", batch)
-
-    meta.update(schema="collapse-1", msa_cells=ncells, msa_skipped=nskip)
+    meta = dict(meta, schema="collapse-1")
     con.executemany("INSERT INTO meta VALUES(?,?)",
                     [(k, json.dumps(v)) for k, v in meta.items()])
     con.commit()
     con.execute("VACUUM")
     con.close()
-    _log(t0, f"  MSA セル {ncells:,} / 大きすぎて省いたノード {nskip}")
 
 
 def main():
@@ -457,6 +494,11 @@ def main():
     ap.add_argument("--sidecar", help="対応付けサイドカー（既定 <out>.collapse）")
     ap.add_argument("--tmp", default=None, help="distill の作業場所")
     ap.add_argument("--no-wildcard", dest="wildcard", action="store_false", default=True)
+    ap.add_argument("--rep", choices=["consensus", "ref"], default="consensus",
+                    help="代表配列の決め方。consensus=列ごとの多数決（既定。置換を最小化し偏りが無い）/ "
+                         "ref=参照パスの塩基（--ref-key。ヒトなど参照座標に揃えたいとき）")
+    ap.add_argument("--ref-key", default=None,
+                    help="--rep ref で代表にするパス名（先頭一致。例 GRCh38）")
     ap.add_argument("--msa-cap", type=int, default=4_000_000,
                     help="1 ノードの MSA セル数の上限。超えたら省く")
     a = ap.parse_args()
@@ -465,14 +507,14 @@ def main():
 
     if a.distill:
         collapse(Path(a.distill), Path(a.out), a.wildcard,
-                 Path(a.sidecar) if a.sidecar else None, a.msa_cap)
+                 Path(a.sidecar) if a.sidecar else None, a.msa_cap, a.rep, a.ref_key)
     else:
         with tempfile.TemporaryDirectory(dir=a.tmp, prefix="collapse.") as td:
             d = Path(td) / "d0"
             subprocess.run([sys.executable, str(Path(__file__).with_name("distill.py")),
                             "--gfa", a.gfa, "--out", str(d)], check=True)
             collapse(d, Path(a.out), a.wildcard,
-                     Path(a.sidecar) if a.sidecar else None, a.msa_cap)
+                     Path(a.sidecar) if a.sidecar else None, a.msa_cap, a.rep, a.ref_key)
 
 
 if __name__ == "__main__":
