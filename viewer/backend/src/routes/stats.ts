@@ -202,7 +202,17 @@ statsRouter.get('/max_coverage', (req, res) => {
     if (rs && d.prepare(`SELECT 1 FROM ${rs}.sqlite_master WHERE type='table' AND name='read_cov'`).get()) {
       // リード深度は高コピー領域で極端に歪む(chrY 実測 p50=43, max=2681)。素の MAX をスケール上限に
       // すると通常深度が全部 flat(~2%)になり色分けが見えない。→ p99 を既定上限に(外れ値は赤で飽和、
-      // 通常域に階調が乗る)。ユーザは「最大深度」で手動上書き可。WG では read_meta 事前計算に移すべき。
+      // 通常域に階調が乗る)。ユーザは「最大深度」で手動上書き可。
+      // チャンク型 v2 のサイドカーは p99 を構築時に read_meta.depth_p99 へ書いてある
+      // （WG の read_cov は 5,200 万行あり ORDER BY 走査が重い）→ あればそれを使う。
+      try {
+        const m = d.prepare(`SELECT value AS v FROM ${rs}.read_meta WHERE key='depth_p99'`)
+          .get() as { v: string } | undefined
+        const pv = m ? Number(m.v) : NaN
+        if (Number.isFinite(pv) && pv > 0) {
+          maxCovCache.set(db, pv); res.json({ maxCoverage: pv }); return
+        }
+      } catch { /* read_meta が無い旧サイドカー: 下の走査へ */ }
       const n = (d.prepare(`SELECT COUNT(*) AS n FROM ${rs}.read_cov WHERE depth>0`).get() as any).n as number
       let rv = 0
       if (n > 0) {

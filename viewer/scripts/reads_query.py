@@ -28,9 +28,10 @@ from cs_ops import extract_node_cs, cs_to_cigar, extract_node_cigar  # cs ロジ
 TOK = re.compile(r'([<>])(\d+)')
 
 
-def _decode_postings(blob):
-    """node_reads.postings(delta+LEB128 varint)→ aln_id 昇順リスト。Rust/py の write_varint と対。"""
-    out = []; prev = 0; shift = 0; cur = 0
+def _decode_postings(blob, prev=0):
+    """node_reads.postings(delta+LEB128 varint)→ aln_id 昇順リスト。Rust/py の write_varint と対。
+    prev はチャンク型 v2 の起点（read_chunk.base_aln_id）。v1 は 0。"""
+    out = []; shift = 0; cur = 0
     for byte in blob:
         cur |= (byte & 0x7f) << shift
         if byte & 0x80:
@@ -38,6 +39,22 @@ def _decode_postings(blob):
         else:
             prev += cur; out.append(prev); cur = 0; shift = 0
     return out
+
+
+def _node_aln_ids(con, gid):
+    """node_reads から gid の aln_id 昇順リスト。チャンク型 v2（chunk_no 列あり）と v1 の両対応。
+    v2 は (gid, chunk_no) 毎 1 blob・チャンク内相対 delta なので、read_chunk.base_aln_id を
+    起点に各チャンクを復号して連結する（チャンクは aln_id 昇順に並ぶ）。"""
+    cols = {r[1] for r in con.execute("PRAGMA rd.table_info(node_reads)")}
+    if "chunk_no" in cols:
+        base = dict(con.execute("SELECT chunk_no, base_aln_id FROM rd.read_chunk"))
+        out = []
+        for cn, blob in con.execute(
+                "SELECT chunk_no, postings FROM rd.node_reads WHERE gfa_id=? ORDER BY chunk_no", (gid,)):
+            out.extend(_decode_postings(blob, base.get(cn, 0)))
+        return out
+    row = con.execute("SELECT postings FROM rd.node_reads WHERE gfa_id=?", (gid,)).fetchone()
+    return _decode_postings(row[0]) if row else []
 
 
 def attach_sidecar(con, db_path, sidecar=None):
@@ -226,8 +243,7 @@ def main():
             return
         gid = int(m.group(1))
         # ★node→reads: node_reads(gfa_id)の posting blob を復号→aln_id 群→read_aln で (sample_no,voff)。
-        prow = con.execute("SELECT postings FROM rd.node_reads WHERE gfa_id=?", (gid,)).fetchone()
-        aln_ids = _decode_postings(prow[0]) if prow else []
+        aln_ids = _node_aln_ids(con, gid)
         rows = []
         for i in range(0, len(aln_ids), 900):
             chunk = aln_ids[i:i+900]
@@ -277,6 +293,12 @@ def main():
                                (args.aln,)).fetchall()
         else:
             q = args.search
+            ra_cols = {r[1] for r in con.execute("PRAGMA rd.table_info(read_aln)")}
+            if not q.isdigit() and "read_name" not in ra_cols:
+                # --no-name-index で構築したサイドカー。名前→aln_id の索引を持たないので黙って
+                # 空を返さず、理由を返す（aln_id での照会は可能）。
+                print(json.dumps({"results": [], "note": "no-name-index"}))
+                return
             if q.isdigit():
                 rows = con.execute("SELECT aln_id,sample_no,voff FROM rd.read_aln WHERE aln_id=?",
                                    (int(q),)).fetchall()

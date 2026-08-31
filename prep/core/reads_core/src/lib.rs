@@ -7,16 +7,28 @@
 // フレームを跨がない。位置(`read_aln.voff`)は**素の非圧縮バイトオフセット**＝容器実装に依存しない。
 //
 // Python(reads_attach.py)側:
-//   - スキーマ作成(node_reads/read_aln/read_src/read_cov/read_meta)、read_src 登録、con.close()
+//   - スキーマ作成(node_reads/read_chunk/read_aln/read_src/read_meta)、read_src 登録、con.close()
 //   - reads_core.build_reads(...) を呼ぶ。read_meta は後で書く。
 // Rust(build_reads)側:
 //   - 各サンプル: 入力 GAF(gzip)を1パス読み → zstd 書込(voff 採取) → path 走査
-//   - read_aln を rusqlite 直書き、edge_sup を compact HashMap、depth→read_cov、node_reads 転置索引
+//   - read_aln を rusqlite 直書き、edge_sup を compact HashMap、cov→read_cov、node_reads 転置索引
+//
+// ★チャンク型 v2（reads_attach.py の docstring 参照）:
+//   - 転置索引は (gfa_id, chunk_no) 毎 1 blob。delta は**チャンク内相対 aln_id**（起点
+//     read_chunk.base_aln_id）。チャンクは visits 予算かサンプル境界で閉じ、閉じた時点で
+//     postings のメモリを解放する → ピークはチャンク 1 個分（v1 は全リード比例で WG 24GB）。
+//   - delta の上限が 1 チャンクの aln 数（CHUNK_ALN_CAP で 2^32 未満を保証）になり、
+//     32bit wrap で索引が黙って壊れる v1 の欠陥（2^32 本目以降）が構造的に消える。
+//   - --append: 既存 read_cov(cov_bases=分子) と edge_read_support を読み戻して加算し、
+//     この 2 表だけ丸ごと作り直す。既存の node_reads チャンク・read_aln は 1 行も触らない。
+//
+// ★照合は葉 id の昇順配列（連番なら直アクセス、疎なら二分探索）。v1 の「max_id+1 の密配列」を
+//   やめたので、id が疎な部分グラフでもメモリは葉数比例。
 //
 // ★Python 意味論の忠実移植(内容一致検証用):
 //   TOK=[<>](\d+) / ヘッダ(@)は容器に書くが voff/parse しない / aln_id は len(cols)>=12 で加算
 //   (座標parse失敗でも消費) / 転置索引は 1リード内 gid 重複を集約 / offset は found ノードのみ前進 /
-//   edge key は canonical (min,max)。
+//   edge key は canonical (min,max) / チャンク境界の判定は「1 リードの走査を終えた直後」。
 
 use flate2::read::MultiGzDecoder;
 use numpy::PyReadonlyArray1;
@@ -30,6 +42,9 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 
 const SKIPPABLE_MAGIC: u32 = 0x184D_2A5E; // zstd skippable frame(素の zstd は読み飛ばす)
 const SEEKABLE_MAGIC: u32 = 0x8F92_EAB1; // seekable format のフッタ
+
+/// チャンク内 aln 数の上限（delta を 32bit に収める保険。visits 予算が先に効くのが普通）。
+const CHUNK_ALN_CAP: i64 = (1 << 32) - 2;
 
 /// 行を追記して「行頭の**非圧縮**オフセット」を返す seekable zstd ライタ。
 /// zstd_seek.py の SeekableZstdWriter と同じ物を書く(相互に読める)。
@@ -137,24 +152,77 @@ fn parse_u_i64(b: &[u8]) -> Option<i64> {
     Some(v)
 }
 
+/// 葉 id → 葉序数。連番なら O(1)、疎でも二分探索（Python 側 LeafMap と同義）。
+struct LeafMap<'a> {
+    ids: &'a [i64],
+    lo: i64,
+    hi: i64,
+    contig: bool,
+}
+impl<'a> LeafMap<'a> {
+    fn new(ids: &'a [i64]) -> Self {
+        let lo = ids[0];
+        let hi = ids[ids.len() - 1];
+        let contig = hi - lo + 1 == ids.len() as i64;
+        Self { ids, lo, hi, contig }
+    }
+    #[inline]
+    fn ord_of(&self, gid: i64) -> i64 {
+        if gid < self.lo || gid > self.hi {
+            return -1;
+        }
+        if self.contig {
+            return gid - self.lo;
+        }
+        match self.ids.binary_search(&gid) {
+            Ok(i) => i as i64,
+            Err(_) => -1,
+        }
+    }
+}
+
+/// read_cov の node_name 'n<id>' から id を取る（それ以外は None）。
+fn leaf_name_id(name: &str) -> Option<i64> {
+    let b = name.as_bytes();
+    if b.len() < 2 || b[0] != b'n' {
+        return None;
+    }
+    parse_u_i64(&b[1..])
+}
+
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (db_path, sample_nos, sample_ids, gaf_paths, out_dir, leaf_ids, leaf_sizes,
+                    maxlayer, no_cov, frame_bytes, level, drop_tags,
+                    chunk_visits, name_index, append, base_aln_id, base_chunk_no))]
 fn build_reads(
     db_path: String,
     sample_nos: Vec<i64>,
     sample_ids: Vec<String>,
     gaf_paths: Vec<String>,
     out_dir: String,
-    size_arr: PyReadonlyArray1<i64>,
+    leaf_ids: PyReadonlyArray1<i64>,
+    leaf_sizes: PyReadonlyArray1<i64>,
     maxlayer: i64,
     no_cov: bool,
     frame_bytes: usize,
     level: i32,
     drop_tags: Vec<String>,
-) -> PyResult<(Vec<i64>, i64, i64, f64)> {
-    let sizes = size_arr
+    chunk_visits: i64,
+    name_index: bool,
+    append: bool,
+    base_aln_id: i64,
+    base_chunk_no: i64,
+) -> PyResult<(Vec<i64>, i64, i64, f64, i64, f64)> {
+    let ids = leaf_ids
         .as_slice()
-        .map_err(|e| PyRuntimeError::new_err(format!("size_arr: {e}")))?;
+        .map_err(|e| PyRuntimeError::new_err(format!("leaf_ids: {e}")))?;
+    let sizes = leaf_sizes
+        .as_slice()
+        .map_err(|e| PyRuntimeError::new_err(format!("leaf_sizes: {e}")))?;
+    if ids.is_empty() || ids.len() != sizes.len() {
+        return Err(PyRuntimeError::new_err("leaf_ids/leaf_sizes が空か長さ不一致"));
+    }
     // 落とすタグは 2 文字の名前で受ける("bq" → 行中の "bq:Z:..." を捨てる)
     let mut drop2: Vec<[u8; 2]> = Vec::new();
     for t in &drop_tags {
@@ -174,35 +242,99 @@ fn build_reads(
         ));
     }
 
-    let run = || -> Result<(Vec<i64>, i64, i64, f64), Box<dyn Error>> {
-        let n_size = sizes.len();
+    let run = || -> Result<(Vec<i64>, i64, i64, f64, i64, f64), Box<dyn Error>> {
+        let lmap = LeafMap::new(ids);
+        let n_leaf = ids.len();
         let mut conn = Connection::open(&db_path)?;
         conn.execute_batch(
             "PRAGMA synchronous=OFF; PRAGMA temp_store=MEMORY; PRAGMA cache_size=-2000000;",
         )?;
 
-        let mut depth_bases: Vec<f64> = vec![0.0; n_size];
-        // ★posting-list(転置索引): gfa_id -> そのノードを通過したリードの aln_id 昇順リスト。
-        //   per-visit の行(全ゲノムで 100 億)は持たず、ノード毎に 1 個の blob に畳んで node_reads へ。
-        //   ★aln_id はリード処理順=昇順なので、**その場で delta を varint にして書き足す**。
-        //     u32 を貯めてから畳むより 3 割方メモリが少なく済む(全ゲノムで 60GB → 45GB 程度)。
-        //     直前の aln_id はノード毎に覚えておく(u32 配列。葉 8000 万でも 326MB)。
-        let mut postings: Vec<Vec<u8>> = Vec::new();
-        postings.resize_with(n_size, Vec::new);
-        let mut last_aln: Vec<u32> = vec![0; n_size];
-        // 点2: edge_sup を compact HashMap に(Python dict の ~10分の1)。canonical (lo,hi) の u32 対。
+        // ---- append: 既存の集計（cov 分子・edge 支持）を読み戻す ----
+        let mut cov_bases: Vec<i64> = vec![0; n_leaf];
+        // edge_sup: canonical (序数 lo, 序数 hi) → 回数。序数順 == id 順（ids は昇順）なので
+        // canonical の意味は v1 (id の min,max) と同一。
         let mut edge_sup: std::collections::HashMap<(u32, u32), u32> =
             std::collections::HashMap::new();
+        if append {
+            {
+                let mut st = conn.prepare("SELECT node_name, cov_bases FROM read_cov")?;
+                let mut rows = st.query([])?;
+                while let Some(r) = rows.next()? {
+                    let name: String = r.get(0)?;
+                    let cb: i64 = r.get::<_, Option<i64>>(1)?.unwrap_or(0);
+                    if let Some(gid) = leaf_name_id(&name) {
+                        let o = lmap.ord_of(gid);
+                        if o >= 0 {
+                            cov_bases[o as usize] = cb;
+                        }
+                    }
+                }
+            }
+            {
+                let mut st = conn.prepare("SELECT source, target, support FROM edge_read_support")?;
+                let mut rows = st.query([])?;
+                while let Some(r) = rows.next()? {
+                    let s: String = r.get(0)?;
+                    let t: String = r.get(1)?;
+                    let sup: i64 = r.get::<_, Option<i64>>(2)?.unwrap_or(0);
+                    if let (Some(a), Some(b)) = (leaf_name_id(&s), leaf_name_id(&t)) {
+                        if a < b {
+                            // 両向き 2 行のうち片側だけ拾う
+                            let (oa, ob) = (lmap.ord_of(a), lmap.ord_of(b));
+                            if oa >= 0 && ob >= 0 {
+                                edge_sup.insert((oa as u32, ob as u32), sup as u32);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ★posting-list(転置索引): 葉序数 -> チャンク内相対 aln_id の delta+varint 列。
+        //   チャンクを閉じるたびに node_reads へ書いてメモリを解放する。
+        let mut postings: Vec<Vec<u8>> = Vec::new();
+        postings.resize_with(n_leaf, Vec::new);
+        let mut last_local: Vec<u32> = vec![0; n_leaf];
         let mut per_sample_nreads: Vec<i64> = Vec::with_capacity(ns);
-        let mut aln_id: i64 = 0; // 全サンプル通し
+        let mut aln_id: i64 = base_aln_id; // 全サンプル通し（append なら既存の続き）
         let mut tot: i64 = 0;
         let mut miss: i64 = 0;
+        let mut chunk_no: i64 = base_chunk_no;
+        let mut chunk_base: i64 = aln_id;
+        let mut chunk_vis: i64 = 0;
 
         let tx = conn.transaction()?;
         {
-            let mut ins_ra = tx
+            let mut ins_ra_name = tx
                 .prepare("INSERT INTO read_aln(aln_id,sample_no,voff,read_name) VALUES(?,?,?,?)")?;
+            let mut ins_ra = tx.prepare("INSERT INTO read_aln(aln_id,sample_no,voff) VALUES(?,?,?)")?;
+            let mut ins_nr =
+                tx.prepare("INSERT INTO node_reads(gfa_id,chunk_no,postings) VALUES(?,?,?)")?;
+            let mut ins_ck = tx.prepare(
+                "INSERT INTO read_chunk(chunk_no,sample_no,base_aln_id,n_aln,n_visits) VALUES(?,?,?,?,?)",
+            )?;
             let mut seen: HashSet<i64> = HashSet::new();
+
+            // チャンクを閉じる（postings を書き出してメモリ解放）。closure だと borrow が絡むので macro。
+            macro_rules! close_chunk {
+                ($sample_no:expr) => {{
+                    let n_aln_c = aln_id - chunk_base;
+                    if n_aln_c != 0 || postings.iter().any(|p| !p.is_empty()) {
+                        for o in 0..n_leaf {
+                            if !postings[o].is_empty() {
+                                let blob = std::mem::take(&mut postings[o]); // 容量ごと解放
+                                ins_nr.execute(params![ids[o], chunk_no, blob])?;
+                                last_local[o] = 0;
+                            }
+                        }
+                        ins_ck.execute(params![chunk_no, $sample_no, chunk_base, n_aln_c, chunk_vis])?;
+                        chunk_no += 1;
+                        chunk_base = aln_id;
+                        chunk_vis = 0;
+                    }
+                }};
+            }
 
             for si in 0..ns {
                 let sample_no = sample_nos[si];
@@ -262,7 +394,6 @@ fn build_reads(
                     };
 
                     // ★保存するのは「必要なタグだけ」に間引いた行(既定では塩基クオリティ bq:Z を捨てる)。
-                    //   HiFi の GAF は 1 行の 3/4 が bq:Z だが、ビューアは一切使わない。
                     //   間引きは**書き出す行**にだけ効く。以下の解析は元の行から行う。
                     let v = bw.virtual_position(); // 行頭の voff(=非圧縮オフセット。書込**前**に採る)
                     if drop2.is_empty() || ncols <= 12 {
@@ -297,14 +428,19 @@ fn build_reads(
                     let path_start = ps.unwrap();
                     let path_end = pe.unwrap();
 
-                    let name = std::str::from_utf8(field(0)).unwrap_or("");
-                    ins_ra.execute(params![aln_id, sample_no, v, name])?;
+                    if name_index {
+                        let name = std::str::from_utf8(field(0)).unwrap_or("");
+                        ins_ra_name.execute(params![aln_id, sample_no, v, name])?;
+                    } else {
+                        ins_ra.execute(params![aln_id, sample_no, v])?;
+                    }
 
                     // path トークン走査([<>]\d+)
                     let pb = field(5);
                     let mut offset: i64 = 0;
-                    let mut prev_gid: i64 = -1;
+                    let mut prev_ord: i64 = -1;
                     seen.clear();
+                    let local = (aln_id - chunk_base) as u64; // チャンク内相対（u32 に収まる: CAP 保証）
                     let mut i = 0usize;
                     while i < pb.len() {
                         let c = pb[i];
@@ -322,44 +458,46 @@ fn build_reads(
                                 continue;
                             }
                             tot += 1;
-                            let seg = if gid >= 0 && (gid as usize) < n_size {
-                                sizes[gid as usize]
-                            } else {
-                                0
-                            };
+                            let o = lmap.ord_of(gid);
+                            let seg = if o >= 0 { sizes[o as usize] } else { 0 };
                             if seg == 0 {
                                 miss += 1;
-                                prev_gid = -1;
+                                prev_ord = -1;
                                 i = j;
                                 continue;
                             }
-                            let g = gid as u32;
+                            let ou = o as usize;
+                            chunk_vis += 1;
                             if seen.insert(gid) {
                                 // 転置索引に aln_id を追記(昇順なので delta は非負)
-                                let gu = gid as usize;
-                                let d = (aln_id as u32) - last_aln[gu];
-                                write_varint(&mut postings[gu], d as u64);
-                                last_aln[gu] = aln_id as u32;
+                                let d = local - last_local[ou] as u64;
+                                write_varint(&mut postings[ou], d);
+                                last_local[ou] = local as u32;
                             }
                             let a0 = path_start.max(offset);
                             let a1 = path_end.min(offset + seg);
                             if a1 > a0 {
-                                depth_bases[gid as usize] += (a1 - a0) as f64;
+                                cov_bases[ou] += a1 - a0;
                             }
-                            if prev_gid >= 0 && prev_gid != gid {
-                                let pg = prev_gid as u32;
-                                let key = if pg < g { (pg, g) } else { (g, pg) };
+                            if prev_ord >= 0 && prev_ord != o {
+                                let (pa, pb2) = (prev_ord as u32, o as u32);
+                                let key = if pa < pb2 { (pa, pb2) } else { (pb2, pa) };
                                 *edge_sup.entry(key).or_insert(0) += 1;
                             }
-                            prev_gid = gid;
+                            prev_ord = o;
                             offset += seg;
                             i = j;
                         } else {
                             i += 1;
                         }
                     }
+                    // ★チャンク境界の判定は「1 リードの走査を終えた直後」（Python と同一）。
+                    if chunk_vis >= chunk_visits || (aln_id - chunk_base) >= CHUNK_ALN_CAP {
+                        close_chunk!(sample_no);
+                    }
                 }
                 bw.close()?; // 残フレーム + シークテーブル
+                close_chunk!(sample_no); // サンプル境界でチャンクを閉じる
                 per_sample_nreads.push(n_reads);
                 tx.execute(
                     "UPDATE read_src SET n_reads=?1 WHERE sample_no=?2",
@@ -371,29 +509,16 @@ fn build_reads(
 
         let _ = maxlayer; // maxlayer は backend が edge_read_support を join する層。Rust では未使用。
 
-        // ★node_reads(転置索引 blob)。postings は既に delta+varint の形で貯めてあるのでそのまま入れる。
-        //   node→reads は blob 1 件を復号するだけ(per-visit 表は持たない)。
-        conn.execute("DROP TABLE IF EXISTS node_reads", [])?;
         conn.execute(
-            "CREATE TABLE node_reads(gfa_id INTEGER PRIMARY KEY, postings BLOB)",
+            "CREATE INDEX IF NOT EXISTS idx_node_reads ON node_reads(gfa_id, chunk_no)",
             [],
         )?;
-        {
-            let txn = conn.transaction()?;
-            {
-                let mut ins = txn.prepare("INSERT INTO node_reads(gfa_id,postings) VALUES(?,?)")?;
-                for gid in 0..n_size {
-                    if postings[gid].is_empty() {
-                        continue;
-                    }
-                    ins.execute(params![gid as i64, &postings[gid]])?;
-                }
-            }
-            txn.commit()?;
+        if !append && name_index {
+            conn.execute("CREATE INDEX idx_read_aln_name ON read_aln(read_name)", [])?;
         }
-        conn.execute("CREATE INDEX idx_read_aln_name ON read_aln(read_name)", [])?;
 
         // edge_read_support: サイドカー表(base の edges は改変しない)。両向き。backend が maxlayer で join。
+        // 集計値の表なので追記時も**丸ごと作り直す**（スキーマは v1 と同じ = 読み手は無改修）。
         conn.execute("DROP TABLE IF EXISTS edge_read_support", [])?;
         conn.execute(
             "CREATE TABLE edge_read_support(source TEXT, target TEXT, support INTEGER)",
@@ -405,8 +530,8 @@ fn build_reads(
                 let mut ins_es = tx2
                     .prepare("INSERT INTO edge_read_support(source,target,support) VALUES(?,?,?)")?;
                 for (&(a, b), &cnt) in edge_sup.iter() {
-                    let na = format!("n{a}");
-                    let nb = format!("n{b}");
+                    let na = format!("n{}", ids[a as usize]);
+                    let nb = format!("n{}", ids[b as usize]);
                     ins_es.execute(params![na, nb, cnt as i64])?;
                     ins_es.execute(params![nb, na, cnt as i64])?;
                 }
@@ -415,34 +540,50 @@ fn build_reads(
         }
         conn.execute("CREATE INDEX idx_ers ON edge_read_support(source,target)", [])?;
 
-        // read_cov(葉平均深度サマリ)
+        // read_cov(葉平均深度サマリ)。分子 cov_bases も保存する（追記時の加算のため）。
         let mut max_depth: f64 = 0.0;
+        let mut depth_p99: f64 = 0.0;
         if !no_cov {
             conn.execute("DROP TABLE IF EXISTS read_cov", [])?;
             conn.execute(
-                "CREATE TABLE read_cov(node_name TEXT PRIMARY KEY, depth REAL)",
+                "CREATE TABLE read_cov(node_name TEXT PRIMARY KEY, depth REAL, cov_bases INTEGER)",
                 [],
             )?;
+            let mut pos: Vec<f64> = Vec::new();
             let tx3 = conn.transaction()?;
             {
-                let mut ins_cov = tx3.prepare("INSERT INTO read_cov(node_name,depth) VALUES(?,?)")?;
-                for gid in 0..n_size {
-                    let sz = sizes[gid];
-                    if sz > 0 {
-                        let d = depth_bases[gid] / (sz as f64);
+                let mut ins_cov =
+                    tx3.prepare("INSERT INTO read_cov(node_name,depth,cov_bases) VALUES(?,?,?)")?;
+                for o in 0..n_leaf {
+                    let sz = sizes[o];
+                    if sz > 0 && cov_bases[o] > 0 {
+                        let d = cov_bases[o] as f64 / (sz as f64);
                         if d > max_depth {
                             max_depth = d;
                         }
                         if d > 0.0 {
-                            ins_cov.execute(params![format!("n{gid}"), d])?;
+                            ins_cov.execute(params![format!("n{}", ids[o]), d, cov_bases[o]])?;
+                            pos.push(d);
                         }
                     }
                 }
             }
             tx3.commit()?;
+            if !pos.is_empty() {
+                pos.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let k = ((0.99_f64 * pos.len() as f64) as usize).saturating_sub(1);
+                depth_p99 = pos[k.min(pos.len() - 1)];
+            }
         }
 
-        Ok((per_sample_nreads, tot, miss, max_depth))
+        Ok((
+            per_sample_nreads,
+            tot,
+            miss,
+            max_depth,
+            chunk_no - base_chunk_no,
+            depth_p99,
+        ))
     };
 
     run().map_err(|e| PyRuntimeError::new_err(e.to_string()))
