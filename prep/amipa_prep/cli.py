@@ -260,6 +260,9 @@ class Bundle:
         self.distill_src = self.work / "distill_src"
         self.collapse_gfa = self.work / "collapse.gfa"
         self.collapse_sidecar = Path(str(self.db) + ".collapse")
+        # ★畳み込み時の dense GFA は別名にする。元グラフ用の dense.gfa（1 回目の distill が
+        #   書く）を povu が掴むと、元グラフを分解してしまい後段の添字が壊れる。
+        self.dense_collapse_gfa = self.work / "dense_collapse.gfa"
 
     def _infer_name(self, gfa: Path | None) -> str:
         # 既存バンドルなら中の本体、次に state.json、無ければ GFA のファイル名から決める。
@@ -390,10 +393,12 @@ def build_stages(b: Bundle, a) -> dict:
     collapsing = bool(getattr(a, "collapse", False))
     if a.gfa:
         d0 = b.distill_src if collapsing else b.distill
+        cmd0 = [py, str(PKG / "distill.py"), "--gfa", str(a.gfa), "--out", str(d0)]
+        if not collapsing:
+            cmd0 += ["--emit-dense-gfa", str(b.dense_gfa)]
         st["distill"] = Stage(
             "distill",
-            [[py, str(PKG / "distill.py"), "--gfa", str(a.gfa),
-              "--out", str(d0), "--emit-dense-gfa", str(b.dense_gfa)]],
+            [cmd0],
             inputs=[a.gfa],
             outputs=[d0 / "meta.json", d0 / "p_tok.npy"],
             env=thread_env(1),
@@ -410,7 +415,7 @@ def build_stages(b: Bundle, a) -> dict:
             [[py, str(PKG / "collapse.py"), "--distill", str(b.distill_src),
               "--out", str(b.collapse_gfa), "--sidecar", str(b.collapse_sidecar)],
              [py, str(PKG / "distill.py"), "--gfa", str(b.collapse_gfa),
-              "--out", str(b.distill), "--emit-dense-gfa", str(b.dense_gfa)]],
+              "--out", str(b.distill), "--emit-dense-gfa", str(b.dense_collapse_gfa)]],
             inputs=[b.distill_src],
             outputs=[b.collapse_sidecar, b.distill / "p_tok.npy"],
             env=thread_env(1),
@@ -420,7 +425,7 @@ def build_stages(b: Bundle, a) -> dict:
     # ① povu decompose: 元 GFA の整数 node id が必須。非 identity なら ⓠ が書いた dense GFA を使う。
     #    ★畳み込みを使うときは畳み込み GFA が入力（下流は全部畳み込みグラフで揃える）。
     if a.gfa and collapsing:
-        povu_gfa = b.dense_gfa if b.dense_gfa.exists() else b.collapse_gfa
+        povu_gfa = b.dense_collapse_gfa if b.dense_collapse_gfa.exists() else b.collapse_gfa
     else:
         povu_gfa = b.dense_gfa if b.dense_gfa.exists() else (a.gfa or b.dense_gfa)
     st["decompose"] = Stage(
