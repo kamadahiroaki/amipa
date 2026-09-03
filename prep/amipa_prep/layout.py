@@ -106,6 +106,101 @@ if HAVE_NUMBA:
                         break
         return cnt
 
+    # ---- ★重み付き最短路（Dial のバケット法）: 目標距離を「パス上の距離」にするため -----
+    @njit(cache=True)
+    def _dij_csr(indptr, indices, w, src, n, C):
+        """整数重み(1..C)の単一始点最短路（Dial のバケット法）。重みが全部 1 なら BFS と一致。
+
+        ★バケツをノードごとの nxt ポインタで繋いではいけない。decrease-key で同じノードを
+          別のバケツへ入れ直すと元のバケツの連結リストがそこで切れ、切れた先が永久に
+          取り出されず remaining が 0 にならない＝無限ループになる（実測: chrY pggb で
+          3.4 時間 CPU を回して出力ゼロ）。ノードではなく「登録」を単位にした項目プールを使う。
+          登録回数は「各ノードの確定は 1 回、そのとき出辺を 1 回ずつ走査」なので n+m 以下。
+        """
+        INF = np.int64(1) << 62
+        dist = np.full(n, -1, np.int64)
+        tent = np.full(n, INF, np.int64)
+        ehead = np.full(C + 1, -1, np.int64)
+        cap = n + indices.size + 2
+        enode = np.empty(cap, np.int32)
+        edist = np.empty(cap, np.int64)
+        enext = np.empty(cap, np.int64)
+        ne = 0
+        tent[src] = 0
+        enode[0] = src; edist[0] = 0; enext[0] = -1; ehead[0] = 0; ne = 1
+        remaining = 1
+        d = np.int64(0)
+        maxd = np.int64(0)
+        while remaining > 0:
+            b = d % (C + 1)
+            e = ehead[b]
+            ehead[b] = -1
+            while e != -1:
+                nx = enext[e]
+                remaining -= 1
+                u = enode[e]
+                if dist[u] < 0 and edist[e] == d:      # 古い登録は捨てる
+                    dist[u] = d
+                    if d > maxd: maxd = d
+                    for q in range(indptr[u], indptr[u + 1]):
+                        v = indices[q]
+                        if dist[v] < 0:
+                            nd = d + w[q]
+                            if nd < tent[v]:
+                                tent[v] = nd
+                                bb = nd % (C + 1)
+                                if ne < cap:
+                                    enode[ne] = v; edist[ne] = nd
+                                    enext[ne] = ehead[bb]; ehead[bb] = ne; ne += 1
+                                    remaining += 1
+                e = nx
+            d += 1
+        return dist
+
+    @njit(cache=True)
+    def _edge_pathlen(ei, ej, nstart, npath, npos, plen, pcirc, out, buf):
+        """各辺の両端が「パス上で何ステップ離れているか」をパスごとに測り、中央値を返す。
+        グラフの最短ホップは全パスにわたる**最小値**なので、1 本のパスの短絡が目標距離を
+        支配する(49 本が 10,000 離れていても 1 本が隣接なら 1 になる)。中央値なら多数決になる。
+        nstart/npath/npos はノードごとの出現一覧(パス番号昇順・同一パス内は位置昇順)。"""
+        for e in range(ei.size):
+            u = ei[e]; v = ej[e]
+            a0 = nstart[u]; a1 = nstart[u + 1]
+            b0 = nstart[v]; b1 = nstart[v + 1]
+            m = 0
+            i = a0; j = b0
+            while i < a1 and j < b1:
+                pu = npath[i]; pv = npath[j]
+                if pu < pv:
+                    i += 1
+                elif pu > pv:
+                    j += 1
+                else:
+                    ie = i
+                    while ie < a1 and npath[ie] == pu: ie += 1
+                    je = j
+                    while je < b1 and npath[je] == pu: je += 1
+                    best = np.int64(1) << 40
+                    x = i; y = j
+                    while x < ie and y < je:
+                        dd = npos[x] - npos[y]
+                        if dd < 0: dd = -dd
+                        if pcirc[pu] == 1:                 # 環状は端をまたぐ方が近いことがある
+                            ww = plen[pu] - dd
+                            if ww < dd: dd = ww
+                        if dd < best: best = dd
+                        if npos[x] < npos[y]: x += 1
+                        else: y += 1
+                    if m < buf.size:
+                        buf[m] = best; m += 1
+                    i = ie; j = je
+            if m == 0:
+                out[e] = 1
+            else:
+                sb = buf[:m].copy()
+                sb.sort()
+                out[e] = sb[m // 2]
+
     @njit(parallel=True, fastmath=False, cache=True)
     def _ball_epoch_numba(X, order, bstart, bidx, bdist, bsrc, bmax, tau, eta):
         """球 pivot 1 epoch。各球の内部ノードだけ更新(球内でノードは一意なので race-free)。
@@ -376,13 +471,72 @@ def sample_path_pairs(rows, p_off, cum, g2l, npairs, mode, rng):
     return li.astype(np.int64), lj.astype(np.int64), d
 
 
+def edge_target_lengths(rows, p_off, ei, ej, n, cap, log_prefix=""):
+    """辺ごとの目標長 = 両端がパス上で何ステップ離れているかの、パスをまたいだ中央値。
+
+    ★support(その辺を使うパス数)で重み付けしてはいけない。稀なアレルの辺も稀な短絡も
+      support 1 で区別できず、稀なアレルが座位から数千飛ばされる。両端のパス上距離なら
+      稀なアレルは 2 前後・短絡は数千で分かれる（実測: chr1 pggb で目標長>=10,000 が
+      21,999 辺 = 0.14%、最大 3,348,435 ステップ）。
+    cap>0 で上限を切る。上限なしだと目標距離の幅が広がりすぎて SGD が収束しない
+    （chr1 で辺長/目標長=8.55。上限 1000 が chrY での最良）。"""
+    if not HAVE_NUMBA:
+        log(f"{log_prefix}WARN: numba が無いので edge-len は使えない。off にする")
+        return None
+    P = p_off.size - 1
+    T = rows.size
+    pid = np.searchsorted(p_off, np.arange(T), side='right') - 1
+    pos = (np.arange(T) - p_off[pid]).astype(np.int64)
+    # 環状はタグでなくグラフから判定する（pggb の GFA に TP タグは無い）
+    ek = set(zip(np.minimum(ei, ej).tolist(), np.maximum(ei, ej).tolist()))
+    circ = np.array([1 if (min(int(rows[p_off[i]]), int(rows[p_off[i+1]-1])),
+                           max(int(rows[p_off[i]]), int(rows[p_off[i+1]-1]))) in ek else 0
+                     for i in range(P)], np.int8)
+    plen = (p_off[1:] - p_off[:-1]).astype(np.int64)
+    nn = rows.astype(np.int64)
+    o = np.lexsort((pos, pid, nn))
+    nn, pp, qq = nn[o], pid[o].astype(np.int64), pos[o]
+    nstart = np.zeros(n + 1, np.int64)
+    np.add.at(nstart[1:], nn, 1)
+    np.cumsum(nstart, out=nstart)
+    out = np.empty(ei.size, np.int64)
+    buf = np.empty(max(P, 1), np.int64)
+    _edge_pathlen(ei.astype(np.int64), ej.astype(np.int64), nstart, pp, qq,
+                  plen, circ, out, buf)
+    EL = out.astype(np.float64)
+    np.maximum(EL, 1.0, out=EL)
+    if cap and cap > 0:
+        np.minimum(EL, float(cap), out=EL)
+    log(f"{log_prefix}edge-len: 環状 {int(circ.sum())}/{P} パス / 目標長 中央 {np.median(EL):.0f} "
+        f"p99 {np.percentile(EL, 99):.0f} 最大 {EL.max():.0f} / "
+        f">=10 {int((EL >= 10).sum()):,} ({100*(EL>=10).mean():.3f}%) / "
+        f">=1000 {int((EL >= 1000).sum()):,} ({100*(EL>=1000).mean():.3f}%)")
+    return EL
+
+
+def build_csr_w(n, ei, ej, EL):
+    """重み付き最短路用の CSR。scipy の csr_matrix は重複辺の data を**足す**ので使えない
+    （GFA には同じ端点対の L 行が向き違いで複数あり、重みが 2 倍になる）。自前で組む。"""
+    src = np.concatenate([ei, ej]).astype(np.int64)
+    dst = np.concatenate([ej, ei]).astype(np.int64)
+    w = np.concatenate([EL, EL])
+    o = np.argsort(src, kind='stable')
+    indptr = np.zeros(n + 2, np.int64)
+    np.add.at(indptr[1:], src[o], 1)
+    np.cumsum(indptr, out=indptr)
+    wi = np.rint(w[o]).astype(np.int32)
+    np.maximum(wi, 1, out=wi)
+    return (indptr[:n + 1].copy(), np.ascontiguousarray(dst[o].astype(np.int32)),
+            np.ascontiguousarray(wi), int(wi.max()))
+
+
 def build_csr(n, ei, ej):
     # ノード index < 2^31 なので int32 で持つ(concat 一時と CSR indices を半減)。
     I = np.concatenate([ei, ej]).astype(np.int32, copy=False)
     J = np.concatenate([ej, ei]).astype(np.int32, copy=False)
     return csr_matrix((np.ones(len(I), np.float32), (I, J)), shape=(n, n))
 
-def maxmin_pivots(A, k, seed=0, engine="numpy"):
+def maxmin_pivots(A, k, seed=0, engine="numpy", W=None):
     """farthest-point sampling。各ピボットから BFS した距離も返す（D[k,n]）。
     maxmin の逐次依存(pivot t+1 = 実行中最小距離の argmax)は残るのでピボット間並列は不可。
     効くのは 1 本の BFS を速くすること: engine=numba なら scipy heap-Dijkstra(O((n+e)log n))を
@@ -390,7 +544,17 @@ def maxmin_pivots(A, k, seed=0, engine="numpy"):
     n = A.shape[0]
     rng = np.random.default_rng(seed)
     use_numba = (engine == "numba") and HAVE_NUMBA
-    if use_numba:
+    if W is not None:                       # ★重み付き: 目標距離をパス上の距離にする
+        if not HAVE_NUMBA:
+            raise SystemExit("edge-len には numba が要る")
+        wip, wind, ww, C = W
+        def bfs(src):
+            d = _dij_csr(wip, wind, ww, np.int32(src), n, C).astype(np.float32)
+            neg = d < 0
+            if neg.any():
+                d[neg] = d[~neg].max()
+            return d
+    elif use_numba:
         indptr, indices = A.indptr, A.indices
         def bfs(src):
             d = _bfs_csr(indptr, indices, np.int32(src), n).astype(np.float32)
@@ -514,7 +678,8 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
                repel=3.0, repel_strength=0.15, repel_anneal=1.0, repel_cap=64, A=None,
                converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
                anneal_epochs=0, converge_rel=0.0, converge_window=10,
-               path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None):
+               path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None,
+               EL=None):
     """epochs は **アニールの地平**（eta と斥力の減衰は ep/epochs で決まる）であって
     「必ず回す回数」ではない。converge_eps>0 なら、1 epoch あたりのノード変位が十分小さく
     なった時点で打ち切る（残りを回しても絵は変わらないため）。
@@ -610,11 +775,19 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
             np.minimum(pmu, 1.0, out=pmu)
             np.subtract(pmag, d, out=pr); pr *= 0.5; pr /= pmag; pr *= pmu  # (mag-d)*0.5/mag*mu
             pvec *= pr[:, None]; X -= pvec                # X -= r*vec (only nodes move; pivot fixed)
-        # ---- (a) edge exact terms (ideal=1) averaged by degree (stable Jacobi) ----
-        mu_e = min(eta * 1.0, 1.0)
+        # ---- (a) edge exact terms averaged by degree (stable Jacobi) ----
+        #      EL=None なら従来どおり理想距離 1（数値はビット一致）。EL を渡すと
+        #      辺ごとの目標長になる。★ここを直さずピボット距離だけ重み付きにしても効かない:
+        #      辺項の重みは 1、ピボット項は 1/d^2 なので、目標 1,000 の辺は辺項が勝って縮む。
+        if EL is None:
+            mu_e = min(eta * 1.0, 1.0)
+            ideal = 1.0
+        else:
+            mu_e = np.minimum(eta / (EL * EL), 1.0)
+            ideal = EL
         vec = X[ej] - X[ei]
         mag = np.sqrt((vec * vec).sum(1)) + 1e-9
-        disp = ((mag - 1.0) * 0.5 / mag * mu_e)[:, None] * vec
+        disp = ((mag - ideal) * 0.5 / mag * mu_e)[:, None] * vec
         # 遅い np.add.at を bincount に置換(同じ集計・数値等価, スキャッタが桁違いに速い)。
         fx = np.empty((n, 2))
         fx[:, 0] = np.bincount(ei, disp[:, 0], n) - np.bincount(ej, disp[:, 0], n)
@@ -791,7 +964,8 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                      repel=3.0, repel_strength=0.15, repel_anneal=1.0, repel_cap=64,
                      converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
                      anneal_epochs=0, converge_rel=0.0, converge_window=10,
-                     path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None):
+                     path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None,
+                     EL=None, ball_edge_max=4.0):
     """1連結成分をレイアウトし、PCA で長軸=x に整える局所座標 [subn,2] を返す。
     numba_min: **廃止**(引数は後方互換で残すが無視)。njit は cache=True で JIT はプロセス跨ぎに
     キャッシュされるため降格の利得が無い一方、この閾値は「エンジン選択」の顔をして **球 pivot の
@@ -821,12 +995,42 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                     f"制限された（成分 n={subn:,}）。所要 ≈ "
                     f"{(2600.0*subn + 12.0*k*subn)/2**30:.0f}GiB")
             k = min(kc, subn)
-    piv, D = maxmin_pivots(A, k, seed=seed, engine=eng)   # 大成分は numba BFS(8×), 距離 D は不変
+    W = build_csr_w(subn, sei, sej, EL) if EL is not None else None
+    piv, D = maxmin_pivots(A, k, seed=seed, engine=eng, W=W)  # 大成分は numba BFS(8×), 距離 D は不変
+    # ★球と hop2..H は「局所の拘束」なので、短絡の辺を外したグラフの上で組む。
+    #   短絡を含めると理想距離 2 で遠い領域を引き寄せ、目標距離を直した意味が消える。
+    D_hop = D
+    if EL is not None:
+        loc = EL <= ball_edge_max
+        A_loc = build_csr(subn, sei[loc], sej[loc])
+        log(f"  局所グラフ: 辺 {int(loc.sum()):,}/{EL.size:,} "
+            f"（目標長>{ball_edge_max:g} の {int((~loc).sum()):,} 本を球と hop2..H から外した）")
+        # ★球の半径 R_ball は build_balls が**ホップ数**として使う。重み付き D を渡すと
+        #   R_ball が膨らんで球サイズ K が上限に張り付き、SGD が桁違いに重くなる
+        #   （実測: chrY pggb で 30 秒 → 7 時間半でも終わらず）。ホップの D を別に作る。
+        # ★D_hop は元のグラフ A で測る。短絡を外した A_loc で測ると、外した辺で分断された
+        #   成分の到達不能ノードに有限最大値が埋まり R_g が爆発する（chr1: 外した辺 209,422 本、
+        #   R_g 21,768 → 1,568,288、球サイズ K 24,095 → 1,374,166 で局所拘束が消えた）。
+        #   球自体は A_loc の上で作る（分断されても球は成分内に収まる）。
+        if HAVE_NUMBA:
+            lip = np.ascontiguousarray(A.indptr, np.int32)
+            lind = np.ascontiguousarray(A.indices, np.int32)
+            D_hop = np.empty_like(D)
+            for t, pv in enumerate(piv):
+                dh = _bfs_csr(lip, lind, np.int32(pv), subn).astype(np.float32)
+                neg = dh < 0
+                if neg.any():
+                    dh[neg] = dh[~neg].max() if (~neg).any() else 1.0
+                D_hop[t] = dh
+            log(f"  球の半径用にホップ距離も計算: 中央 {float(np.median(D_hop)):,.0f}"
+                f"（重み付き {float(np.median(D)):,.0f}）")
+    else:
+        A_loc = A
     x0 = pivot_mds(D) if (init == "pmds" and subn >= 3 and k >= 2) else None   # D は非破壊
-    ball = build_balls(A, subn, D, coverage=ball_coverage, rfrac=ball_rfrac, coveff=ball_coveff,
+    ball = build_balls(A_loc, subn, D_hop, coverage=ball_coverage, rfrac=ball_rfrac, coveff=ball_coveff,
                        min_nodes=ball_min_nodes, kpct=ball_kpct, seed=seed,
                        log_prefix="  ") if eng == "numba" else None
-    short = build_short(A, subn, short_h, short_cap, log_prefix="  ") if short_h >= 2 else None
+    short = build_short(A_loc, subn, short_h, short_cap, log_prefix="  ") if short_h >= 2 else None
     X = sgd_layout(subn, sei, sej, piv, D, epochs=epochs, seed=seed, engine=eng, x_init=x0,
                    ball=ball, ball_tau=ball_tau, short=short, A=A,
                    repel=repel, repel_strength=repel_strength,
@@ -835,7 +1039,7 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                    converge_min_frac=converge_min_frac, anneal_epochs=anneal_epochs,
                    converge_rel=converge_rel, converge_window=converge_window,
                    path=path, path_mode=path_mode, path_pairs=path_pairs,
-                   path_scale=path_scale, g2l=g2l)
+                   path_scale=path_scale, g2l=g2l, EL=EL)
     Xc = X - X.mean(0)
     _, S, Vt = np.linalg.svd(Xc, full_matrices=False)
     return Xc @ Vt.T
@@ -876,6 +1080,18 @@ def main():
     ap.add_argument("--epochs", type=int, default=30,
                     help="アニールの地平かつ上限。eta と斥力の減衰は ep/epochs で決まるので、"
                          "この値を変えると 1 epoch あたりの進み方も変わる（単に長く回すのではない）")
+    ap.add_argument("--edge-len", choices=["off", "pathmed"], default="off",
+                    help="辺の目標長。off=全部 1（従来）。pathmed=両端がパス上で何ステップ"
+                         "離れているかの中央値。グラフの最短ホップは全パスの**最小**なので "
+                         "1 本の短絡が目標距離を支配する（chrY pggb で MC の 15 倍歪む）。"
+                         "★--distill が要る（パスを読むため）。")
+    ap.add_argument("--edge-len-cap", type=float, default=1000.0, metavar="L",
+                    help="--edge-len pathmed の目標長の上限。上限なしだと目標距離の幅が"
+                         "広がりすぎて収束しない（chr1 で辺長/目標長=8.55）。"
+                         "chrY pggb では 1000 が最良（最密セル -63%%）。0 で無制限。")
+    ap.add_argument("--edge-len-ball-max", type=float, default=4.0, metavar="L",
+                    help="球 pivot と hop2..H を組むとき、目標長がこれを超える辺を外す。"
+                         "短絡を含めると理想距離 2 で遠い領域を引き寄せてしまう。")
     ap.add_argument("--path-term", choices=["off", "hop", "bp"], default="off",
                     help="path-guided 項。パス上の対をサンプルして距離を拘束する（--distill が要る）。"
                          "hop=ステップ数を目標距離に / bp=塩基距離（odgi layout と同じ考え方）/ "
@@ -991,11 +1207,11 @@ def main():
     log(f"nodes={n:,} edges={len(ei):,}")
     # path-guided 項の材料（--path-term off なら作らない = 従来と完全に同じ経路）
     pathdat = None; path_scale = 1.0
-    if args.path_term != "off":
+    if args.path_term != "off" or args.edge_len != "off":
         if not args.distill:
-            sys.exit("--path-term には --distill が必要（パスの並びが要る）")
+            sys.exit(f"--path-term / --edge-len には --distill が必要（パスの並びが要る）")
         pathdat = build_path(args.distill, ids, n, log_prefix="")
-        if pathdat is not None:
+        if pathdat is not None and args.path_term != "off":
             path_scale = float(pathdat[2][-1]) / max(pathdat[0].size, 1)   # 1 ステップの平均 bp
             log(f"path 項: mode={args.path_term} pairs/epoch={args.path_pairs:,} "
                 f"1 ステップ平均 {path_scale:.2f} bp")
@@ -1012,24 +1228,36 @@ def main():
     log(f"major comps={cls.n_major} (nodes={n_major_nodes:,}), "
         f"debris comps={cls.n_debris} (nodes={n-n_major_nodes:,}), τ={args.min_comp}")
 
+    # ---- ★辺の目標長（--edge-len pathmed）----
+    EL_all = None
+    if args.edge_len == "pathmed":
+        if pathdat is None:
+            raise SystemExit("--edge-len pathmed には --distill（パス）が要る")
+        _rows, _poff, _cum = pathdat
+        EL_all = edge_target_lengths(_rows.astype(np.int64), _poff, ei, ej, n,
+                                     args.edge_len_cap, log_prefix="")
+
     xy = np.zeros((n, 2))
     comp_kind = np.zeros(n, np.int8)   # 1=major, 0=debris (描画用)
 
     # 成分抽出(共有 lab/ei/ej を使うので main 側で逐次に。重い layout_component だけを並列化する)。
     tasks = []                                    # (ci, idx, subn, sei, sej)
     task_g2l = []                                 # path 項用（成分ローカルへの写像）
+    task_EL = []                                  # --edge-len 用（成分ごとの辺の目標長）
     for ci in major_comps:
         idx = np.where(lab == ci)[0]
         subn = len(idx)
         g2l = -np.ones(n, np.int64); g2l[idx] = np.arange(subn)
         em = (lab[ei] == ci) & (lab[ej] == ci)
         tasks.append((ci, idx, subn, g2l[ei[em]], g2l[ej[em]]))
-        task_g2l.append(g2l if pathdat is not None else None)
+        task_g2l.append(g2l if (pathdat is not None and args.path_term != 'off') else None)
+        task_EL.append(EL_all[em] if EL_all is not None else None)
         log(f"  major comp {ci}: nodes={subn:,} edges={int(em.sum()):,}")
 
     # レイアウト本体(BFS+SGD)は成分ごとに完全独立 → プロセス並列で品質厳密に不変。
     # engine=numba は成分内をスレッド並列するので、単一巨大成分(chr22/WG)では jobs=1+numba が本命。
-    bkw = dict(ball_coverage=args.ball_coverage, ball_rfrac=args.ball_rfrac,
+    bkw = dict(ball_edge_max=args.edge_len_ball_max,
+               ball_coverage=args.ball_coverage, ball_rfrac=args.ball_rfrac,
                ball_coveff=args.ball_coveff, ball_min_nodes=args.ball_min_nodes,
                ball_tau=args.ball_taper, ball_kpct=args.ball_kpct,
                short_h=args.short, short_cap=args.short_cap,
@@ -1045,18 +1273,20 @@ def main():
         with ProcessPoolExecutor(max_workers=args.jobs) as ex:
             futs = [ex.submit(layout_component, subn, sei, sej,
                               args.pivots, args.epochs, args.seed, engine, 0,
-                              args.init, path=pathdat, path_mode=args.path_term,
-                              path_pairs=(args.path_pairs if pathdat is not None else 0),
-                              path_scale=path_scale, g2l=gl, **bkw)
-                    for (_, _, subn, sei, sej), gl in zip(tasks, task_g2l)]
+                              args.init, path=(pathdat if args.path_term != 'off' else None),
+                              path_mode=args.path_term,
+                              path_pairs=(args.path_pairs if (pathdat is not None and args.path_term != 'off') else 0),
+                              path_scale=path_scale, g2l=gl, EL=el, **bkw)
+                    for (_, _, subn, sei, sej), gl, el in zip(tasks, task_g2l, task_EL)]
             results = [f.result() for f in futs]
     else:
         results = [layout_component(subn, sei, sej,
                                     args.pivots, args.epochs, args.seed, engine, 0,
-                                    args.init, path=pathdat, path_mode=args.path_term,
-                                    path_pairs=(args.path_pairs if pathdat is not None else 0),
-                                    path_scale=path_scale, g2l=gl, **bkw)
-                   for (_, _, subn, sei, sej), gl in zip(tasks, task_g2l)]
+                                    args.init, path=(pathdat if args.path_term != 'off' else None),
+                                    path_mode=args.path_term,
+                                    path_pairs=(args.path_pairs if (pathdat is not None and args.path_term != 'off') else 0),
+                                    path_scale=path_scale, g2l=gl, EL=el, **bkw)
+                   for (_, _, subn, sei, sej), gl, el in zip(tasks, task_g2l, task_EL)]
 
     # ---- 配置: サイズ順 shelf packing で目標アスペクト R(既定16:9)へ詰める ----
     #   横一列(帯状)をやめ、各成分/デブリ塊を1つの箱として大きい順に行折り返し。画面を面で使う。

@@ -462,7 +462,9 @@ def build_stages(b: Bundle, a) -> dict:
           "--distill", str(b.distill), "--out", str(b.npz_prefix),
           "--init", "pmds", "--epochs", str(a.epochs), "--seed", str(a.seed),
           "--min-comp", str(a.min_comp), "--pivots", str(a.pivots),
-          "--pivot-mem-gib", str(a.mem_gib), "--threads", str(threads)]],
+          "--pivot-mem-gib", str(a.mem_gib), "--threads", str(threads)]
+         + (["--edge-len", a.layout_edge_len, "--edge-len-cap", str(a.layout_edge_len_cap)]
+            if a.layout_edge_len != "off" else [])],
         inputs=[b.distill],
         outputs=[b.npz],
         env={**thread_env(threads), "NUMBA_NUM_THREADS": str(threads), "MPLBACKEND": "Agg"},
@@ -841,6 +843,11 @@ def add_common(p, need_gfa=False):
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--pivots", type=int, default=400)
+    p.add_argument("--layout-edge-len", choices=["off", "pathmed"], default="off",
+                   help="layout の目標距離。pathmed=辺の目標長を両端のパス上距離の中央値にする"
+                        "（短絡で遠い領域が重なるのを防ぐ。chrY pggb で最悪セル -26%%）。既定 off")
+    p.add_argument("--layout-edge-len-cap", type=float, default=1000.0,
+                   help="--layout-edge-len pathmed の目標長の上限")
     p.add_argument("--ribbon-disk", action="store_true",
                    help="リボンを disk streaming で作る（大きいグラフ。RAM を O(node) に抑える）")
     p.add_argument("--band", type=Path, help="cytoBand（GRCh38）")
