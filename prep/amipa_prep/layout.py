@@ -538,7 +538,12 @@ def frame_target_lengths(rows, p_off, ei, ej, n, cap, anchor_frac=0.9, log_prefi
     keep[1:] = (nn[o][1:] != nn[o][:-1]) | (pid[o][1:] != pid[o][:-1])
     npc = np.bincount(nn[o][keep], minlength=n)
     mx = int(npc.max()) if n else 0
-    is_anchor = npc >= max(1, int(np.ceil(anchor_frac * mx)))
+    # ★錨は「ほぼ全パスが通る」だけでなく**どのパスも 1 回しか通らない**ノードに限る（方向II の錨と同じ定義）。
+    #   pggb はゲノム内の反復を 1 ノードに畳むので、全株が持つ IS 配列などは出現パス数 50 でもパス内に複数回現れる。
+    #   これを錨にすると区間の切り方が乱れ、_edge_pathlen の「出現対の最小」も混ざって、区間の伸縮が暴れる
+    #   （ecoli50 pggb で ≥10 の辺が 2.9%、中心円 76% に崩壊）。
+    nocc = np.bincount(nn, minlength=n)
+    is_anchor = (npc >= max(1, int(np.ceil(anchor_frac * mx)))) & (nocc == npc)
     an = np.where(is_anchor[nn])[0]                      # 錨のステップ（昇順）
     if an.size < 2:
         log(f"{log_prefix}edge-len framemed: 錨が無い（最大出現パス数 {mx}）。目標長 1")
