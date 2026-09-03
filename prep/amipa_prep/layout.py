@@ -514,6 +514,108 @@ def edge_target_lengths(rows, p_off, ei, ej, n, cap, log_prefix=""):
     return EL
 
 
+def frame_target_lengths(rows, p_off, ei, ej, n, cap, anchor_frac=0.9, log_prefix=""):
+    """辺ごとの目標長を**枠**（錨と錨の間）の単位で決める（--edge-len framemed）。
+
+    pathmed は辺の両端の「パス上距離の中央値」だが、丸ごと 1 ノードで残った長いアレル W の辺 A→W は
+    W を含む唯一のパスで測るので 1 になる。W は錨 A–B を 2 ホップで結ぶ近道で、同じ枠を数千ホップで
+    通る他のパスと矛盾し、A, B が引き寄せられて鎖が折れる（ecoli50 方向II c3: 全ノードの 15% が
+    中央/最短 >100 倍の枠にあり、中心円 r=3% に bp の 46% が溜まった）。
+    ここでは 錨 = ほぼ全パスが通るノード（出現パス数 >= anchor_frac × 最大）とし、各パスを錨で区間に
+    切って、同じ錨対の区間長（ホップ）の中央値 M を求め、そのパスの区間の各辺に M / h_p を配る
+    （h_p はそのパスの区間のホップ数）。近道（h_p=2）は各辺 M/2 に伸び、長いアレル（h_p ≫ M）は
+    1 に留める（下限 1: 稀な長い挿入で全体を潰さない）。複数パスが通る辺は per-path 値の中央値。
+    錨の外（パスの端）と、錨対が 1 パスしか無い区間は 1（情報なし＝pathmed と同じ）。"""
+    P = p_off.size - 1
+    T = rows.size
+    if P == 0 or T < 2:
+        return None
+    pid = (np.searchsorted(p_off, np.arange(T), side='right') - 1).astype(np.int64)
+    nn = rows.astype(np.int64)
+    # 出現パス数（同じパスの複数回出現は 1 と数える）
+    o = np.lexsort((pid, nn))
+    keep = np.ones(T, bool)
+    keep[1:] = (nn[o][1:] != nn[o][:-1]) | (pid[o][1:] != pid[o][:-1])
+    npc = np.bincount(nn[o][keep], minlength=n)
+    mx = int(npc.max()) if n else 0
+    is_anchor = npc >= max(1, int(np.ceil(anchor_frac * mx)))
+    an = np.where(is_anchor[nn])[0]                      # 錨のステップ（昇順）
+    if an.size < 2:
+        log(f"{log_prefix}edge-len framemed: 錨が無い（最大出現パス数 {mx}）。目標長 1")
+        return np.ones(ei.size, np.float64)
+    same = pid[an[1:]] == pid[an[:-1]]
+    t0 = an[:-1][same]; t1 = an[1:][same]                # 区間 = ステップ t0..t1（辺 t0..t1-1）
+    h = (t1 - t0).astype(np.int64)
+    a = nn[t0]; b = nn[t1]
+    key = np.minimum(a, b) * np.int64(n) + np.maximum(a, b)
+    # ★錨対 (a,b) の目標区間長 M = **両錨を含む全パス**でのパス上距離の中央値（pathmed を錨対に適用）。
+    #   「隣接する錨対の区間長の中央値」では再編成の接合部が直らない: 錨 A(参照 2247 kb) → W → B(619 kb) の
+    #   近道は、A,B が隣接するのがクレードの 6 パスだけで、他 44 パスは間に数千の錨を挟むので中央値 2 のまま。
+    #   全パスで測れば 44 パスが 10 万ホップ、6 パスが 2 → 中央値 10 万（ecoli50 方向II c3 で実測）。
+    uk, inv = np.unique(key, return_inverse=True)
+    ua = (uk // np.int64(n)).astype(np.int64); ub = (uk % np.int64(n)).astype(np.int64)
+    if HAVE_NUMBA:
+        pos_ = (np.arange(T) - p_off[pid]).astype(np.int64)
+        o = np.lexsort((pos_, pid, nn))
+        nn_s, pp_s, qq_s = nn[o], pid[o], pos_[o]
+        nstart = np.zeros(n + 1, np.int64)
+        np.add.at(nstart[1:], nn_s, 1)
+        np.cumsum(nstart, out=nstart)
+        plen = (p_off[1:] - p_off[:-1]).astype(np.int64)
+        pcirc = np.zeros(P, np.int8)                  # 枠は環状を考えない（原点跨ぎの枠は稀）
+        outm = np.empty(uk.size, np.int64); buf = np.empty(max(P, 1), np.int64)
+        _edge_pathlen(ua, ub, nstart, pp_s, qq_s, plen, pcirc, outm, buf)
+        M = outm[inv].astype(np.float64)
+    else:                                              # numba 無し: 隣接する錨対の区間長の中央値で代用
+        o2 = np.lexsort((h, key))
+        ks, hs = key[o2], h[o2]
+        grp_start = np.r_[0, np.where(ks[1:] != ks[:-1])[0] + 1]
+        grp_len = np.diff(np.r_[grp_start, ks.size])
+        med = 0.5 * (hs[grp_start + (grp_len - 1) // 2] + hs[grp_start + grp_len // 2])
+        M = np.empty(key.size, np.float64); M[o2] = med[np.repeat(np.arange(grp_start.size), grp_len)]
+    # numba 版の M は「両錨を含むパス」で測っているので、自分しか含まなければ M = h → 伸縮 1 になる。
+    # 代用版（隣接する錨対の区間長）は同じ錨対が 2 区間以上ないと中央値に意味がないので 1 にする。
+    cnt_u = np.bincount(inv, minlength=uk.size); cnt = cnt_u[inv]
+    grp_start = np.arange(uk.size); grp_len = cnt_u
+    if HAVE_NUMBA:
+        scale = M / np.maximum(h, 1)
+    else:
+        scale = np.where(cnt >= 2, M / np.maximum(h, 1), 1.0)
+    scale = np.maximum(scale, 1.0)
+    if cap and cap > 0:
+        scale = np.minimum(scale, float(cap))
+    # ステップ辺 t（rows[t]→rows[t+1]）の重み: 区間内は scale、外は 1
+    wstep = np.ones(T - 1, np.float64)
+    tot = int(h.sum())
+    seg_of = np.repeat(np.arange(h.size), h)
+    off = np.arange(tot) - np.repeat(np.cumsum(h) - h, h)
+    wstep[t0[seg_of] + off] = scale[seg_of]
+    # ステップ辺 → グラフの辺（無向）へ。同じ辺の per-path 値は中央値
+    ek = np.minimum(ei, ej).astype(np.int64) * np.int64(n) + np.maximum(ei, ej).astype(np.int64)
+    eo = np.argsort(ek, kind="stable"); eks = ek[eo]
+    su = nn[:-1]; sv = nn[1:]
+    valid = pid[:-1] == pid[1:]
+    sk = np.minimum(su, sv) * np.int64(n) + np.maximum(su, sv)
+    sk = sk[valid]; ws = wstep[valid]
+    pos = np.searchsorted(eks, sk)
+    pos[pos >= eks.size] = 0
+    hit = eks[pos] == sk
+    eidx = eo[pos[hit]]; ws = ws[hit]
+    o3 = np.lexsort((ws, eidx))
+    ei_s, w_s = eidx[o3], ws[o3]
+    gs = np.r_[0, np.where(ei_s[1:] != ei_s[:-1])[0] + 1]
+    gl = np.diff(np.r_[gs, ei_s.size])
+    emed = 0.5 * (w_s[gs + (gl - 1) // 2] + w_s[gs + gl // 2])
+    EL = np.ones(ei.size, np.float64)
+    EL[ei_s[gs]] = emed
+    nfr = grp_start.size
+    log(f"{log_prefix}edge-len framemed: 錨 {int(is_anchor.sum()):,} ノード（出現パス数 >= {int(np.ceil(anchor_frac * mx))}/{mx}）/ "
+        f"錨対 {nfr:,}（≥2 パス {int((grp_len >= 2).sum()):,}）/ 区間の伸縮 >=3 倍 {int((scale >= 3).sum()):,} 区間 / "
+        f"目標長 中央 {np.median(EL):.0f} p99 {np.percentile(EL, 99):.0f} 最大 {EL.max():.0f} / "
+        f">=10 {int((EL >= 10).sum()):,} ({100*(EL>=10).mean():.3f}%) / 辺に写せなかったステップ辺 {int((~hit).sum()):,}")
+    return EL
+
+
 def build_csr_w(n, ei, ej, EL):
     """重み付き最短路用の CSR。scipy の csr_matrix は重複辺の data を**足す**ので使えない
     （GFA には同じ端点対の L 行が向き違いで複数あり、重みが 2 倍になる）。自前で組む。"""
@@ -1080,7 +1182,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=30,
                     help="アニールの地平かつ上限。eta と斥力の減衰は ep/epochs で決まるので、"
                          "この値を変えると 1 epoch あたりの進み方も変わる（単に長く回すのではない）")
-    ap.add_argument("--edge-len", choices=["off", "pathmed"], default="off",
+    ap.add_argument("--edge-len", choices=["off", "pathmed", "framemed", "both"], default="off",
                     help="辺の目標長。off=全部 1（従来）。pathmed=両端がパス上で何ステップ"
                          "離れているかの中央値。グラフの最短ホップは全パスの**最小**なので "
                          "1 本の短絡が目標距離を支配する（chrY pggb で MC の 15 倍歪む）。"
@@ -1089,6 +1191,11 @@ def main():
                     help="--edge-len pathmed の目標長の上限。上限なしだと目標距離の幅が"
                          "広がりすぎて収束しない（chr1 で辺長/目標長=8.55）。"
                          "chrY pggb では 1000 が最良（最密セル -63%%）。0 で無制限。")
+    ap.add_argument("--edge-len-frame-cap", type=float, default=100000.0, metavar="L",
+                    help="framemed の目標長の上限（既定 1e5。pathmed の上限 1000 とは別。ecoli50 方向II では 1000 だと"
+                         "10 万ホップの枠を 2 辺で跨ぐ近道が残って中心に花が出る。1e8 だと巨大アレルが遠くへ飛ぶ）")
+    ap.add_argument("--edge-len-anchor-frac", type=float, default=0.9, metavar="F",
+                    help="framemed の錨 = 出現パス数が最大の F 倍以上のノード（既定 0.9）")
     ap.add_argument("--edge-len-ball-max", type=float, default=4.0, metavar="L",
                     help="球 pivot と hop2..H を組むとき、目標長がこれを超える辺を外す。"
                          "短絡を含めると理想距離 2 で遠い領域を引き寄せてしまう。")
@@ -1230,12 +1337,19 @@ def main():
 
     # ---- ★辺の目標長（--edge-len pathmed）----
     EL_all = None
-    if args.edge_len == "pathmed":
+    if args.edge_len in ("pathmed", "framemed", "both"):
         if pathdat is None:
-            raise SystemExit("--edge-len pathmed には --distill（パス）が要る")
+            raise SystemExit(f"--edge-len {args.edge_len} には --distill（パス）が要る")
         _rows, _poff, _cum = pathdat
-        EL_all = edge_target_lengths(_rows.astype(np.int64), _poff, ei, ej, n,
-                                     args.edge_len_cap, log_prefix="")
+        # pathmed は辺そのものの近道（反復: chrY pggb で効く）、framemed は錨の間の近道（丸ごとアレル・
+        # 再編成の接合部: ecoli50 方向II で効く）。both は辺ごとに大きい方を採る。
+        if args.edge_len in ("pathmed", "both"):
+            EL_all = edge_target_lengths(_rows.astype(np.int64), _poff, ei, ej, n,
+                                         args.edge_len_cap, log_prefix="")
+        if args.edge_len in ("framemed", "both"):
+            EL_f = frame_target_lengths(_rows.astype(np.int64), _poff, ei, ej, n,
+                                        args.edge_len_frame_cap, args.edge_len_anchor_frac, log_prefix="")
+            EL_all = EL_f if EL_all is None else np.maximum(EL_all, EL_f)
 
     xy = np.zeros((n, 2))
     comp_kind = np.zeros(n, np.int8)   # 1=major, 0=debris (描画用)
