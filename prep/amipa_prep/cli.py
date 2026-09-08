@@ -460,12 +460,14 @@ def build_stages(b: Bundle, a) -> dict:
         "layout",
         [[py, str(PKG / "layout.py"),
           "--distill", str(b.distill), "--out", str(b.npz_prefix),
-          "--init", "pmds", "--epochs", str(a.epochs), "--seed", str(a.seed),
+          "--init", a.layout_init, "--epochs", str(a.epochs), "--seed", str(a.seed),
           "--min-comp", str(a.min_comp), "--pivots", str(a.pivots),
           "--pivot-mem-gib", str(a.mem_gib), "--threads", str(threads)]
          + (["--edge-len", a.layout_edge_len, "--edge-len-cap", str(a.layout_edge_len_cap),
              "--edge-len-frame-cap", str(a.layout_edge_len_frame_cap)]
-            if a.layout_edge_len != "off" else [])],
+            if a.layout_edge_len != "off" else [])
+         + (["--path-only", "--path-term", a.layout_path_term, "--path-pairs", str(a.layout_path_pairs)]
+            if a.layout_path_only else [])],
         inputs=[b.distill],
         outputs=[b.npz],
         env={**thread_env(threads), "NUMBA_NUM_THREADS": str(threads), "MPLBACKEND": "Agg"},
@@ -851,6 +853,14 @@ def add_common(p, need_gfa=False):
                    help="--layout-edge-len pathmed の目標長の上限")
     p.add_argument("--layout-edge-len-frame-cap", type=float, default=100000.0,
                    help="--layout-edge-len framemed/both の枠の目標長の上限（既定 1e5）")
+    p.add_argument("--layout-path-only", action="store_true",
+                   help="レイアウトをパス誘導のみにする（ピボット・短距離・球の項なし。表示用に変換したグラフ向け）")
+    p.add_argument("--layout-path-term", choices=["hop", "bp"], default="hop",
+                   help="--layout-path-only の距離の尺度（hop=ステップ数、既定）")
+    p.add_argument("--layout-path-pairs", type=int, default=0,
+                   help="--layout-path-only で 1 epoch あたりの対の数（0=成分内ステップ数）")
+    p.add_argument("--layout-init", choices=["pmds", "path", "random"], default="pmds",
+                   help="レイアウトの初期配置（既定 pmds。path=パス内位置で 1 次元に並べる）")
     p.add_argument("--ribbon-disk", action="store_true",
                    help="リボンを disk streaming で作る（大きいグラフ。RAM を O(node) に抑える）")
     p.add_argument("--band", type=Path, help="cytoBand（GRCh38）")

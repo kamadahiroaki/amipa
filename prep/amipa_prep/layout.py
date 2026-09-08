@@ -202,6 +202,27 @@ if HAVE_NUMBA:
                 out[e] = sb[m // 2]
 
     @njit(parallel=True, fastmath=False, cache=True)
+    def _path_sgd_numba(X, li, lj, d, eta):
+        """パス上の対 (li[t], lj[t]) を目標距離 d[t] へ近づける確率的更新を **対ごとに逐次適用**する
+        （Jacobi 平均でなく SGD。odgi layout と同じ形）。prange で並列化するので同じノードを別スレッドが
+        同時に動かす競合があるが、SGD の雑音として許容する（odgi も lock-free）。
+        mu = min(eta/d², 1)、両端を r = (|Δ|-d)/2·mu/|Δ| ずつ寄せる。同一座標は対のハッシュ角で割る。"""
+        m = li.size
+        for t in prange(m):
+            i = li[t]; j = lj[t]; dd = d[t]
+            dx = X[j, 0] - X[i, 0]; dy = X[j, 1] - X[i, 1]
+            mag = np.sqrt(dx * dx + dy * dy)
+            if mag < 1e-9:
+                ang = ((i * 2654435761 + j * 40503) % 6283) * 0.001
+                dx = 1e-6 * np.cos(ang); dy = 1e-6 * np.sin(ang); mag = 1e-6
+            mu = eta / (dd * dd)
+            if mu > 1.0:
+                mu = 1.0
+            r = (mag - dd) * 0.5 / mag * mu
+            X[i, 0] += r * dx; X[i, 1] += r * dy
+            X[j, 0] -= r * dx; X[j, 1] -= r * dy
+
+    @njit(parallel=True, fastmath=False, cache=True)
     def _ball_epoch_numba(X, order, bstart, bidx, bdist, bsrc, bmax, tau, eta):
         """球 pivot 1 epoch。各球の内部ノードだけ更新(球内でノードは一意なので race-free)。
         更新式は _pivot_epoch_numba と同一。**境界テーパー**: 球の内外で拘束が不連続だと境界が
@@ -786,7 +807,7 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
                converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
                anneal_epochs=0, converge_rel=0.0, converge_window=10,
                path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None,
-               EL=None):
+               EL=None, path_only=False, path_eta_max=None):
     """epochs は **アニールの地平**（eta と斥力の減衰は ep/epochs で決まる）であって
     「必ず回す回数」ではない。converge_eps>0 なら、1 epoch あたりのノード変位が十分小さく
     なった時点で打ち切る（残りを回しても絵は変わらないため）。
@@ -825,6 +846,14 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
     k = len(piv)
     if eta_max is None:
         eta_max = dmax * dmax  # 1/min_w, min_w = 1/dmax^2
+    if path_only:
+        # ★パス誘導のみ: 目標距離の最大はパス長（ステップ数）なので、eta の天井はそれに合わせる
+        #   （ピボットの hop 距離は短絡で潰れていて尺度にならない）。
+        if path_eta_max is not None and path_eta_max > 0:
+            eta_max = float(path_eta_max)
+        use_numba_path = use_numba and HAVE_NUMBA
+        log(f"  path-only: pairs/epoch={path_pairs:,} eta_max={eta_max:.3g} engine={'numba' if use_numba_path else 'numpy'}"
+            f" ピボット/短距離/球の項は使わない（辺項{'・斥力' if (repel > 0 and use_numba and A is not None) else ''}は使う）")
     T = anneal_epochs if anneal_epochs and anneal_epochs > 0 else epochs
     # アニールは T epoch で eta_min まで落とし、以降は eta_min に据え置く。
     # anneal_epochs 未指定(=epochs)なら clip は恒等なので旧実装と bit-identical。
@@ -868,7 +897,9 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
         # ---- (b) pivot block updates: pivot FIXED, each node = independent 1-term
         #          majorization → unconditionally stable ----
         piv_order = rng.permutation(k)               # GS 用 pivot 順(両エンジンで同一に消費)
-        if use_numba:
+        if path_only:
+            pass                                      # パス誘導のみ: ピボット項なし
+        elif use_numba:
             _pivot_epoch_numba(X, piv_order, piv64, Dc, float(eta))   # 数値等価・prange 並列
         else:
           for pi in piv_order:
@@ -902,7 +933,7 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
         X += fx / deg[:, None]                   # average over incident edges
         # ---- (a') 短距離項 hop 2..H。更新式と重み mu=min(eta/d^2,1) は pivot 項と同一 ----
         #      アレル対 (B,C) と弦 (a,z) はどちらも hop 2 で、ここでしか拘束されない。
-        if short is not None:
+        if short is not None and not path_only:
             SHI, SHJ, SHD, SHC = short
             # ★対を CHUNK ずつ処理して一時配列を有界にする。一括だと v2/d2s などが
             #   対数の ~5 倍立ち、chr22 の段階対 coverage20(5.3 億対)で 35GB 級になって
@@ -932,6 +963,7 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
             X += gx / SHC[:, None]
         # ---- (a'') path-guided 項。パス上の対を毎 epoch サンプルし直す（SGD なので固定不要）。
         #      更新式と重み mu=min(eta/d^2,1) は他の項と同一。距離の尺度だけ mode で変える。
+        pi_ = None
         if path is not None and path_pairs > 0:
             sp = sample_path_pairs(path[0], path[1], path[2], g2l, path_pairs, path_mode, rng)
             if sp is not None:
@@ -939,6 +971,12 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
                 if path_mode == 'bp':
                     pd_ = pd_ / max(path_scale, 1e-9)   # 1 ステップ ≒ 1 単位に揃える
                     np.maximum(pd_, 1.0, out=pd_)
+                if path_only and use_numba and HAVE_NUMBA:
+                    perm = rng.permutation(pi_.size)     # 対の順序をばらす（同じパスの対が並ぶと偏る）
+                    _path_sgd_numba(X, np.ascontiguousarray(pi_[perm]), np.ascontiguousarray(pj_[perm]),
+                                    np.ascontiguousarray(pd_[perm]), float(eta))
+                    pi_ = None
+            if path is not None and path_pairs > 0 and pi_ is not None:
                 gxp = np.zeros((n, 2))
                 vp = X[pj_] - X[pi_]
                 mpr = np.sqrt((vp * vp).sum(1))
@@ -959,7 +997,7 @@ def sgd_layout(n, ei, ej, piv, D, epochs=30, seed=1, eta_min=0.1, engine="numpy"
         #      ★エッジ+短距離の**後**に掛ける。前に掛けると可読領域の交差が悪化する
         #      (2026-08-04 実測 2seed: 前=111/116/124 → 後=94/88。グリフ重なり/TV/アレル
         #       重なりは不変なので代償なし。seed ばらつきは 13 なので有意)。
-        if ball is not None:
+        if ball is not None and not path_only:
             bstart, bidx, bdist, bsrc, bmax, bsub = ball
             nb = bsrc.size
             sel = rng.permutation(nb)[:max(1, nb // bsub)]
@@ -1072,7 +1110,7 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                      converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
                      anneal_epochs=0, converge_rel=0.0, converge_window=10,
                      path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None,
-                     EL=None, ball_edge_max=4.0):
+                     EL=None, ball_edge_max=4.0, path_only=False):
     """1連結成分をレイアウトし、PCA で長軸=x に整える局所座標 [subn,2] を返す。
     numba_min: **廃止**(引数は後方互換で残すが無視)。njit は cache=True で JIT はプロセス跨ぎに
     キャッシュされるため降格の利得が無い一方、この閾値は「エンジン選択」の顔をして **球 pivot の
@@ -1134,10 +1172,58 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
     else:
         A_loc = A
     x0 = pivot_mds(D) if (init == "pmds" and subn >= 3 and k >= 2) else None   # D は非破壊
+    path_eta_max = None; path_pairs_eff = path_pairs
+    if path is not None and g2l is not None and (path_only or init == "path"):
+        rows, p_off, cum = path
+        loc = g2l[rows]                                   # 各ステップの成分ローカル index（-1 = 成分外）
+        inside = loc >= 0
+        if init == "path":
+            # ★パス順の初期化: 背骨パス（最長のパス。環状ゲノムは株ごとに原点が違い、コンティグは断片なので
+            #   「各パス内の位置の平均」は使えない）の上のノードに x = 背骨のステップ番号を与え、他のノードは
+            #   自分を通る各パスで直前に見た背骨ノードの x を引き継ぐ（1 次元の外挿）。y は小さな乱数。
+            plen = np.diff(p_off); bb = int(np.argmax(plen))
+            b0, b1 = int(p_off[bb]), int(p_off[bb + 1])
+            xpos = np.full(subn, np.nan)
+            lb = loc[b0:b1]; okb = lb >= 0
+            xpos[lb[okb]] = np.arange(b1 - b0, dtype=np.float64)[okb]        # 背骨: 再訪は後の位置で上書き（稀）
+            # 引き継ぎを何周か回す: 1 周目は背骨に触るパスだけ埋まる。埋まったノードを次の周の「背骨」にして、
+            #   背骨と直接は交わらないコンティグ（別の腕・アレイ）にも届かせる。
+            n_fill_total = 0
+            for rnd in range(6):
+                sx = np.zeros(subn); sc = np.zeros(subn); known = ~np.isnan(xpos)
+                for q in range(p_off.size - 1):
+                    if q == bb and rnd == 0: continue
+                    r0, r1 = int(p_off[q]), int(p_off[q + 1]); lq = loc[r0:r1]
+                    if r1 - r0 < 2: continue
+                    inq = lq >= 0; lqc = np.maximum(lq, 0)
+                    has_ = inq & known[lqc]
+                    if not has_.any() or has_.all(): continue
+                    bp_ = np.where(has_, xpos[lqc], np.nan)
+                    idx_ = np.where(has_, np.arange(r1 - r0), -1); ff = np.maximum.accumulate(idx_)
+                    vals = np.where(ff >= 0, bp_[np.maximum(ff, 0)], np.nan)
+                    first = int(np.flatnonzero(has_)[0]); vals[:first] = bp_[first]
+                    m_ = inq & ~known[lqc]
+                    np.add.at(sx, lq[m_], vals[m_]); np.add.at(sc, lq[m_], 1.0)
+                fillable = np.isnan(xpos) & (sc > 0)
+                if not fillable.any(): break
+                xpos[fillable] = sx[fillable] / sc[fillable]; n_fill_total += int(fillable.sum())
+            fillable = np.zeros(subn, bool); fillable[:] = False
+            _nfill = n_fill_total
+            rest = np.isnan(xpos)
+            if rest.any(): xpos[rest] = np.nanmean(xpos) if (~rest).any() else 0.0
+            x0 = np.zeros((subn, 2)); x0[:, 0] = xpos
+            x0[:, 1] = np.random.default_rng(seed).standard_normal(subn) * max(1.0, 0.001 * subn)
+            log(f"  init=path: 背骨=パス {bb}（{b1 - b0:,} ステップ）上 {int(okb.sum()):,} ノード、引き継ぎ {_nfill:,}（{rnd + 1} 周）、"
+                f"不明 {int(rest.sum()):,} / {subn:,}、x 範囲 {x0[:,0].min():.0f}..{x0[:,0].max():.0f}")
+        if path_only:
+            nsteps = int(inside.sum())
+            if path_pairs_eff <= 0: path_pairs_eff = nsteps          # 既定 = 成分内ステップ数（1 epoch に 1 対/ステップ）
+            plen = np.diff(p_off).astype(np.float64)
+            path_eta_max = float(plen.max()) ** 2 if plen.size else None
     ball = build_balls(A_loc, subn, D_hop, coverage=ball_coverage, rfrac=ball_rfrac, coveff=ball_coveff,
                        min_nodes=ball_min_nodes, kpct=ball_kpct, seed=seed,
-                       log_prefix="  ") if eng == "numba" else None
-    short = build_short(A_loc, subn, short_h, short_cap, log_prefix="  ") if short_h >= 2 else None
+                       log_prefix="  ") if (eng == "numba" and not path_only) else None
+    short = build_short(A_loc, subn, short_h, short_cap, log_prefix="  ") if (short_h >= 2 and not path_only) else None
     X = sgd_layout(subn, sei, sej, piv, D, epochs=epochs, seed=seed, engine=eng, x_init=x0,
                    ball=ball, ball_tau=ball_tau, short=short, A=A,
                    repel=repel, repel_strength=repel_strength,
@@ -1145,8 +1231,8 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                    converge_eps=converge_eps, converge_patience=converge_patience,
                    converge_min_frac=converge_min_frac, anneal_epochs=anneal_epochs,
                    converge_rel=converge_rel, converge_window=converge_window,
-                   path=path, path_mode=path_mode, path_pairs=path_pairs,
-                   path_scale=path_scale, g2l=g2l, EL=EL)
+                   path=path, path_mode=path_mode, path_pairs=path_pairs_eff,
+                   path_scale=path_scale, g2l=g2l, EL=EL, path_only=path_only, path_eta_max=path_eta_max)
     Xc = X - X.mean(0)
     _, S, Vt = np.linalg.svd(Xc, full_matrices=False)
     return Xc @ Vt.T
@@ -1209,8 +1295,12 @@ def main():
                          "hop=ステップ数を目標距離に / bp=塩基距離（odgi layout と同じ考え方）/ "
                          "off(既定)=従来どおりトポロジのみ。★これを使うとレイアウトは "
                          "topology-only ではなくなる")
-    ap.add_argument("--path-pairs", type=int, default=2_000_000, metavar="M",
-                    help="path 項で 1 epoch あたりにサンプルする対の数（既定 200 万）")
+    ap.add_argument("--path-pairs", type=int, default=None, metavar="M",
+                    help="path 項で 1 epoch あたりにサンプルする対の数（既定: --path-term では 200 万、--path-only では成分内ステップ数＝1 対/ステップ）")
+    ap.add_argument("--path-only", action="store_true",
+                    help="★パス誘導のみのレイアウト: ピボット・短距離・球の項を使わず、パス上の対の SGD（対ごとに逐次更新、"
+                         "odgi layout と同じ形）と辺項だけで置く。表示用に変換したグラフ（locusfold）向け。--path-term hop|bp で距離の尺度、"
+                         "--init path で初期配置をパス順にできる")
     ap.add_argument("--anneal-epochs", type=int, default=0, metavar="T",
                     help="アニール長。eta を T epoch で eta_min まで落とし、以降は据え置く。"
                          "0(既定)は --epochs と同じ＝従来どおり。**--converge-eps と併用するときは "
@@ -1242,8 +1332,8 @@ def main():
                          "auto=numba あれば numba。単一巨大成分(chr22/WG)の高速化用")
     ap.add_argument("--threads", type=int, default=0,
                     help="numba engine のスレッド数(0=既定=全コア)")
-    ap.add_argument("--init", choices=["random", "pmds"], default="pmds",
-                    help="SGD 初期化。pmds=PivotMDS 大域初期化(背骨の縦波打ちを抑制, topology-only, 既定)。")
+    ap.add_argument("--init", choices=["random", "pmds", "path"], default="pmds",
+                    help="SGD 初期化。pmds=PivotMDS 大域初期化(背骨の縦波打ちを抑制, topology-only, 既定)。path=パス内位置で 1 次元に並べる（--path-only 向け）")
     ap.add_argument("--aspect", type=float, default=16.0 / 9.0,
                     help="連結成分の配置(shelf packing)の目標アスペクト比 W/H(既定16:9≈1.78, 4:3=1.33)")
     ap.add_argument("--pack-gap", type=float, default=0.05,
@@ -1319,7 +1409,11 @@ def main():
     log(f"nodes={n:,} edges={len(ei):,}")
     # path-guided 項の材料（--path-term off なら作らない = 従来と完全に同じ経路）
     pathdat = None; path_scale = 1.0
-    if args.path_term != "off" or args.edge_len != "off":
+    if args.path_only and args.path_term == "off":
+        args.path_term = "hop"                       # パス誘導のみなら距離の尺度は既定 hop
+    if args.path_pairs is None:
+        args.path_pairs = 0 if args.path_only else 2_000_000
+    if args.path_term != "off" or args.edge_len != "off" or args.init == "path":
         if not args.distill:
             sys.exit(f"--path-term / --edge-len には --distill が必要（パスの並びが要る）")
         pathdat = build_path(args.distill, ids, n, log_prefix="")
@@ -1369,7 +1463,7 @@ def main():
         g2l = -np.ones(n, np.int64); g2l[idx] = np.arange(subn)
         em = (lab[ei] == ci) & (lab[ej] == ci)
         tasks.append((ci, idx, subn, g2l[ei[em]], g2l[ej[em]]))
-        task_g2l.append(g2l if (pathdat is not None and args.path_term != 'off') else None)
+        task_g2l.append(g2l if (pathdat is not None and (args.path_term != 'off' or args.init == 'path')) else None)
         task_EL.append(EL_all[em] if EL_all is not None else None)
         log(f"  major comp {ci}: nodes={subn:,} edges={int(em.sum()):,}")
 
@@ -1392,19 +1486,19 @@ def main():
         with ProcessPoolExecutor(max_workers=args.jobs) as ex:
             futs = [ex.submit(layout_component, subn, sei, sej,
                               args.pivots, args.epochs, args.seed, engine, 0,
-                              args.init, path=(pathdat if args.path_term != 'off' else None),
+                              args.init, path=(pathdat if (args.path_term != 'off' or args.init == 'path') else None),
                               path_mode=args.path_term,
                               path_pairs=(args.path_pairs if (pathdat is not None and args.path_term != 'off') else 0),
-                              path_scale=path_scale, g2l=gl, EL=el, **bkw)
+                              path_scale=path_scale, g2l=gl, EL=el, path_only=args.path_only, **bkw)
                     for (_, _, subn, sei, sej), gl, el in zip(tasks, task_g2l, task_EL)]
             results = [f.result() for f in futs]
     else:
         results = [layout_component(subn, sei, sej,
                                     args.pivots, args.epochs, args.seed, engine, 0,
-                                    args.init, path=(pathdat if args.path_term != 'off' else None),
+                                    args.init, path=(pathdat if (args.path_term != 'off' or args.init == 'path') else None),
                                     path_mode=args.path_term,
                                     path_pairs=(args.path_pairs if (pathdat is not None and args.path_term != 'off') else 0),
-                                    path_scale=path_scale, g2l=gl, EL=el, **bkw)
+                                    path_scale=path_scale, g2l=gl, EL=el, path_only=args.path_only, **bkw)
                    for (_, _, subn, sei, sej), gl, el in zip(tasks, task_g2l, task_EL)]
 
     # ---- 配置: サイズ順 shelf packing で目標アスペクト R(既定16:9)へ詰める ----
