@@ -467,8 +467,10 @@ def build_stages(b: Bundle, a) -> dict:
              "--edge-len-frame-cap", str(a.layout_edge_len_frame_cap)]
             if a.layout_edge_len != "off" else [])
          + (["--path-only", "--path-term", a.layout_path_term, "--path-pairs", str(a.layout_path_pairs)]
-            if a.layout_path_only else [])],
-        inputs=[b.distill],
+            if a.layout_path_only else [])
+         + (["--node-coord", str(a.layout_node_coord), "--coord-circular", str(a.layout_coord_circular)]
+            if a.layout_node_coord else [])],
+        inputs=[b.distill] + ([Path(a.layout_node_coord)] if a.layout_node_coord else []),
         outputs=[b.npz],
         env={**thread_env(threads), "NUMBA_NUM_THREADS": str(threads), "MPLBACKEND": "Agg"},
         # メモリ予算は「その機械で使える量」であって出力は変えない → 鍵から外す
@@ -859,6 +861,10 @@ def add_common(p, need_gfa=False):
                    help="--layout-path-only の距離の尺度（hop=ステップ数、既定）")
     p.add_argument("--layout-path-pairs", type=int, default=0,
                    help="--layout-path-only で 1 epoch あたりの対の数（0=成分内ステップ数）")
+    p.add_argument("--layout-node-coord", default=None,
+                   help="ノードの座位座標 TSV（locusfold → nodecoord_compact）。ピボット距離と辺の目標長を座位差にする（他の項は従来どおり）")
+    p.add_argument("--layout-coord-circular", type=float, default=0.0,
+                   help="座位座標が環状なら参照の長さ（bp）")
     p.add_argument("--layout-init", choices=["pmds", "path", "random"], default="pmds",
                    help="レイアウトの初期配置（既定 pmds。path=パス内位置で 1 次元に並べる）")
     p.add_argument("--ribbon-disk", action="store_true",
