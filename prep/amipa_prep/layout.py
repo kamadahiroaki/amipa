@@ -664,7 +664,7 @@ def build_csr(n, ei, ej):
     J = np.concatenate([ej, ei]).astype(np.int32, copy=False)
     return csr_matrix((np.ones(len(I), np.float32), (I, J)), shape=(n, n))
 
-def maxmin_pivots(A, k, seed=0, engine="numpy", W=None):
+def maxmin_pivots(A, k, seed=0, engine="numpy", W=None, allowed=None):
     """farthest-point sampling。各ピボットから BFS した距離も返す（D[k,n]）。
     maxmin の逐次依存(pivot t+1 = 実行中最小距離の argmax)は残るのでピボット間並列は不可。
     効くのは 1 本の BFS を速くすること: engine=numba なら scipy heap-Dijkstra(O((n+e)log n))を
@@ -695,12 +695,17 @@ def maxmin_pivots(A, k, seed=0, engine="numpy", W=None):
             d = shortest_path(A, unweighted=True, indices=src)
             d[np.isinf(d)] = d[~np.isinf(d)].max()
             return d
-    piv = [int(rng.integers(n))]
+    # ★allowed（座位座標を持つノードだけ等）を渡すと、ピボットはその中からだけ選ぶ。座標なしの塊（未配置の衛星配列など）からピボットを取ると、
+    #   その行がホップ距離になって離れた座位の参照ノードを塊へ引き寄せ、染色体が鉤状に丸まる（chrY 実測）。距離行 D は全ノードぶん計算する
+    if allowed is not None and allowed.any():
+        cand0 = np.flatnonzero(allowed); piv = [int(cand0[rng.integers(cand0.size)])]
+    else:
+        allowed = None; piv = [int(rng.integers(n))]
     D = np.empty((k, n), np.float32)
     D[0] = bfs(piv[0])
     mind = D[0].copy()
     for t in range(1, k):
-        nxt = int(np.argmax(mind))
+        nxt = int(np.argmax(mind if allowed is None else np.where(allowed, mind, -1.0)))
         piv.append(nxt)
         D[t] = bfs(nxt)
         mind = np.minimum(mind, D[t])
@@ -1110,7 +1115,7 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                      converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
                      anneal_epochs=0, converge_rel=0.0, converge_window=10,
                      path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None,
-                     EL=None, ball_edge_max=4.0, path_only=False, node_coord=None, coord_L=0.0, coord_scale=1.0, node_len=None, node_unc=None, coord_gap_min=20000.0):
+                     EL=None, ball_edge_max=4.0, path_only=False, node_coord=None, coord_L=0.0, coord_scale=1.0, node_len=None, node_unc=None, coord_gap_min=20000.0, coord_pivots_only=True):
     """1連結成分をレイアウトし、PCA で長軸=x に整える局所座標 [subn,2] を返す。
     numba_min: **廃止**(引数は後方互換で残すが無視)。njit は cache=True で JIT はプロセス跨ぎに
     キャッシュされるため降格の利得が無い一方、この閾値は「エンジン選択」の顔をして **球 pivot の
@@ -1165,7 +1170,9 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
         log(f"  座位座標: {int(has_c.sum()):,}/{subn:,} ノードに座標、辺 {int(both.sum()):,}/{sei.size:,} に座位差の目標長"
             f"（>{ball_edge_max:g} ホップ {int((ELc > ball_edge_max).sum()):,} 本、最大 {ELc.max():,.0f}）、尺度 {coord_scale:.2f} bp/hop")
     W = build_csr_w(subn, sei, sej, EL) if EL is not None else None
-    piv, D = maxmin_pivots(A, k, seed=seed, engine=eng, W=W)  # 大成分は numba BFS(8×), 距離 D は不変
+    piv, D = maxmin_pivots(A, k, seed=seed, engine=eng, W=W, allowed=(has_c if (has_c is not None and coord_pivots_only) else None))  # 大成分は numba BFS(8×), 距離 D は不変
+    if has_c is not None and coord_pivots_only:
+        log(f"  座位座標: ピボットは座標ありノードからだけ選択（座標なし {int((~has_c).sum()):,} ノードはピボットにしない）")
     if has_c is not None:
         # ★ピボット距離: 両方に座標があれば座位差（ホップ換算）。グラフ最短路（稀な接合部で短絡する）に頼らない。
         pc_ = has_c[piv]
