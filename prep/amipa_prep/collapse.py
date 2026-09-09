@@ -281,13 +281,22 @@ def collapse(distill: Path, out_gfa: Path, wildcard: bool = True,
     rep_off = np.zeros(G + 1, np.int64)
     np.cumsum(replen, out=rep_off[1:])
     repcat = np.frombuffer(b"N", np.uint8).repeat(int(rep_off[-1])).copy()
-    sg_, wi_, _ = _ragged(RE[fi] - RS[fi])
-    tsel = RS[fi][sg_] + wi_
-    dstart = rep_off[RG[fi]][sg_] + (cum[tsel] - cum[RS[fi]][sg_])
-    val, off = step_bases(rows[tsel], p_ori[tsel])
-    sg2, wi2, _ = _ragged(s_bp[rows[tsel]])
-    repcat[dstart[sg2] + wi2] = val
-    _log(t0, f"代表配列 総 {int(rep_off[-1]):,} bp")
+    # ★代表区間を bp 合計 ≤ CH ずつのまとまりで書く。全長ぶんを一度に展開すると 1 bp あたり int64 の添字配列（seg/within/dstart…）を
+    #   同時に 5〜6 本持ち、chr22（809 Mbp）で +24 GB（この段だけで 36 GB）になっていた。まとまりなら数百 MB で済む
+    CH = 32_000_000
+    cs_ = np.cumsum(replen[RG[fi]])
+    bnd = np.unique(np.r_[0, np.searchsorted(cs_, np.arange(CH, int(cs_[-1]) + CH, CH), side="right"), fi.size])
+    for a_, b_ in zip(bnd[:-1], bnd[1:]):
+        f_ = fi[a_:b_]
+        sg_, wi_, _ = _ragged(RE[f_] - RS[f_])
+        tsel = RS[f_][sg_] + wi_
+        dstart = rep_off[RG[f_]][sg_] + (cum[tsel] - cum[RS[f_]][sg_])
+        val, off = step_bases(rows[tsel], p_ori[tsel])
+        sg2, wi2, _ = _ragged(s_bp[rows[tsel]])
+        repcat[dstart[sg2] + wi2] = val
+        del sg_, wi_, tsel, dstart, val, off, sg2, wi2
+    nchunk = bnd.size - 1; del cs_, bnd
+    _log(t0, f"代表配列 総 {int(rep_off[-1]):,} bp（{nchunk} まとまり）")
 
     # ── 5. 辺 ───────────────────────────────────────────────────
     sp = RP[:-1] == RP[1:]
