@@ -466,7 +466,7 @@ def build_stages(b: Bundle, a) -> dict:
         if a.gfa and collapsing:
             # ★畳み込みでノード id が変わるので、座標を <db>.collapse の orig_node で畳み込みノードへ写す（代表配列の先頭の構成ノードの座標）
             coord_for_layout = b.work / "coord_collapsed.tsv"
-            coord_cmds = [[py, str(PKG / "collapse_coord.py"), str(b.collapse_sidecar), str(a.layout_node_coord), str(coord_for_layout)]]
+            coord_cmds = [[py, str(PKG / "collapse_coord.py"), str(b.collapse_sidecar), str(a.layout_node_coord), str(coord_for_layout), str(float(a.layout_coord_circular or 0.0))]]
         else:
             coord_for_layout = Path(a.layout_node_coord)
     st["layout"] = Stage(
@@ -504,7 +504,7 @@ def build_stages(b: Bundle, a) -> dict:
                 "--template", str(a.template), "--out-db", str(b.db),
                 # ★PID 等の毎回変わる値を入れない（コマンド行が変わると段の鍵が変わり、
                 #   何も変えていないのに emit がやり直しになる）。バンドル名で一意にする。
-                "--build-tmp", str(tmp / f"amipa-build-{b.name}"),
+                "--build-tmp", str(tmp / f"amipa-build-{b.name}-{os.getpid()}"),   # ★実行ごとに一意: 同じノードで同名バンドルの prep が並ぶと同じ DB を開いて "database is locked"（2026-09-09 実測）
                 "--emit-inversion", "--emit-multiplicity",
                 "--budget-floor", "1000", "--budget-rmin", "2", "--budget-rmax", "2.5",
                 "--budget-shrink", "0.8", "--budget-span-weight", "1.0",

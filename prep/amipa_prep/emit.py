@@ -4596,6 +4596,8 @@ def main():
         except OSError:
             pass
         os.remove(work_db)
+        try: os.rmdir(args.build_tmp)                      # 実行ごとに一意なディレクトリなので空になったら消す（ノードの /tmp に残さない）
+        except OSError: pass
         log(f"staged copy done ({time.time()-_tcp:.1f}s); local work DB removed")
         args.out_db = final_out_db     # 以降のログ表示用に最終パスへ
     # distill サイドカー: 最終パス(--build-tmp のコピー先)に対して張る。適格判定は §db_meta で済み。

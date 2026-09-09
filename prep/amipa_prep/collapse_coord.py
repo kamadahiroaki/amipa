@@ -5,10 +5,10 @@
 代表配列内オフセット off）から、畳み込みノードごとに構成ノードの中点座標の最小と最大の中央を採る（＝畳み込みノードの座位区間の中心）。
 座標がノード中点の定義なので向きに依存せず、隣接ノードとの中点差から両ノード長の平均を引くと 0 になり、辺の目標長が 1 のまま保たれる。
 
-usage: collapse_coord.py <db>.collapse in.coord.tsv out.coord.tsv"""
+usage: collapse_coord.py <db>.collapse in.coord.tsv out.coord.tsv [L]   （L > 0 なら環状: 原点を跨ぐノードの中心を環状に取る）"""
 import sys, sqlite3, numpy as np
 
-sidecar, cin, cout = sys.argv[1:4]
+sidecar, cin, cout = sys.argv[1:4]; L = float(sys.argv[4]) if len(sys.argv) > 4 else 0.0
 coord = {}; unc = {}
 with open(cin) as f:
     hdr = f.readline().rstrip("\n").split("\t"); ic = hdr.index("coord") if "coord" in hdr else 1; iu = hdr.index("u") if "u" in hdr else None
@@ -28,6 +28,8 @@ with open(cout, "w") as w:
     w.write("id\tcoord\tu\n" if unc else "id\tcoord\n")
     for gid in sorted(lo):
         m = 0.5 * (lo[gid] + hi[gid])                      # 構成ノードの中点座標の区間の中心 = 畳み込みノードの座位区間の中心（向きに依存しない）
+        if L > 0 and hi[gid] - lo[gid] > L / 2:            # ★原点を跨ぐ: min/max の中点は環の反対側になるので、L/2 未満側を +L して取り直す
+            m = (0.5 * (lo[gid] + L + hi[gid])) % L
         w.write(f"{gid}\t{m:.0f}\t{uu[gid]:.0f}\n" if unc else f"{gid}\t{m:.0f}\n")
 best = lo
 print(f"[collapse_coord] 元ノード座標 {len(coord):,} → 畳み込みノード {len(best):,} / {n_gid:,} に座標 -> {cout}", flush=True)
