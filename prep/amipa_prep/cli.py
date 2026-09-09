@@ -428,10 +428,15 @@ def build_stages(b: Bundle, a) -> dict:
         povu_gfa = b.dense_collapse_gfa if b.dense_collapse_gfa.exists() else b.collapse_gfa
     else:
         povu_gfa = b.dense_gfa if b.dense_gfa.exists() else (a.gfa or b.dense_gfa)
+    if getattr(a, "povu_split", 0) and getattr(a, "povu_split", 0) > 0:
+        # ★参照上の関節点で切って切片ごとに povu（メモリ ∝ 切片。chr22 で povu 単体は 110 GB 級、chr1 は 384 GB 超）
+        dec_cmd = [py, str(PKG / "povu_split.py"), "--gfa", str(povu_gfa), "--ref", a.ref_key, "--out", str(b.povu_dir),
+                   "--target", str(a.povu_split), "--jobs", str(max(1, threads // 2)), "--threads", "2", "--povu", str(a.povu)]
+    else:
+        dec_cmd = [str(a.povu), "-v", "2", "-t", str(threads), "decompose", "-i", str(povu_gfa), "-o", str(b.povu_dir)]
     st["decompose"] = Stage(
         "decompose",
-        [[str(a.povu), "-v", "2", "-t", str(threads), "decompose",
-          "-i", str(povu_gfa), "-o", str(b.povu_dir)]],
+        [dec_cmd],
         inputs=[povu_gfa],
         outputs=[str(b.povu_dir / "*.pvst")],
         # ★povu は -o のディレクトリを自分では作らない。無いと
@@ -869,6 +874,8 @@ def add_common(p, need_gfa=False):
                    help="--layout-path-only の距離の尺度（hop=ステップ数、既定）")
     p.add_argument("--layout-path-pairs", type=int, default=0,
                    help="--layout-path-only で 1 epoch あたりの対の数（0=成分内ステップ数）")
+    p.add_argument("--povu-split", type=int, default=0, metavar="N",
+                   help="★decompose: 参照パス上の関節点でグラフを約 N ノードの切片に切り、切片ごとに povu を走らせる（メモリ ∝ 切片）。0=切らない（従来）。--ref-key の参照が要る")
     p.add_argument("--layout-node-coord", default=None,
                    help="ノードの座位座標 TSV（locusfold → nodecoord_compact）。ピボット距離と辺の目標長を座位差にする（他の項は従来どおり）")
     p.add_argument("--layout-coord-circular", type=float, default=0.0,
