@@ -469,6 +469,12 @@ def build_stages(b: Bundle, a) -> dict:
             coord_cmds = [[py, str(PKG / "collapse_coord.py"), str(b.collapse_sidecar), str(a.layout_node_coord), str(coord_for_layout), str(float(a.layout_coord_circular or 0.0))]]
         else:
             coord_for_layout = Path(a.layout_node_coord)
+        if a.layout_coord_smooth > 0:
+            # ★表示座標の平滑化: コピーの中点座標の段差（隣接で通過の集合が違う）を、レイアウトするグラフの隣接と整合させる（coord_smooth.py の docstring）
+            smoothed = b.work / "coord_smooth.tsv"
+            coord_cmds.append([py, str(PKG / "coord_smooth.py"), "--distill", str(b.distill), "--coord", str(coord_for_layout), "--out", str(smoothed),
+                               "--L", str(float(a.layout_coord_circular or 0.0)), "--lam", str(a.layout_coord_smooth), "--gap-min", str(a.layout_coord_gap_min)])
+            coord_for_layout = smoothed
     st["layout"] = Stage(
         "layout",
         coord_cmds + [[py, str(PKG / "layout.py"),
@@ -481,7 +487,7 @@ def build_stages(b: Bundle, a) -> dict:
             if a.layout_edge_len != "off" else [])
          + (["--path-only", "--path-term", a.layout_path_term, "--path-pairs", str(a.layout_path_pairs)]
             if a.layout_path_only else [])
-         + (["--node-coord", str(coord_for_layout), "--coord-circular", str(a.layout_coord_circular)]
+         + (["--node-coord", str(coord_for_layout), "--coord-circular", str(a.layout_coord_circular), "--coord-gap-min", str(a.layout_coord_gap_min)]
             if a.layout_node_coord else [])],
         inputs=[b.distill] + ([Path(a.layout_node_coord)] if a.layout_node_coord else []) + ([b.collapse_sidecar] if (a.layout_node_coord and a.gfa and collapsing) else []),
         outputs=[b.npz],
@@ -880,6 +886,10 @@ def add_common(p, need_gfa=False):
                    help="ノードの座位座標 TSV（locusfold → nodecoord_compact）。ピボット距離と辺の目標長を座位差にする（他の項は従来どおり）")
     p.add_argument("--layout-coord-circular", type=float, default=0.0,
                    help="座位座標が環状なら参照の長さ（bp）")
+    p.add_argument("--layout-coord-smooth", type=float, default=1.0,
+                   help="座位座標をレイアウトするグラフの隣接と整合させる平滑化の辺重み λ（0 で無効。既定 1: 精密なノードは動かず雑音ノードだけ隣へ寄る。大きくすると欠失域が圧縮され波打つ）")
+    p.add_argument("--layout-coord-gap-min", type=float, default=20000.0,
+                   help="座位座標の接合部判定の最小隙間（bp）。これと 2u の大きい方を超える隙間の辺だけ座位差を目標長にする")
     p.add_argument("--layout-init", choices=["pmds", "path", "random"], default="pmds",
                    help="レイアウトの初期配置（既定 pmds。path=パス内位置で 1 次元に並べる）")
     p.add_argument("--ribbon-disk", action="store_true",

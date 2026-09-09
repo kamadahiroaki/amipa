@@ -1115,7 +1115,7 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                      converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
                      anneal_epochs=0, converge_rel=0.0, converge_window=10,
                      path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None,
-                     EL=None, ball_edge_max=4.0, path_only=False, node_coord=None, coord_L=0.0, coord_scale=1.0, node_len=None, node_unc=None, coord_gap_min=20000.0, coord_pivots_only=True):
+                     EL=None, ball_edge_max=4.0, path_only=False, node_coord=None, coord_L=0.0, coord_scale=1.0, node_len=None, node_unc=None, coord_gap_min=20000.0, coord_pivots_only=True, eta_max=None):
     """1連結成分をレイアウトし、PCA で長軸=x に整える局所座標 [subn,2] を返す。
     numba_min: **廃止**(引数は後方互換で残すが無視)。njit は cache=True で JIT はプロセス跨ぎに
     キャッシュされるため降格の利得が無い一方、この閾値は「エンジン選択」の顔をして **球 pivot の
@@ -1264,7 +1264,7 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                        min_nodes=ball_min_nodes, kpct=ball_kpct, seed=seed,
                        log_prefix="  ") if (eng == "numba" and not path_only) else None
     short = build_short(A_loc, subn, short_h, short_cap, log_prefix="  ") if (short_h >= 2 and not path_only) else None
-    X = sgd_layout(subn, sei, sej, piv, D, epochs=epochs, seed=seed, engine=eng, x_init=x0,
+    X = sgd_layout(subn, sei, sej, piv, D, epochs=epochs, seed=seed, engine=eng, x_init=x0, eta_max=(eta_max if (eta_max and eta_max > 0) else None),
                    ball=ball, ball_tau=ball_tau, short=short, A=A,
                    repel=repel, repel_strength=repel_strength,
                    repel_anneal=repel_anneal, repel_cap=repel_cap,
@@ -1310,6 +1310,9 @@ def main():
                          "最大成分が大きいグラフ（稀エッジで全染色体が連結した場合など）で使う。")
     ap.add_argument("--pivot-floor", type=int, default=32,
                     help="メモリ予算で縛るときの pivots 下限（既定 32）")
+    ap.add_argument("--eta-max", type=float, default=0.0,
+                    help="SGD の初期学習率の上限（0 = 既定の dmax²）。座位座標では dmax が 10⁵ ホップ級になり dmax²=10¹¹ から始めると、"
+                         "ピボットのスナップ領域に epoch の大半が費やされ辺・短距離項が収束しない（ecoli T1n: 目標長 1 の辺 25,000 本が 100 超に伸びた）")
     ap.add_argument("--epochs", type=int, default=30,
                     help="アニールの地平かつ上限。eta と斥力の減衰は ep/epochs で決まるので、"
                          "この値を変えると 1 epoch あたりの進み方も変わる（単に長く回すのではない）")
@@ -1547,7 +1550,7 @@ def main():
 
     # レイアウト本体(BFS+SGD)は成分ごとに完全独立 → プロセス並列で品質厳密に不変。
     # engine=numba は成分内をスレッド並列するので、単一巨大成分(chr22/WG)では jobs=1+numba が本命。
-    bkw = dict(ball_edge_max=args.edge_len_ball_max,
+    bkw = dict(eta_max=args.eta_max, ball_edge_max=args.edge_len_ball_max,
                ball_coverage=args.ball_coverage, ball_rfrac=args.ball_rfrac,
                ball_coveff=args.ball_coveff, ball_min_nodes=args.ball_min_nodes,
                ball_tau=args.ball_taper, ball_kpct=args.ball_kpct,
