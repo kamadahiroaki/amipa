@@ -1110,7 +1110,7 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
                      converge_eps=0.0, converge_patience=3, converge_min_frac=0.25,
                      anneal_epochs=0, converge_rel=0.0, converge_window=10,
                      path=None, path_mode='hop', path_pairs=0, path_scale=1.0, g2l=None,
-                     EL=None, ball_edge_max=4.0, path_only=False, node_coord=None, coord_L=0.0, coord_scale=1.0, node_len=None):
+                     EL=None, ball_edge_max=4.0, path_only=False, node_coord=None, coord_L=0.0, coord_scale=1.0, node_len=None, node_unc=None, coord_gap_min=20000.0):
     """1連結成分をレイアウトし、PCA で長軸=x に整える局所座標 [subn,2] を返す。
     numba_min: **廃止**(引数は後方互換で残すが無視)。njit は cache=True で JIT はプロセス跨ぎに
     キャッシュされるため降格の利得が無い一方、この閾値は「エンジン選択」の顔をして **球 pivot の
@@ -1149,9 +1149,17 @@ def layout_component(subn, sei, sej, pivots, epochs, seed, engine="numpy", numba
         dc = np.abs(node_coord[sej[both]] - node_coord[sei[both]])
         if coord_L > 0: dc = np.minimum(dc, coord_L - dc)
         if node_len is not None:
-            # 座標はノード先頭のパス上位置なので、隣接する 2 ノードでも |Δc| ≈ 上流ノードの長さ。長い方のノード長を差し引く
-            dc = np.maximum(0.0, dc - np.maximum(node_len[sei[both]], node_len[sej[both]]).astype(np.float64))
-        ELc = np.ones(sei.size, np.float64); ELc[both] = np.maximum(1.0, dc / max(coord_scale, 1e-9))
+            # 座標はノードの座位区間の中心なので、隣接する 2 ノードの中点差 ≈ 両ノード長の平均。それを差し引くと隙間になる（向きに依存しない）
+            dc = np.maximum(0.0, dc - 0.5 * (node_len[sei[both]] + node_len[sej[both]]).astype(np.float64))
+        # ★隙間はクラスタ幅（座標の不確かさ u、数 kb）ぶんの雑音を含み、ホップ（数十〜百 bp）より粗い。隣接は座標より正確な拘束なので、
+        #   隙間が不確かさを超える辺（本物の接合部・欠失）だけ座位差を目標長にし、他は 1 のまま。座標はピボット（大域）の物差しとして使う。
+        tol = np.full(int(both.sum()), float(coord_gap_min))
+        if node_unc is not None:
+            tol = np.maximum(tol, 2.0 * np.maximum(node_unc[sei[both]], node_unc[sej[both]]))
+        junction = dc > tol
+        ELc = np.ones(sei.size, np.float64); idx_b = np.flatnonzero(both)
+        ELc[idx_b[junction]] = np.maximum(1.0, dc[junction] / max(coord_scale, 1e-9))
+        log(f"  座位座標: 接合部の辺（隙間 > 不確かさ）{int(junction.sum()):,} / {int(both.sum()):,}")
         if EL is None: EL = ELc
         else: EL = np.maximum(EL, ELc)
         log(f"  座位座標: {int(has_c.sum()):,}/{subn:,} ノードに座標、辺 {int(both.sum()):,}/{sei.size:,} に座位差の目標長"
@@ -1358,10 +1366,12 @@ def main():
     ap.add_argument("--threads", type=int, default=0,
                     help="numba engine のスレッド数(0=既定=全コア)")
     ap.add_argument("--node-coord", default=None, metavar="TSV",
-                    help="★ノードの座位座標（locusfold の出力。列 id, coord[, u]）。与えると、ピボット距離と辺の目標長を座位差（bp をホップ換算）にし、"
+                    help="★ノードの座位座標（locusfold2 の出力。列 id, coord[, u]。coord はノードの座位区間の中心）。与えると、ピボット距離と辺の目標長を座位差（bp をホップ換算）にし、"
                          "グラフ最短路の短絡（稀な接合部の辺）に頼らない。座標の無いノードは従来のホップ距離。他の項（pmds・辺・短距離・球・斥力）はそのまま")
     ap.add_argument("--coord-circular", type=float, default=0.0, metavar="L",
                     help="座位座標が環状（長さ L bp）なら周回距離 min(d, L-d) を使う")
+    ap.add_argument("--coord-gap-min", type=float, default=20000.0, metavar="BP",
+                    help="隣接ノードの座位の隙間がこの値（と 2u の大きい方）を超える辺だけ座位差の目標長にする（既定 20 kb = ビン幅の上限）。他の辺は 1")
     ap.add_argument("--coord-scale", type=float, default=0.0, metavar="BP",
                     help="座位差をホップに換算する bp/hop（0=自動: 全パスの bp / 全ステップ）")
     ap.add_argument("--init", choices=["random", "pmds", "path"], default="pmds",
@@ -1454,15 +1464,19 @@ def main():
             log(f"path 項: mode={args.path_term} pairs/epoch={args.path_pairs:,} "
                 f"1 ステップ平均 {path_scale:.2f} bp")
 
-    coord_all = None; coord_scale = 1.0; len_all = None
+    coord_all = None; coord_scale = 1.0; len_all = None; unc_all = None
     if args.node_coord:
         M_ = int(ids.max()); id2row = np.full(M_ + 1, -1, np.int64); id2row[ids] = np.arange(n)
-        coord_all = np.full(n, np.nan)
+        coord_all = np.full(n, np.nan); unc_all = np.full(n, np.nan)
         with open(args.node_coord) as fc:
             hdr_ = fc.readline().rstrip("\n").split("\t"); ic_ = hdr_.index("coord") if "coord" in hdr_ else 1
+            iu_ = hdr_.index("u") if "u" in hdr_ else -1
             for ln in fc:
                 p_ = ln.split("\t"); k_ = int(p_[0])
-                if 0 <= k_ <= M_ and id2row[k_] >= 0: coord_all[id2row[k_]] = float(p_[ic_])
+                if 0 <= k_ <= M_ and id2row[k_] >= 0:
+                    coord_all[id2row[k_]] = float(p_[ic_])
+                    if iu_ >= 0: unc_all[id2row[k_]] = float(p_[iu_])
+        if iu_ < 0: unc_all = None
         if args.coord_scale > 0: coord_scale = args.coord_scale
         elif pathdat is not None and pathdat[0].size: coord_scale = float(pathdat[2][-1]) / pathdat[0].size
         else:
@@ -1510,6 +1524,7 @@ def main():
     task_EL = []                                  # --edge-len 用（成分ごとの辺の目標長）
     task_C = []                                   # --node-coord 用（成分ごとの座位座標）
     task_Ln = []                                  # 同、ノード長
+    task_U = []                                   # 同、座標の不確かさ u
     for ci in major_comps:
         idx = np.where(lab == ci)[0]
         subn = len(idx)
@@ -1520,6 +1535,7 @@ def main():
         task_EL.append(EL_all[em] if EL_all is not None else None)
         task_C.append(coord_all[idx] if coord_all is not None else None)
         task_Ln.append(len_all[idx] if len_all is not None else None)
+        task_U.append(unc_all[idx] if unc_all is not None else None)
         log(f"  major comp {ci}: nodes={subn:,} edges={int(em.sum()):,}")
 
     # レイアウト本体(BFS+SGD)は成分ごとに完全独立 → プロセス並列で品質厳密に不変。
@@ -1545,8 +1561,8 @@ def main():
                               path_mode=args.path_term,
                               path_pairs=(args.path_pairs if (pathdat is not None and args.path_term != 'off') else 0),
                               path_scale=path_scale, g2l=gl, EL=el, path_only=args.path_only,
-                              node_coord=cc, coord_L=args.coord_circular, coord_scale=coord_scale, node_len=ln_, **bkw)
-                    for (_, _, subn, sei, sej), gl, el, cc, ln_ in zip(tasks, task_g2l, task_EL, task_C, task_Ln)]
+                              node_coord=cc, coord_L=args.coord_circular, coord_scale=coord_scale, node_len=ln_, node_unc=uu_, coord_gap_min=args.coord_gap_min, **bkw)
+                    for (_, _, subn, sei, sej), gl, el, cc, ln_, uu_ in zip(tasks, task_g2l, task_EL, task_C, task_Ln, task_U)]
             results = [f.result() for f in futs]
     else:
         results = [layout_component(subn, sei, sej,
@@ -1555,8 +1571,8 @@ def main():
                                     path_mode=args.path_term,
                                     path_pairs=(args.path_pairs if (pathdat is not None and args.path_term != 'off') else 0),
                                     path_scale=path_scale, g2l=gl, EL=el, path_only=args.path_only,
-                                    node_coord=cc, coord_L=args.coord_circular, coord_scale=coord_scale, node_len=ln_, **bkw)
-                   for (_, _, subn, sei, sej), gl, el, cc, ln_ in zip(tasks, task_g2l, task_EL, task_C, task_Ln)]
+                                    node_coord=cc, coord_L=args.coord_circular, coord_scale=coord_scale, node_len=ln_, node_unc=uu_, coord_gap_min=args.coord_gap_min, **bkw)
+                   for (_, _, subn, sei, sej), gl, el, cc, ln_, uu_ in zip(tasks, task_g2l, task_EL, task_C, task_Ln, task_U)]
 
     # ---- 配置: サイズ順 shelf packing で目標アスペクト R(既定16:9)へ詰める ----
     #   横一列(帯状)をやめ、各成分/デブリ塊を1つの箱として大きい順に行折り返し。画面を面で使う。

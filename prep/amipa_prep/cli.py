@@ -456,9 +456,17 @@ def build_stages(b: Bundle, a) -> dict:
     )
 
     # ③ レイアウト: topology-only SGD ＋ PivotMDS 初期化。真の多並列。
+    coord_for_layout = None; coord_cmds = []
+    if a.layout_node_coord:
+        if a.gfa and collapsing:
+            # ★畳み込みでノード id が変わるので、座標を <db>.collapse の orig_node で畳み込みノードへ写す（代表配列の先頭の構成ノードの座標）
+            coord_for_layout = b.work / "coord_collapsed.tsv"
+            coord_cmds = [[py, str(PKG / "collapse_coord.py"), str(b.collapse_sidecar), str(a.layout_node_coord), str(coord_for_layout)]]
+        else:
+            coord_for_layout = Path(a.layout_node_coord)
     st["layout"] = Stage(
         "layout",
-        [[py, str(PKG / "layout.py"),
+        coord_cmds + [[py, str(PKG / "layout.py"),
           "--distill", str(b.distill), "--out", str(b.npz_prefix),
           "--init", a.layout_init, "--epochs", str(a.epochs), "--seed", str(a.seed),
           "--min-comp", str(a.min_comp), "--pivots", str(a.pivots),
@@ -468,9 +476,9 @@ def build_stages(b: Bundle, a) -> dict:
             if a.layout_edge_len != "off" else [])
          + (["--path-only", "--path-term", a.layout_path_term, "--path-pairs", str(a.layout_path_pairs)]
             if a.layout_path_only else [])
-         + (["--node-coord", str(a.layout_node_coord), "--coord-circular", str(a.layout_coord_circular)]
+         + (["--node-coord", str(coord_for_layout), "--coord-circular", str(a.layout_coord_circular)]
             if a.layout_node_coord else [])],
-        inputs=[b.distill] + ([Path(a.layout_node_coord)] if a.layout_node_coord else []),
+        inputs=[b.distill] + ([Path(a.layout_node_coord)] if a.layout_node_coord else []) + ([b.collapse_sidecar] if (a.layout_node_coord and a.gfa and collapsing) else []),
         outputs=[b.npz],
         env={**thread_env(threads), "NUMBA_NUM_THREADS": str(threads), "MPLBACKEND": "Agg"},
         # メモリ予算は「その機械で使える量」であって出力は変えない → 鍵から外す
