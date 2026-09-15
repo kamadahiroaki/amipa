@@ -11,6 +11,7 @@ import { sessionRouter } from './routes/session'
 import { bubbleMsaRouter } from './routes/bubbleMsa'
 import { exportRouter } from './routes/exportData'
 import { renderRouter } from './routes/render'
+import { blocksRouter } from './routes/blocks'
 import { initWorkerPool } from './workerPool'
 import { prewarmAtStartup } from './prewarm'
 import { getDbDir } from './db'
@@ -146,6 +147,7 @@ app.use('/api', sessionRouter)
 app.use('/api', bubbleMsaRouter)
 app.use('/api', exportRouter)
 app.use('/api', renderRouter)
+app.use('/api', blocksRouter)
 
 // Serve built frontend in production
 const frontendDist = path.join(__dirname, '../../frontend/dist')

@@ -768,3 +768,23 @@ export async function fetchBubbleMsa(
   if (!res.ok) return { error: 'request failed (' + res.status + ')' }
   return res.json()
 }
+
+// ── 多解像度 MSA（共線ブロック）: backend /api/blocks はサイドカー JSON（functions/msa_lod/70_hier_build.py）をそのまま返す。
+//    中身の型は閲覧側（components/blockMsaRender.ts）で扱うので、ここでは opaque に受ける。
+export interface BlocksData { meta: any; windows: any[]; tree?: any; error?: string }
+export async function fetchBlocks(dbFile: string): Promise<BlocksData> {
+  const res = await fetch(`/api/blocks?db=${encodeURIComponent(dbFile)}`)
+  if (!res.ok) return { meta: null, windows: [], error: 'request failed (' + res.status + ')' }
+  return res.json()
+}
+export async function fetchBlocksHas(dbFile: string): Promise<boolean> {
+  try { const r = await fetch(`/api/blocks/has?db=${encodeURIComponent(dbFile)}`); const j = await r.json(); return !!j.has } catch { return false }
+}
+// ブロック（参照区間）に重なる、表示層のノード名。グラフの強調に使う。
+export async function fetchBlockNodes(dbFile: string, layer: number, contig: number, start: number, end: number): Promise<string[]> {
+  const p = new URLSearchParams({ db: dbFile, layer: String(layer), contig: String(contig), start: String(Math.floor(start)), end: String(Math.ceil(end)) })
+  const res = await fetch(`/api/blocks/nodes?${p}`)
+  if (!res.ok) return []
+  const j = await res.json()
+  return Array.isArray(j.names) ? j.names as string[] : []
+}

@@ -4,7 +4,9 @@ import Minimap from './components/Minimap'
 import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, INTRON_COLOR } from './annotColors'
 import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
 import BubbleMsa from './components/BubbleMsa'
-import { fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
+import BlockMsa from './components/BlockMsa'
+import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
+import { fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -931,8 +933,21 @@ export default function App() {
   const [msaNodeSel, setMsaNodeSel] = useState<string[]>([])    // MSA 対象ノード名
   // MSA パネルで hover 中の列のノード群。列=アレル群(排他アレル複数)なので配列で受ける。
   const [msaHover, setMsaHover] = useState<string[] | null>(null)
-  const msaHiSet = useMemo(() => new Set(msaNodeSel), [msaNodeSel])  // グラフ強調用
-  const msaHoverSet = useMemo(() => (msaHover && msaHover.length ? new Set(msaHover) : null), [msaHover])
+  // 多解像度 MSA（共線ブロック）パネル。選択/ホバーしたブロック＝参照区間 → 表示層のノード名に解いてグラフを強調する。
+  const [blkH, setBlkH] = useState(0)                                  // パネル高さ(0=閉)
+  const [blkSel, setBlkSel] = useState<Set<string> | null>(null)       // 選択ブロックのノード群（橙リング）
+  const [blkHov, setBlkHov] = useState<Set<string> | null>(null)       // ホバー中ブロックのノード群（マゼンタ）
+  const blkApiRef = useRef<BlockMsaHandle | null>(null)
+  const blkReq = useRef(0)
+  const resolveBlock = useCallback(async (b: BlockRef | null, set: (v: Set<string> | null) => void) => {
+    const my = ++blkReq.current
+    if (!b || !selectedDb) { set(null); return }
+    const names = await fetchBlockNodes(selectedDb, mapLayer, b.ref_contig, b.x, b.x + b.span)
+    if (my !== blkReq.current) return                                  // 古い問い合わせは捨てる
+    set(names.length ? new Set(names) : null)
+  }, [selectedDb, mapLayer])
+  const msaHiSet = useMemo(() => { const u = new Set(msaNodeSel); if (blkSel) for (const n of blkSel) u.add(n); return u }, [msaNodeSel, blkSel])  // グラフ強調用（bubble MSA の選択 ＋ ブロック）
+  const msaHoverSet = useMemo(() => { if (blkHov && blkHov.size) return blkHov; return (msaHover && msaHover.length ? new Set(msaHover) : null) }, [msaHover, blkHov])
 
   useEffect(() => {
     fetch('/api/databases')
@@ -1878,6 +1893,22 @@ export default function App() {
           >
             MSA
           </button>
+          <button
+            onClick={() => setBlkH(h => (h > 0 ? 0 : 380))}
+            title="多解像度 MSA（共線ブロック）パネル。ブロックを選ぶとグラフ側の該当ノードが光り、グラフでノードを選ぶとそのブロックが選ばれる"
+            style={{
+              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
+              border: '1px solid',
+              borderColor: blkH > 0 ? '#0d9488' : '#adb5bd',
+              borderRadius: 4,
+              background: blkH > 0 ? '#e6f4f1' : '#f8f9fa',
+              color: blkH > 0 ? '#0d9488' : '#495057',
+              cursor: 'pointer',
+              fontWeight: blkH > 0 ? 600 : 400,
+            }}
+          >
+            Blocks
+          </button>
         </div>
       </div>
 
@@ -2200,6 +2231,7 @@ export default function App() {
                   onNodesEdited={g => setPendingEdits(prev => [...prev, g])}
                   onNodeSelect={node => {
                     setSelectedNode(node)
+                    if (blkH > 0 && node && node.ref_bp != null && node.ref_contig_id != null) blkApiRef.current?.selectByRef(node.ref_contig_id, node.ref_bp)
                     // MSA ノード選択モード中はクリックしたノードを MSA 対象集合にトグル追加。
                     if (node && msaPick) {
                       const nm = node.node_name
@@ -2913,6 +2945,18 @@ export default function App() {
             onHoverNode={setMsaHover}
             sampleKeys={[...ribbonSel.keys()]}
             ribbonLevel={ribbonLevel}
+          />
+        </div>
+      )}
+
+      {/* ── Bottom panel 3: 多解像度 MSA（共線ブロック） ─────────────── */}
+      {blkH > 0 && (
+        <div style={{ height: blkH, flexShrink: 0, overflow: 'hidden', borderTop: '1px solid #c8cdd3', background: '#fff' }}>
+          <BlockMsa
+            db={selectedDb}
+            onSelectBlock={b => { void resolveBlock(b, setBlkSel) }}
+            onHoverBlock={b => { void resolveBlock(b, setBlkHov) }}
+            onReady={h => { blkApiRef.current = h; if (!h) { setBlkSel(null); setBlkHov(null) } }}
           />
         </div>
       )}
