@@ -22,6 +22,7 @@ const css = n => getComputedStyle(root).getPropertyValue(n).trim();
 let TH = {}; function readTheme(){ TH = {ink:css('--ink'),muted:css('--muted'),line:css('--line'),line2:css('--line2'),ref:css('--ref'),reflab:css('--reflab'),sel:css('--sel'),selbg:css('--selbg'),hover:css('--hover'),panel:css('--panel'),accent:css('--accent'),tick:css('--tick'),rep:css('--rep'),gap:css('--gap'),inv:css('--inv'),disp:css('--disp'),abs:css('--abs')}; }
 readTheme();
 const RH = 30, MINW = 4, SEP = 2;
+const BUNDLE_FRAC = 0.3;   // 束に入れるのはブロックの典型長のこの割合未満の断片だけ
 const KINDN = {0:'主鎖',2:'変位（同じ向きで別の位置）',3:'逆位',4:'錨なし区間（反復・参照に無い配列・非コア）',5:'閾値未満の小ブロック群'};
 const RAMP = [[68,1,84],[72,36,117],[65,68,135],[53,95,141],[42,120,142],[33,145,140],[34,168,132],[68,191,112],[122,209,81],[189,223,38],[253,231,37]];
 function ramp(t){ t=Math.max(0,Math.min(1,t)); const k=t*(RAMP.length-1), i=Math.min(RAMP.length-2,Math.floor(k)), f=k-i; const a=RAMP[i], b=RAMP[i+1]; return `rgb(${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},${Math.round(a[2]+(b[2]-a[2])*f)})`; }
@@ -131,8 +132,12 @@ function computeLayout(){
     // 束: 1 ブロックに閉じたコンティグが同じブロックに 2 本以上（全体表示のみ）
     const bundled = new Set();
     if (st.bundle){ const byRank = new Map();
-      for (const ct of r.contigs){ const rs = new Set(ct.seq.filter(o=>o.kind<4).map(o=>o.rank)); if (ct.seq.length && rs.size===1){ const rk=[...rs][0]; if (!byRank.has(rk)) byRank.set(rk,[]); byRank.get(rk).push(ct); } }
-      for (const [rk, cts] of byRank){ if (cts.length>=2 && blockX.has(rk)){ cts.forEach(ct=>bundled.add(ct)); const col=blockX.get(rk); r.bundles.push({rank:rk, n:cts.length, bp:cts.reduce((a,ct)=>a+ct.c.bp,0), contigs:cts.map(ct=>ct.c), x:col.x, w:col.w}); } } }
+      // 束の対象は「1 ブロックに閉じていて、そのブロックの典型長の BUNDLE_FRAC 未満の断片」だけ。ブロックの大半を載せている
+      // コンティグ（例: chrY HG00673 の #1 全体 330 kb）は束に入れず普通の矢印で描く。束は drawGrid で重ね矢印として描く
+      for (const ct of r.contigs){ const rs = new Set(ct.seq.filter(o=>o.kind<4).map(o=>o.rank)); if (ct.seq.length && rs.size===1){ const rk=[...rs][0]; const B = L.blocks[rk]; if (B && ct.c.bp >= BUNDLE_FRAC*Math.max(1,B.tbp)) continue; if (!byRank.has(rk)) byRank.set(rk,[]); byRank.get(rk).push(ct); } }
+      for (const [rk, cts] of byRank){ if (cts.length>=2 && blockX.has(rk)){ cts.forEach(ct=>bundled.add(ct)); const col=blockX.get(rk);
+        const dirs = cts.flatMap(ct=>ct.seq.filter(o=>o.kind<4).map(o=>o.dir)); const dir = dirs.filter(d=>d===1).length*2 >= dirs.length ? 1 : 0;
+        r.bundles.push({rank:rk, n:cts.length, dir, bp:cts.reduce((a,ct)=>a+ct.c.bp,0), contigs:cts.map(ct=>ct.c), x:col.x, w:col.w}); } } }
     r.markers = [];
     let ownX = 4; const sOwn = W / Math.max(1, ...rows.map(rw=>rw.contigs.reduce((a,ct)=>a+ct.c.bp,0)));
     for (const ct of r.contigs){
@@ -189,6 +194,8 @@ function computeLayout(){
           if (mx!=null) r.minors.push({x:mx, m, c:ct.c}); } }
       r.items.push(...placed.filter(p=>!p.hidden));
     }
+    if (st.mode==='own'){ for (const b of r.bundles){ b.x = ownX; b.w = Math.max(14, b.bp*sOwn); ownX += b.w + 8; b.lane = 0; } }   // 各行の並び: 束は行の末尾に
+    else { for (const b of r.bundles){ b.lane = r.items.some(p=>p.slot.lane===0 && p.x < b.x+b.w && p.x+p.w > b.x) ? 1 : 0; } }   // 同じ列に全長の矢印があれば束は下段へ
   }
   // 列プロファイル: ブロックごとに ハプロの状態(主鎖/逆位/別位置/持たない(覆っているのに)) と 錨でない bp 割合の中央値
   const prof = new Map();
@@ -256,7 +263,15 @@ function drawGrid(){
       if (o.kind===4 && o.it[4]>1 && p.w>=16){ g.fillStyle=TH.panel; g.font='9.5px "IBM Plex Mono"'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('×'+o.it[4], p.x+p.w/2, yy+hh/2); }
       if (st.sel!=null && o.kind<4 && o.rank===st.sel){ g.strokeStyle = TH.sel; g.lineWidth=2; g.strokeRect(p.x-1, yy-1, p.w+2, hh+2); }
     }
+    // 束: 1 ブロックに閉じた断片コンティグ n 本を、その列に 1 つの重ね矢印（後ろにずらした影 ＋ 本体 ＋ 点線の内枠 ＋ ×n）で描く
+    for (const b of (r.bundles||[])){ const yy = b.lane===1 ? y+17 : y+4, hh = b.lane===1 ? 9 : 12; const col = colorOf(b.rank);
+      g.globalAlpha = .35; arrow(g, b.x+2, yy-2, b.w, hh, b.dir, col, false, false); g.globalAlpha = 1;
+      arrow(g, b.x, yy, b.w, hh, b.dir, col, false, false);
+      g.save(); g.setLineDash([2,2]); g.strokeStyle = TH.panel; g.lineWidth = 1; g.strokeRect(b.x+1.5, yy+1.5, Math.max(1,b.w-3), hh-3); g.restore();
+      if (b.w>=16){ g.fillStyle=TH.ink; g.font='9.5px "IBM Plex Mono"'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('×'+b.n, b.x+b.w/2, yy+hh/2); }
+      if (st.sel!=null && b.rank===st.sel){ g.strokeStyle = TH.sel; g.lineWidth=2; g.strokeRect(b.x-1, yy-1, b.w+2, hh+2); } }
   });
+  if (st.hover && st.hover.b){ const b = st.hover.b; g.strokeStyle = TH.sel; g.lineWidth=1.5; g.strokeRect(b.x-1.5, st.hover.ri*RH + (b.lane===1?15.5:2.5), b.w+3, b.lane===1?12:15); }
   if (st.hover && st.hover.p){ const p = st.hover.p; const lane = (st.mode==='own') ? 0 : p.slot.lane; g.strokeStyle = TH.sel; g.lineWidth=1.5; g.strokeRect(p.x-1.5, st.hover.ri*RH + (lane===0?2.5:15.5), p.w+3, lane===0?15:12); }
 }
 function drawHeader(){
@@ -344,7 +359,7 @@ function showItem(h){
       const nm = x => x.kind>=4 ? (x.kind===4?'錨なし':'小群') : (x.items.length>1 ? `#${x.items[0].o.rank+1}${x.dir?'→':'←'}…#${x.items[x.items.length-1].o.rank+1}` : `#${x.r0+1}${x.dir?'→':'←'}`);
       html += `<p><span class="k">この行の通過順:</span> ${i>0?esc(nm(segs[i-1]))+' → ':''}<b>${esc(nm(sg))}</b>${i+1<segs.length?' → '+esc(nm(segs[i+1])):''}<br><span class="k">区間 ${sg.items.length} ブロック · ${fmtbp(sg.items.reduce((a,p)=>a+p.o.it[2],0))}</span></p>`; }
     if (o.kind<4) html += breakdown(o.rank);
-  } else if (h.b){ html += `<p>ブロック #${h.b.rank+1} に閉じたコンティグ ${h.b.n} 本 · 合計 ${fmtbp(h.b.bp)}</p><ul>` + h.b.contigs.map(c=>`<li>${esc(c.name)} ${fmtbp(c.bp)} ${c.strand}</li>`).join('') + '</ul>'; }
+  } else if (h.b){ const B = L.blocks[h.b.rank]; html += `<p>ブロック #${h.b.rank+1} <span class="k">${esc(B.name)}</span><br>束: このブロックに閉じた断片コンティグ ${h.b.n} 本 · 合計 ${fmtbp(h.b.bp)} (典型長 ${fmtbp(B.tbp)} の ${(100*h.b.bp/Math.max(1,B.tbp)).toFixed(0)}%)<br><span class="k">典型長の ${Math.round(BUNDLE_FRAC*100)}% 以上を載せるコンティグは束に入れず矢印で描く</span></p><ul>` + h.b.contigs.map(c=>`<li>${esc(c.name)} ${fmtbp(c.bp)} ${c.strand} · ${c.nsteps.toLocaleString()} 歩</li>`).join('') + '</ul>' + breakdown(h.b.rank); }
   else if (h.mk){ const it = h.mk.o.it; html += `<p>${KINDN[h.mk.o.kind]}<br>${fmtbp(it[2])} · ${it[3].toLocaleString()} 葉歩${h.mk.o.kind===4&&it[4]>1?' · 最大再訪 ×'+it[4]:''}${h.mk.o.kind===5?' · 小ブロック '+it[7]+' 個':''}<br><span class="k">主なノード ${esc(it[10])} (${fmtbp(it[11])}) · 歩 ${it[8]}–${it[9]} · 近傍ブロック #${h.mk.o.rank+1}</span><br><span class="k">${esc(h.mk.ct.c.name)}</span></p>`; }
   else if (h.m){ html += `<p>小要素 ${fmtbp(h.m.m[1])} <span class="k">主なノード ${esc(h.m.m[2])} (${fmtbp(h.m.m[3])}) · 歩 ${h.m.m[4]}–${h.m.m[5]}</span></p>`; }
   else { html += '<ul>' + r.contigs.map(ct=>`<li>${esc(ct.c.name)} ${fmtbp(ct.c.bp)} ${ct.c.strand} · ${ct.c.nsteps.toLocaleString()} 歩</li>`).join('') + '</ul>'; }
@@ -368,14 +383,16 @@ function showBranch(node){ const T = DATA.tree; const L = level(); const ev = (L
 // ---- 操作 ----
 function hit(x,y){ const ri = Math.floor(y/RH); if (ri<0||ri>=LY.rows.length) return null; const r = LY.rows[ri]; const ly = y-ri*RH;
   for (const p of r.items){ const lane = (st.mode==='own') ? 0 : p.slot.lane; const y0 = lane===0?3:16, y1 = lane===0?17:27; if (x>=p.x-1 && x<=p.x+p.w+1 && ly>=y0 && ly<=y1) return {ri,p}; }
+  for (const b of (r.bundles||[])){ const y0 = b.lane===1?16:3, y1 = b.lane===1?27:17; if (x>=b.x-1 && x<=b.x+b.w+1 && ly>=y0 && ly<=y1) return {ri, b}; }
   return {ri}; }
 const grid = cv.grid;
 grid.addEventListener('mousemove', e=>{ const rect = grid.getBoundingClientRect(); const h = hit(e.clientX-rect.left, e.clientY-rect.top); st.hover = h; drawGrid(); drawLabels(); if (!st.pinned) showItem(h);
-  emitHover(h && h.p && h.p.o.kind<4 ? h.p.o.rank : null); });
+  emitHover(h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null)); });
 grid.addEventListener('mouseleave', ()=>{ st.hover=null; drawGrid(); drawLabels(); emitHover(null); });
 grid.addEventListener('click', e=>{ const rect = grid.getBoundingClientRect(); const h = hit(e.clientX-rect.left, e.clientY-rect.top);
   if (h && h.p && h.p.o.kind<4){ st.sel = (st.sel===h.p.o.rank) ? null : h.p.o.rank; st.pinned = st.sel!=null; if (st.sel!=null) showItem(h); drawAll(); emitSel(); }
-  else if (h && (h.b||h.m)){ st.pinned = true; showItem(h); }
+  else if (h && h.b){ st.sel = (st.sel===h.b.rank) ? null : h.b.rank; st.pinned = st.sel!=null; if (st.sel!=null) showItem(h); drawAll(); emitSel(); }   // 束もブロックの選択として扱う
+  else if (h && h.m){ st.pinned = true; showItem(h); }
   else { st.pinned = false; st.sel = null; drawAll(); emitSel(); } });
 cv.hdr.addEventListener('click', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = (st.sel===c.rank)?null:c.rank; st.pinned = st.sel!=null; if (st.sel!=null) showBlock(c.rank); drawAll(); emitSel(); return; } } });
 cv.hdr.addEventListener('mousemove', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (x>=c.x && x<=c.x+c.w){ if (!st.pinned) showBlock(c.rank); emitHover(c.rank); return; } } emitHover(null); });
