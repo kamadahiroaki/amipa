@@ -278,6 +278,15 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         encl = np.where(ff >= 0, col2blk[np.maximum(ff, 0)], 0)
         # 各ブロックの原子区間数（細分できるか）
         atoms_in = np.bincount(bid, minlength=nb)
+        # ブロック内の合意座標: そのブロックの錨列（合意順）に沿った累積錨 bp。colx でなく錨 bp の累積にするのは、複製反復の列が
+        # 根の合意座標では遠方に置かれて座標が跳ぶため。blkrank[col]=ブロック内の錨の順位、cpos255[col]=0..255 の位置、
+        # bcols[b]=ブロック b の錨列、bstart[b]=各錨の開始 bp、btot[b]=錨 bp の合計
+        blkrank = np.full(nc, -1, np.int64); cpos255 = np.zeros(nc, np.float64); bcols = []; bstart = []; btot = np.zeros(nb, np.int64)
+        for b in range(nb):
+            cb = np.flatnonzero(col2blk == b); bcols.append(cb)
+            if cb.size == 0: bstart.append(np.zeros(0, np.int64)); continue
+            st_ = np.cumsum(colbp[cb]) - colbp[cb]; bstart.append(st_); btot[b] = int(colbp[cb].sum())
+            blkrank[cb] = np.arange(cb.size); cpos255[cb] = st_ / max(1, btot[b]) * 255
         inst_bp = [[] for _ in range(nb)]; hap_out = []; child_ranges = {b: [] for b in range(nb)}; adj_by_name = {}
         if record is not None and W not in record:
             continue                       # 梯子の途中（錨の削減だけ進める）
@@ -339,8 +348,32 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
                     mono = 1
                     if ar.size > 1:
                         dd_ = np.diff(ar.astype(np.int64)); mono = 1 if ((dd_ >= 0).all() or (dd_ <= 0).all()) else 0
+                    # ---- ブロック内の差異（合意座標モードの描画用）----
+                    # このインスタンスが持つブロック t の錨 → 欠けている錨の連続区間（dels: [c0,c1] 0..255, bp）、覆う範囲（ext）、
+                    # 少数派サイトと挿入（gaps）の合意座標での位置、コンティグの端で切れているか（trunc: 1=先頭 2=末尾）
+                    cc = cols_[s0:e0]; ist = tk == t; pcol = cc[ist]                         # 持っている錨の列
+                    rk_ = blkrank[pcol]; K_t = int(bcols[t].size); dels = []; ext = [0, 255]
+                    if K_t > 0 and rk_.size:
+                        pres = np.zeros(K_t, bool); pres[rk_[rk_ >= 0]] = True
+                        miss = (~pres).view(np.int8); e_ = np.diff(np.concatenate(([0], miss, [0])))
+                        ms_ = np.flatnonzero(e_ == 1); me_ = np.flatnonzero(e_ == -1)
+                        if ms_.size:
+                            bs_ = bstart[t][ms_]; be_ = bstart[t][me_ - 1] + colbp[bcols[t][me_ - 1]]; rbp_ = be_ - bs_
+                            keep_ = np.flatnonzero(rbp_ >= max(200, 0.01 * btot[t]))
+                            keep_ = keep_[np.argsort(-rbp_[keep_])][:32]; keep_ = np.sort(keep_)
+                            dels = [[int(bs_[q] / max(1, btot[t]) * 255), int(min(255, math.ceil(be_[q] / max(1, btot[t]) * 255))), int(rbp_[q])] for q in keep_.tolist()]
+                        pr_ = np.flatnonzero(pres); ext = [int(cpos255[bcols[t][pr_[0]]]), int(min(255, math.ceil((bstart[t][pr_[-1]] + colbp[bcols[t][pr_[-1]]]) / max(1, btot[t]) * 255)))]
+                    # 直前の錨の合意座標（前方埋め）。少数派サイト・挿入の位置に使う
+                    posf = np.where(ist, cpos255[cc], np.nan)
+                    if ist.any():
+                        idx_ = np.where(ist, np.arange(cc.size), 0); idx_ = np.maximum.accumulate(idx_); posf = cpos255[cc[idx_]]; posf[:int(np.argmax(ist))] = cpos255[cc[int(np.argmax(ist))]]
+                    else: posf = np.zeros(cc.size)
+                    cvs = np.unique(posf[starts_v].astype(np.uint8)) if starts_v.size else np.zeros(0, np.uint8)
+                    cvs_b64 = base64.b64encode(cvs.tobytes()).decode() if cvs.size else ""
+                    for gi_, q in enumerate(bigg.tolist()): gaps[gi_].append(int(posf[st_all[q]]))
+                    trunc = (1 if off + s0 == 0 else 0) | (2 if off + e0 == len(ctx.seqs[pi][0]) else 0)
                     inst.append([t, d, sb_, int(ns[s0:e0].sum()), 1, 0, int(cum[s0]), int((bstep[s0:e0] == t).sum()),
-                                 s0 + off, e0 + off, abp, nvar, vs, maxgap, gaps, npriv, mono])
+                                 s0 + off, e0 + off, abp, nvar, vs, maxgap, gaps, npriv, mono, trunc, dels, cvs_b64, ext])
                     inst_bp[t].append(sb_); child_ranges[t].append((pi, s0 + off, e0 + off))
                     prev = e0
                 if prev < n: emit_gap(prev, n)

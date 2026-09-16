@@ -27,6 +27,7 @@ const KINDN = {0:'主鎖',2:'変位（同じ向きで別の位置）',3:'逆位'
 const RAMP = [[68,1,84],[72,36,117],[65,68,135],[53,95,141],[42,120,142],[33,145,140],[34,168,132],[68,191,112],[122,209,81],[189,223,38],[253,231,37]];
 function ramp(t){ t=Math.max(0,Math.min(1,t)); const k=t*(RAMP.length-1), i=Math.min(RAMP.length-2,Math.floor(k)), f=k-i; const a=RAMP[i], b=RAMP[i+1]; return `rgb(${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},${Math.round(a[2]+(b[2]-a[2])*f)})`; }
 function varSites(it){ if (it._vs) return it._vs; if (!it[12]) return (it._vs = new Uint8Array(0)); const b = atob(it[12]); const u8 = new Uint8Array(b.length); for (let i=0;i<b.length;i++) u8[i]=b.charCodeAt(i); it._vs = u8; return it._vs; }
+function consSites(it){ if (it._cvs) return it._cvs; if (!it[19]) return (it._cvs = new Uint8Array(0)); const b = atob(it[19]); const u8 = new Uint8Array(b.length); for (let i=0;i<b.length;i++) u8[i]=b.charCodeAt(i); it._cvs = u8; return it._cvs; }
 function measureOf(it){ if (!(it.length>11) || it[2]<=0) return null; if (st.measure==='minor') return it[11]/it[2]*1000; if (st.measure==='priv') return (it[15]||0)/it[2]*1000; return 1 - it[10]/it[2]; }
 const _stats = new Map();
 function densStats(){ const key = st.li+'|'+st.measure; if (_stats.has(key)) return _stats.get(key); const L = level(); const all = []; const byBlock = new Map(), byHap = new Map();
@@ -139,11 +140,16 @@ function computeLayout(){
         const dirs = cts.flatMap(ct=>ct.seq.filter(o=>o.kind<4).map(o=>o.dir)); const dir = dirs.filter(d=>d===1).length*2 >= dirs.length ? 1 : 0;
         r.bundles.push({rank:rk, n:cts.length, dir, bp:cts.reduce((a,ct)=>a+ct.c.bp,0), contigs:cts.map(ct=>ct.c), x:col.x, w:col.w}); } } }
     r.markers = [];
+    // 合意座標モード: 主鎖（上段）のブロック矢印は通過長でなく列の幅いっぱいに描き、中に欠け・挿入・変異を合意座標で描く
+    // （drawGrid）。同じブロックを同じ行で複数回通る（再訪）ときは列を等分する
+    const cnt0 = new Map();
+    for (const ct of r.contigs){ if (bundled.has(ct)) continue; for (const {o, slot} of ct.items){ if (o.kind<4 && slot.lane===0) cnt0.set(o.rank, (cnt0.get(o.rank)||0)+1); } }
     let ownX = 4; const sOwn = W / Math.max(1, ...rows.map(rw=>rw.contigs.reduce((a,ct)=>a+ct.c.bp,0)));
     for (const ct of r.contigs){
       if (bundled.has(ct)) continue; const placed=[];
       for (const {o, slot} of ct.items){
-        let px, pw; const bpw = Math.max(MINW, o.it[2]*(st.mode==='own'?sOwn:s));
+        let px, pw; const colw0 = (st.mode!=='own' && o.kind<4 && slot.lane===0) ? blockX.get(vis[slot.pos]).w / (cnt0.get(o.rank)||1) : null;
+        const bpw = colw0!=null ? Math.max(MINW, colw0) : Math.max(MINW, o.it[2]*(st.mode==='own'?sOwn:s));
         if (st.mode==='own'){ px = ownX; pw = bpw; ownX += bpw + 1; }
         else { const col = blockX.get(vis[slot.pos]); pw = Math.min(col.w, bpw);
           if (slot.lane===0){ // 同じブロックが錨なし区間や小群で分断されて複数インスタンスになったら、列の中で左から順に置く（重ねない）
@@ -240,17 +246,28 @@ function drawGrid(){
     const laneOf = p => (st.mode==='own') ? 0 : p.slot.lane; const yTop = l => l===0 ? y+4 : y+17; const hOf = l => l===0 ? 12 : 9;
     for (const p of r.items){ const o = p.o; const lane = laneOf(p); const yy = yTop(lane), hh = hOf(lane);
       const inSeg = p.seg && p.seg.items.length>1 && o.kind<4;
+      const cons = st.mode!=='own' && o.kind<4 && o.it.length>20 && p.w>=6;     // 合意座標モード: ブロック内の差異を合意座標で描く
+      const inner0 = Math.max(1, p.w-2); const XC = c => p.x+1+Math.max(0,Math.min(255,c))/255*inner0;
       if (o.kind===5) arrow(g, p.x, yy, p.w, hh, o.dir, null, false, true);
       else if (inSeg){ arrow(g, p.x, yy, p.w, hh, o.dir, colorOf(o.rank), false, false); }   // 区間の一部: 通過順に並べた各ブロックの矢印
       else arrow(g, p.x, yy, p.w, hh, o.dir, o.kind===4 ? TH.rep : colorOf(o.rank), o.kind===4, false);
+      if (cons){
+        // 合意の錨がこの株に無い区間（欠失・分岐・コンティグ断片の外側）: 白く抜いて中央に細い線
+        for (const dl of (o.it[18]||[])){ const x0 = XC(dl[0]), x1 = Math.max(XC(dl[1]), x0+1.5); g.fillStyle = TH.panel; g.fillRect(x0, yy, x1-x0, hh); g.fillStyle = TH.ink; g.globalAlpha=.45; g.fillRect(x0, yy+hh/2-.5, x1-x0, 1); g.globalAlpha=1; }
+        // コンティグの端で切れている側に点線の縁（向きが逆なら左右も逆）
+        if (o.it[17]){ const leftEnd = o.dir ? (o.it[17]&1) : (o.it[17]&2), rightEnd = o.dir ? (o.it[17]&2) : (o.it[17]&1);
+          g.save(); g.setLineDash([2,2]); g.strokeStyle = TH.ink; g.lineWidth = 1.5;
+          if (leftEnd){ g.beginPath(); g.moveTo(p.x+1.5, yy); g.lineTo(p.x+1.5, yy+hh); g.stroke(); }
+          if (rightEnd){ g.beginPath(); g.moveTo(p.x+p.w-1.5, yy); g.lineTo(p.x+p.w-1.5, yy+hh); g.stroke(); } g.restore(); } }
       if (o.kind===3){ g.fillStyle = TH.ink; g.globalAlpha=.7; g.fillRect(p.x, yy+hh+1, p.w, 1.5); g.globalAlpha=1; }
       if (o.kind<4 && o.it.length>16 && o.it[16]===0){ g.save(); g.setLineDash([2,2]); g.strokeStyle = TH.sel; g.lineWidth=1.5; g.beginPath(); g.moveTo(p.x, yy-1.5); g.lineTo(p.x+p.w, yy-1.5); g.stroke(); g.restore(); }
       if (o.kind<4 && o.it.length>14 && o.it[14] && o.it[14].length && p.w>=3){ const y0 = yy + hh*2/3, hv = hh/3; const inner = Math.max(1, p.w - 2);
-        for (const gp of o.it[14]){ const x0 = p.x+1+gp[0]/255*inner, x1 = p.x+1+gp[1]/255*inner; g.save(); g.beginPath(); g.rect(x0, yy, Math.max(2, x1-x0), hh); g.clip();
+        for (const gp of o.it[14]){ const useC = cons && gp.length>3; const wI = Math.max(3, Math.min(12, gp[2]*LY.s));
+          const x0 = useC ? Math.max(p.x+1, Math.min(p.x+p.w-1-wI, XC(gp[3]))) : p.x+1+gp[0]/255*inner, x1 = useC ? x0+wI : p.x+1+gp[1]/255*inner; g.save(); g.beginPath(); g.rect(x0, yy, Math.max(2, x1-x0), hh); g.clip();
           g.fillStyle = TH.panel; g.globalAlpha = .75; g.fillRect(x0, yy, Math.max(2,x1-x0), hh); g.globalAlpha = 1; g.strokeStyle = TH.rep; g.lineWidth = 1; g.beginPath(); for (let t=-hh; t<x1-x0+hh; t+=4){ g.moveTo(x0+t, yy+hh); g.lineTo(x0+t+hh, yy); } g.stroke(); g.restore(); } }
       if (o.kind<4 && o.it.length>12 && p.w>=3 && !(p.w - 2 >= o.it[2]/1000)){ // 粗いとき: セルの値を下側 1/3 に塗る
         const cf = cellFill(o.it, r.hapIdx); if (cf){ const y0 = yy + hh*2/3, hv = hh/3; g.fillStyle = TH.panel; g.fillRect(p.x+1, y0, Math.max(1,p.w-2), hv); g.fillStyle = cf.color; g.globalAlpha = cf.alpha; g.fillRect(p.x+1, y0, Math.max(1,p.w-2), hv); g.globalAlpha = 1; } }
-      else if (o.kind<4 && o.it.length>12 && (o.it[12] || o.it._vs) && p.w>=3){ const vs = varSites(o.it); const y0 = yy + hh*2/3, hv = hh/3; const inner = Math.max(1, p.w - 2);
+      else if (o.kind<4 && o.it.length>12 && (o.it[12] || o.it._vs || o.it[19]) && p.w>=3){ const vs = cons ? consSites(o.it) : varSites(o.it); const y0 = yy + hh*2/3, hv = hh/3; const inner = Math.max(1, p.w - 2);   // 合意座標モードでは合意座標で（行をまたいで縦に揃う）
         // 下側 1/3 を薄く白く敷いてから線を引く（紫のブロックでも黒線が見えるように）。サイトが px 幅を超えるときは px ごとの密度の濃淡
         g.fillStyle = TH.panel; g.globalAlpha = 0.55; g.fillRect(p.x+1, y0, inner, hv); g.globalAlpha = 1;
         const npx = Math.max(1, Math.floor(inner)); const cnt = new Uint16Array(npx); for (let i=0;i<vs.length;i++){ cnt[Math.min(npx-1, Math.floor(vs[i]/255*npx))]++; }
@@ -339,7 +356,7 @@ function drawLegend(){ const el=$('legend'); el.innerHTML='';
   const s1=document.createElement('span'); s1.append('合意順序（左→右）'); s1.prepend(c); el.appendChild(s1);
   const mname = {minor:'少数派サイト密度（半数未満のハプロだけが持つノードを含む区間 / kb）', priv:'私有サイト密度（この株だけが持つノードを含む区間 / kb）', nonanc:'錨でない bp の割合'}[st.measure];
   const nname = {abs:'層内の百分位で灰色の濃さ（濃い＝多い）', block:'そのブロックの全株の中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）', hap:'その株の全ブロックの中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）'}[st.norm];
-  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。逆位は左向き＋下線', `矢印の下側 1/3＝${mname}。${nname}。1 px が 1 kb 以下まで拡大すると個々のサイトの位置の線に切り替わる`,'灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
+  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。逆位は左向き＋下線', `矢印の下側 1/3＝${mname}。${nname}。1 px が 1 kb 以下まで拡大すると個々のサイトの位置の線に切り替わる`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
 
 
 function blockRef(rank){ if (rank==null) return null; const L = level(); const B = L.blocks[rank]; if (!B) return null;
@@ -356,6 +373,8 @@ function showItem(h){
   if (h.p){ const o = h.p.o, it = o.it; const B = L.blocks[o.rank];
     html += `<p>${o.kind>=4?'近傍の':''}ブロック #${o.rank+1} <span class="k">${esc(B.name)}</span><br>${KINDN[o.kind]} · 向き ${o.dir?'→':'←'}${o.kind<4&&it[4]>1?' · ×'+it[4]:''}${o.kind===4&&it[4]>1?' · 最大再訪 ×'+it[4]:''}${o.kind===5?' · 小ブロック '+it[7]+' 個':''}<br>`+
       `この通過 ${fmtbp(it[2])}${o.kind<4?` (典型長の ${(100*it[2]/Math.max(1,B.tbp)).toFixed(0)}%)`:''} · ${it[3].toLocaleString()} 葉歩 · 位置 ${fmtbp(it[6])} · 歩 ${it[8]}–${it[9]}${o.kind<4&&it.length>11?`<br>少数派サイト ${it[11]} 個 (${(it[11]/Math.max(1,it[2])*1000).toFixed(2)}/kb) · 私有サイト ${it[15]||0} 個 (${((it[15]||0)/Math.max(1,it[2])*1000).toFixed(2)}/kb) · 錨でない bp ${(100*(1-it[10]/Math.max(1,it[2]))).toFixed(1)}%${(()=>{ const cf = cellFill(it, r.hapIdx); return cf ? ' · 塗り: '+cf.txt : ''; })()}${it.length>14&&it[14]&&it[14].length?` · <b>内側の長い錨なし区間 ${it[14].map(g=>fmtbp(g[2])).join(', ')}</b>（縞）`:''}${it.length>16&&it[16]===0?`<br><b>この株はブロック内部で順序が入れ替わっている</b>（この層では少数派の破断点を無視して 1 ブロックにまとめている。上辺の破線。細かい層に降りると分かれる）`:''}`:''}${it[10]?`<br><span class="k">主なノード ${esc(it[10])} (${fmtbp(it[11])})</span>`:''}<br><span class="k">${esc(h.p.ct.c.name)} ${h.p.ct.c.strand} · ${esc(h.p.ct.c.path)}</span></p>`;
+    if (o.kind<4 && it.length>20){ const dl = it[18]||[]; const big = dl.length ? dl.reduce((a,b)=>Math.max(a,b[2]),0) : 0;
+      html += `<p><span class="k">ブロック内:</span> 覆う範囲 ${(it[20][0]/2.55).toFixed(0)}–${(it[20][1]/2.55).toFixed(0)}% · 合意の錨が無い区間 ${dl.length} 個${dl.length?`（最大 ${fmtbp(big)}）`:''}${it[17]?` · コンティグの${it[17]&1?'先頭':''}${it[17]===3?'と':''}${it[17]&2?'末尾':''}で切れている`:''}</p>`; }
     if (h.p.seg && st.mode!=='own'){ const sg = h.p.seg; const segs = LY.rows[h.ri].segs.filter(x=>x.ct===sg.ct); const i = segs.indexOf(sg);
       const nm = x => x.kind>=4 ? (x.kind===4?'錨なし':'小群') : (x.items.length>1 ? `#${x.items[0].o.rank+1}${x.dir?'→':'←'}…#${x.items[x.items.length-1].o.rank+1}` : `#${x.r0+1}${x.dir?'→':'←'}`);
       html += `<p><span class="k">この行の通過順:</span> ${i>0?esc(nm(segs[i-1]))+' → ':''}<b>${esc(nm(sg))}</b>${i+1<segs.length?' → '+esc(nm(segs[i+1])):''}<br><span class="k">区間 ${sg.items.length} ブロック · ${fmtbp(sg.items.reduce((a,p)=>a+p.o.it[2],0))}</span></p>`; }
