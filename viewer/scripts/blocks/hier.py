@@ -65,9 +65,15 @@ def _seg_lis(c, w, st, J, lam):
         chain[bi] = True; bi = prev[bi]
     return chain, bs
 
-RATE_IO_COLD = 2.0e6      # token/s（Lustre 初回、実測）
+RATE_IO_COLD = 2.0e6      # token/s（Lustre 初回、実測。Ctx の読み込みにだけ効く）
 RATE_INST    = 21237.0    # インスタンス/s（実測）
+RATE_WARM    = 2.5e6      # token/s（Ctx を温めた常駐ワーカーで窓 1 個を作る速さ。2026-09-16 ecoli50 実測 2.5〜3.8M、chrY 10M）
+OVERHEAD_S   = 0.10       # 窓 1 個の固定費（秒）
 FANOUT       = 15
+
+def drill_cost(ntok, nhap):
+    """逐次計算で窓 1 個を作る所要（秒、Ctx は温まっている前提）。これが予算（既定 0.8 s）を超えるブロックは事前計算する"""
+    return OVERHEAD_S + ntok / RATE_WARM + FANOUT * nhap / RATE_INST
 
 def chain_circular(rk, dr, kd, w, nb, circular):
     m = len(rk); best = None
@@ -176,7 +182,9 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         wseqs.append((c_[s0:e0], vo[s0:e0], bp[s0:e0], ns[s0:e0], pi, s0))
         whap.append(ctx.hidx[ctx.at.labels_of(pi)[1]]); wref.append(ctx.at.isref(pi))
     if not wseqs: return None
-    cols_in = np.unique(np.concatenate([w[0] for w in wseqs]))
+    _m = np.zeros(ctx.ncols, bool)
+    for w in wseqs: _m[w[0]] = True
+    cols_in = np.flatnonzero(_m)                       # np.unique(concat) は O(n log n)。1 千万トークンの窓で 1 s かかっていた
     remap = np.full(ctx.ncols, -1, np.int64); remap[cols_in] = np.arange(len(cols_in)); nc = len(cols_in)
     colbp = ctx.colbp[cols_in]; colx = ctx.colx[cols_in]
     colname = [ctx.colname[c] for c in cols_in.tolist()]; colcid = ctx.colcid[cols_in]
@@ -186,7 +194,7 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
     hap_of = np.array([hre[h] for h in whap], np.int64)
     mv = np.zeros(nc, np.int64); nh = np.zeros((H, nc), bool)
     for w, h in zip(S, hap_of):
-        u, n = np.unique(w[0], return_counts=True); np.maximum.at(mv, u, n); nh[h, u] = True
+        cnt_ = np.bincount(w[0], minlength=nc); np.maximum(mv, cnt_, out=mv); nh[h] |= cnt_ > 0     # ufunc.at より bincount が速い
     nhap_col = nh.sum(0)
     A = (mv <= 1) & inorder & (nhap_col >= anchor_frac * H)
     if int(A.sum()) < 4: A = (mv <= 1) & (nhap_col >= anchor_frac * H)     # 順序パスが通らない窓は条件を外す
@@ -309,24 +317,24 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
                     for s0, e0 in zip(np.flatnonzero(e == 1).tolist(), np.flatnonzero(e == -1).tolist()):
                         big = s0 + int(np.argmax(bp[s0:e0]))
                         minor.append([int(cum[s0]), int(cum[e0] - cum[s0]), colname[cols_[big]], int(colbp[cols_[big]]), int(s0), int(e0)])
-                anc_idx = np.flatnonzero(tok >= 0); groups = []; gi = 0
-                while gi < len(anc_idx):
-                    gj = gi
-                    while gj + 1 < len(anc_idx) and tok[anc_idx[gj + 1]] == tok[anc_idx[gi]]: gj += 1
-                    groups.append((int(anc_idx[gi]), int(anc_idx[gj]) + 1, int(tok[anc_idx[gi]]))); gi = gj + 1
+                # 同じブロックの錨の連なり → (最初の錨, 最後の錨+1, ブロック)。トークン単位の Python ループだと 1 千万トークンで 7 s
+                anc_idx = np.flatnonzero(tok >= 0); groups = []
+                if anc_idx.size:
+                    ta_ = tok[anc_idx]; cut_ = np.flatnonzero(ta_[1:] != ta_[:-1]) + 1
+                    gs_ = np.concatenate(([0], cut_)); ge_ = np.concatenate((cut_, [anc_idx.size]))
+                    groups = list(zip(anc_idx[gs_].tolist(), (anc_idx[ge_ - 1] + 1).tolist(), ta_[gs_].tolist()))
                 def emit_gap(ga, gb):
-                    q = ga
-                    while q < gb:
-                        t = tok[q]; r = q
-                        while r + 1 < gb and tok[r + 1] == t: r += 1
+                    tt_ = tok[ga:gb]
+                    if tt_.size == 0: return
+                    cut_ = np.flatnonzero(tt_[1:] != tt_[:-1]) + 1                       # 同じ種類の連なりに切る（トークン単位のループを避ける）
+                    for q, r in zip((np.concatenate(([0], cut_)) + ga).tolist(), (np.concatenate((cut_, [tt_.size])) - 1 + ga).tolist()):
+                        t = tok[q]
                         if t in (-2, -4):
                             sb_ = int(cum[r + 1] - cum[q]); plus = int((bp[q:r + 1] * vo[q:r + 1]).sum()); d = 1 if plus * 2 >= sb_ else 0
                             u, cnt = np.unique(cols_[q:r + 1], return_counts=True); big = q + int(np.argmax(bp[q:r + 1])); top = int(cols_[big])
                             natom = int(len(np.unique(col2atom[cols_[q:r + 1]][col2atom[cols_[q:r + 1]] >= 0]))) if t == -4 else int(r + 1 - q)
                             inst.append([int(encl[top]), d, sb_, int(ns[q:r + 1].sum()), int(cnt.max()), 4 if t == -2 else 5,
                                          int(cum[q]), natom, q + off, r + 1 + off, colname[top], int(colbp[top])])
-                        elif t == -3: pass
-                        q = r + 1
                 prev = 0
                 for (s0, e0, t) in groups:
                     if s0 > prev: emit_gap(prev, s0)
@@ -457,7 +465,7 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         levels.append(dict(W=W, nblocks=nb, blocks=blocks, haps=hap_out, mergecap=cap, mode=('bins' if (bins and bins > 0) else 'blocks'), adj=adj_list, events=events, origin=origin,
                            nonmono=int(sum(1 for hp in hap_out for c in hp["contigs"] for x in c["inst"] if x[5] < 4 and x[16] == 0))))
         child_list.append(child_ranges)          # ★段ごとに保持。子の窓は最細段（levels[0]）のブロック番号で作る
-    return dict(levels=levels, atoms=int(nat), H=H, child_ranges=(child_list[0] if child_list else {}), ncols=nc, nb_by_W=nb_by_W, tree=tree_out)
+    return dict(levels=levels, atoms=int(nat), H=H, child_ranges=(child_list[0] if child_list else {}), child_list=child_list, ncols=nc, nb_by_W=nb_by_W, tree=tree_out)
 
 def ladder(span, steps):
     """内部の梯子は細い方から 2 倍ずつ積み上げる（段階的に落とさないと一気に 1 ブロックへ潰れる）。
@@ -505,8 +513,8 @@ def main():
     ap.add_argument("--circular", action="store_true")
     ap.add_argument("--anchor-frac", type=float, default=0.8); ap.add_argument("--sub-anchor-frac", type=float, default=0.5)
     ap.add_argument("--merge-frac-max", type=float, default=0.25)
-    ap.add_argument("--budget", type=float, default=1.0, help="逐次計算の予算（秒、cold）。これ以下で計算できる窓は焼かず逐次に任せる")
-    ap.add_argument("--max-depth", type=int, default=3); ap.add_argument("--max-windows", type=int, default=60)
+    ap.add_argument("--budget", type=float, default=0.8, help="逐次計算の予算（秒、Ctx 温まり時）。これ以下で計算できる窓は焼かず逐次に任せる。1 秒規則の余裕として 0.8")
+    ap.add_argument("--max-depth", type=int, default=3); ap.add_argument("--max-windows", type=int, default=400, help="安全弁。当たったら警告（予算で決めるのが本筋）")
     ap.add_argument("--steps", type=int, default=3, help="1 窓あたりの閾値の段数")
     ap.add_argument("--bins", type=int, default=12, help="再編成の無い窓を座標で等分するビン数")
     ap.add_argument("--name", default=""); ap.add_argument("--out", required=True)
@@ -525,29 +533,38 @@ def main():
         if res is None: continue
         if w["depth"] == 0 and res.get("tree"): tree = res["tree"]; log("系統樹: ハプロ %d, UPGMA（葉ノードの Jaccard）" % len(tree["haps"]))
         wid = len(windows)
-        windows.append(dict(id=wid, parent=w["parent"], pblock=w["pblock"], depth=w["depth"], label=w["label"],
-                            atoms=res["atoms"], H=res["H"], levels=res["levels"], children={}, mode=res["mode"]))
+        wd_ = dict(id=wid, parent=w["parent"], pblock=w["pblock"], depth=w["depth"], label=w["label"],
+                   atoms=res["atoms"], H=res["H"], levels=res["levels"], children={}, mode=res["mode"])
+        if w.get("plevel"): wd_["plevel"] = w["plevel"]; wd_["pW"] = w["pW"]
+        windows.append(wd_)
         if w["depth"] >= a.max_depth - 1: continue
-        fine = res["levels"][0]                      # 最も細かい閾値の段から降りる
-        for b, blk in enumerate(fine["blocks"]):
-            rng = res["child_ranges"].get(b, [])
-            if not rng: continue
-            ntok = sum(e - s for _, s, e in rng)
-            cost = ntok / RATE_IO_COLD + FANOUT * blk["nhap"] / RATE_INST
-            if cost <= a.budget or blk["atoms"] < 2: continue
-            if len(windows) + len(queue) >= a.max_windows: break
-            queue.append(dict(parent=wid, pblock=b, ranges=rng, depth=w["depth"] + 1,
-                              label="#%d" % (b + 1), span=blk["span"], afrac=a.sub_anchor_frac))
-            windows[wid]["children"][str(b)] = -1     # 後で id を埋める
+        # どの段のブロックからも降りられる（画面はダブルクリック）。逐次計算が予算を超える窓だけ焼く。
+        # children の鍵は最細段 "rank"、粗い段 "li:rank"（画面の childKey と同じ）
+        for li, lev in enumerate(res["levels"]):
+            cr = res["child_list"][li] if li < len(res["child_list"]) else {}
+            for b, blk in enumerate(lev["blocks"]):
+                rng = cr.get(b, [])
+                if not rng: continue
+                ntok = sum(e - s for _, s, e in rng)
+                # 原子区間が 1 つ（内部が共線）のブロックも座標分割（ビン）で降りられるので焼く対象。ビンの段で錨 1 本のものだけ除く
+                if drill_cost(ntok, blk["nhap"]) <= a.budget or (lev.get("mode") == "bins" and blk["atoms"] < 2): continue
+                if len(windows) + len(queue) >= a.max_windows:
+                    log("★ --max-windows %d に当たった（予算 %.2fs を超える窓が残る）" % (a.max_windows, a.budget)); break
+                key = str(b) if li == 0 else "%d:%d" % (li, b)
+                queue.append(dict(parent=wid, pblock=b, ranges=rng, depth=w["depth"] + 1, label="#%d" % (b + 1), span=blk["span"],
+                                  afrac=a.sub_anchor_frac, key=key, plevel=li, pW=lev["W"], cost=drill_cost(ntok, blk["nhap"])))
+                windows[wid]["children"][key] = -1     # 後で id を埋める
     # 親の children に子 id を入れる
     for wd in windows:
-        if wd["parent"] >= 0: windows[wd["parent"]]["children"][str(wd["pblock"])] = wd["id"]
+        if wd["parent"] >= 0:
+            key = str(wd["pblock"]) if not wd.get("plevel") else "%d:%d" % (wd["plevel"], wd["pblock"])
+            windows[wd["parent"]]["children"][key] = wd["id"]
     for wd in windows: wd["children"] = {k: v for k, v in wd["children"].items() if v >= 0}
     # meta にはパラメタも入れる（worker.py が逐次計算で同じ条件を使う）
     meta = dict(name=a.name or os.path.basename(a.db), circular=bool(a.circular), bpt=round(ctx.bpt, 2),
                 nhaps=len(ctx.hapnames), ncols=ctx.ncols, order=dict(path=ctx.co["opath"], kind=ctx.co["okind"]),
                 order_arg=a.order, ref_arg=a.ref, params=P, max_depth=a.max_depth,
-                budget=a.budget, rate_io=RATE_IO_COLD, rate_inst=RATE_INST, fanout=FANOUT, total_bp=total_bp)
+                budget=a.budget, rate_io=RATE_IO_COLD, rate_warm=RATE_WARM, overhead_s=OVERHEAD_S, rate_inst=RATE_INST, fanout=FANOUT, total_bp=total_bp)
     json.dump(dict(meta=meta, windows=windows, tree=tree), open(a.out, "w"), separators=(",", ":"))
     if not windows: log("窓が 1 つも作れなかった"); return
     log("窓 %d 個 (深さ ≤ %d) → %s (%.1f MB, %.1fs)" % (len(windows), max(w["depth"] for w in windows), a.out,
