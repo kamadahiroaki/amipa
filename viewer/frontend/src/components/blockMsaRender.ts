@@ -296,13 +296,14 @@ function drawTree(){
   const svg = $('tree'); const show = st.order==='tree' && !!DATA.tree; root.style.setProperty('--treew', show?'130px':'0px');
   svg.innerHTML=''; if (!show) return;
   const T = DATA.tree; const Wt = 128, H = LY.rows.length*RH; svg.setAttribute('width', Wt); svg.setAttribute('height', H);
-  const rowOfHap = new Map(LY.rows.map((r,i)=>[r.hapIdx, i])); const hmax = Math.max(1e-9, T.nodes[String(T.root)].h);
+  // 葉は名前で行に対応させる（子の窓では L.haps が全体の部分集合で、番号がずれる）。窓に居ないハプロの葉は飛ばし、内部節はある子だけの平均に置く
+  const rowOfHap = new Map(LY.rows.map((r,i)=>[r.hap, i])); const hmax = Math.max(1e-9, T.nodes[String(T.root)].h);
   const xOf = h => 8 + (1 - h/hmax) * (Wt-20); const ev = level().events || {};
-  const yOf = {}; function place(v){ const nd = T.nodes[String(v)]; if ('leaf' in nd){ const ri = rowOfHap.get(nd.leaf); yOf[v] = (ri==null? -100 : ri*RH + RH/2); return yOf[v]; } const ys = nd.ch.map(place); yOf[v] = (ys[0]+ys[1])/2; return yOf[v]; }
+  const yOf = {}; function place(v){ const nd = T.nodes[String(v)]; if ('leaf' in nd){ const ri = rowOfHap.get(T.haps[nd.leaf]); yOf[v] = (ri==null? null : ri*RH + RH/2); return yOf[v]; } const ys = nd.ch.map(place).filter(y=>y!=null); yOf[v] = ys.length ? ys.reduce((a,b)=>a+b,0)/ys.length : null; return yOf[v]; }
   place(T.root);
   const parts = [];
-  function draw(v){ const nd = T.nodes[String(v)]; const x = xOf(nd.h), y = yOf[v];
-    if (!('leaf' in nd)){ for (const c of nd.ch){ const cn = T.nodes[String(c)]; const cx = xOf(cn.h), cy = yOf[c];
+  function draw(v){ const nd = T.nodes[String(v)]; const x = xOf(nd.h), y = yOf[v]; if (y==null) return;
+    if (!('leaf' in nd)){ for (const c of nd.ch){ const cn = T.nodes[String(c)]; const cx = xOf(cn.h), cy = yOf[c]; if (cy==null) continue;
         parts.push(`<path d="M${x},${y} V${cy} H${cx}" fill="none" stroke="${TH.muted}" stroke-width="1" data-node="${c}" class="br"/>`);
         const e = ev[String(c)]; if (e){ const n = (e.gain?e.gain.length:0)+(e.loss?e.loss.length:0); if (n){ const mx = (x+cx)/2; parts.push(`<g data-node="${c}" class="ev"><circle cx="${mx}" cy="${cy}" r="6" fill="${TH.sel}" opacity=".85"/><text x="${mx}" y="${cy+3}" font-size="8" text-anchor="middle" fill="#fff" font-family="IBM Plex Mono">${n}</text></g>`); } }
         draw(c); } }

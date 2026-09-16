@@ -85,6 +85,58 @@ def chain_circular(rk, dr, kd, w, nb, circular):
     if best is None: return np.zeros(m, bool), 1.0, 0
     return best[3], best[1], best[2]
 
+def upgma(D, names):
+    """UPGMA。返り値: nodes（id→{leaf}|{ch:[a,b]}, h=高さ）, root, 葉順（小さい部分木を先に ladderize）"""
+    n = len(names); nid = n; nodes = {i: dict(id=i, leaf=i, h=0.0) for i in range(n)}
+    Dm = {(i, j): float(D[i, j]) for i in range(n) for j in range(n) if i < j}
+    size = {i: 1 for i in range(n)}; active = list(range(n))
+    while len(active) > 1:
+        i, j = min(((a, b) for a in active for b in active if a < b), key=lambda p: Dm[p])
+        h = Dm[(i, j)] / 2
+        nodes[nid] = dict(id=nid, ch=[i, j], h=h); size[nid] = size[i] + size[j]
+        for k in active:
+            if k in (i, j): continue
+            dik = Dm[(min(i, k), max(i, k))]; djk = Dm[(min(j, k), max(j, k))]
+            Dm[(min(nid, k), max(nid, k))] = (dik * size[i] + djk * size[j]) / (size[i] + size[j])
+        active = [k for k in active if k not in (i, j)] + [nid]; nid += 1
+    root = active[0]
+    def leaves(v): return [nodes[v]["leaf"]] if "leaf" in nodes[v] else leaves(nodes[v]["ch"][0]) + leaves(nodes[v]["ch"][1])
+    def ladder(v):
+        if "leaf" in nodes[v]: return
+        a, b = nodes[v]["ch"]
+        if len(leaves(a)) > len(leaves(b)): nodes[v]["ch"] = [b, a]
+        for c in nodes[v]["ch"]: ladder(c)
+    ladder(root)
+    return nodes, root, leaves(root)
+
+def fitch(nodes, root, X):
+    """Fitch 節約法。X: (葉数, 形質数) int8、0=無し 1=有り 2=不明（この窓に居ないハプロ＝どちらでもよい）。
+    返り値: 枝（子ノード id）ごとの (獲得 index 列, 喪失 index 列)"""
+    sets = {}
+    def down(v):
+        nd = nodes[v]
+        if "leaf" in nd: x = X[nd["leaf"]]; sets[v] = np.where(x == 1, 2, np.where(x == 0, 1, 3)).astype(np.int8); return
+        a, b = nd["ch"]; down(a); down(b)
+        inter = sets[a] & sets[b]; sets[v] = np.where(inter > 0, inter, sets[a] | sets[b]).astype(np.int8)
+    down(root)
+    state = {}; events = {}
+    def up(v, parent_state):
+        s = sets[v]
+        if parent_state is None: st = np.where(s & 1, 0, 1)                  # 根は「無し」を優先
+        else: st = np.where((s & (1 << parent_state)) > 0, parent_state, np.where(s & 1, 0, 1))
+        state[v] = st.astype(np.int8)
+        if parent_state is not None:
+            ch = st != parent_state
+            events[v] = (np.flatnonzero(ch & (st == 1)).tolist(), np.flatnonzero(ch & (st == 0)).tolist())
+        if "leaf" not in nodes[v]:
+            for c in nodes[v]["ch"]: up(c, state[v])
+    up(root, None)
+    return events
+
+def tree_nodes(tree):
+    """JSON 形（キーが str）の木を fitch 用に int キーへ"""
+    return {int(k): v for k, v in tree["nodes"].items()}
+
 class Ctx:
     """グラフ全体で 1 回だけ作るもの（本番ではサイドカー生成時に 1 回）"""
     def __init__(self, db, distill, order_kind, ref, circular):
@@ -115,7 +167,7 @@ class Ctx:
         self.bpt = tb / max(1, tt)
         log("Ctx: 列 %d, パス %d, ハプロ %d, %.1f bp/token" % (self.ncols, len(self.present), len(self.hapnames), self.bpt))
 
-def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=500, varbins=32, record=None, bins=0):
+def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=500, varbins=32, record=None, bins=0, tree=None, want_tree=False):
     """ranges: [(pi, s0, e0)]。返り値: dict(levels=[...], atoms=n, cols=[...])"""
     wseqs = []; whap = []; wref = []
     for pi, s0, e0 in ranges:
@@ -149,6 +201,21 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
     at_c0 = np.full(nat, nc, np.int64); at_c1 = np.full(nat, -1, np.int64)
     np.minimum.at(at_c0, aid, colsA); np.maximum.at(at_c1, aid, colsA)
     at_x0 = colx[at_c0]; at_x1 = colx[at_c1] + colbp[at_c1]
+    tree_out = None
+    if want_tree and H >= 2:
+        # 系統樹: 葉ノードの Jaccard（比較は「両方が覆う列」に限る。覆い＝錨を持つ原子区間を列に広げた近似）→ UPGMA
+        Pm = np.zeros((H, nc), bool); atomP = np.zeros((H, nat), bool)
+        for w, h in zip(S, hap_of):
+            Pm[h, w[0]] = True; am = col2atom[w[0]]; atomP[h, am[am >= 0]] = True
+        ff0 = np.maximum.accumulate(np.where(col2atom >= 0, np.arange(nc), -1)); enclatom = np.where(ff0 >= 0, col2atom[np.maximum(ff0, 0)], 0)
+        Pf = Pm.astype(np.float32); Cf = atomP[:, enclatom].astype(np.float32)
+        PP = Pf @ Pf.T; PC = Pf @ Cf.T
+        union = PC + PC.T - PP; Dist = 1.0 - np.where(union > 0, PP / np.maximum(union, 1), 0.0); np.fill_diagonal(Dist, 0.0)
+        names = [ctx.hapnames[h] for h in haps_in]
+        nodes_, root_, order_ = upgma(Dist, names)
+        tree_out = dict(nodes={str(k): dict(id=v["id"], h=float(v["h"]), **({"leaf": v["leaf"]} if "leaf" in v else {"ch": v["ch"]})) for k, v in nodes_.items()},
+                        root=int(root_), order=[int(x) for x in order_], haps=names)
+        tree = tree_out
     aseqs = []
     for w in seq4:
         am = col2atom[w[0]]; m = am >= 0
@@ -211,12 +278,12 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         encl = np.where(ff >= 0, col2blk[np.maximum(ff, 0)], 0)
         # 各ブロックの原子区間数（細分できるか）
         atoms_in = np.bincount(bid, minlength=nb)
-        inst_bp = [[] for _ in range(nb)]; hap_out = []; child_ranges = {b: [] for b in range(nb)}
+        inst_bp = [[] for _ in range(nb)]; hap_out = []; child_ranges = {b: [] for b in range(nb)}; adj_by_name = {}
         if record is not None and W not in record:
             continue                       # 梯子の途中（錨の削減だけ進める）
         for h in haps_in:
             sel = [k for k in range(len(S)) if whap[k] == h]
-            ctg_out = []
+            ctg_out = []; hap_adj = set()
             for k in sorted(sel, key=lambda q: -int(S[q][2].sum())):
                 cols_, vo, bp, ns, pi, off = S[k]; n = len(cols_); tot = int(bp.sum()); cum = np.concatenate(([0], np.cumsum(bp)))
                 bstep = col2blk[cols_]; nonb = bstep < 0; tok = bstep.copy(); has_atom = col2atom[cols_] >= 0
@@ -289,9 +356,17 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
                     if x[5] >= 4: continue
                     d_ = x[1] if sign > 0 else 1 - x[1]
                     x[5] = 0 if ch[q] else (3 if d_ == 0 else 2)
+                # 隣接形質（符号つきブロック隣接: a の出口端と b の入口端。0=尾 1=頭。環状なら巡回）→ 枝ごとの獲得/喪失（Fitch）
+                bl = [x for x in inst if x[5] < 4]
+                if sign < 0: bl = [[x[0], 1 - x[1]] + x[2:] for x in bl[::-1]]
+                pairs = list(zip(bl, bl[1:])) + ([(bl[-1], bl[0])] if is_circ and len(bl) > 1 else [])
+                for u_, v_ in pairs:
+                    ea = (int(u_[0]), 1 if u_[1] else 0); eb = (int(v_[0]), 0 if v_[1] else 1)
+                    hap_adj.add(tuple(sorted([ea, eb])))
                 ctg_out.append(dict(name=ctx.at.labels_of(pi)[2] or ctx.at.p_names[pi], path=ctx.at.p_names[pi],
                                     strand=("-" if sign < 0 else "+"), start=int(start), bp=tot, nsteps=n, inst=inst, minor=minor))
             hap_out.append(dict(hap=ctx.hapnames[h], isref=int(any(ctx.at.isref(S[k][4]) for k in sel)), contigs=ctg_out))
+            adj_by_name[ctx.hapnames[h]] = hap_adj
         per_hap = {}
         for hp in hap_out:
             acc = {}
@@ -321,10 +396,22 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         blocks = [dict(c0=int(blk_c0[b]), c1=int(blk_c1[b]), span=int(so[b]), tbp=tbp[b], bpmax=bpmax[b],
                        nhap=int(nhap_b[b]), x=int(xo[b]), atoms=int(atoms_in[b]), ref_contig=int(colcid[blk_c0[b]]),
                        name=colname[blk_c0[b]] + "…" + colname[blk_c1[b]], ncol=int(atoms_in[b])) for b in range(nb)]
-        levels.append(dict(W=W, nblocks=nb, blocks=blocks, haps=hap_out, mergecap=cap, mode=('bins' if (bins and bins > 0) else 'blocks'),
+        alladj = sorted(set().union(*adj_by_name.values())) if adj_by_name else []
+        aidx = {x: i for i, x in enumerate(alladj)}; events = {}
+        if tree is not None and alladj:
+            tn = {hn: i for i, hn in enumerate(tree["haps"])}
+            X = np.full((len(tree["haps"]), len(alladj)), 2, np.int8)          # 2=不明（この窓に居ないハプロ）
+            for hn, sset in adj_by_name.items():
+                if hn not in tn: continue
+                X[tn[hn]] = 0
+                for x in sset: X[tn[hn], aidx[x]] = 1
+            ev = fitch(tree_nodes(tree), int(tree["root"]), X)
+            events = {str(v): dict(gain=g, loss=l) for v, (g, l) in ev.items() if g or l}
+        adj_list = [[x[0][0], x[0][1], x[1][0], x[1][1]] for x in alladj]
+        levels.append(dict(W=W, nblocks=nb, blocks=blocks, haps=hap_out, mergecap=cap, mode=('bins' if (bins and bins > 0) else 'blocks'), adj=adj_list, events=events,
                            nonmono=int(sum(1 for hp in hap_out for c in hp["contigs"] for x in c["inst"] if x[5] < 4 and x[16] == 0))))
         child_list.append(child_ranges)          # ★段ごとに保持。子の窓は最細段（levels[0]）のブロック番号で作る
-    return dict(levels=levels, atoms=int(nat), H=H, child_ranges=(child_list[0] if child_list else {}), ncols=nc, nb_by_W=nb_by_W)
+    return dict(levels=levels, atoms=int(nat), H=H, child_ranges=(child_list[0] if child_list else {}), ncols=nc, nb_by_W=nb_by_W, tree=tree_out)
 
 def ladder(span, steps):
     """内部の梯子は細い方から 2 倍ずつ積み上げる（段階的に落とさないと一気に 1 ブロックへ潰れる）。
@@ -338,7 +425,7 @@ def ladder(span, steps):
 
 DEFAULT_PARAMS = dict(anchor_frac=0.8, sub_anchor_frac=0.5, merge_frac_max=0.25, steps=3, bins=12)
 
-def compute_window(ctx, ranges, span, afrac, P, tag=""):
+def compute_window(ctx, ranges, span, afrac, P, tag="", tree=None, want_tree=False):
     """窓 1 個を計算する（事前計算・逐次計算の共通部）。
     ranges: [(pi, s0, e0)]（親ブロックの各インスタンスのトークン範囲）、span: 親ブロックの合意座標での幅
     （閾値の梯子の基準）、afrac: 錨に要る出現割合、P: DEFAULT_PARAMS 形のパラメタ。
@@ -357,9 +444,9 @@ def compute_window(ctx, ranges, span, afrac, P, tag=""):
         # 再編成が無い窓（破断点では 1〜2 ブロック）→ 合意座標で等分（ビン）して降りられるようにする
         note = "破断点では nb=%s なので座標分割 %d ビン" % (sorted(probe["nb_by_W"].values())[:4], P["bins"])
         log("  win %s: %s" % (tag, note))
-        res = build_window(ctx, ranges, Wl, afrac, P["merge_frac_max"], bins=P["bins"])
+        res = build_window(ctx, ranges, Wl, afrac, P["merge_frac_max"], bins=P["bins"], tree=tree, want_tree=want_tree)
     else:
-        res = build_window(ctx, ranges, Wl, afrac, P["merge_frac_max"], record=rec)
+        res = build_window(ctx, ranges, Wl, afrac, P["merge_frac_max"], record=rec, tree=tree, want_tree=want_tree)
     if res is None or not res["levels"]:
         log("  win skip %s: 閾値 %s でブロックにならず" % (tag, Wl)); return None
     res["mode"] = res["levels"][0].get("mode", "blocks"); res["note"] = note
@@ -384,10 +471,13 @@ def main():
     total_bp = sum(int(ctx.seqs[pi][2].sum()) for pi in ctx.present)
     cons_span = int(ctx.colx[-1] + ctx.colbp[-1] - ctx.colx[0])      # 合意座標での全長（閾値の梯子はこれを基準にする）
     windows = []; queue = [dict(parent=-1, pblock=-1, ranges=root_ranges, depth=0, label="全体", span=cons_span, afrac=a.anchor_frac)]
+    tree = None                                   # 系統樹は根の窓（全ハプロ）で 1 回作り、子の窓の Fitch にも使う
     while queue and len(windows) < a.max_windows:
         w = queue.pop(0)
-        res = compute_window(ctx, w["ranges"], w["span"], w["afrac"], P, tag="(親 %d #%s)" % (w["parent"], w["pblock"] + 1))
+        res = compute_window(ctx, w["ranges"], w["span"], w["afrac"], P, tag="(親 %d #%s)" % (w["parent"], w["pblock"] + 1),
+                             tree=tree, want_tree=(w["depth"] == 0))
         if res is None: continue
+        if w["depth"] == 0 and res.get("tree"): tree = res["tree"]; log("系統樹: ハプロ %d, UPGMA（葉ノードの Jaccard）" % len(tree["haps"]))
         wid = len(windows)
         windows.append(dict(id=wid, parent=w["parent"], pblock=w["pblock"], depth=w["depth"], label=w["label"],
                             atoms=res["atoms"], H=res["H"], levels=res["levels"], children={}, mode=res["mode"]))
@@ -412,7 +502,7 @@ def main():
                 nhaps=len(ctx.hapnames), ncols=ctx.ncols, order=dict(path=ctx.co["opath"], kind=ctx.co["okind"]),
                 order_arg=a.order, ref_arg=a.ref, params=P, max_depth=a.max_depth,
                 budget=a.budget, rate_io=RATE_IO_COLD, rate_inst=RATE_INST, fanout=FANOUT, total_bp=total_bp)
-    json.dump(dict(meta=meta, windows=windows), open(a.out, "w"), separators=(",", ":"))
+    json.dump(dict(meta=meta, windows=windows, tree=tree), open(a.out, "w"), separators=(",", ":"))
     if not windows: log("窓が 1 つも作れなかった"); return
     log("窓 %d 個 (深さ ≤ %d) → %s (%.1f MB, %.1fs)" % (len(windows), max(w["depth"] for w in windows), a.out,
                                                      os.path.getsize(a.out) / 1e6, time.time() - t0))

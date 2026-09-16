@@ -23,13 +23,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True); ap.add_argument("--distill", required=True); ap.add_argument("--blocks", default="")
     a = ap.parse_args()
-    meta = {}
+    meta = {}; tree = None
     bp = a.blocks or (a.db + ".blocks.json")
     if os.path.exists(bp):
         try:
             with open(bp) as f:
-                # meta は先頭にある。全体（数 MB）を読んでもよいが、meta だけ欲しいので JSON を丸ごと読む
-                meta = json.load(f).get("meta", {}) or {}
+                side = json.load(f); meta = side.get("meta", {}) or {}; tree = side.get("tree")   # 系統樹は枝ごとの獲得/喪失（Fitch）に使う
         except Exception as e:
             log("worker: サイドカー meta を読めない (%s): %s" % (bp, e))
     P = dict(DEFAULT_PARAMS); P.update(meta.get("params", {}) or {})
@@ -77,7 +76,7 @@ def main():
                 span = int(req.get("span") or 0)
                 if span <= 0: span = int(sum(int(ctx.seqs[pi][2][s0:e0].sum()) for pi, s0, e0 in ranges) / max(1, len(ranges)))
                 afrac = float(req.get("afrac") or P["sub_anchor_frac"])
-                res = compute_window(ctx, ranges, span, afrac, P, tag=str(req.get("label", "")))
+                res = compute_window(ctx, ranges, span, afrac, P, tag=str(req.get("label", "")), tree=tree)
                 if res is None: emit(dict(id=rid, ok=False, error="この範囲では錨が取れず、ブロックになりません")); continue
                 win = dict(id=-1, parent=int(req.get("parent", -1)), pblock=int(req.get("pblock", -1)), depth=int(req.get("depth", 0)),
                            label=str(req.get("label", "")), atoms=res["atoms"], H=res["H"], levels=res["levels"], children={},
