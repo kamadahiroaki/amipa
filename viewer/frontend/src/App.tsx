@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, useCallback, useId, useMemo, Fragment } from 'react'
-import GraphCanvas, { GraphCanvasHandle, PATH_COLORS, RibbonData } from './components/GraphCanvas'
+import GraphCanvas, { GraphCanvasHandle, PATH_COLORS, RibbonData , BlockColorMap } from './components/GraphCanvas'
 import Minimap from './components/Minimap'
 import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, INTRON_COLOR } from './annotColors'
 import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
 import BubbleMsa from './components/BubbleMsa'
 import BlockMsa from './components/BlockMsa'
+import type { BlockView } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
 import { fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
@@ -163,6 +164,22 @@ const handleStyle: React.CSSProperties = {
 }
 // 掴みしろ(px)。5px の線を掴むのは細すぎるので、上下(左右)にこれだけ透明な帯を足す。
 const GRIP_PAD = 6
+
+// Blocks パネルが知らせてきた「見えている窓・段のブロック（参照区間と色）」を、GraphCanvas の塗り分け表に組み直す。
+// 色は panel と同じ rgb() 文字列なので、ここで数値に直す。コンティグごとに開始位置で昇順。
+function blockViewToColors(v: BlockView): BlockColorMap {
+  const groups = new Map<number, { s: number; e: number; c: number }[]>()
+  let maxSpan = 1
+  for (const b of v.blocks) {
+    const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color)
+    const c = m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96
+    const g = groups.get(b.ref_contig) ?? []; g.push({ s: b.x, e: b.x + Math.max(1, b.span), c }); groups.set(b.ref_contig, g)
+    maxSpan = Math.max(maxSpan, b.span)
+  }
+  const contigs = new Map<number, { starts: number[]; ends: number[]; colors: number[] }>()
+  for (const [k, g] of groups) { g.sort((a, b) => a.s - b.s); contigs.set(k, { starts: g.map(i => i.s), ends: g.map(i => i.e), colors: g.map(i => i.c) }) }
+  return { maxSpan, contigs }
+}
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)
 
@@ -936,7 +953,7 @@ export default function App() {
   const [msaHover, setMsaHover] = useState<string[] | null>(null)
   // 多解像度 MSA（共線ブロック）パネル。選択/ホバーしたブロック＝参照区間 → 表示層のノード名に解いてグラフを強調する。
   const [blkH, setBlkH] = useState(0)                                  // パネル高さ(0=閉)
-  const [blkSel, setBlkSel] = useState<Set<string> | null>(null)       // 選択ブロックのノード群（橙リング）
+  const [blkColors, setBlkColors] = useState<BlockColorMap | null>(null)   // Blocks の窓・段に合わせたノードの塗り分け（参照区間→色）
   const [blkHov, setBlkHov] = useState<Set<string> | null>(null)       // ホバー中ブロックのノード群（マゼンタ）
   const blkApiRef = useRef<BlockMsaHandle | null>(null)
   const blkReq = useRef(0)
@@ -947,7 +964,7 @@ export default function App() {
     if (my !== blkReq.current) return                                  // 古い問い合わせは捨てる
     set(names.length ? new Set(names) : null)
   }, [selectedDb, mapLayer])
-  const msaHiSet = useMemo(() => { const u = new Set(msaNodeSel); if (blkSel) for (const n of blkSel) u.add(n); return u }, [msaNodeSel, blkSel])  // グラフ強調用（bubble MSA の選択 ＋ ブロック）
+  const msaHiSet = useMemo(() => new Set(msaNodeSel), [msaNodeSel])  // グラフ強調用（bubble MSA の選択）。ブロックは窓全体の塗り分けで見せるのでリングは出さない
   const msaHoverSet = useMemo(() => { if (blkHov && blkHov.size) return blkHov; return (msaHover && msaHover.length ? new Set(msaHover) : null) }, [msaHover, blkHov])
 
   useEffect(() => {
@@ -1901,7 +1918,11 @@ export default function App() {
             MSA
           </button>
           <button
-            onClick={() => setBlkH(h => (h > 0 ? 0 : 380))}
+            onClick={() => setBlkH(h => {
+              if (h > 0) return 0
+              showHint('Blocks: パネルで見ている窓・段に合わせて、グラフのノードをブロック色で塗り分けます（薄灰＝窓の外か参照座標なし）。ブロックをホバーすると該当ノードがマゼンタで光り、グラフでノードを選ぶとそのブロックが選ばれます。')
+              return 380
+            })}
             title="多解像度 MSA（共線ブロック）パネル。ブロックを選ぶとグラフ側の該当ノードが光り、グラフでノードを選ぶとそのブロックが選ばれる"
             style={{
               fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
@@ -2229,6 +2250,7 @@ export default function App() {
                   floodMaxHop={floodHops}
                   msaHighlight={msaHiSet}
                   msaHoverNodes={msaHoverSet}
+                  blockColors={blkColors}
                   onViewportChange={(vp, layer, glyphs) => {
                     setMapViewport(vp); setMapLayer(layer)
                     if (glyphs !== undefined) setMapGlyphs(glyphs)
@@ -2974,9 +2996,9 @@ export default function App() {
         <div style={{ height: blkH, flexShrink: 0, overflow: 'hidden', borderTop: '1px solid #c8cdd3', background: '#fff' }}>
           <BlockMsa
             db={selectedDb}
-            onSelectBlock={b => { void resolveBlock(b, setBlkSel) }}
             onHoverBlock={b => { void resolveBlock(b, setBlkHov) }}
-            onReady={h => { blkApiRef.current = h; if (!h) { setBlkSel(null); setBlkHov(null) } }}
+            onView={v => setBlkColors(v ? blockViewToColors(v) : null)}
+            onReady={h => { blkApiRef.current = h; if (!h) { setBlkHov(null); setBlkColors(null) } }}
           />
         </div>
       )}

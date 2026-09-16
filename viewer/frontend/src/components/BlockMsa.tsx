@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { fetchBlocks, fetchBlockWindow, warmBlocks } from '../api/client'
-import { mountBlockMsa, BlockMsaHandle, BlockRef } from './blockMsaRender'
+import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
 //   ・db が変わるたびに /api/blocks（サイドカー JSON）を取り直して描き直す
@@ -11,14 +11,15 @@ interface Props {
   db: string | null
   onSelectBlock?: (b: BlockRef | null) => void
   onHoverBlock?: (b: BlockRef | null) => void
+  onView?: (v: BlockView | null) => void            // 見えている窓・段のブロックと色（グラフの塗り分け用）
   onReady?: (h: BlockMsaHandle | null) => void
 }
 
-export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onReady }: Props) {
+export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onReady }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const handleRef = useRef<BlockMsaHandle | null>(null)
-  const cbRef = useRef({ onSelectBlock, onHoverBlock })
-  useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock } }, [onSelectBlock, onHoverBlock])
+  const cbRef = useRef({ onSelectBlock, onHoverBlock, onView })
+  useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock, onView } }, [onSelectBlock, onHoverBlock, onView])
   const [msg, setMsg] = useState<string | null>(null)
 
   useEffect(() => {
@@ -34,6 +35,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onReady }: P
         onSelectBlock: b => cbRef.current.onSelectBlock?.(b),
         onHoverBlock: b => cbRef.current.onHoverBlock?.(b),
         onDrill: req => fetchBlockWindow(db, req),          // 事前計算に無い窓を backend で逐次計算
+        onView: v => cbRef.current.onView?.(v),
       })
       onReady?.(handleRef.current)
       void warmBlocks(db)                                   // ワーカーを先に起こして Ctx を温める（初回の降下を速く）

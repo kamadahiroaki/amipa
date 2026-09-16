@@ -192,6 +192,25 @@ interface Props {
   floodMaxHop?: number                       // ランプ正規化用の最大 hop（=D）
   msaHighlight?: Set<string> | null          // MSA 対象に選択中のノード名(グラフ上でリング強調)
   msaHoverNodes?: Set<string> | null         // MSA パネルで hover 中の列のノード群(強い強調。排他アレルは複数)
+  blockColors?: BlockColorMap | null         // Blocks パネル（多解像度 MSA）の窓・段に合わせた塗り分け。null=無効
+}
+
+// Blocks パネルの現在の窓・段に合わせてノードを塗る。参照コンティグごとに、開始位置で昇順に並べた区間
+// [starts[i], ends[i]] と色 colors[i]。ノードは代表位置（ref_bp と ref_bp_end の中点）を含む最小の区間の色になる。
+// 区間に入らないノード（窓の外・参照座標なし・多重マッピング）は薄い灰色（呼び出し側で null を灰に写す）。
+export interface BlockColorMap { maxSpan: number; contigs: Map<number, { starts: number[]; ends: number[]; colors: number[] }> }
+export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
+                             bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
+  if (contig == null || bp == null || multi) return null
+  const c = bm.contigs.get(Number(contig)); if (!c) return null
+  const mid = (Number(bp) + Number(bpEnd ?? bp)) / 2
+  let lo = 0, hi = c.starts.length
+  while (lo < hi) { const m = (lo + hi) >> 1; if (c.starts[m] <= mid) lo = m + 1; else hi = m }
+  let best = -1
+  for (let j = lo - 1; j >= 0 && c.starts[j] >= mid - bm.maxSpan; j--) {
+    if (c.ends[j] >= mid && (best < 0 || c.ends[j] - c.starts[j] < c.ends[best] - c.starts[best])) best = j
+  }
+  return best >= 0 ? c.colors[best] : null
 }
 
 export interface GraphCanvasHandle {
@@ -268,7 +287,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     cnvMode, cnvNodes, cnvColors, onCnvSuppress, seqMode, baseMap, coverageMin,
     nodeScale, edgeMin, mapMapq, hapSel, maxRows, onLodClamp, detailDepthMode, maxEdgePx, maxEdgeReads, showNodeNames, showNodeBp, labelScale, labelColor, labelOffset, showRefPos, refContigs, nodeColors,
     selectedPaths, ribbons, layerZoom, zoomWindow, worldBbox, layerOffset, suppressHeavyWarning,
-    floodMode, floodResult, floodSeedComp, floodMaxHop, msaHighlight, msaHoverNodes,
+    floodMode, floodResult, floodSeedComp, floodMaxHop, msaHighlight, msaHoverNodes, blockColors,
     onViewportChange, onHeavyView, onNodeSelect, onLoadingChange, onFetchProgress, onFastPath,
     onRibbonEdited, onNodesEdited }, ref
 ) {
@@ -460,6 +479,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   useEffect(() => { showRefPosRef.current = showRefPos; renderRef.current?.() }, [showRefPos])
   useEffect(() => { refContigsRef.current = refContigs; renderRef.current?.() }, [refContigs])
   useEffect(() => { nodeColorsRef.current = nodeColors; renderRef.current?.() }, [nodeColors])
+  useEffect(() => { blockColorsRef.current = blockColors ?? null; renderRef.current?.() }, [blockColors])
   useEffect(() => { ribbonsRef.current = ribbons; renderRibbonsRef.current?.() }, [ribbons])
 
   interface PathCache { nodes: CtgPathNode[]; steps: CtgPathStep[] }
@@ -517,6 +537,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const labelOffsetRef      = useRef(labelOffset)
   const refContigsRef       = useRef(refContigs)
   const nodeColorsRef       = useRef(nodeColors)
+  const blockColorsRef      = useRef<BlockColorMap | null>(blockColors ?? null)
   const ribbonsRef          = useRef(ribbons)
   const ribbonLayerRef      = useRef<PIXI.Graphics | null>(null)
   const renderRibbonsRef    = useRef<(() => void) | null>(null)
@@ -734,8 +755,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         // ノードの既定色（アノテ着色が無いとき）。以前はここで `nodes.haplotype` を見て
         // a/b/m を塗り分けていたが、その列は emitter が is_bubble を letter で書き直しただけの
         // 重複で、ハプロタイプの意味は無かった（列ごと廃止）。
-        const fill = annot != null ? annot : 0x228be6
-        const line = annot != null ? darken(annot) : 0x1864ab
+        const bmF = blockColorsRef.current      // Blocks パネルの塗り分けは図版出力にも反映
+        const blk: number | null | undefined = bmF ? blockColorOf(bmF, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi) : undefined
+        const fill = blk !== undefined ? (blk ?? 0xe9ecef) : annot != null ? annot : 0x228be6
+        const line = blk !== undefined ? (blk != null ? darken(blk) : 0xadb5bd) : annot != null ? darken(annot) : 0x1864ab
         return { node_name: n.node_name, xCoord: n.xCoord, yCoord: n.yCoord, radius: n.radius, angle: n.angle,
                  fill: hex(fill), stroke: hex(line) }
       })
@@ -1341,6 +1364,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         }
         // アラインビュー連動の対応色（あれば最優先で塗る）
         const linkColor = nodeColorsRef.current.get(n.node_name)
+        // Blocks パネルの窓に合わせた塗り分け。undefined=モード OFF、null=モード ON だが区間の外（薄灰）
+        const bm = blockColorsRef.current
+        const blockColor: number | null | undefined = bm ? blockColorOf(bm, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi) : undefined
         // アノテ着色(band/region/gene 密度)。node fill は単値なので相互排他、優先 band>region>gene。
         const annotColor: number | null =
             bandModeRef.current   ? bandToColor(n.band_id, bandDictRef.current)
@@ -1350,11 +1376,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         const fillColor = floodFill != null ? floodFill
                         : linkColor != null ? linkColor
                         : shouldGrey ? 0xe9ecef
+                        : blockColor !== undefined ? (blockColor ?? 0xe9ecef)
                         : annotColor != null ? annotColor
                         : 0x228be6
         const lineColor = floodFill != null ? floodLineC
                         : linkColor != null ? 0x343a40
                         : shouldGrey ? 0xadb5bd
+                        : blockColor !== undefined ? (blockColor != null ? darken(blockColor) : 0xadb5bd)
                         : annotColor != null ? darken(annotColor)
                         : 0x1864ab
 
