@@ -55,7 +55,7 @@ const cv = {hdr:$('hdr'), grid:$('grid')};
 function sizeCanvas(c,w,h){ const r=window.devicePixelRatio||1; c.width=Math.max(1,Math.round(w*r)); c.height=Math.max(1,Math.round(h*r)); c.style.width=w+'px'; c.style.height=h+'px'; const g=c.getContext('2d'); g.setTransform(r,0,0,r,0,0); return g; }
 function level(){ return win().levels[st.li]; }
 function nb(){ return level().nblocks; }
-function originRank(){ return st.origin==null ? level().origin : Math.min(st.origin, nb()-1); }
+function originRank(){ return st.origin==null ? (level().origin!=null ? level().origin : 0) : Math.min(st.origin, nb()-1); }   // origin が無い古いサイドカーでも NaN にしない
 function rr(rank){ return DATA.meta.circular && st.win===0 ? ((rank - originRank()) % nb() + nb()) % nb() : rank; }
 
 // ---- ブロックインスタンスの表示順（反転・回転） ----

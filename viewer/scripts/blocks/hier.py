@@ -288,6 +288,7 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
             st_ = np.cumsum(colbp[cb]) - colbp[cb]; bstart.append(st_); btot[b] = int(colbp[cb].sum())
             blkrank[cb] = np.arange(cb.size); cpos255[cb] = st_ / max(1, btot[b]) * 255
         inst_bp = [[] for _ in range(nb)]; hap_out = []; child_ranges = {b: [] for b in range(nb)}; adj_by_name = {}
+        bkpt_bp = np.zeros(nb, np.float64)          # 境界 k|k+1 に破断点を持つハプロの bp（環状の原点＝最も切れていない境界）
         if record is not None and W not in record:
             continue                       # 梯子の途中（錨の削減だけ進める）
         for h in haps_in:
@@ -396,6 +397,14 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
                 for u_, v_ in pairs:
                     ea = (int(u_[0]), 1 if u_[1] else 0); eb = (int(v_[0]), 0 if v_[1] else 1)
                     hap_adj.add(tuple(sorted([ea, eb])))
+                # 主鎖の並びで隣接ブロック k→k+1 が続いていない境界に、このコンティグの bp を積む（環状の原点の選択に使う）
+                mainseq = [int(x[0]) for x in bl if x[5] == 0]; mpos = {r: i for i, r in enumerate(mainseq)}
+                for k in range(nb):
+                    nxt = (k + 1) % nb
+                    if k not in mpos or nxt not in mpos: continue
+                    if not is_circ and k + 1 >= nb: continue
+                    ik = mpos[k]; ok = (ik + 1 < len(mainseq) and mainseq[ik + 1] == nxt) or (is_circ and ik == len(mainseq) - 1 and mainseq[0] == nxt)
+                    if not ok: bkpt_bp[k] += tot
                 ctg_out.append(dict(name=ctx.at.labels_of(pi)[2] or ctx.at.p_names[pi], path=ctx.at.p_names[pi],
                                     strand=("-" if sign < 0 else "+"), start=int(start), bp=tot, nsteps=n, inst=inst, minor=minor))
             hap_out.append(dict(hap=ctx.hapnames[h], isref=int(any(ctx.at.isref(S[k][4]) for k in sel)), contigs=ctg_out))
@@ -429,6 +438,10 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         blocks = [dict(c0=int(blk_c0[b]), c1=int(blk_c1[b]), span=int(so[b]), tbp=tbp[b], bpmax=bpmax[b],
                        nhap=int(nhap_b[b]), x=int(xo[b]), atoms=int(atoms_in[b]), ref_contig=int(colcid[blk_c0[b]]),
                        name=colname[blk_c0[b]] + "…" + colname[blk_c1[b]], ncol=int(atoms_in[b])) for b in range(nb)]
+        # 環状の原点: 破断点の bp が最小の境界のうち、直前のブロックが最も広いものの次 → そのブロックを先頭に回して表示する
+        origin = 0
+        if ctx.circular and nb > 1:
+            cand = np.flatnonzero(bkpt_bp == bkpt_bp.min()); origin = int((cand[np.argmax(blk_span[cand])] + 1) % nb)
         alladj = sorted(set().union(*adj_by_name.values())) if adj_by_name else []
         aidx = {x: i for i, x in enumerate(alladj)}; events = {}
         if tree is not None and alladj:
@@ -441,7 +454,7 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
             ev = fitch(tree_nodes(tree), int(tree["root"]), X)
             events = {str(v): dict(gain=g, loss=l) for v, (g, l) in ev.items() if g or l}
         adj_list = [[x[0][0], x[0][1], x[1][0], x[1][1]] for x in alladj]
-        levels.append(dict(W=W, nblocks=nb, blocks=blocks, haps=hap_out, mergecap=cap, mode=('bins' if (bins and bins > 0) else 'blocks'), adj=adj_list, events=events,
+        levels.append(dict(W=W, nblocks=nb, blocks=blocks, haps=hap_out, mergecap=cap, mode=('bins' if (bins and bins > 0) else 'blocks'), adj=adj_list, events=events, origin=origin,
                            nonmono=int(sum(1 for hp in hap_out for c in hp["contigs"] for x in c["inst"] if x[5] < 4 and x[16] == 0))))
         child_list.append(child_ranges)          # ★段ごとに保持。子の窓は最細段（levels[0]）のブロック番号で作る
     return dict(levels=levels, atoms=int(nat), H=H, child_ranges=(child_list[0] if child_list else {}), ncols=nc, nb_by_W=nb_by_W, tree=tree_out)
