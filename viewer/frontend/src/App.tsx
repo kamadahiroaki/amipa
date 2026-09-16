@@ -795,7 +795,7 @@ export default function App() {
       graph: { nodeGreyMode, coverageTextMode, edgeWidthMode, cnvMode, showNodeNames, showNodeBp, showAlignColors, showRefPos,
                maxHb, coverageMin, nodeScale, edgeMin, mapMapq, maxEdgePx, maxEdgeReads, labelScale, labelColor, labelOffset },
       paths: [...selectedPaths.entries()],
-      panels: { leftW, rightW, topH, bottomH, msaH, showPaths, showOverlays },
+      panels: { leftW, rightW, topH, bottomH, msaH, blkH, showPaths, showOverlays },
       ribbon: { level: ribbonLevel, sel: [...ribbonSel.entries()] },
       align: { rows: alignRows, activeRowId: activeAlignRowId },
     }
@@ -831,6 +831,7 @@ export default function App() {
     if (typeof pn.topH === 'number') setTopH(pn.topH)
     if (typeof pn.bottomH === 'number') setBottomH(pn.bottomH)
     if (typeof pn.msaH === 'number') setMsaH(pn.msaH)
+    if (typeof pn.blkH === 'number') setBlkH(pn.blkH)
     if (typeof pn.showPaths === 'boolean') setShowPaths(pn.showPaths)
     if (typeof pn.showOverlays === 'boolean') setShowOverlays(pn.showOverlays)
     const rb = s.ribbon
@@ -1065,6 +1066,12 @@ export default function App() {
     const start = msaH
     makeDragHandler(delta =>
       setMsaH(Math.max(MIN_SIDE, Math.min(window.innerHeight - MIN_GRAPH, start - delta)))
+    )(e)
+  }
+  function onBlkHandleDown(e: React.MouseEvent) {
+    const start = blkH
+    makeDragHandler(delta =>
+      setBlkH(Math.max(MIN_SIDE, Math.min(window.innerHeight - MIN_GRAPH, start - delta)))
     )(e)
   }
   function onRightHandleDown(e: React.MouseEvent) {
@@ -2822,12 +2829,17 @@ export default function App() {
       </div>
 
       {/* ── Bottom panel ──────────────────────────────────────────── */}
-      <div
-        onMouseDown={onBottomHandleDown}
-        title="Drag to resize bottom panel"
-        className="amipa-grip-row"
-        style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
-      />
+      {/* Alignment のハンドルは、閉じているときは「下に他のパネルが無い」場合だけ出す。
+          MSA / Blocks が開いていると、その直上にこのハンドルが来て、下のパネルを広げようとした
+          ドラッグが Alignment を開いてしまう（掴みしろ GRIP_PAD 分だけ下にも張り出している） */}
+      {(bottomH > 0 || (msaH === 0 && blkH === 0)) && (
+        <div
+          onMouseDown={onBottomHandleDown}
+          title="Drag to resize bottom panel"
+          className="amipa-grip-row"
+          style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
+        />
+      )}
       {bottomH > 0 && (
         <div style={{ height: bottomH, flexShrink: 0, overflow: 'hidden',
           borderTop: '1px solid #c8cdd3', background: '#f8f9fa' }}>
@@ -2950,6 +2962,14 @@ export default function App() {
       )}
 
       {/* ── Bottom panel 3: 多解像度 MSA（共線ブロック） ─────────────── */}
+      {blkH > 0 && (
+        <div
+          onMouseDown={onBlkHandleDown}
+          title="Drag to resize Blocks panel"
+          className="amipa-grip-row"
+          style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
+        />
+      )}
       {blkH > 0 && (
         <div style={{ height: blkH, flexShrink: 0, overflow: 'hidden', borderTop: '1px solid #c8cdd3', background: '#fff' }}>
           <BlockMsa

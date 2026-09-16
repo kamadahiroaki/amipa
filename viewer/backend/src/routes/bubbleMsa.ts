@@ -27,7 +27,7 @@ const MAX_TOKENS = Number((process.env.AMIPA_MSA_MAX_TOKENS ?? process.env.MSA_M
 //   (2) `realpath(<db>)+'.distill'`     … emitter が張ったサイドカー(symlink 運用でも届く)
 //   (3) db_meta.inputs.distill.path     … サイドカー導入前に建った既存 DB(WG 等)の救済。
 //       emitter は昔から入力の出自を db_meta に刻んでいるので、再ビルドせず MSA が使える。
-function distillFor(dbPath: string): string | null {
+export function distillFor(dbPath: string): string | null {
   const cands: string[] = [dbPath + '.distill']
   try { const rp = fs.realpathSync(dbPath); if (rp !== dbPath) cands.push(rp + '.distill') } catch { /* ignore */ }
   for (const c of cands) {

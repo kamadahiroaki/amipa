@@ -10,7 +10,8 @@ import path from 'path'
 //     （開発機のスクリプト置き場）への実行時依存を切るため。
 //
 // 必要な Python 側の依存は numpy だけ(bubble_msa.py が distill の .npy を読む)。
-// reads_query.py / cs_ops.py は標準ライブラリのみ。
+// reads_query.py / cs_ops.py は標準ライブラリのみ。blocks/（多解像度 MSA の逐次計算）は numpy 必須、
+// numba はあれば速い（無くても動く）。
 
 /** ヘルパ実行に使う python。AMIPA_PYTHON > 旧 MSA_PYTHON/AMIPA_PY > PATH の python3。 */
 export const AMIPA_PYTHON =

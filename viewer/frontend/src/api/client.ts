@@ -788,3 +788,21 @@ export async function fetchBlockNodes(dbFile: string, layer: number, contig: num
   const j = await res.json()
   return Array.isArray(j.names) ? j.names as string[] : []
 }
+// 逐次計算: 事前計算のサイドカーに無い窓を、backend の常駐 Python ワーカーで計算する。
+//   ranges = 親ブロックの各インスタンスのトークン範囲 [path 名, s0, e0]（blockMsaRender が inst[8..9] から組む）
+export interface BlockDrillRequest { ranges: [string, number, number][]; span: number; afrac: number; label: string; depth: number; parent: number; pblock: number }
+export interface BlockDrillResult { window?: any; error?: string; ms?: number; total_ms?: number; missing?: number; state?: string }
+export async function fetchBlockWindow(dbFile: string, req: BlockDrillRequest): Promise<BlockDrillResult> {
+  let res: Response
+  try {
+    res = await fetch('/api/blocks/window', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ...req }) })
+  } catch (e) { return { error: String(e) } }
+  let j: BlockDrillResult | null = null
+  try { j = await res.json() } catch { /* ignore */ }
+  if (!res.ok) return { error: (j && j.error) || 'request failed (' + res.status + ')' }
+  return j ?? { error: 'empty response' }
+}
+// ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）
+export async function warmBlocks(dbFile: string): Promise<{ state: string; error?: string; warm_ms?: number }> {
+  try { const r = await fetch(`/api/blocks/warm?db=${encodeURIComponent(dbFile)}`); return await r.json() } catch (e) { return { state: 'error', error: String(e) } }
+}

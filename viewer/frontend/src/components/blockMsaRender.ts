@@ -1,11 +1,12 @@
 // @ts-nocheck
+import type { BlockDrillRequest, BlockDrillResult } from '../api/client'
 // 多解像度 MSA（共線ブロック）の描画。functions/msa_lod/hier_template.html の JS をそのまま移植（vanilla、canvas）。
 // React 側は components/BlockMsa.tsx が薄く包む。ここは意図的に型を付けない（試作。本番化時に整える）。
 const BODY = '\n<div class="toolbar"><div class="chips" id="bk_chips" style="margin-left:0"></div>\n  <div class="grp"><span class="t">窓</span><nav class="crumbs" id="bk_crumbs" aria-label="階層"></nav></div>\n  <div class="grp"><span class="t">最小ブロック</span><span id="bk_ladder"></span></div>\n  <div class="grp"><span class="t">並べ方</span><button id="bk_m_msa" aria-pressed="true">合意座標</button><button id="bk_m_own" aria-pressed="false">各行の並び</button></div>\n  <div class="grp"><span class="t">目盛り</span><button id="bk_a_cons" aria-pressed="true">ブロック累積 bp</button><button id="bk_a_ref" aria-pressed="false">参照 bp</button></div>\n  <div class="grp"><span class="t">行順</span><button id="bk_o_tree" aria-pressed="true">系統樹</button><button id="bk_o_name" aria-pressed="false">名前</button></div>\n  <div class="grp" id="bk_origingrp"><span class="t">原点</span><span id="bk_origintxt" class="t"></span><button id="bk_setorigin" disabled>選択ブロックを原点に</button><button id="bk_autoorigin">自動</button></div>\n  <div class="grp"><button id="bk_scopein" disabled>選択ブロックの内側へ →</button><button id="bk_scopeout" disabled>← 全体へ</button></div>\n  <div class="grp"><span class="t">変異密度</span><button id="bk_v_minor" aria-pressed="true">少数派サイト</button><button id="bk_v_priv" aria-pressed="false">私有サイト</button><button id="bk_v_nonanc" aria-pressed="false">錨でない bp</button></div>\n  <div class="grp"><span class="t">基準</span><button id="bk_n_abs" aria-pressed="true">絶対（層内百分位）</button><button id="bk_n_block" aria-pressed="false">ブロック相対</button><button id="bk_n_hap" aria-pressed="false">株相対</button></div>\n  <div class="grp"><label><input type="checkbox" id="bk_bund" checked>束ねる</label></div>\n</div>\n<div class="legend" id="bk_legend"></div>\n<div class="bkmain">\n  <div id="bk_corner"><span>ハプロタイプ ↓</span><span id="bk_scopetxt"></span></div>\n  <div id="bk_hdrwrap"><canvas id="bk_hdr"></canvas></div>\n  <aside id="bk_detail"><h3>詳細 <button id="bk_copybtn" title="詳細の文字をコピー">コピー</button></h3><div id="bk_detailbody"><p class="k">矢印や列見出しにホバーすると詳細が出ます。クリックで固定。</p></div></aside>\n  <div id="bk_body"><div id="bk_treewrap"><svg id="bk_tree" xmlns="http://www.w3.org/2000/svg"></svg></div><div id="bk_labwrap"></div><div id="bk_gridwrap"><canvas id="bk_grid"></canvas></div></div>\n</div>\n';
 const CSS = '.bkmsa{--bg:#f3f6f7;--panel:#fff;--ink:#1b2530;--muted:#64707c;--line:#d3dbe1;--line2:#e7ecf0;--accent:#0d9488;--ref:#fff3e0;--reflab:#7a4b00;\n  --sel:#ff1493;--selbg:rgba(255,20,147,.12);--hover:rgba(13,148,136,.10);--shadow:0 6px 20px rgba(20,30,40,.14);--tick:#8a96a3;--rep:#6b7480;--gap:#eef2f5;--inv:#7c3aed;--disp:#d98200;--abs:#c9d1d8}.bkmsa *{box-sizing:border-box}.bkmsa{background:var(--bg);color:var(--ink);font:13px/1.45 "IBM Plex Sans",system-ui,sans-serif;display:flex;flex-direction:column;height:100%;overflow:hidden;position:relative}.bkmsa .chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}.bkmsa .chip{font:11.5px "IBM Plex Mono",monospace;color:var(--muted);border:1px solid var(--line2);border-radius:999px;padding:2px 9px;background:var(--bg)}.bkmsa .chip b{color:var(--ink);font-weight:500}.bkmsa .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:5px 16px;border-bottom:1px solid var(--line);background:var(--panel)}.bkmsa .grp{display:flex;align-items:center;gap:5px;padding-right:12px;border-right:1px solid var(--line2)}.bkmsa .grp:last-child{border-right:0}.bkmsa .grp .t{font-size:11.5px;color:var(--muted);margin-right:2px}.bkmsa button{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:6px;padding:3px 9px;font:12px "IBM Plex Sans",sans-serif;cursor:pointer}.bkmsa button:hover{border-color:var(--accent)}.bkmsa button[disabled]{opacity:.45;cursor:default}.bkmsa button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}.bkmsa button.mono{font-family:"IBM Plex Mono",monospace}.bkmsa button:focus-visible, .bkmsa input:focus-visible{outline:2px solid var(--sel);outline-offset:1px}.bkmsa label{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:4px}.bkmsa input[type=checkbox]{accent-color:var(--accent)}.bkmsa .crumbs{display:flex;align-items:center;gap:3px;flex-wrap:wrap}.bkmsa .crumbs .sep{color:var(--muted);font-size:12px}.bkmsa .crumb{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:6px;padding:2px 8px;font:12px "IBM Plex Mono",monospace;cursor:pointer}.bkmsa .crumb[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}.bkmsa .legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:11.5px;color:var(--muted);padding:5px 16px;border-bottom:1px solid var(--line);background:var(--panel)}.bkmsa .legend canvas{vertical-align:middle}.bkmsa .bkmain{flex:1;display:grid;grid-template-columns:var(--treew,130px) 176px 1fr 320px;grid-template-rows:40px 1fr;min-height:0;background:var(--panel)}.bkmsa #bk_corner{grid-column:1/3;border-right:1px solid var(--line);border-bottom:1px solid var(--line);font-size:10.5px;color:var(--muted);padding:4px 8px;display:flex;align-items:flex-end;justify-content:space-between}.bkmsa #bk_hdrwrap{border-bottom:1px solid var(--line);position:relative;overflow:hidden}.bkmsa #bk_detail{grid-row:1/3;border-left:1px solid var(--line);padding:10px 12px;overflow:auto;font:12px/1.55 "IBM Plex Mono",monospace;user-select:text;-webkit-user-select:text}.bkmsa #bk_detail h3{font:600 12px "IBM Plex Sans",sans-serif;margin:0 0 6px;color:var(--muted);display:flex;justify-content:space-between;align-items:center}.bkmsa #bk_detail .k{color:var(--muted)}.bkmsa #bk_detail .h{color:var(--accent);font-weight:500}.bkmsa #bk_detail p{margin:0 0 8px}.bkmsa #bk_detail ul{margin:0 0 8px;padding-left:16px}.bkmsa #bk_detail li{margin:0}.bkmsa #bk_body{grid-column:1/4;display:grid;grid-template-columns:var(--treew,130px) 176px 1fr;overflow-y:auto;overflow-x:hidden;min-height:0}.bkmsa #bk_treewrap{position:relative}.bkmsa #bk_labwrap{border-right:1px solid var(--line);position:relative}.bkmsa .lab{position:absolute;left:0;right:0;height:30px;display:flex;align-items:center;padding:0 8px;font:11px "IBM Plex Mono",monospace;white-space:nowrap;overflow:hidden;\n  user-select:text;-webkit-user-select:text;border-bottom:1px solid var(--line2)}.bkmsa .lab.ref{background:var(--ref);color:var(--reflab)}.bkmsa .lab.hov{background:var(--hover)}.bkmsa .lab small{color:var(--muted);margin-left:6px;font-size:10px}.bkmsa #bk_gridwrap{position:relative}.bkmsa canvas{display:block}.bkmsa .sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;margin-right:4px}.bkmsa #bk_copybtn{font-size:11px;padding:1px 7px}\n@media (max-width:900px){.bkmain{grid-template-columns:0 120px 1fr 0}.bkmsa #bk_body{grid-template-columns:0 120px 1fr}.bkmsa #bk_detail{display:none}}\n';
 export interface BlockRef { win: number; level: number; W: number; rank: number; name: string; ref_contig: number; x: number; span: number; tbp: number; nhap: number; label: string }
 export interface BlockMsaHandle { selectByRef(contig: number, bp: number): boolean; destroy(): void }
-export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void }
+export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void; onDrill?: (req: BlockDrillRequest) => Promise<BlockDrillResult> }
 function injectStyle(){ if (document.getElementById('bkmsa_style')) return; const s = document.createElement('style'); s.id = 'bkmsa_style'; s.textContent = CSS; document.head.appendChild(s); }
 export function mountBlockMsa(root: HTMLElement, DATA: any, cb: BlockMsaCallbacks): BlockMsaHandle {
   injectStyle(); root.classList.add('bkmsa'); root.innerHTML = BODY;
@@ -43,7 +44,7 @@ function levelDensRef(){ if (_densRef.has(st.li)) return _densRef.get(st.li); co
 function fmtbp(x){ if (x>=1e6) return (x/1e6).toFixed(x>=1e7?1:2)+' Mb'; if (x>=1e3) return (x/1e3).toFixed(x>=1e5?0:1)+' kb'; return x+' bp'; }
 const esc = s => String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
-const st = {win: 0, li: 0, mode:'msa', axis:'cons', order:'tree', origin:null, sel:null, hover:null, pinned:false, showMinor:true, bundle:true, showLinks:false, measure:'minor', norm:'abs'};
+const st = { drilling:false,win: 0, li: 0, mode:'msa', axis:'cons', order:'tree', origin:null, sel:null, hover:null, pinned:false, showMinor:true, bundle:true, showLinks:false, measure:'minor', norm:'abs'};
 if (st.li<0) st.li=0;
 st.li = Math.max(0, win().levels.length-1);   // 既定は最も粗い段
 const cv = {hdr:$('hdr'), grid:$('grid')};
@@ -287,17 +288,23 @@ function drawTree(){
   svg.querySelectorAll('.ev, .br').forEach(el=>{ el.style.cursor='pointer'; el.addEventListener('mousemove', e=>{ if (st.pinned) return; showBranch(+el.getAttribute('data-node')); }); el.addEventListener('click', e=>{ st.pinned = true; showBranch(+el.getAttribute('data-node')); }); });
 }
 function drawChips(){ const L = level(); let inv=0, disp=0, rep=0, small=0; for (const r of LY.rows) for (const p of r.items){ const k=p.o.kind; if (k===3) inv++; else if (k===2) disp++; else if (k===4) rep++; else if (k===5) small++; }
-  $('chips').innerHTML = `<span class="chip">窓 <b>${st.win===0?"全体":esc(win().label)}</b> · 原子区間 ${win().atoms.toLocaleString()} · 深さ ${win().depth}</span><span class="chip">最小ブロック <b>${fmtbp(L.W)}</b></span><span class="chip">ブロック <b>${LY.vis.length}</b></span><span class="chip">行 <b>${LY.rows.length}</b></span><span class="chip">逆位 <b>${inv}</b> 変位 <b>${disp}</b> 小群 ${small}</span><span class="chip">併合の上限 <b>${L.mergecap||0}</b> 株${L.nonmono?` · 内部順序ずれ ${L.nonmono}`:''}</span>`;
+  $('chips').innerHTML = `<span class="chip">窓 <b>${st.win===0?"全体":esc(win().label)}</b>${(level().mode==='bins')?' · <b>座標分割</b>（再編成なし・等分）':''} · ${level().mode==='bins'?'錨':'原子区間'} ${win().atoms.toLocaleString()} · 深さ ${win().depth}${win().ondemand?` · <b>逐次計算</b>${win().ms?' '+win().ms+' ms':''}`:''}</span><span class="chip">${L.mode==='bins'?'ビン幅':'最小ブロック'} <b>${fmtbp(L.W)}</b></span><span class="chip">ブロック <b>${LY.vis.length}</b></span><span class="chip">行 <b>${LY.rows.length}</b></span><span class="chip">逆位 <b>${inv}</b> 変位 <b>${disp}</b> 小群 ${small}</span><span class="chip">併合の上限 <b>${L.mergecap||0}</b> 株${L.nonmono?` · 内部順序ずれ ${L.nonmono}`:''}</span>`;
   const ld = $('ladder'); ld.innerHTML=''; win().levels.forEach((lv,i)=>{ const b=document.createElement('button'); b.className='mono'; b.textContent=fmtbp(lv.W)+' ('+lv.nblocks+')'; b.setAttribute('aria-pressed', i===st.li?'true':'false'); b.addEventListener('click',()=>{ st.li=i; st.sel=null; st.origin=null; drawAll(); emitSel(); }); ld.appendChild(b); });
   $('origingrp').style.display = (DATA.meta.circular && st.win===0) ? '' : 'none';
   $('origintxt').textContent = DATA.meta.circular ? `#${originRank()+1}${st.origin==null?'（自動）':''}` : '';
   $('scopetxt').textContent = win().parent>=0 ? `親 #${win().pblock+1} の内側 · 閾値 ${fmtbp(level().W)}` : `閾値 ${fmtbp(level().W)}`;
 }
+function canDrill(rank){ const L = level(); const B = L.blocks[rank]; if (!B) return false; return L.mode==='bins' ? (B.atoms==null || B.atoms>=2) : true; }
 function updateButtons(){ const w=win();
   const childOK = st.sel!=null && w.children && w.children[String(st.sel)]!=null;
+  const drillOK = st.sel!=null && !childOK && st.li===0 && !!(cb && cb.onDrill) && canDrill(st.sel);
   $('setorigin').disabled = !(st.sel!=null && DATA.meta.circular && st.win===0);
-  $('scopein').disabled = !(st.sel!=null && (st.li>0 || childOK));
-  $('scopein').textContent = (st.sel!=null && st.li===0 && childOK) ? '選択ブロックの内側へ →' : '細かく →';
+  if (st.drilling){ $('scopein').disabled = true; $('scopein').textContent = '計算中…'; }
+  else {
+    $('scopein').disabled = !(st.sel!=null && (st.li>0 || childOK || drillOK));
+    $('scopein').textContent = (st.sel!=null && st.li===0 && childOK) ? '選択ブロックの内側へ →' : (drillOK ? '選択ブロックの内側へ（逐次計算）→' : '細かく →');
+  }
+  $('scopein').title = (st.sel!=null && st.li===0 && !childOK && !drillOK) ? (canDrill(st.sel) ? '逐次計算の経路が無い（backend の Python ワーカーが使えない）' : 'このビンは錨が 1 本以下なので、これ以上分けられません') : (drillOK ? '事前計算に無い窓。backend で今計算します（初回はアトラスの読み込みで数秒〜数十秒）' : '');
   $('scopeout').disabled = !(st.li < w.levels.length-1 || w.parent>=0);
   $('scopeout').textContent = (st.li < w.levels.length-1) ? '← 粗く' : '← 親の窓へ';
   const bc = $('crumbs'); if (bc){ bc.innerHTML = winPath().map((p,i)=>
@@ -364,12 +371,31 @@ grid.addEventListener('click', e=>{ const rect = grid.getBoundingClientRect(); c
   else { st.pinned = false; st.sel = null; drawAll(); emitSel(); } });
 cv.hdr.addEventListener('click', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = (st.sel===c.rank)?null:c.rank; st.pinned = st.sel!=null; if (st.sel!=null) showBlock(c.rank); drawAll(); emitSel(); return; } } });
 cv.hdr.addEventListener('mousemove', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (x>=c.x && x<=c.x+c.w){ if (!st.pinned) showBlock(c.rank); emitHover(c.rank); return; } } emitHover(null); });
-$('scopein').addEventListener('click', ()=>{ if (st.sel==null) return;
+function enterWindow(ch){ st.win = ch; st.li = Math.max(0, WINS[ch].levels.length-1); st.sel=null; st.origin=null; st.pinned=false; drawAll(); emitSel(); }
+// 親ブロック rank の各インスタンスのトークン範囲（inst[8]=s0, inst[9]=e0、パス名で送る）。事前計算の child_ranges と同じ定義
+function drillRanges(rank){ const L = level(); const out = [];
+  for (const hp of L.haps) for (const c of hp.contigs) for (const x of c.inst){ if (x[5] < 4 && x[0] === rank) out.push([c.path, x[8], x[9]]); }
+  return out; }
+$('scopein').addEventListener('click', ()=>{ if (st.sel==null || st.drilling) return;
   // 同じ窓の中に細かい段があればまずそちらへ、無ければ子の窓へ降りる
   if (st.li > 0){ st.li -= 1; st.pinned=false; drawAll(); return; }
-  const ch = win().children ? win().children[String(st.sel)] : null;
-  if (ch==null){ return; }
-  st.win = ch; st.li = Math.max(0, WINS[ch].levels.length-1); st.sel=null; st.origin=null; st.pinned=false; drawAll(); emitSel(); });
+  const w = win(); const ch = w.children ? w.children[String(st.sel)] : null;
+  if (ch!=null){ enterWindow(ch); return; }
+  if (!(cb && cb.onDrill) || !canDrill(st.sel)) return;
+  // 事前計算に無い窓 → backend の常駐ワーカーで逐次計算。返ってきた窓を WINS に足して、親の children に登録する
+  const rank = st.sel, pw = st.win, B = level().blocks[rank];
+  const req = { ranges: drillRanges(rank), span: B.span, afrac: (DATA.meta.params && DATA.meta.params.sub_anchor_frac) || 0.5,
+                label: '#'+(rank+1), depth: w.depth+1, parent: pw, pblock: rank };
+  st.drilling = true; updateButtons();
+  $('detailbody').innerHTML = `<p class="k">#${rank+1} の内側を計算しています…（初回はアトラスの読み込みで数秒〜数十秒）</p>`;
+  cb.onDrill(req).then(r=>{ st.drilling = false;
+    if (!r || r.error || !r.window){ $('detailbody').innerHTML = `<p class="k">逐次計算に失敗: ${esc((r && r.error) || '応答なし')}</p>`; updateButtons(); return; }
+    const nw = r.window; nw.id = WINS.length; nw.parent = pw; nw.pblock = rank; nw.children = nw.children || {}; nw.ondemand = true; nw.ms = r.total_ms || r.ms || 0;
+    WINS.push(nw); if (!WINS[pw].children) WINS[pw].children = {}; WINS[pw].children[String(rank)] = nw.id;
+    if (st.win !== pw){ updateButtons(); return; }      // 待つ間に別の窓へ移っていたら登録だけして動かない
+    enterWindow(nw.id);
+  }).catch(e=>{ st.drilling = false; $('detailbody').innerHTML = `<p class="k">逐次計算に失敗: ${esc(String(e))}</p>`; updateButtons(); });
+});
 $('scopeout').addEventListener('click', ()=>{
   if (st.li < win().levels.length-1){ st.li += 1; st.pinned=false; drawAll(); return; }
   const w = win(); if (w.parent<0) return;
