@@ -189,6 +189,13 @@ function computeLayout(){
           else if (right!=null){ avail = need; x0 = Math.max(4, right - need); }
           else { avail = need; x0 = 4; }
           const sc = avail >= need ? 1 : (avail >= 40 ? avail/need : Math.min(1, Math.max(avail, 60)/need));
+          // 隙間に入らない長い変位・逆位の連なり（例: ecoli GCF_013459175 の #7〜#20 の逆位 14 ブロックが行末に来て画面外へ）は、
+          // 行順の隙間でなく**合意の列**の下段に置く（Mauve が逆位 LCB を軸の下の同じ位置に描くのと同じ）。連結線と矢印の向きで動きは読める
+          const overflow = x0 + need*Math.min(1, sc) > W + 2;
+          if (sc < 0.5 || overflow){
+            for (const p of blocks){ const col = blockX.get(vis[p.slot.pos]); const used = laneUsed.get('c'+p.slot.pos)||0;
+              p.w = Math.max(2, Math.min(col.w, col.w - used)); p.x = col.x + Math.min(used, Math.max(0, col.w - p.w)); laneUsed.set('c'+p.slot.pos, used + p.w + 1); p.atCol = true; }
+            continue; }
           let cx = x0; blocks.forEach((p,i)=>{ p.w = Math.max(2, widths[i]*sc); p.x = cx; cx += p.w + SEP*sc; });
         }
       }
@@ -393,7 +400,7 @@ function drawLegend(){ const el=$('legend'); el.innerHTML='';
   const s1=document.createElement('span'); s1.append('合意順序（左→右）'); s1.prepend(c); el.appendChild(s1);
   const mname = {minor:'少数派サイト密度（半数未満のハプロだけが持つノードを含む区間 / kb）', priv:'私有サイト密度（この株だけが持つノードを含む区間 / kb）', nonanc:'錨でない bp の割合'}[st.measure];
   const nname = {abs:'層内の百分位で灰色の濃さ（濃い＝多い）', block:'そのブロックの全株の中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）', hap:'その株の全ブロックの中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）'}[st.norm];
-  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。逆位は左向き＋下線', `矢印の下側 1/3＝${mname}。${nname}。1 px が 1 kb 以下まで拡大すると個々のサイトの位置の線に切り替わる`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','連結線＝隣り合う行の同じブロックを結ぶ（Mauve 風）。揃っていれば短い縦線、ずれていれば斜線。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックの線を濃くする','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
+  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは合意の列の下段に置く。逆位は左向き＋下線', `矢印の下側 1/3＝${mname}。${nname}。1 px が 1 kb 以下まで拡大すると個々のサイトの位置の線に切り替わる`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','連結線＝隣り合う行の同じブロックを結ぶ（Mauve 風）。揃っていれば短い縦線、ずれていれば斜線。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックの線を濃くする','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
 
 
 function blockRef(rank){ if (rank==null) return null; const L = level(); const B = L.blocks[rank]; if (!B) return null;
@@ -412,6 +419,7 @@ function showItem(h){
       `この通過 ${fmtbp(it[2])}${o.kind<4?` (典型長の ${(100*it[2]/Math.max(1,B.tbp)).toFixed(0)}%)`:''} · ${it[3].toLocaleString()} 葉歩 · 位置 ${fmtbp(it[6])} · 歩 ${it[8]}–${it[9]}${o.kind<4&&it.length>11?`<br>少数派サイト ${it[11]} 個 (${(it[11]/Math.max(1,it[2])*1000).toFixed(2)}/kb) · 私有サイト ${it[15]||0} 個 (${((it[15]||0)/Math.max(1,it[2])*1000).toFixed(2)}/kb) · 錨でない bp ${(100*(1-it[10]/Math.max(1,it[2]))).toFixed(1)}%${(()=>{ const cf = cellFill(it, r.hapIdx); return cf ? ' · 塗り: '+cf.txt : ''; })()}${it.length>14&&it[14]&&it[14].length?` · <b>内側の長い錨なし区間 ${it[14].map(g=>fmtbp(g[2])).join(', ')}</b>（縞）`:''}${it.length>16&&it[16]===0?`<br><b>この株はブロック内部で順序が入れ替わっている</b>（この層では少数派の破断点を無視して 1 ブロックにまとめている。上辺の破線。細かい層に降りると分かれる）`:''}`:''}${it[10]?`<br><span class="k">主なノード ${esc(it[10])} (${fmtbp(it[11])})</span>`:''}<br><span class="k">${esc(h.p.ct.c.name)} ${h.p.ct.c.strand} · ${esc(h.p.ct.c.path)}</span></p>`;
     if (o.kind<4 && it.length>20){ const dl = it[18]||[]; const big = dl.length ? dl.reduce((a,b)=>Math.max(a,b[2]),0) : 0;
       html += `<p><span class="k">ブロック内:</span> 覆う範囲 ${(it[20][0]/2.55).toFixed(0)}–${(it[20][1]/2.55).toFixed(0)}% · 合意の錨が無い区間 ${dl.length} 個${dl.length?`（最大 ${fmtbp(big)}）`:''}${it[17]?` · コンティグの${it[17]&1?'先頭':''}${it[17]===3?'と':''}${it[17]&2?'末尾':''}で切れている`:''}</p>`; }
+    if (h.p.atCol && st.mode!=='own') html += `<p class="k">この連なりは行順の隙間に入らないので、合意の列の下段に置いています（並びは「各行の並び」モードで）。</p>`;
     if (h.p.seg && st.mode!=='own'){ const sg = h.p.seg; const segs = LY.rows[h.ri].segs.filter(x=>x.ct===sg.ct); const i = segs.indexOf(sg);
       const nm = x => x.kind>=4 ? (x.kind===4?'錨なし':'小群') : (x.items.length>1 ? `#${x.items[0].o.rank+1}${x.dir?'→':'←'}…#${x.items[x.items.length-1].o.rank+1}` : `#${x.r0+1}${x.dir?'→':'←'}`);
       html += `<p><span class="k">この行の通過順:</span> ${i>0?esc(nm(segs[i-1]))+' → ':''}<b>${esc(nm(sg))}</b>${i+1<segs.length?' → '+esc(nm(segs[i+1])):''}<br><span class="k">区間 ${sg.items.length} ブロック · ${fmtbp(sg.items.reduce((a,p)=>a+p.o.it[2],0))}</span></p>`; }
@@ -518,6 +526,7 @@ return {
     L.blocks.forEach((B, i)=>{ const c = (B.ref_contig!=null ? B.ref_contig : 0); if (c===contig && bp >= B.x && bp <= B.x + B.span) { if (hit<0 || B.span < L.blocks[hit].span) hit = i; } });
     if (hit < 0) return false; st.sel = hit; st.pinned = true; showBlock(hit); drawAll(); emitSel(); return true; },
   destroy(){ window.removeEventListener('keydown', onKey); ro.disconnect(); root.innerHTML = ''; if (cb && cb.onView) cb.onView(null); },
+  _layout(){ return LY; },   // 試験用（配置の検査）
 };
 
 }
