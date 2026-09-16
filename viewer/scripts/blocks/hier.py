@@ -173,6 +173,29 @@ class Ctx:
         self.bpt = tb / max(1, tt)
         log("Ctx: 列 %d, パス %d, ハプロ %d, %.1f bp/token" % (self.ncols, len(self.present), len(self.hapnames), self.bpt))
 
+def coarsen(prev, W, at_x0, at_x1):
+    """入れ子の段: 直前の段のブロック（合意順に並ぶ単位）を、幅が W 未満のものから支持の弱い境界で隣と併合する（落とさない）。
+    prev: dict(bid=活性原子区間ごとのブロック id, atomsA, nb, b0, b1, last_rank=ブロック末尾の錨 rank, supc=境界ごとの支持ハプロ数,
+    members=最細段の rank の一覧)。返り値: 同じ形の dict と併合回数"""
+    nb = prev["nb"]; segs = [[k, k] for k in range(nb)]; nmerge = 0
+    sup = np.array([int(prev["supc"][prev["last_rank"][k]]) if prev["last_rank"][k] < len(prev["supc"]) else 0 for k in range(max(0, nb - 1))], np.int64)
+    span_of = lambda sg: float(at_x1[prev["b1"][sg[1]]] - at_x0[prev["b0"][sg[0]]])
+    while len(segs) > 1:
+        widths = [span_of(sg) for sg in segs]; i = int(np.argmin(widths))
+        if widths[i] >= W: break
+        cands = []
+        if i > 0: cands.append((int(sup[segs[i][0] - 1]), i - 1))
+        if i + 1 < len(segs): cands.append((int(sup[segs[i][1]]), i + 1))
+        j = min(cands)[1]; a, b = (j, i) if j < i else (i, j)
+        segs[a] = [segs[a][0], segs[b][1]]; del segs[b]; nmerge += 1
+    g_of = np.zeros(nb, np.int64)
+    for g, sg in enumerate(segs): g_of[sg[0]:sg[1] + 1] = g
+    bid = g_of[prev["bid"]]; nb2 = len(segs); atomsA = prev["atomsA"]
+    b0 = np.full(nb2, int(atomsA.max()) + 1, np.int64); b1 = np.full(nb2, -1, np.int64); np.minimum.at(b0, bid, atomsA); np.maximum.at(b1, bid, atomsA)
+    last_rank = np.array([prev["last_rank"][sg[1]] for sg in segs], np.int64)
+    members = [sum((prev["members"][k] for k in range(sg[0], sg[1] + 1)), []) for sg in segs]
+    return dict(bid=bid, atomsA=atomsA, nb=nb2, b0=b0, b1=b1, last_rank=last_rank, supc=prev["supc"], members=members), nmerge
+
 def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=500, varbins=32, record=None, bins=0, tree=None, want_tree=False):
     """ranges: [(pi, s0, e0)]。返り値: dict(levels=[...], atoms=n, cols=[...])"""
     wseqs = []; whap = []; wref = []
@@ -244,11 +267,17 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         _, bid_bins = np.unique(raw, return_inverse=True)
         Wlist = [max(1, int((hi_ - lo_) / bins))]; record = set(Wlist)
     fr = [merge_frac_max * (i / max(1, len(Wlist) - 1)) for i in range(len(Wlist))]
+    fine = None; cur = None; fine_origin = 0; nmerge = 0      # 最細の記録段。これより粗い記録段は fine のブロックを入れ子にまとめて作る
     for li, W in enumerate(Wlist):
-        cap = int(round(fr[li] * H))
+        cap = int(round(fr[li] * H)); nmerge = 0
+        recorded_here = (record is None) or (len(record) > 0 and W in record)
         if bins and bins > 0:
             bid = bid_bins.astype(np.int64); nb = int(bid.max()) + 1; atomsA = np.arange(nat); n2 = nat
             b0 = np.full(nb, nat, np.int64); b1 = np.full(nb, -1, np.int64); np.minimum.at(b0, bid, atomsA); np.maximum.at(b1, bid, atomsA)
+        elif fine is not None:
+            if not recorded_here: continue                     # 入れ子の段は記録する段だけ作る
+            cur, nmerge = coarsen(cur, W, at_x0, at_x1)
+            bid, nb, atomsA, b0, b1 = cur["bid"], cur["nb"], cur["atomsA"], cur["b0"], cur["b1"]
         else:
           for it in range(400):
               r2, bkr, n2, supc = breakpoints(aseqs, A2, nat, hap_of, H)
@@ -274,11 +303,14 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
               if merged: continue
               if not drop: break
               A2[atomsA[np.isin(bid, drop)]] = False
-        if not (bins and bins > 0):
+        if not (bins and bins > 0) and fine is None:
             atomsA = np.flatnonzero(A2)
         if nb == 0 or atomsA.size == 0: break
         nb_by_W[W] = nb
         if record is not None and len(record) == 0: continue          # probe: ブロック数だけ数える
+        if fine is None and not (bins and bins > 0) and recorded_here and nb > 0:
+            fine = dict(bid=bid.copy(), atomsA=atomsA.copy(), nb=nb, b0=b0.copy(), b1=b1.copy(), last_rank=r1.copy(),
+                        supc=np.asarray(supc).copy(), members=[[k] for k in range(nb)]); cur = fine
         atom2blk = np.full(nat, -1, np.int64); atom2blk[atomsA] = bid
         blk_c0 = at_c0[b0]; blk_c1 = at_c1[b1]; blk_span = at_x1[b1] - at_x0[b0]
         col2blk = np.where(col2atom >= 0, atom2blk[np.maximum(col2atom, 0)], -1)
@@ -450,6 +482,11 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         origin = 0
         if ctx.circular and nb > 1:
             cand = np.flatnonzero(bkpt_bp == bkpt_bp.min()); origin = int((cand[np.argmax(blk_span[cand])] + 1) % nb)
+        members = None
+        if cur is not None and cur is not fine:
+            members = cur["members"]
+            if ctx.circular: origin = next((g for g, mem in enumerate(members) if fine_origin in mem), origin)   # 粗い段の原点＝最細段の原点を含むブロック
+        elif cur is not None: fine_origin = origin
         alladj = sorted(set().union(*adj_by_name.values())) if adj_by_name else []
         aidx = {x: i for i, x in enumerate(alladj)}; events = {}
         if tree is not None and alladj:
@@ -462,7 +499,7 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
             ev = fitch(tree_nodes(tree), int(tree["root"]), X)
             events = {str(v): dict(gain=g, loss=l) for v, (g, l) in ev.items() if g or l}
         adj_list = [[x[0][0], x[0][1], x[1][0], x[1][1]] for x in alladj]
-        levels.append(dict(W=W, nblocks=nb, blocks=blocks, haps=hap_out, mergecap=cap, mode=('bins' if (bins and bins > 0) else 'blocks'), adj=adj_list, events=events, origin=origin,
+        levels.append(dict(W=W, nblocks=nb, blocks=blocks, haps=hap_out, mergecap=cap, mode=('bins' if (bins and bins > 0) else 'blocks'), adj=adj_list, events=events, origin=origin, merges=nmerge, members=members,
                            nonmono=int(sum(1 for hp in hap_out for c in hp["contigs"] for x in c["inst"] if x[5] < 4 and x[16] == 0))))
         child_list.append(child_ranges)          # ★段ごとに保持。子の窓は最細段（levels[0]）のブロック番号で作る
     return dict(levels=levels, atoms=int(nat), H=H, child_ranges=(child_list[0] if child_list else {}), child_list=child_list, ncols=nc, nb_by_W=nb_by_W, tree=tree_out)
@@ -540,7 +577,7 @@ def main():
         if w["depth"] >= a.max_depth - 1: continue
         # どの段のブロックからも降りられる（画面はダブルクリック）。逐次計算が予算を超える窓だけ焼く。
         # children の鍵は最細段 "rank"、粗い段 "li:rank"（画面の childKey と同じ）
-        for li, lev in enumerate(res["levels"]):
+        for li, lev in enumerate(res["levels"][:1]):            # 子窓は最細段だけ。粗い段のブロックは画面で最細段への絞り込みになる（計算なし）
             cr = res["child_list"][li] if li < len(res["child_list"]) else {}
             for b, blk in enumerate(lev["blocks"]):
                 rng = cr.get(b, [])
