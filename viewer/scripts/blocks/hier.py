@@ -196,7 +196,8 @@ def coarsen(prev, W, at_x0, at_x1):
     members = [sum((prev["members"][k] for k in range(sg[0], sg[1] + 1)), []) for sg in segs]
     return dict(bid=bid, atomsA=atomsA, nb=nb2, b0=b0, b1=b1, last_rank=last_rank, supc=prev["supc"], members=members), nmerge
 
-def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=500, varbins=32, record=None, bins=0, tree=None, want_tree=False):
+def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=500, varbins=256, record=None, bins=0, tree=None, want_tree=False):
+    # varbins: 少数派サイトの位置（通過内 0..varbins-1）。画面は 0..255 で読むので 256。32 だと左 1/8 に寄る（改訂 30）
     """ranges: [(pi, s0, e0)]。返り値: dict(levels=[...], atoms=n, cols=[...])"""
     wseqs = []; whap = []; wref = []
     for pi, s0, e0 in ranges:
