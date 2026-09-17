@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { fetchBlocks, fetchBlockWindow, warmBlocks, BlockDrillRequest } from '../api/client'
-import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView } from './blockMsaRender'
+import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView, GeneLite } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
 //   ・db が変わるたびに /api/blocks（サイドカー JSON）を取り直して描き直す
@@ -15,15 +15,17 @@ interface Props {
   onSelectHap?: (groupKey: string, hap: string) => void   // 行ラベルのクリック → グラフのパス群の選択切替
   onBaseMsa?: (req: BlockDrillRequest) => void           // 底: ブロックの各行のトークン範囲を塩基レベル MSA へ
   hapMarks?: Map<string, string>                    // グラフで選択中のパス群（鍵→色）→ 行ラベルの印
+  genes?: Map<number, GeneLite[]>                   // 参照コンティグ id → 遺伝子（列見出しのトラックと遺伝子密度の色）
   onReady?: (h: BlockMsaHandle | null) => void
 }
 
-export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa, hapMarks, onReady }: Props) {
+export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa, hapMarks, genes, onReady }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const handleRef = useRef<BlockMsaHandle | null>(null)
   const cbRef = useRef({ onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa })
   useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa } }, [onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa])
   useEffect(() => { handleRef.current?.setHapMarks(hapMarks ?? new Map()) }, [hapMarks])
+  useEffect(() => { handleRef.current?.setGenes(genes ?? new Map()) }, [genes])
   const [msg, setMsg] = useState<string | null>(null)
 
   useEffect(() => {
@@ -44,6 +46,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onBaseMsa: req => cbRef.current.onBaseMsa?.(req),
       })
       handleRef.current.setHapMarks(hapMarks ?? new Map())
+      handleRef.current.setGenes(genes ?? new Map())
       onReady?.(handleRef.current)
       void warmBlocks(db)                                   // ワーカーを先に起こして Ctx を温める（初回の降下を速く）
     }).catch(e => { if (live) setMsg('読み込みに失敗: ' + String(e)) })

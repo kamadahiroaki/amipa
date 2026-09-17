@@ -1013,6 +1013,22 @@ export default function App() {
     setMsaH(h => (h > 0 ? h : 300))
     showHint(`Blocks ${req.label} の各行（${req.ranges.length} 範囲）を塩基レベル MSA に渡しました`)
   }, [showHint])
+  // 遺伝子（参照座標）を参照コンティグ id ごとに。gene.chrom（例 chrY）と ref_contigs.name を末尾一致で合わせる
+  const blkGenes = useMemo(() => {
+    const m = new Map<number, { name: string; start: number; end: number; strand?: string }[]>()
+    if (!geneFeatures.length || !refContigs.size) return m
+    const byName = new Map<string, number>(); for (const [id, rc] of refContigs) byName.set(rc.name, id)
+    const one = refContigs.size === 1 ? [...refContigs.keys()][0] : null
+    for (const g of geneFeatures) {
+      let cid: number | undefined = g.chrom ? byName.get(g.chrom) : undefined
+      if (cid == null && g.chrom) { for (const [nm, id] of byName) if (nm.endsWith(g.chrom) || g.chrom.endsWith(nm)) { cid = id; break } }
+      if (cid == null && one != null) cid = one
+      if (cid == null) continue
+      const arr = m.get(cid) ?? []; arr.push({ name: g.name, start: g.start, end: g.end, strand: g.strand }); m.set(cid, arr)
+    }
+    for (const arr of m.values()) arr.sort((a, b) => a.start - b.start)
+    return m
+  }, [geneFeatures, refContigs])
   const blkHapMarks = useMemo(() => { const m = new Map<string, string>(); for (const [k, v] of ribbonSel) m.set(k, '#' + v.color.toString(16).padStart(6, '0')); return m }, [ribbonSel])
   const [blkHov, setBlkHov] = useState<Set<string> | null>(null)       // ホバー中ブロックのノード群（マゼンタ）
   const blkApiRef = useRef<BlockMsaHandle | null>(null)
@@ -3042,6 +3058,7 @@ export default function App() {
             onSelectHap={onBlockSelectHap}
             onBaseMsa={onBlockBaseMsa}
             hapMarks={blkHapMarks}
+            genes={blkGenes}
             onReady={h => { blkApiRef.current = h; if (!h) { setBlkHov(null); setBlkColors(null) } }}
           />
         </div>
