@@ -802,6 +802,14 @@ export async function fetchBlockWindow(dbFile: string, req: BlockDrillRequest): 
   if (!res.ok) return { error: (j && j.error) || 'request failed (' + res.status + ')' }
   return j ?? { error: 'empty response' }
 }
+// MSA の窓（参照区間）に合うグラフの表示層と、その層のノードの外接箱
+export interface BlockViewFit { layer: number; count: number; counts?: number[]; cx?: number; cy?: number; minx?: number; miny?: number; maxx?: number; maxy?: number; error?: string }
+export async function fetchBlockView(dbFile: string, contig: number, start: number, end: number, target = 800): Promise<BlockViewFit | null> {
+  try {
+    const p = new URLSearchParams({ db: dbFile, contig: String(contig), start: String(Math.floor(start)), end: String(Math.ceil(end)), target: String(target) })
+    const r = await fetch(`/api/blocks/view?${p}`); if (!r.ok) return null; return await r.json()
+  } catch { return null }
+}
 // ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）
 export async function warmBlocks(dbFile: string): Promise<{ state: string; error?: string; warm_ms?: number }> {
   try { const r = await fetch(`/api/blocks/warm?db=${encodeURIComponent(dbFile)}`); return await r.json() } catch (e) { return { state: 'error', error: String(e) } }

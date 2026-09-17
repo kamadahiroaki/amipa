@@ -11,15 +11,18 @@ interface Props {
   db: string | null
   onSelectBlock?: (b: BlockRef | null) => void
   onHoverBlock?: (b: BlockRef | null) => void
-  onView?: (v: BlockView | null) => void            // 見えている窓・段のブロックと色（グラフの塗り分け用）
+  onView?: (v: BlockView | null) => void            // 見えている窓・段のブロックと色（グラフの塗り分け用）、範囲（グラフ連動用）
+  onSelectHap?: (groupKey: string, hap: string) => void   // 行ラベルのクリック → グラフのパス群の選択切替
+  hapMarks?: Map<string, string>                    // グラフで選択中のパス群（鍵→色）→ 行ラベルの印
   onReady?: (h: BlockMsaHandle | null) => void
 }
 
-export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onReady }: Props) {
+export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSelectHap, hapMarks, onReady }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const handleRef = useRef<BlockMsaHandle | null>(null)
-  const cbRef = useRef({ onSelectBlock, onHoverBlock, onView })
-  useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock, onView } }, [onSelectBlock, onHoverBlock, onView])
+  const cbRef = useRef({ onSelectBlock, onHoverBlock, onView, onSelectHap })
+  useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock, onView, onSelectHap } }, [onSelectBlock, onHoverBlock, onView, onSelectHap])
+  useEffect(() => { handleRef.current?.setHapMarks(hapMarks ?? new Map()) }, [hapMarks])
   const [msg, setMsg] = useState<string | null>(null)
 
   useEffect(() => {
@@ -36,7 +39,9 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onRe
         onHoverBlock: b => cbRef.current.onHoverBlock?.(b),
         onDrill: req => fetchBlockWindow(db, req),          // 事前計算に無い窓を backend で逐次計算
         onView: v => cbRef.current.onView?.(v),
+        onSelectHap: (k, h) => cbRef.current.onSelectHap?.(k, h),
       })
+      handleRef.current.setHapMarks(hapMarks ?? new Map())
       onReady?.(handleRef.current)
       void warmBlocks(db)                                   // ワーカーを先に起こして Ctx を温める（初回の降下を速く）
     }).catch(e => { if (live) setMsg('読み込みに失敗: ' + String(e)) })

@@ -223,6 +223,8 @@ export function blockColorOf(bm: BlockColorMap, contig: number | null | undefine
 
 export interface GraphCanvasHandle {
   navigateTo: (cx: number, cy: number, highlightId?: number | null, targetLayer?: number) => void
+  // 外接箱を画面に収める。targetLayer があれば、その層のズーム帯 [f(L), f(L+1)) に zoom を収める（MSA の窓の大きさ→表示層）
+  fitBounds: (minx: number, miny: number, maxx: number, maxy: number, targetLayer?: number) => void
   getSelectedNodes: () => NodeData[]
   // フェッチ済み(可視)サブグラフ上で A,B 間のノード名を返す(source/sink なら bubble 内部)。DB 非依存・即時。
   nodesBetween: (a: string, b: string) => string[]
@@ -307,6 +309,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const alignPickModeRef = useRef(alignPickMode)
   const onModeChangeRef  = useRef<((m: boolean) => void) | null>(null)
   const navigateRef          = useRef<((cx: number, cy: number, highlightId?: number | null, targetLayer?: number) => void) | null>(null)
+  const fitBoundsRef = useRef<((minx: number, miny: number, maxx: number, maxy: number, targetLayer?: number) => void) | null>(null)
   const getSelectedNodesRef  = useRef<(() => NodeData[]) | null>(null)
   const exportSvgRef         = useRef<(() => void) | null>(null)
   const nodesBetweenRef      = useRef<((a: string, b: string) => string[]) | null>(null)
@@ -614,6 +617,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   useImperativeHandle(ref, () => ({
     navigateTo: (cx, cy, highlightId?, targetLayer?) =>
       navigateRef.current?.(cx, cy, highlightId, targetLayer),
+    fitBounds: (minx, miny, maxx, maxy, targetLayer?) => fitBoundsRef.current?.(minx, miny, maxx, maxy, targetLayer),
     getSelectedNodes: () => getSelectedNodesRef.current?.() ?? [],
     nodesBetween: (a, b) => nodesBetweenRef.current?.(a, b) ?? [],
     graphCounts: () => graphCountsRef.current?.() ?? { nodes: 0, edges: 0 },
@@ -3369,6 +3373,24 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       world.position.y = app.screen.height / 2 - cy * zoom
       onViewportChanged()
       settleRecompute()   // 目的層への切替を待たせない（ハイライト対象を即可視化）
+    }
+
+    fitBoundsRef.current = (minx: number, miny: number, maxx: number, maxy: number, targetLayer?: number) => {
+      const bw = Math.max(1e-6, maxx - minx), bh = Math.max(1e-6, maxy - miny)
+      let z = Math.min(app.screen.width / (bw * 1.25), app.screen.height / (bh * 1.25))
+      if (targetLayer !== undefined) {
+        // 層はズームで決まる（LOD-A）ので、目的層の帯に収める。箱が小さすぎても帯の上端で止める
+        const L = clamp(targetLayer, 0, maxLayer)
+        const fL = thresholdFor(L)
+        const fU = L < maxLayer ? thresholdFor(L + 1) : fL * 1.6
+        z = Math.min(Math.max(z, fL * 1.02), fU * 0.98)
+      }
+      world.scale.set(z)
+      const cx = (minx + maxx) / 2, cy = (miny + maxy) / 2
+      world.position.x = app.screen.width  / 2 - cx * z
+      world.position.y = app.screen.height / 2 - cy * z
+      onViewportChanged()
+      settleRecompute()
     }
 
     // オンデマンド描画では idle 中に paint しないため、バックグラウンドから復帰した際に

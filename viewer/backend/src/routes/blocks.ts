@@ -11,6 +11,7 @@ import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } f
 //   GET /api/blocks/status?db … ワーカーの状態
 //   POST /api/blocks/window   … {db, ranges:[[path,s0,e0],…], span, afrac, label, depth, parent, pblock}
 //       … 事前計算に無い窓をその場で計算して返す（blocksWorker.ts → scripts/blocks/worker.py）
+//   GET /api/blocks/view?db&contig&start&end … 区間に合う表示層とノードの外接箱（MSA の窓 → グラフの層・範囲）
 //   GET /api/blocks/nodes?db&layer&contig&start&end
 //       … 参照区間 [start,end] に重なる、表示層 `layer` のノード名。ブロック → グラフの強調に使う。
 //         idx_nodes_refpos(ref_contig_id, ref_bp, ref_bp_end, layer_index) を使う索引レンジで、全走査しない。
@@ -77,6 +78,42 @@ blocksRouter.get('/blocks/nodes', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }
+})
+
+// ── MSA の窓 → グラフの表示層と範囲 ───────────────────────────────────────────────
+//   GET /api/blocks/view?db&contig&start&end[&target=800]
+//   区間に属するノード数を粗い層から数え、target 以下に収まる最も細かい層を選ぶ。その層のノードの外接箱と重心も返す。
+//   画面は fitBounds(bbox, layer) でグラフをその層のズーム帯に合わせて範囲へ寄せる（MSA の窓の大きさ→表示層の連動）。
+function maxLayerOf(d: ReturnType<typeof getDb>): number {
+  try { const r = d.prepare('SELECT maxlayer FROM stats').get() as { maxlayer?: number } | undefined; return Number(r?.maxlayer ?? 0) } catch { return 0 }
+}
+blocksRouter.get('/blocks/view', (req, res) => {
+  const { db, contig, start, end, target } = req.query as Record<string, string>
+  if (!db || contig == null || start == null || end == null) { res.status(400).json({ error: 'Missing db/contig/start/end' }); return }
+  const cid = Number(contig), s = Number(start), e = Number(end), tgt = Math.max(50, Number(target) || 800)
+  if (![cid, s, e].every(Number.isFinite)) { res.status(400).json({ error: 'Invalid numbers' }); return }
+  try {
+    const d = getDb(db); const maxL = maxLayerOf(d); const maxSpan = 2 * Math.max(1, e - s)
+    const cnt = d.prepare(
+      `SELECT COUNT(*) AS n FROM nodes
+       WHERE layer_index = ? AND ref_contig_id = ? AND ref_bp IS NOT NULL AND ref_bp <= ? AND ref_bp >= ?
+         AND COALESCE(ref_bp_end, ref_bp) >= ? AND COALESCE(ref_bp_end, ref_bp) - ref_bp <= ?`)
+    const counts: number[] = []; let layer = 0
+    for (let L = 0; L <= maxL; L++) {
+      const n = Number((cnt.get(L, cid, e, s - maxSpan, s, maxSpan) as { n: number }).n)
+      counts.push(n)
+      if (n <= tgt && n > 0) layer = L
+      if (n > tgt) break                                   // 細かい層ほど増えるので、超えたら打ち切り
+    }
+    const bb = d.prepare(
+      `SELECT COUNT(*) AS n, MIN(xCoord) AS minx, MAX(xCoord) AS maxx, MIN(yCoord) AS miny, MAX(yCoord) AS maxy,
+              AVG(xCoord) AS cx, AVG(yCoord) AS cy FROM nodes
+       WHERE layer_index = ? AND ref_contig_id = ? AND ref_bp IS NOT NULL AND ref_bp <= ? AND ref_bp >= ?
+         AND COALESCE(ref_bp_end, ref_bp) >= ? AND COALESCE(ref_bp_end, ref_bp) - ref_bp <= ?`
+    ).get(layer, cid, e, s - maxSpan, s, maxSpan) as any
+    if (!bb || !bb.n) { res.json({ layer, count: 0, counts }); return }
+    res.json({ layer, count: bb.n, counts, cx: bb.cx, cy: bb.cy, minx: bb.minx, miny: bb.miny, maxx: bb.maxx, maxy: bb.maxy })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 // ── 逐次計算（事前計算に無い窓を、DB ごとに常駐する Python ワーカーで計算する） ─────────────────

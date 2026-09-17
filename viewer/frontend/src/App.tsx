@@ -6,8 +6,9 @@ import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
 import BubbleMsa from './components/BubbleMsa'
 import BlockMsa from './components/BlockMsa'
 import type { BlockView } from './components/blockMsaRender'
+import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
-import { fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
+import { fetchBlockView, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -954,6 +955,35 @@ export default function App() {
   // 多解像度 MSA（共線ブロック）パネル。選択/ホバーしたブロック＝参照区間 → 表示層のノード名に解いてグラフを強調する。
   const [blkH, setBlkH] = useState(0)                                  // パネル高さ(0=閉)
   const [blkColors, setBlkColors] = useState<BlockColorMap | null>(null)   // Blocks の窓・段に合わせたノードの塗り分け（参照区間→色）
+  const blkScopeKeyRef = useRef<string>('')                                 // 直近にグラフを寄せた窓・絞り込み（同じなら寄せ直さない）
+  const pendingHapRef = useRef<string | null>(null)                          // パス群の一覧が届いてから切り替える行
+  // Blocks の窓・絞り込みが変わったら、グラフをその参照区間へ寄せ、区間に合う層（属するノードが ~800 個以下の最も細かい層）で表示
+  const onBlockView = useCallback((v: BlockView | null) => {
+    setBlkColors(v ? blockViewToColors(v) : null)
+    if (!v || !v.sync || !v.scope || !selectedDb) return
+    if (v.scopeKey === blkScopeKeyRef.current) return
+    blkScopeKeyRef.current = v.scopeKey
+    const sc = v.scope
+    void fetchBlockView(selectedDb, sc.contig, sc.start, sc.end).then(f => {
+      if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return
+      graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer)
+    })
+  }, [selectedDb])
+  // 行ラベルのクリック → そのハプロタイプのパス群（リボン）を選択／解除。パスパネルが「なし」なら haplotype 粒度で開く
+  const onBlockSelectHap = useCallback((groupKey: string, hap: string) => {
+    if (ribbonLevel === 'none' || pathGroups.length === 0) { pendingHapRef.current = hap; if (ribbonLevel === 'none') setRibbonLevel('haplotype'); return }
+    const key = matchHapToKey(hap, pathGroups.map(g => g.key)) ?? groupKey
+    const g = pathGroups.find(x => x.key === key)
+    if (!g) { showHint(`パス群に「${hap}」に合うものがありません（粒度: ${ribbonLevel}）`); return }
+    toggleRibbonGroup(g); setRibbonHidden(false)
+  }, [ribbonLevel, pathGroups, toggleRibbonGroup, showHint])
+  useEffect(() => {
+    const hap = pendingHapRef.current; if (!hap || pathGroups.length === 0) return
+    pendingHapRef.current = null
+    const key = matchHapToKey(hap, pathGroups.map(g => g.key)); const g = key ? pathGroups.find(x => x.key === key) : undefined
+    if (g) { toggleRibbonGroup(g); setRibbonHidden(false) } else showHint(`パス群に「${hap}」に合うものがありません`)
+  }, [pathGroups, toggleRibbonGroup, showHint])
+  const blkHapMarks = useMemo(() => { const m = new Map<string, string>(); for (const [k, v] of ribbonSel) m.set(k, '#' + v.color.toString(16).padStart(6, '0')); return m }, [ribbonSel])
   const [blkHov, setBlkHov] = useState<Set<string> | null>(null)       // ホバー中ブロックのノード群（マゼンタ）
   const blkApiRef = useRef<BlockMsaHandle | null>(null)
   const blkReq = useRef(0)
@@ -2997,7 +3027,9 @@ export default function App() {
           <BlockMsa
             db={selectedDb}
             onHoverBlock={b => { void resolveBlock(b, setBlkHov) }}
-            onView={v => setBlkColors(v ? blockViewToColors(v) : null)}
+            onView={onBlockView}
+            onSelectHap={onBlockSelectHap}
+            hapMarks={blkHapMarks}
             onReady={h => { blkApiRef.current = h; if (!h) { setBlkHov(null); setBlkColors(null) } }}
           />
         </div>
