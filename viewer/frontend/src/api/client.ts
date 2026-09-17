@@ -802,6 +802,10 @@ export async function fetchBlockWindow(dbFile: string, req: BlockDrillRequest): 
   if (!res.ok) return { error: (j && j.error) || 'request failed (' + res.status + ')' }
   return j ?? { error: 'empty response' }
 }
+// サイドカーの系統樹の葉の順（ハプロタイプ名）。無ければ空
+export async function fetchBlocksTree(dbFile: string): Promise<string[]> {
+  try { const r = await fetch(`/api/blocks/tree?db=${encodeURIComponent(dbFile)}`); const j = await r.json(); return Array.isArray(j.haps) ? j.haps : [] } catch { return [] }
+}
 // MSA の窓（参照区間）に合うグラフの表示層と、その層のノードの外接箱
 export interface BlockViewFit { layer: number; count: number; counts?: number[]; cx?: number; cy?: number; minx?: number; miny?: number; maxx?: number; maxy?: number; error?: string }
 export async function fetchBlockView(dbFile: string, contig: number, start: number, end: number, target = 800): Promise<BlockViewFit | null> {

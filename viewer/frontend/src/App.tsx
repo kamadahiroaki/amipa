@@ -8,7 +8,7 @@ import BlockMsa from './components/BlockMsa'
 import type { BlockView } from './components/blockMsaRender'
 import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
-import { fetchBlockView, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
+import { fetchBlockView, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -544,7 +544,21 @@ export default function App() {
   const [ribbonTheta, setRibbonTheta] = useState(0)
   const [ribbons, setRibbons] = useState<RibbonData[]>([])
   const [ribbonSearch, setRibbonSearch] = useState('')
-  const [ribbonCollapsed, setRibbonCollapsed] = useState(false)  // リスト部を畳む（リボン描画は維持）
+  // パス群一覧の並び。名前順（既定）/ 系統順（Blocks のサイドカーの系統樹の葉の順）/ 被覆順（サーバの並び）
+  const [ribbonSort, setRibbonSort] = useState<'name' | 'tree' | 'cov'>('name')
+  const [treeHaps, setTreeHaps] = useState<string[] | null>(null)      // 系統順に使う葉の順（db ごとに取り直す）
+  useEffect(() => { setTreeHaps(null) }, [selectedDb])
+  useEffect(() => { if (ribbonSort === 'tree' && treeHaps == null && selectedDb) { fetchBlocksTree(selectedDb).then(setTreeHaps) } }, [ribbonSort, treeHaps, selectedDb])
+  const sortedPathGroups = useMemo(() => {
+    const gs = pathGroups.slice()
+    const byName = (a: PathGroup, b: PathGroup) => a.key.localeCompare(b.key, undefined, { numeric: true })
+    if (ribbonSort === 'cov') return gs
+    if (ribbonSort === 'name') return gs.sort(byName)
+    if (!treeHaps || !treeHaps.length) return gs.sort(byName)
+    const keys = gs.map(g => g.key); const rank = new Map<string, number>()
+    treeHaps.forEach((hap, i) => { const k = matchHapToKey(hap, keys); if (k != null && !rank.has(k)) rank.set(k, i) })
+    return gs.sort((a, b) => { const ra = rank.get(a.key), rb = rank.get(b.key); if (ra != null && rb != null) return ra - rb; if (ra != null) return -1; if (rb != null) return 1; return byName(a, b) })
+  }, [pathGroups, ribbonSort, treeHaps])
   const [ribbonHidden, setRibbonHidden] = useState(false)        // 選択は維持したままリボン描画だけ一時非表示
   // Layer 2: UTGクリック時のCTGリスト
   // 葉ノードの塩基配列(選択時 on-demand)。leafSeqFull=全長取得済みか(既定は先頭100kb)。
@@ -2064,17 +2078,17 @@ export default function App() {
               display: "flex", flexDirection: "column",
               fontFamily: "sans-serif", fontSize: 12, color: "#343a40", padding: 8,
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4,
-                marginBottom: (ribbonLevel !== 'none' && !ribbonCollapsed) ? 6 : 0 }}>
-                <span style={{ fontWeight: 600 }} title="選択したパスはリボン描画と MSA 対象を兼ねる">
-              パス{ribbonSel.size > 0 ? ` (${ribbonSel.size})` : ''}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }} title="選択したパスはリボン描画と MSA 対象を兼ねる">
                 <select value={ribbonLevel} onChange={e => setRibbonLevel(e.target.value as 'none' | RibbonLevel)}
-                  style={{ flex: 1, marginLeft: 'auto' }}>
-                  <option value="none">なし</option>
-                  <option value="sample">サンプル</option>
-                  <option value="haplotype">ハプロタイプ</option>
-                  {(ribbonContig || !ribbonHapcov) && <option value="contig">コンティグ</option>}
+                  style={{ flex: 1 }}>
+                  <option value="none">パス: なし</option>
+                  <option value="sample">パス: サンプル</option>
+                  <option value="haplotype">パス: ハプロタイプ</option>
+                  {(ribbonContig || !ribbonHapcov) && <option value="contig">パス: コンティグ</option>}
                 </select>
+              </div>
+              {/* 2 行目: 操作ボタンは常に同じ並びで出す（選択の有無でレイアウトを変えない。使えないときは無効表示） */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: ribbonLevel !== 'none' ? 6 : 0 }}>
                 {/* hap 絞り込み描画: 選択群を通るノード・エッジだけ取得する（サイドカー必須） */}
                 {hapIdx && (
                   <button onClick={() => setHapFilter(v => !v)}
@@ -2092,70 +2106,50 @@ export default function App() {
                   </button>
                 )}
                 {/* 全選択 / 反転: 絞り込み結果に対して */}
-                {ribbonLevel !== 'none' && pathGroups.length > 0 && (
-                  <>
-                    <button onClick={selectAllRibbon}
-                      title="表示中(絞り込み結果)を全選択"
-                      style={{ flex: '0 0 auto', height: 20, padding: '0 6px', cursor: 'pointer',
-                        border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
-                        color: '#495057', lineHeight: 1, fontSize: 11 }}>
-                      全選択
-                    </button>
-                    <button onClick={invertRibbon}
-                      title="表示中(絞り込み結果)の選択を反転"
-                      style={{ flex: '0 0 auto', height: 20, padding: '0 6px', cursor: 'pointer',
-                        border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
-                        color: '#495057', lineHeight: 1, fontSize: 11 }}>
-                      反転
-                    </button>
-                  </>
-                )}
-                {/* 選択があるとき: 一時非表示(選択は維持)・全解除 */}
-                {ribbonLevel !== 'none' && ribbonSel.size > 0 && (
-                  <>
-                    <button onClick={() => setRibbonHidden(h => !h)}
-                      title={ribbonHidden ? 'リボンを再表示' : 'リボンを一時非表示（選択は維持）'}
-                      style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
-                        border: '1px solid #ced4da', borderRadius: 3,
-                        background: ribbonHidden ? '#ffe3e3' : '#f8f9fa',
-                        color: ribbonHidden ? '#c92a2a' : '#495057', lineHeight: 1, fontSize: 12 }}>
-                      {ribbonHidden ? '🙈' : '👁'}
-                    </button>
-                    <button onClick={() => { setRibbonSel(new Map()); setRibbonHidden(false) }}
-                      title="選択を全解除"
-                      style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
-                        border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
-                        color: '#495057', lineHeight: 1, fontSize: 12 }}>
-                      ✕
-                    </button>
-                  </>
-                )}
-                {/* 折りたたみトグル: 描画は維持したままリスト部だけ畳む */}
-                {ribbonLevel !== 'none' && (
-                  <button onClick={() => setRibbonCollapsed(c => !c)}
-                    title={ribbonCollapsed ? 'リストを開く' : 'リストを畳む（描画は維持）'}
-                    style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
-                      border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa',
-                      color: '#495057', lineHeight: 1, fontSize: 12 }}>
-                    {ribbonCollapsed ? '▸' : '▾'}
-                  </button>
-                )}
+                {(() => { const off = ribbonLevel === 'none' || pathGroups.length === 0
+                  const bs = (extra: React.CSSProperties = {}): React.CSSProperties => ({ flex: '0 0 auto', height: 20, padding: '0 6px', cursor: off ? 'default' : 'pointer',
+                    border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa', color: '#495057', lineHeight: 1, fontSize: 11, opacity: off ? 0.45 : 1, ...extra })
+                  const noSel = off || ribbonSel.size === 0
+                  return (
+                    <>
+                      <button onClick={selectAllRibbon} disabled={off} title="表示中(絞り込み結果)を全選択" style={bs()}>全選択</button>
+                      <button onClick={invertRibbon} disabled={off} title="表示中(絞り込み結果)の選択を反転" style={bs()}>反転</button>
+                      <button onClick={() => setRibbonHidden(h => !h)} disabled={noSel}
+                        title={ribbonHidden ? 'リボンを再表示' : 'リボンを一時非表示（選択は維持）'}
+                        style={bs({ width: 20, padding: 0, fontSize: 12, background: ribbonHidden ? '#ffe3e3' : '#f8f9fa', color: ribbonHidden ? '#c92a2a' : '#495057', opacity: noSel ? 0.45 : 1 })}>
+                        {ribbonHidden ? '🙈' : '👁'}
+                      </button>
+                      <button onClick={() => { setRibbonSel(new Map()); setRibbonHidden(false) }} disabled={noSel}
+                        title={ribbonSel.size ? `選択を全解除（${ribbonSel.size} 群）` : '選択なし'}
+                        style={bs({ width: 20, padding: 0, fontSize: 12, opacity: noSel ? 0.45 : 1 })}>✕</button>
+                      <span style={{ marginLeft: 'auto', color: '#868e96', fontSize: 11, minWidth: 28, textAlign: 'right' }}>{ribbonSel.size ? `${ribbonSel.size} 群` : ''}</span>
+                    </>
+                  ) })()}
               </div>
-              {ribbonLevel !== 'none' && ribbonCollapsed && ribbonSel.size > 0 && (
-                <div style={{ fontSize: 11, color: '#868e96', marginTop: 4 }}>{ribbonSel.size} 群を表示中</div>
-              )}
-              {ribbonLevel !== 'none' && !ribbonCollapsed && (
+              {ribbonLevel !== 'none' && (
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                     <span title="super-node の総塩基の θ% 以上を通れば通過。既定 0=少しでも通れば通過（表示フィルタと同じ基準）。上げると混雑は減るが、バブルは 1 ハプロタイプが総塩基の 1/アリル数しか覆えないためリボンが落ちやすい">θ {Math.round(ribbonTheta * 100)}%</span>
                     <input type="range" min={0} max={100} value={Math.round(ribbonTheta * 100)}
                       onChange={e => setRibbonTheta(Number(e.target.value) / 100)} style={{ flex: 1 }} />
                   </div>
-                  <input type="text" placeholder="絞り込み…" value={ribbonSearch}
-                    onChange={e => setRibbonSearch(e.target.value)}
-                    style={{ marginBottom: 6, padding: '2px 4px', border: '1px solid #ced4da', borderRadius: 3 }} />
+                  <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
+                    <input type="text" placeholder="絞り込み…" value={ribbonSearch}
+                      onChange={e => setRibbonSearch(e.target.value)}
+                      style={{ flex: 1, minWidth: 0, padding: '2px 4px', border: '1px solid #ced4da', borderRadius: 3 }} />
+                    <select value={ribbonSort} onChange={e => setRibbonSort(e.target.value as 'name' | 'tree' | 'cov')}
+                      title="一覧の並び。系統順は Blocks（多解像度 MSA）のサイドカーにある系統樹の葉の順（MSA の行と同じ）"
+                      style={{ flex: '0 0 auto' }}>
+                      <option value="name">名前順</option>
+                      <option value="tree">系統順</option>
+                      <option value="cov">被覆順</option>
+                    </select>
+                  </div>
+                  {ribbonSort === 'tree' && treeHaps != null && treeHaps.length === 0 && (
+                    <div style={{ fontSize: 11, color: '#868e96', marginBottom: 4 }}>この DB には系統樹（Blocks のサイドカー）が無いので名前順で表示</div>
+                  )}
                   <div style={{ overflowY: 'auto', flex: 1 }}>
-                    {pathGroups
+                    {sortedPathGroups
                       .filter(g => !ribbonSearch || g.key.toLowerCase().includes(ribbonSearch.toLowerCase()))
                       .slice(0, 300).map(g => {
                         const sel = ribbonSel.get(g.key)
@@ -2468,7 +2462,7 @@ export default function App() {
                           <span
                             onClick={() => {
                               if (ribbonLevel === 'none') setRibbonLevel('sample')
-                              setRibbonCollapsed(false)
+
                               if (ribbonSel.size > 0) setHapFilter(true)
                               else showHint('パスリボンのリストでサンプル/ハプロタイプを選ぶと、'
                                 + 'その経路だけに絞って深い層まで表示できます')

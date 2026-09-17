@@ -11,6 +11,7 @@ import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } f
 //   GET /api/blocks/status?db … ワーカーの状態
 //   POST /api/blocks/window   … {db, ranges:[[path,s0,e0],…], span, afrac, label, depth, parent, pblock}
 //       … 事前計算に無い窓をその場で計算して返す（blocksWorker.ts → scripts/blocks/worker.py）
+//   GET /api/blocks/tree?db … 系統樹の葉の順（ハプロタイプ名）。パスパネルの「系統順」
 //   GET /api/blocks/view?db&contig&start&end … 区間に合う表示層とノードの外接箱（MSA の窓 → グラフの層・範囲）
 //   GET /api/blocks/nodes?db&layer&contig&start&end
 //       … 参照区間 [start,end] に重なる、表示層 `layer` のノード名。ブロック → グラフの強調に使う。
@@ -78,6 +79,25 @@ blocksRouter.get('/blocks/nodes', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: String(err) })
   }
+})
+
+// ── サイドカーの系統樹（葉の順）だけを返す。パスパネルの「系統順」に使う。JSON 全体（〜数 MB）は読まない ──
+const treeCache = new Map<string, { mtime: number; haps: string[] }>()
+blocksRouter.get('/blocks/tree', (req, res) => {
+  const { db } = req.query as Record<string, string>
+  if (!db) { res.status(400).json({ error: 'Missing db' }); return }
+  const p = blocksPath(db)
+  if (!p) { res.json({ haps: [] }); return }
+  try {
+    const mtime = fs.statSync(p).mtimeMs
+    const c = treeCache.get(p)
+    if (c && c.mtime === mtime) { res.json({ haps: c.haps }); return }
+    const j = JSON.parse(fs.readFileSync(p, 'utf8'))
+    const t = j?.tree
+    const haps: string[] = (t && Array.isArray(t.order) && Array.isArray(t.haps)) ? t.order.map((i: number) => t.haps[i]) : []
+    treeCache.set(p, { mtime, haps })
+    res.json({ haps })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 // ── MSA の窓 → グラフの表示層と範囲 ───────────────────────────────────────────────
