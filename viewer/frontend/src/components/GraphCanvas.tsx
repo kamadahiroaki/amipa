@@ -197,14 +197,15 @@ interface Props {
 
 // Blocks パネルの現在の窓・段に合わせてノードを塗る。参照コンティグごとに、開始位置で昇順に並べた区間
 // [starts[i], ends[i]] と色 colors[i]。ノードは代表位置（ref_bp と ref_bp_end の中点）を含む最小の区間の色になる。
-// 区間に入らないノード（窓の外・参照座標なし）は薄い灰色（呼び出し側で null を灰に写す）。複数位置（ref_multi）のノードは
-// 記録された範囲が位置の外接箱なので、箱が丸ごと 1 つの区間に収まるときだけ塗る（縦列反復のような近接した複数位置は塗れる。
-// ブロックをまたいで散在する箱は灰のまま。hover のリングは区間の重なりで出すので、灰でもリングは出うる）。
+// 区間に入らないノード（窓の外・参照座標なし）は薄い灰色（呼び出し側で null を灰に写す）。ノードの参照スパンが区間幅の
+// 2 倍を超えるもの（子孫が散在するクラスタのスーパーノード、位置が散在する複数位置ノード）も灰。hover のリング
+// （/api/blocks/nodes）も同じ規則なので、リングが出るのに灰、という食い違いは起きない。
 export interface BlockColorMap { maxSpan: number; contigs: Map<number, { starts: number[]; ends: number[]; colors: number[] }> }
 export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
                              bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
   if (contig == null || bp == null) return null
   const c = bm.contigs.get(Number(contig)); if (!c) return null
+  const nodeSpan = Number(bpEnd ?? bp) - Number(bp)
   const mid = (Number(bp) + Number(bpEnd ?? bp)) / 2
   let lo = 0, hi = c.starts.length
   while (lo < hi) { const m = (lo + hi) >> 1; if (c.starts[m] <= mid) lo = m + 1; else hi = m }
@@ -213,7 +214,10 @@ export function blockColorOf(bm: BlockColorMap, contig: number | null | undefine
     if (c.ends[j] >= mid && (best < 0 || c.ends[j] - c.starts[j] < c.ends[best] - c.starts[best])) best = j
   }
   if (best < 0) return null
-  if (multi && !(c.starts[best] <= Number(bp) && c.ends[best] >= Number(bpEnd ?? bp))) return null
+  // 区間より桁で広い箱を持つノード（子孫の葉が散在するクラスタのスーパーノードや、位置が散在する複数位置ノード）は
+  // どの区間にも「属する」と言えないので灰。境界をまたぐ普通のノードは中点の区間の色（/api/blocks/nodes と同じ規則）
+  if (nodeSpan > 2 * (c.ends[best] - c.starts[best])) return null
+  void multi
   return c.colors[best]
 }
 
