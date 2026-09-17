@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBlocks, fetchBlockWindow, warmBlocks } from '../api/client'
+import { fetchBlocks, fetchBlockWindow, warmBlocks, BlockDrillRequest } from '../api/client'
 import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
@@ -13,15 +13,16 @@ interface Props {
   onHoverBlock?: (b: BlockRef | null) => void
   onView?: (v: BlockView | null) => void            // 見えている窓・段のブロックと色（グラフの塗り分け用）、範囲（グラフ連動用）
   onSelectHap?: (groupKey: string, hap: string) => void   // 行ラベルのクリック → グラフのパス群の選択切替
+  onBaseMsa?: (req: BlockDrillRequest) => void           // 底: ブロックの各行のトークン範囲を塩基レベル MSA へ
   hapMarks?: Map<string, string>                    // グラフで選択中のパス群（鍵→色）→ 行ラベルの印
   onReady?: (h: BlockMsaHandle | null) => void
 }
 
-export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSelectHap, hapMarks, onReady }: Props) {
+export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa, hapMarks, onReady }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const handleRef = useRef<BlockMsaHandle | null>(null)
-  const cbRef = useRef({ onSelectBlock, onHoverBlock, onView, onSelectHap })
-  useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock, onView, onSelectHap } }, [onSelectBlock, onHoverBlock, onView, onSelectHap])
+  const cbRef = useRef({ onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa })
+  useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa } }, [onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa])
   useEffect(() => { handleRef.current?.setHapMarks(hapMarks ?? new Map()) }, [hapMarks])
   const [msg, setMsg] = useState<string | null>(null)
 
@@ -40,6 +41,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onDrill: req => fetchBlockWindow(db, req),          // 事前計算に無い窓を backend で逐次計算
         onView: v => cbRef.current.onView?.(v),
         onSelectHap: (k, h) => cbRef.current.onSelectHap?.(k, h),
+        onBaseMsa: req => cbRef.current.onBaseMsa?.(req),
       })
       handleRef.current.setHapMarks(hapMarks ?? new Map())
       onReady?.(handleRef.current)

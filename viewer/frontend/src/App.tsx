@@ -997,6 +997,13 @@ export default function App() {
     const key = matchHapToKey(hap, pathGroups.map(g => g.key)); const g = key ? pathGroups.find(x => x.key === key) : undefined
     if (g) { toggleRibbonGroup(g); setRibbonHidden(false) } else showHint(`パス群に「${hap}」に合うものがありません`)
   }, [pathGroups, toggleRibbonGroup, showHint])
+  // Blocks の底 → 塩基レベル MSA（MSA パネル）。範囲を渡してパネルを開く
+  const [msaRangeReq, setMsaRangeReq] = useState<{ ranges: [string, number, number][]; label: string; key: number } | null>(null)
+  const onBlockBaseMsa = useCallback((req: { ranges: [string, number, number][]; label: string }) => {
+    setMsaRangeReq({ ranges: req.ranges, label: req.label, key: Date.now() })
+    setMsaH(h => (h > 0 ? h : 300))
+    showHint(`Blocks ${req.label} の各行（${req.ranges.length} 範囲）を塩基レベル MSA に渡しました`)
+  }, [showHint])
   const blkHapMarks = useMemo(() => { const m = new Map<string, string>(); for (const [k, v] of ribbonSel) m.set(k, '#' + v.color.toString(16).padStart(6, '0')); return m }, [ribbonSel])
   const [blkHov, setBlkHov] = useState<Set<string> | null>(null)       // ホバー中ブロックのノード群（マゼンタ）
   const blkApiRef = useRef<BlockMsaHandle | null>(null)
@@ -3003,6 +3010,7 @@ export default function App() {
             onHoverNode={setMsaHover}
             sampleKeys={[...ribbonSel.keys()]}
             ribbonLevel={ribbonLevel}
+            rangeReq={msaRangeReq}
           />
         </div>
       )}
@@ -3023,6 +3031,7 @@ export default function App() {
             onHoverBlock={b => { void resolveBlock(b, setBlkHov) }}
             onView={onBlockView}
             onSelectHap={onBlockSelectHap}
+            onBaseMsa={onBlockBaseMsa}
             hapMarks={blkHapMarks}
             onReady={h => { blkApiRef.current = h; if (!h) { setBlkHov(null); setBlkColors(null) } }}
           />

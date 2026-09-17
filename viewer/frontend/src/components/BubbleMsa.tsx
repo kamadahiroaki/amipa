@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
-import { fetchBubbleMsa, BubbleMsaResp, MsaRow } from '../api/client'
+import { useMemo, useRef, useState, useEffect } from 'react'
+import { fetchBubbleMsa, fetchBubbleMsaRanges, BubbleMsaResp, MsaRow } from '../api/client'
 
 // 下部パネルの MSA ビュー。ユーザが (1)ノードを選び (2)対象サンプルをパスパネルで選び
 // (3)「MSA 計算」を押すと初めて抽出が走る(計算は重いので明示トリガ)。
@@ -18,6 +18,8 @@ interface Props {
   onHoverNode?: (names: string[] | null) => void   // 列=アレル群なので複数ノードを渡す
   sampleKeys: string[]              // 選択中のパス群キー([...ribbonSel.keys()])
   ribbonLevel: string
+  // Blocks パネルの底からの受け渡し（各行のトークン範囲）。key が変わるたびに取り直す。ノード選択とは排他
+  rangeReq?: { ranges: [string, number, number][]; label: string; key: number } | null
 }
 
 const STYLE = `
@@ -195,7 +197,7 @@ ${parts.join('\n')}
 }
 
 export default function BubbleMsa(props: Props) {
-  const { db, pickedNodes, pickMode, onTogglePick, onRemoveNode, onClearNodes, onFillBetween, onHoverNode, sampleKeys } = props
+  const { db, pickedNodes, pickMode, onTogglePick, onRemoveNode, onClearNodes, onFillBetween, onHoverNode, sampleKeys, rangeReq } = props
   const [data, setData] = useState<BubbleMsaResp | null>(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -207,12 +209,24 @@ export default function BubbleMsa(props: Props) {
   const tipRef = useRef<HTMLDivElement>(null)
 
   async function compute() {
-    if (!db || pickedNodes.length === 0) return
+    if (!db) return
+    if (rangeReq && rangeReq.ranges.length) {
+      setLoading(true); setErr(null); setSortCol(null)
+      const d = await fetchBubbleMsaRanges(db, rangeReq.ranges, rangeReq.label, flank)
+      setLoading(false)
+      if (d.error) { setErr(d.error); setData(null) } else setData(d)
+      return
+    }
+    if (pickedNodes.length === 0) return
     setLoading(true); setErr(null); setSortCol(null)
     const d = await fetchBubbleMsa(db, pickedNodes, sampleKeys, flank)
     setLoading(false)
     if (d.error) { setErr(d.error); setData(null) } else setData(d)
   }
+  // Blocks から範囲が届いたら即計算（ボタンを押させない）
+  const lastReqKey = useRef<number>(-1)
+  useEffect(() => { if (rangeReq && rangeReq.key !== lastReqKey.current) { lastReqKey.current = rangeReq.key; void compute() } // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rangeReq?.key])
 
   // 並び順: アレル順(既定)/サンプル順、または列クリック(その列の塩基順、一時的)。
   // 参照はどの順でも先頭に固定する(差分表示の基準行なので上にあってほしい)。
@@ -345,6 +359,7 @@ export default function BubbleMsa(props: Props) {
           {pickedNodes.length > 14 && <span style={{ color: '#99a' }}>+{pickedNodes.length - 14}</span>}
         </span>
         {pickedNodes.length > 0 && <button onClick={onClearNodes} style={btn(false)} title="ノード選択を全解除">clear</button>}
+        {rangeReq && <span className="bmsa-chip" title={`Blocks パネルの ${rangeReq.label} から。${rangeReq.ranges.length} 行のトークン範囲`} style={{ background: '#e6f4f1', borderColor: '#0d9488', color: '#0d9488' }}>Blocks {rangeReq.label}</span>}
         <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
           <span title={sampleKeys.length ? 'MSA 対象パス:\n' + sampleKeys.join('\n') : 'パスパネルで対象を選択'}
             style={{ color: sampleKeys.length ? '#0f766e' : '#c0392b' }}>
@@ -353,7 +368,7 @@ export default function BubbleMsa(props: Props) {
           <label style={{ color: '#889' }} title="選択ノード集合の前後に何ノード分の文脈を含めるか">文脈±
             <input type="number" min={0} max={12} value={flank} onChange={e => setFlank(Math.max(0, Math.min(12, Number(e.target.value) || 0)))}
               style={{ width: 34, marginLeft: 3 }} /></label>
-          <button onClick={compute} disabled={pickedNodes.length === 0 || loading}
+          <button onClick={compute} disabled={(pickedNodes.length === 0 && !(rangeReq && rangeReq.ranges.length)) || loading}
             style={btn(true, pickedNodes.length === 0 || loading)}>{data ? '再計算' : 'MSA 計算'}</button>
         </span>
       </div>

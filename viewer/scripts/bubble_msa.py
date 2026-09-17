@@ -49,8 +49,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
     ap.add_argument("--distill", required=True)
-    ap.add_argument("--nodes", required=True,
+    ap.add_argument("--nodes", default="",
                     help="ノード名のカンマ区切り。S/クラスタは配下葉に展開、n… は葉そのもの")
+    ap.add_argument("--ranges-stdin", dest="ranges_stdin", action="store_true",
+                    help="stdin の JSON {ranges:[[path名, s0, e0],…], label} で対象を与える（Blocks パネルの底からの受け渡し）。"
+                         "S=範囲内のトークンの葉集合、行=与えたパスの範囲だけ")
+    ap.add_argument("--label", default="")
     ap.add_argument("--samples", default="",
                     help="対象 sample/hap/contig キーのカンマ区切り(空=この bubble を通る全パス)。参照は常に含む")
     ap.add_argument("--flank", type=int, default=4)
@@ -94,9 +98,26 @@ def main():
         die("DB を開けません: " + str(e))
 
     sel_nodes = [x for x in args.nodes.split(",") if x]
-    if not sel_nodes:
+    RNG = None                                   # ranges モード: {pi: [(s0,e0),…]}
+    if args.ranges_stdin:
+        try:
+            req = json.load(sys.stdin)
+        except Exception as e:
+            die("stdin の JSON を読めません: " + str(e))
+        name2pi = {nm: i for i, nm in enumerate(p_names)}
+        RNG = {}
+        for r in (req.get("ranges") or []):
+            pi = name2pi.get(str(r[0]))
+            if pi is None: continue
+            n_ = int(p_off[pi + 1]) - int(p_off[pi]); s0 = max(0, min(n_, int(r[1]))); e0 = max(s0, min(n_, int(r[2])))
+            if e0 > s0: RNG.setdefault(pi, []).append((s0, e0))
+        if not RNG:
+            die("範囲が空です（パス名が distill と一致しません）")
+        label = args.label or str(req.get("label") or "Blocks")
+    elif not sel_nodes:
         die("ノードが指定されていません")
-    label = sel_nodes[0] + ((" +%d" % (len(sel_nodes) - 1)) if len(sel_nodes) > 1 else "")
+    else:
+        label = sel_nodes[0] + ((" +%d" % (len(sel_nodes) - 1)) if len(sel_nodes) > 1 else "")
     # ★ MAX(layer_index) は索引が無く WG(110M 行)で全走査になるので stats を使う(emitter が書く)。
     _ml = con.execute("SELECT maxlayer FROM stats").fetchone()
     maxlayer = int(_ml[0]) if _ml and _ml[0] is not None else \
@@ -143,11 +164,21 @@ def main():
         if len(leafset) > MAX_LEAVES:
             die("選択が大きすぎます(葉 %d 超)。MSA は %d 葉まで。より狭いノード集合を選んでください。"
                 % (MAX_LEAVES, MAX_LEAVES))
-    leaves = sorted(leafset, key=lambda n: int(n[1:]))
-    if not leaves:
-        die("選択ノードから葉集合を作れません(bubble か葉ノードを選んでください)")
-    orig2dense = dense_of(int(n[1:]) for n in leaves)
-    Sdense = set(orig2dense[int(n[1:])] for n in leaves if int(n[1:]) in orig2dense)
+    if RNG is not None:
+        # S = 与えた範囲のトークン（dense id）の和。葉名は表示・塩基の取得のために dense→元 id で作る
+        Sdense = set()
+        for pi, rs in RNG.items():
+            a = int(p_off[pi])
+            for s0, e0 in rs: Sdense.update(int(t) for t in np.unique(np.asarray(p_tok[a + s0:a + e0])))
+        if len(Sdense) > MAX_LEAVES:
+            die("この範囲は葉が %d 個あり、塩基レベル MSA の上限 %d を超えます。Blocks でさらに内側へ降りてください。" % (len(Sdense), MAX_LEAVES))
+        leaves = sorted({nname(t) for t in Sdense}, key=lambda n: int(n[1:]))
+    else:
+        leaves = sorted(leafset, key=lambda n: int(n[1:]))
+        if not leaves:
+            die("選択ノードから葉集合を作れません(bubble か葉ノードを選んでください)")
+        orig2dense = dense_of(int(n[1:]) for n in leaves)
+        Sdense = set(orig2dense[int(n[1:])] for n in leaves if int(n[1:]) in orig2dense)
     if not Sdense:
         die("葉を distill の dense id に対応づけできません(グラフ不一致?)")
     Sarr = np.array(sorted(Sdense), dtype=p_tok.dtype)   # 判定は np.isin(C 実装)で行う
@@ -199,19 +230,21 @@ def main():
         if base in samp_keys or s0 in samp_keys: return True
         return any(base == k or base.startswith(k + "#") for k in samp_keys)
     pis = []
-    if touch_cid:
+    if RNG is not None:
+        pis = list(RNG.keys())                   # 行は与えたパスの範囲だけ（他のゲノムの反復通過は出さない）
+    elif touch_cid:
         for cid in touch_cid:
             for pi in key2pi.get(cid2key.get(cid, "\0"), ()):
                 pis.append(pi)
     else:
         pis = list(range(len(p_names)))           # cov 前絞り込み不可時は全走査にフォールバック
     # 参照を先に処理する: MAX_ROWS で打ち切られても整列の基準行(参照)が必ず残るように。
-    pis = sorted(set(pi for pi in pis if matches(pi)), key=lambda pi: (not isref_pi(pi), pi))
+    pis = sorted(set(pi for pi in pis if (RNG is not None or matches(pi))), key=lambda pi: (not isref_pi(pi), pi))
 
     # ★ 走査量の事前見積り。WG は 1 contig が chr 級(数百万〜千万 token)なので、絞り込みを
     #   忘れて全 hap を選ぶと p_tok を数 GB 読んで timeout する。読む前に p_off の差分で判定して
     #   「絞ってください」と返す(黙って 30s 待たせない)。
-    ntok = int(sum(int(p_off[pi + 1]) - int(p_off[pi]) for pi in pis))
+    ntok = int(sum(e0 - s0 for pi in pis for s0, e0 in RNG[pi])) if RNG is not None else int(sum(int(p_off[pi + 1]) - int(p_off[pi]) for pi in pis))
     if ntok > args.max_tokens:
         die("走査対象が大きすぎます(%d contig / %.1fM token)。対象サンプル/ハプロタイプを絞ってください。"
             % (len(pis), ntok / 1e6))
@@ -221,6 +254,14 @@ def main():
         a, b = int(p_off[pi]), int(p_off[pi + 1])
         if b <= a:
             return []
+        if RNG is not None:
+            # 与えた範囲だけを読み、前後 flank 分の文脈を付けて 1 範囲 = 1 通過にする（S の判定はしない）
+            out = []
+            for s0, e0 in RNG[pi]:
+                lo = max(0, s0 - args.flank); hi = min(b - a, e0 + args.flank)
+                tk = np.asarray(p_tok[a + lo:a + hi]); oo = np.asarray(p_ori[a + lo:a + hi])
+                out.append(([int(x) for x in tk], [int(x) for x in oo]))
+            return out
         tk = np.asarray(p_tok[a:b])
         # ★ token ごとの `int(t) in Sdense`(Python ループ)は WG の chr 級 contig で数秒/contig
         #   かかり timeout の主因になる。dense id レンジで粗く落として np.isin(C 実装)で判定する。

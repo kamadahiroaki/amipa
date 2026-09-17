@@ -788,6 +788,14 @@ export async function fetchBlockNodes(dbFile: string, layer: number, contig: num
   const j = await res.json()
   return Array.isArray(j.names) ? j.names as string[] : []
 }
+// Blocks の底からの受け渡し: 各行のトークン範囲で塩基レベル MSA（bubble MSA と同じ出力）
+export async function fetchBubbleMsaRanges(dbFile: string, ranges: [string, number, number][], label: string, flank = 0): Promise<BubbleMsaResp> {
+  try {
+    const res = await fetch('/api/bubble_msa/ranges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges, label, flank }) })
+    if (!res.ok) return { error: 'request failed (' + res.status + ')' }
+    return res.json()
+  } catch (e) { return { error: String(e) } }
+}
 // 逐次計算: 事前計算のサイドカーに無い窓を、backend の常駐 Python ワーカーで計算する。
 //   ranges = 親ブロックの各インスタンスのトークン範囲 [path 名, s0, e0]（blockMsaRender が inst[8..9] から組む）
 export interface BlockDrillRequest { ranges: [string, number, number][]; span: number; afrac: number; label: string; depth: number; parent: number; pblock: number }

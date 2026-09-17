@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { execFile } from 'child_process'
+import { execFile, spawn } from 'child_process'
 import path from 'path'
 import fs from 'fs'
 import { getDb, getDbDir } from '../db'
@@ -72,4 +72,33 @@ bubbleMsaRouter.get('/bubble_msa', (req, res) => {
       try { res.json(JSON.parse(stdout)) }
       catch (e) { res.json({ error: 'MSA 出力を解釈できません: ' + String(e) }) }
     })
+})
+
+// Blocks パネルの底からの受け渡し: 各行（パス）のトークン範囲を stdin の JSON で渡し、その範囲の塩基レベル MSA を返す。
+//   POST /api/bubble_msa/ranges  body {db, ranges:[[path, s0, e0], …], label, flank}
+//   S（列）は範囲内のトークンの葉集合、行は与えたパスの範囲だけ。上限は bubble_msa.py の MAX_LEAVES（400 葉）。
+bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>
+  const db = typeof b.db === 'string' ? b.db : ''
+  const ranges = Array.isArray(b.ranges) ? (b.ranges as unknown[]) : []
+  if (!db) { res.status(400).json({ error: 'Missing db' }); return }
+  if (!ranges.length || !ranges.every(r => Array.isArray(r) && r.length === 3 && typeof r[0] === 'string')) { res.status(400).json({ error: 'ranges must be [[path, s0, e0], ...]' }); return }
+  const fq = Number(b.flank); const flank = String(Number.isFinite(fq) ? Math.max(0, Math.min(12, fq)) : 0)
+  const dbPath = path.join(getDbDir(), path.basename(db))
+  if (!fs.existsSync(dbPath)) { res.status(404).json({ error: 'DB が見つかりません' }); return }
+  const distill = distillFor(dbPath)
+  if (!distill) { res.json({ error: 'この DB には MSA 用 distill サイドカーがありません（' + path.basename(dbPath) + '.distill）' }); return }
+  const argv = [SCRIPT, '--db', dbPath, '--distill', distill, '--ranges-stdin', '--flank', flank, '--label', String(b.label ?? 'Blocks')]
+  const child = spawn(PYTHON, argv, { stdio: ['pipe', 'pipe', 'pipe'] })
+  let out = '', errTxt = ''; let done = false
+  const timer = setTimeout(() => { if (!done) { done = true; try { child.kill() } catch { /* ignore */ } res.json({ error: 'MSA 抽出がタイムアウトしました' }) } }, TIMEOUT_MS)
+  child.stdout.setEncoding('utf8'); child.stdout.on('data', (d: string) => { out += d })
+  child.stderr.setEncoding('utf8'); child.stderr.on('data', (d: string) => { errTxt += d })
+  child.on('error', (e) => { if (done) return; done = true; clearTimeout(timer); res.json({ error: 'MSA 抽出に失敗: ' + String(e) }) })
+  child.on('close', () => {
+    if (done) return; done = true; clearTimeout(timer)
+    try { res.json(JSON.parse(out)) } catch (e) { res.json({ error: 'MSA 出力を解釈できません: ' + (errTxt ? errTxt.slice(0, 400) : String(e)) }) }
+  })
+  child.stdin.on('error', () => { /* ignore */ })
+  child.stdin.end(JSON.stringify({ ranges, label: b.label ?? 'Blocks' }))
 })
