@@ -51,6 +51,19 @@ function refMaxSpan(d: ReturnType<typeof getDb>): number | null {
 }
 
 const MAX_NODES = 20000
+// 層ごとの「複数位置でないノードの最大スパン」。索引レンジの下限（start − このスパン）に使う。ref_meta.max_span は
+// 複数位置ノード（ゲノム全長 5.1 Mb の箱）で決まっていて下限として役に立たず、層の全ノードを走査していた。
+const nonMultiSpanCache = new Map<string, number>()
+function nonMultiMaxSpan(d: ReturnType<typeof getDb>, dbFile: string, layer: number): number {
+  const key = path.basename(dbFile) + ':' + layer
+  const c = nonMultiSpanCache.get(key); if (c != null) return c
+  let v = 0
+  try {
+    const r = d.prepare(`SELECT MAX(COALESCE(ref_bp_end, ref_bp) - ref_bp) AS m FROM nodes WHERE layer_index = ? AND ref_bp IS NOT NULL AND COALESCE(ref_multi, 0) = 0`).get(layer) as { m?: number } | undefined
+    v = r?.m != null && Number.isFinite(Number(r.m)) ? Number(r.m) : 0
+  } catch { v = refMaxSpan(d) ?? 0 }
+  nonMultiSpanCache.set(key, v); return v
+}
 blocksRouter.get('/blocks/nodes', (req, res) => {
   const { db, layer, contig, start, end } = req.query as Record<string, string>
   if (!db || layer == null || contig == null || start == null || end == null) { res.status(400).json({ error: 'Missing db/layer/contig/start/end' }); return }
@@ -58,16 +71,19 @@ blocksRouter.get('/blocks/nodes', (req, res) => {
   if (![L, cid, s, e].every(Number.isFinite)) { res.status(400).json({ error: 'Invalid numbers' }); return }
   try {
     const d = getDb(db)
-    const span = refMaxSpan(d)
-    const lo = span == null ? null : s - span
-    // ref_bp <= end かつ ref_bp_end >= start。下限（start − max_span）で索引レンジを閉じる（/goto と同じ理屈）。
+    const lo = s - nonMultiMaxSpan(d, db, L)
+    // 単一位置のノード: 区間 [start,end] と重なれば含む（ref_bp <= end かつ ref_bp_end >= start）。
+    // 複数位置（ref_multi）のノード: 記録範囲は位置の外接箱なので、箱が丸ごと区間に入るときだけ含む
+    // （グラフの塗り分け blockColorOf と同じ規則）。ゲノム全長の箱を持つ原点跨ぎのスーパーノードが
+    // どのブロックのホバーでも光っていた（ecoli50 の 0 bp 付近）のを止める。
     const rows = d.prepare(
       `SELECT node_name FROM nodes
        WHERE layer_index = ? AND ref_contig_id = ? AND ref_bp IS NOT NULL
-         AND ref_bp <= ?${lo == null ? '' : ' AND ref_bp >= ?'}
+         AND ref_bp <= ? AND ref_bp >= ?
          AND COALESCE(ref_bp_end, ref_bp) >= ?
+         AND (COALESCE(ref_multi, 0) = 0 OR (ref_bp >= ? AND COALESCE(ref_bp_end, ref_bp) <= ?))
        LIMIT ${MAX_NODES}`
-    ).all(...(lo == null ? [L, cid, e, s] : [L, cid, e, lo, s])) as { node_name: string }[]
+    ).all(L, cid, e, lo, s, s, e) as { node_name: string }[]
     res.json({ names: rows.map(r => r.node_name), truncated: rows.length >= MAX_NODES })
   } catch (err) {
     res.status(500).json({ error: String(err) })
