@@ -179,7 +179,16 @@ function blockViewToColors(v: BlockView): BlockColorMap {
   }
   const contigs = new Map<number, { starts: number[]; ends: number[]; colors: number[] }>()
   for (const [k, g] of groups) { g.sort((a, b) => a.s - b.s); contigs.set(k, { starts: g.map(i => i.s), ends: g.map(i => i.e), colors: g.map(i => i.c) }) }
-  return { maxSpan, contigs }
+  // 全体窓を見ているときは「最細段のブロック番号 → 色」も作る（見えているブロックの members で写す。絞り込みで見えない番号は null）
+  let rankColors: (number | null)[] | null = null
+  if (v.win === 0 && v.n0 > 0) {
+    rankColors = new Array(v.n0).fill(null)
+    for (const b of v.blocks) {
+      const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color); const c = m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96
+      for (const r of (b.members || [b.rank])) if (r >= 0 && r < v.n0) rankColors[r] = c
+    }
+  }
+  return { maxSpan, contigs, rankColors }
 }
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)
@@ -973,7 +982,7 @@ export default function App() {
   const pendingHapRef = useRef<string | null>(null)                          // パス群の一覧が届いてから切り替える行
   // Blocks の窓・絞り込みが変わったら、グラフをその参照区間へ寄せ、区間に合う層（属するノードが ~800 個以下の最も細かい層）で表示
   const onBlockView = useCallback((v: BlockView | null) => {
-    setBlkColors(v ? blockViewToColors(v) : null)
+    setBlkColors(v ? { ...blockViewToColors(v), db: selectedDb ?? undefined } : null)
     if (!v || !v.sync || !v.scope || !selectedDb) return
     if (v.scopeKey === blkScopeKeyRef.current) return
     blkScopeKeyRef.current = v.scopeKey

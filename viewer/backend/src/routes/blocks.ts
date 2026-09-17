@@ -9,6 +9,7 @@ import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } f
 //   GET /api/blocks?db=X.db            … `<db>.blocks.json`（functions/msa_lod/70_hier_build.py の出力）をそのまま返す
 //   GET /api/blocks/warm?db  … 逐次計算ワーカーを起こして Ctx を温める（状態を返す）。パネルを開いた時に呼ぶ
 //   GET /api/blocks/status?db … ワーカーの状態
+//   POST /api/blocks/nodemap  … {db, layer, names} → ノードが属する全体窓・最細段のブロック番号（塗り分け用）
 //   POST /api/blocks/window   … {db, ranges:[[path,s0,e0],…], span, afrac, label, depth, parent, pblock}
 //       … 事前計算に無い窓をその場で計算して返す（blocksWorker.ts → scripts/blocks/worker.py）
 //   GET /api/blocks/tree?db … 系統樹の葉の順（ハプロタイプ名）。パスパネルの「系統順」
@@ -159,6 +160,24 @@ blocksRouter.get('/blocks/status', (req, res) => {
   const { db } = req.query as Record<string, string>
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
   res.json(blocksWorkerStatus(peekBlocksWorker(dbPathOf(db))))
+})
+
+// ノード名 → 全体窓・最細段のブロック番号（常駐ワーカー。葉は合意列の位置、スーパーノードは配下の葉の多数決）。
+// グラフの塗り分けで、参照座標を持たないノード（chrY pggb の葉の 78%）や外接箱の広いスーパーノードを塗るために使う。
+//   POST /api/blocks/nodemap  body {db, layer, names:[…]}  → {ranks:[…], nblocks}
+const MAX_NAMES = 20000
+blocksRouter.post('/blocks/nodemap', async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>
+  const db = typeof b.db === 'string' ? b.db : ''
+  const names = Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []
+  if (!db) { res.status(400).json({ error: 'Missing db' }); return }
+  if (!names.length || names.length > MAX_NAMES) { res.status(400).json({ error: `names must be 1..${MAX_NAMES}` }); return }
+  const r = workerFor(db)
+  if (!r.w) { res.status(503).json({ error: r.error }); return }
+  try {
+    const out = await r.w.warm().then(() => r.w!.request('nodemap', { layer: Number(b.layer) || 0, names }))
+    res.json({ ranks: out.ranks, nblocks: out.nblocks, ms: out.ms })
+  } catch (e) { res.status(500).json({ error: String((e as Error)?.message ?? e) }) }
 })
 
 const MAX_RANGES = 200000

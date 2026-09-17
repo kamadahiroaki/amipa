@@ -7,7 +7,7 @@ const CSS = '.bkmsa{--bg:#f3f6f7;--panel:#fff;--ink:#1b2530;--muted:#64707c;--li
 export interface BlockRef { win: number; level: number; W: number; rank: number; name: string; ref_contig: number; x: number; span: number; tbp: number; nhap: number; label: string }
 export interface BlockMsaHandle { selectByRef(contig: number, bp: number): boolean; setHapMarks(m: Map<string, string>): void; destroy(): void; _layout?: () => any }
 // 現在見えている窓・段のブロック一覧（色つき）。App がグラフのノードをブロック色で塗るのに使う
-export interface BlockView { win: number; level: number; W: number; mode: string; blocks: { rank: number; color: string; ref_contig: number; x: number; span: number; label: string }[]; scope: { contig: number; start: number; end: number } | null; scopeKey: string; sync: boolean }
+export interface BlockView { win: number; level: number; W: number; mode: string; blocks: { rank: number; color: string; ref_contig: number; x: number; span: number; label: string; members: number[] }[]; scope: { contig: number; start: number; end: number } | null; scopeKey: string; sync: boolean; n0: number }
 export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void; onDrill?: (req: BlockDrillRequest) => Promise<BlockDrillResult>; onView?: (v: BlockView | null) => void; onSelectHap?: (groupKey: string, hap: string) => void; onBaseMsa?: (req: BlockDrillRequest) => void }
 // MSA の行（ハプロタイプ名。例 'HG00673#1', 'GCF_013459175.1#1', 'grch38#chrY'）を、グラフのパス群の鍵
 // （sample 'HG00673' / haplotype 'HG00673#1' / ecoli では haplotype 'GCF_013459175.1', sample 'GCF_013459175'）に合わせる
@@ -263,8 +263,8 @@ function emitView(){ if (!(cb && cb.onView)) return; const L = level(); const ke
   const byC = new Map(); for (const rank of LY.vis){ const B = L.blocks[rank]; const c = (B.ref_contig!=null ? B.ref_contig : 0); const g = byC.get(c) || {n:0, lo:Infinity, hi:-Infinity}; g.n++; g.lo = Math.min(g.lo, B.x); g.hi = Math.max(g.hi, B.x + B.span); byC.set(c, g); }
   let scope = null; for (const [c,g] of byC){ if (!scope || g.n > scope.n){ scope = {contig:c, start:g.lo, end:g.hi, n:g.n}; } }
   const scopeKey = st.win + '|' + (st.filter ? [...st.filter].sort((a,b)=>a-b).join(',') : '');
-  cb.onView({ win: st.win, level: st.li, W: L.W, mode: L.mode||'blocks', scope: scope ? {contig:scope.contig, start:scope.start, end:scope.end} : null, scopeKey, sync: st.sync,
-    blocks: LY.vis.map(rank => { const B = L.blocks[rank]; return { rank, color: colorOf(rank), ref_contig: (B.ref_contig!=null ? B.ref_contig : 0), x: B.x, span: B.span, label: '#'+(rank+1) }; }) }); }
+  cb.onView({ win: st.win, level: st.li, W: L.W, mode: L.mode||'blocks', scope: scope ? {contig:scope.contig, start:scope.start, end:scope.end} : null, scopeKey, sync: st.sync, n0: win().levels[0].nblocks,
+    blocks: LY.vis.map(rank => { const B = L.blocks[rank]; return { rank, color: colorOf(rank), ref_contig: (B.ref_contig!=null ? B.ref_contig : 0), x: B.x, span: B.span, label: '#'+(rank+1), members: membersOf(L, rank) }; }) }); }
 function arrow(g, x, y, w, h, dir, color, hatch, dotted){
   const hd = Math.min(6, Math.max(2, w*0.35)); g.beginPath();
   if (dir){ g.moveTo(x,y); g.lineTo(x+w-hd,y); g.lineTo(x+w,y+h/2); g.lineTo(x+w-hd,y+h); g.lineTo(x,y+h); } else { g.moveTo(x+w,y); g.lineTo(x+hd,y); g.lineTo(x,y+h/2); g.lineTo(x+hd,y+h); g.lineTo(x+w,y+h); }
@@ -401,7 +401,7 @@ function updateButtons(){ const w=win();
   if (st.drilling){ $('scopein').disabled = true; $('scopein').textContent = '計算中…'; }
   else {
     $('scopein').disabled = !(childOK || drillOK || filterOK);
-    $('scopein').textContent = filterOK ? '選択ブロックの内側へ（絞り込み）→' : childOK ? '選択ブロックの内側へ →' : (drillOK ? '選択ブロックの内側へ（逐次計算）→' : '選択ブロックの内側へ →');
+    $('scopein').textContent = filterOK ? '選択ブロックの内側へ（絞り込み）→' : childOK ? '選択ブロックの内側へ →' : (st.sel!=null && canBase(st.sel)) ? '塩基レベルへ ↓' : (drillOK ? '選択ブロックの内側へ（逐次計算）→' : '選択ブロックの内側へ →');
   }
   $('scopein').title = filterOK ? 'この段のブロックが含む最細段のブロックだけを表示します（計算なし）。ダブルクリックでも同じ'
     : (st.sel!=null && st.li===0 && !childOK && !drillOK) ? (canDrill(st.sel) ? '逐次計算の経路が無い（backend の Python ワーカーが使えない）' : 'このビンは錨が 1 本以下なので、これ以上分けられません')

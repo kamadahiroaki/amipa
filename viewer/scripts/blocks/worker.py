@@ -7,7 +7,9 @@ stdin に 1 行 1 要求の JSON、stdout に 1 行 1 応答の JSON。ログは
   {"id":1,"op":"warm"}                         → Ctx（アトラス＋distill の読み込み・合意順序）を作って温める
   {"id":2,"op":"window","ranges":[[path,s0,e0],...],"span":<bp>,"afrac":0.5,"label":"#4","depth":1}
                                                → 窓 1 個を計算して {"id":2,"ok":true,"window":{...},"ms":...}
-  {"id":3,"op":"ping"} / {"op":"quit"}
+  {"id":3,"op":"nodemap","layer":L,"names":[...]}   → 各ノードが属する全体窓・最細段のブロック番号（-1=不明）
+                                                葉は合意列の位置から、スーパーノードは配下の葉の多数決（層ごとに 1 回計算して記憶）
+  {"id":4,"op":"ping"} / {"op":"quit"}
 Ctx は最初に必要になった時に作る（chrY 10 s / ecoli50 40 s 級）。以後の窓は 1 秒以内が目安。
 パラメタ（錨の出現割合・併合上限・ビン数・環状・順序の基準）は事前計算のサイドカー meta から取り、無ければ既定値。
 """
@@ -33,7 +35,53 @@ def main():
             log("worker: サイドカー meta を読めない (%s): %s" % (bp, e))
     P = dict(DEFAULT_PARAMS); P.update(meta.get("params", {}) or {})
     circular = bool(meta.get("circular", False)); order_arg = meta.get("order_arg", "ref"); ref_arg = meta.get("ref_arg", "")
-    state = dict(ctx=None, name2pi=None, warm_ms=None)
+    state = dict(ctx=None, name2pi=None, warm_ms=None, leaf_rank=None, maj={}, side_windows=None)
+    side_root = None
+    if os.path.exists(bp):
+        try:
+            with open(bp) as f: side_root = json.load(f).get("windows", [None])[0]
+        except Exception: side_root = None
+
+    def leaf_ranks():
+        """葉（V 番号）→ 全体窓・最細段のブロック番号。サイドカーの根の窓のブロック名（c0 列の名前）を合意列に写し、
+        列 c のブロック＝c0 ≤ c を満たす最後のブロック（構築器の encl と同じ）。サイドカーが無ければ None"""
+        if state["leaf_rank"] is not None: return state["leaf_rank"]
+        ctx = ensure_ctx()
+        if not side_root: return None
+        L0 = side_root["levels"][0]; name2col = {nm: i for i, nm in enumerate(ctx.colname)}
+        c0 = []
+        for b in L0["blocks"]:
+            nm = b["name"].split("…")[0]; c = name2col.get(nm)
+            c0.append(c if c is not None else -1)
+        c0 = np.array(c0, np.int64); order = np.argsort(c0); c0s = c0[order]
+        colrank = (np.searchsorted(c0s, np.arange(ctx.ncols), side="right") - 1)
+        colrank = order[np.maximum(colrank, 0)].astype(np.int32)           # 列 → ブロック番号（先頭より前は #1）
+        lr = np.full(ctx.at.V, -1, np.int32); lv = ctx.at.leaf_v; col_of = ctx.col[lv]
+        ok = col_of >= 0; lr[lv[ok]] = colrank[col_of[ok]]
+        state["leaf_rank"] = lr; return lr
+
+    def majority_for_layer(L):
+        """層 L のノード（V 番号）→ 配下の葉のブロック番号の多数決（bp 加重）"""
+        if L in state["maj"]: return state["maj"][L]
+        ctx = ensure_ctx(); at = ctx.at; lr = leaf_ranks()
+        if lr is None: state["maj"][L] = {}; return {}
+        if L not in at.anc:
+            cur = np.arange(at.V, dtype=np.int64)
+            for _ in range(300):
+                nxt = np.where(at.inL[L, cur], cur, at.parent[cur])
+                if np.array_equal(nxt, cur): break
+                cur = nxt
+            at.anc[L] = cur
+        lv = at.leaf_v; a = at.anc[L][lv]; r = lr[lv]; w = at.leaf_bp[lv].astype(np.float64)
+        ok = r >= 0; a, r, w = a[ok], r[ok], w[ok]
+        key = a.astype(np.int64) * (int(r.max()) + 2) + r
+        uk, inv = np.unique(key, return_inverse=True); ws = np.bincount(inv, weights=w)
+        ua = uk // (int(r.max()) + 2); ur = uk % (int(r.max()) + 2)
+        best = {}
+        for anc_v, rk, wt in zip(ua.tolist(), ur.tolist(), ws.tolist()):
+            if anc_v not in best or wt > best[anc_v][1]: best[anc_v] = (rk, wt)
+        m = {int(k): int(v[0]) for k, v in best.items()}
+        state["maj"][L] = m; return m
     emit(dict(ev="hello", db=os.path.basename(a.db), params=P, circular=circular))
 
     def ensure_ctx():
@@ -63,6 +111,17 @@ def main():
             if op == "ping": emit(dict(id=rid, ok=True, ready=state["ctx"] is not None)); continue
             if op == "warm":
                 ensure_ctx(); emit(dict(id=rid, ok=True, warm_ms=state["warm_ms"], ms=int((time.time() - t0) * 1000))); continue
+            if op == "nodemap":
+                ctx = ensure_ctx(); L = int(req.get("layer", ctx.at.maxlayer)); names = req.get("names") or []
+                lr = leaf_ranks()
+                if lr is None: emit(dict(id=rid, ok=False, error="サイドカー（根の窓）が無いので対応を作れません")); continue
+                m = majority_for_layer(L); nm2v = ctx.at.names; out = []
+                for nm in names:
+                    v = nm2v.get(str(nm))
+                    if v is None: out.append(-1); continue
+                    rk = int(lr[v]) if ctx.at.kind[v] == 0 else m.get(int(v), -1)
+                    out.append(rk)
+                emit(dict(id=rid, ok=True, ranks=out, nblocks=len(side_root["levels"][0]["blocks"]) if side_root else 0, ms=int((time.time() - t0) * 1000))); continue
             if op == "window":
                 ctx = ensure_ctx(); n2p = state["name2pi"]
                 ranges = []; missing = 0

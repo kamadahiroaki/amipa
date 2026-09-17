@@ -1,7 +1,7 @@
 import type { GuardSink } from '../api/client'
 import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import * as PIXI from 'pixi.js'
-import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture } from '../api/client'
+import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap } from '../api/client'
 import { stainToColor, GIE_COLORS, GENE_DENSITY_LOW, GENE_DENSITY_HIGH } from '../annotColors'
 // §8.2 Phase 3: 図版の幾何＋SVG 直列化は backend の純粋モジュールを共有する(ヘッドレス CLI と一本化)。
 import { buildGraphFigure, drawListToSvg, FIG_SCALE } from '../../../backend/src/figure/svgSerialize'
@@ -200,7 +200,13 @@ interface Props {
 // 区間に入らないノード（窓の外・参照座標なし）は薄い灰色（呼び出し側で null を灰に写す）。ノードの参照スパンが区間幅の
 // 2 倍を超えるもの（子孫が散在するクラスタのスーパーノード、位置が散在する複数位置ノード）も灰。hover のリング
 // （/api/blocks/nodes）も同じ規則なので、リングが出るのに灰、という食い違いは起きない。
-export interface BlockColorMap { maxSpan: number; contigs: Map<number, { starts: number[]; ends: number[]; colors: number[] }> }
+export interface BlockColorMap {
+  maxSpan: number; contigs: Map<number, { starts: number[]; ends: number[]; colors: number[] }>
+  // 全体窓・最細段のブロック番号 → 色（見ている段でのまとめ方・絞り込みを反映。null=その番号は今は見えない/灰）。
+  // 全体窓を見ているときだけ入る。ノード名 → 番号は /api/blocks/nodemap で引いて GraphCanvas が記憶する
+  rankColors?: (number | null)[] | null
+  db?: string
+}
 export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
                              bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
   if (contig == null || bp == null) return null
@@ -549,6 +555,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const refContigsRef       = useRef(refContigs)
   const nodeColorsRef       = useRef(nodeColors)
   const blockColorsRef      = useRef<BlockColorMap | null>(blockColors ?? null)
+  // ノード名 → 全体窓・最細段のブロック番号（/api/blocks/nodemap の記憶。db が変わったら捨てる）
+  const nodeRankRef         = useRef<{ db: string; layer: number; map: Map<string, number> }>({ db: '', layer: -1, map: new Map() })
+  const nodeRankPendingRef  = useRef<Set<string>>(new Set())
+  const nodeRankTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ribbonsRef          = useRef(ribbons)
   const ribbonLayerRef      = useRef<PIXI.Graphics | null>(null)
   const renderRibbonsRef    = useRef<(() => void) | null>(null)
@@ -1377,8 +1387,18 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         // アラインビュー連動の対応色（あれば最優先で塗る）
         const linkColor = nodeColorsRef.current.get(n.node_name)
         // Blocks パネルの窓に合わせた塗り分け。undefined=モード OFF、null=モード ON だが区間の外（薄灰）
+        // まず名前 → ブロック番号（ワーカーの対応表。参照座標の無い葉やスーパーノードも塗れる）、無ければ参照区間の規則
         const bm = blockColorsRef.current
-        const blockColor: number | null | undefined = bm ? blockColorOf(bm, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi) : undefined
+        let blockColor: number | null | undefined = undefined
+        if (bm) {
+          const rc = bm.rankColors
+          const rk = rc ? nodeRankRef.current.map.get(n.node_name) : undefined
+          if (rc && rk !== undefined) blockColor = rk >= 0 && rk < rc.length ? rc[rk] : null
+          else {
+            blockColor = blockColorOf(bm, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi)
+            if (rc && rk === undefined) nodeRankPendingRef.current.add(n.node_name)      // 後で対応表を引く
+          }
+        }
         // アノテ着色(band/region/gene 密度)。node fill は単値なので相互排他、優先 band>region>gene。
         const annotColor: number | null =
             bandModeRef.current   ? bandToColor(n.band_id, bandDictRef.current)
@@ -2042,6 +2062,24 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           uiLayer.drawCircle(s.x, s.y, 28)
           uiLayer.endFill()
         }
+      }
+
+      // Blocks の塗り分けで対応表が無かったノードを、層ごとにまとめて /api/blocks/nodemap に問い合わせる（300 ms デバウンス）
+      if (nodeRankPendingRef.current.size && blockColorsRef.current?.rankColors && !nodeRankTimerRef.current) {
+        nodeRankTimerRef.current = setTimeout(() => {
+          nodeRankTimerRef.current = null
+          const st = nodeRankRef.current; const db = blockColorsRef.current?.db ?? dbFile
+          if (st.db !== db) { st.db = db; st.map = new Map() }
+          const layer = Math.max(0, displayLayer)
+          if (st.layer !== layer) { st.layer = layer; st.map = new Map() }
+          const names = [...nodeRankPendingRef.current].slice(0, 20000); nodeRankPendingRef.current.clear()
+          if (!names.length) return
+          fetchBlockNodemap(db, layer, names).then(ranks => {
+            if (!ranks || nodeRankRef.current.layer !== layer) return
+            names.forEach((nm, i) => nodeRankRef.current.map.set(nm, ranks[i]))
+            markDirty(); renderRef.current?.()
+          }).catch(() => { /* 次の描画で再試行 */ })
+        }, 300)
       }
 
       // MSA 対象の選択ノード(橙の二重リング)＋パネル hover 中ノード(マゼンタのハロー＋白縁太リング)。

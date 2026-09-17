@@ -822,6 +822,13 @@ export async function fetchBlockView(dbFile: string, contig: number, start: numb
     const r = await fetch(`/api/blocks/view?${p}`); if (!r.ok) return null; return await r.json()
   } catch { return null }
 }
+// ノード名 → 全体窓・最細段のブロック番号（-1=不明）。参照座標の無いノードの塗り分けに使う
+export async function fetchBlockNodemap(dbFile: string, layer: number, names: string[]): Promise<number[] | null> {
+  try {
+    const r = await fetch('/api/blocks/nodemap', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names }) })
+    if (!r.ok) return null; const j = await r.json(); return Array.isArray(j.ranks) ? j.ranks as number[] : null
+  } catch { return null }
+}
 // ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）
 export async function warmBlocks(dbFile: string): Promise<{ state: string; error?: string; warm_ms?: number }> {
   try { const r = await fetch(`/api/blocks/warm?db=${encodeURIComponent(dbFile)}`); return await r.json() } catch (e) { return { state: 'error', error: String(e) } }
