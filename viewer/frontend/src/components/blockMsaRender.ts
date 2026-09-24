@@ -318,6 +318,28 @@ function emitView(){ if (!(cb && cb.onView)) return; const L = level(); const ke
   const scopeKey = st.win + '|' + (st.filter ? [...st.filter].sort((a,b)=>a-b).join(',') : '');
   cb.onView({ win: st.win, level: st.li, W: L.W, mode: L.mode||'blocks', scope: scope ? {contig:scope.contig, start:scope.start, end:scope.end} : null, scopeKey, sync: st.sync, n0: win().levels[0].nblocks,
     blocks: LY.vis.map(rank => { const B = L.blocks[rank]; return { rank, color: colorOf(rank), ref_contig: (B.ref_contig!=null ? B.ref_contig : 0), x: B.x, span: B.span, label: '#'+(rank+1), members: membersOf(L, rank) }; }) }); }
+function arrowPath(g, x, y, w, h, dir){ const hd = Math.min(6, Math.max(2, w*0.35)); g.beginPath();
+  if (dir){ g.moveTo(x,y); g.lineTo(x+w-hd,y); g.lineTo(x+w,y+h/2); g.lineTo(x+w-hd,y+h); g.lineTo(x,y+h); } else { g.moveTo(x+w,y); g.lineTo(x+hd,y); g.lineTo(x,y+h/2); g.lineTo(x+hd,y+h); g.lineTo(x+w,y+h); }
+  g.closePath(); }
+// Mauve 風の類似度プロファイル: 矢印の中を、位置ごとの「保存度」の高さでブロック色に塗る（残りは白）。
+// 尺度が少数派サイトなら位置が分かるので山型、私有サイト／錨でない bp は位置が無いので一定の高さ（値が大きいほど低い）。
+// 高さ 1 = この層の典型密度の 2 倍以上で 0、密度 0 で満杯（既存の濃淡と同じ正規化）。返り値: ビンごとの高さ 0..1（null=満杯）
+function profileHeights(o, cons, nbins, hapIdx){ const it = o.it; if (!(it.length>12) || it[2]<=0) return null;
+  if (st.measure==='minor'){ const vs = cons ? consSites(it) : varSites(it); if (!vs.length) return null;
+    const h = new Float32Array(nbins); const cnt = new Float32Array(nbins);
+    const scale = (it[11]||vs.length) / vs.length;                                  // 位置は 1/255 に丸めて重複を落としているので、実数に戻す
+    for (let i=0;i<vs.length;i++){ let b = Math.min(nbins-1, Math.floor(vs[i]/255*nbins)); if (!cons && !o.dir) b = nbins-1-b; cnt[b] += scale; }
+    const bpPerBin = (cons ? Math.max(1, level().blocks[o.rank].tbp) : it[2]) / nbins; const dref = levelDensRef();
+    for (let i=0;i<nbins;i++){ const dens = cnt[i]/bpPerBin*1000; h[i] = 1 - Math.min(1, dens/(2*dref)); } return h; }
+  const v = measureOf(it); if (v==null) return null; const S = densStats(); const q = pct(S.all, v); const h = new Float32Array(nbins); h.fill(1 - q); return h; }
+function profileArrow(g, p, o, yy, hh, col, cons, hapIdx){
+  const inner = Math.max(1, p.w-2); const nbins = Math.max(2, Math.min(255, Math.floor(inner/2))); const h = profileHeights(o, cons, nbins, hapIdx);
+  g.save(); arrowPath(g, p.x, yy, p.w, hh, o.dir); g.clip();
+  if (!h){ g.fillStyle = col; g.fillRect(p.x, yy, p.w, hh); }
+  else { g.fillStyle = TH.panel; g.fillRect(p.x, yy, p.w, hh); g.fillStyle = col; const bw = inner/nbins;
+    for (let i=0;i<nbins;i++){ const hp = Math.max(1, Math.round(h[i]*(hh-1))); g.fillRect(p.x+1+i*bw, yy+hh-hp, bw+0.6, hp); } }
+  g.restore();
+  arrowPath(g, p.x, yy, p.w, hh, o.dir); g.strokeStyle = col; g.globalAlpha = .95; g.lineWidth = .9; g.stroke(); g.globalAlpha = 1; }
 function arrow(g, x, y, w, h, dir, color, hatch, dotted){
   const hd = Math.min(6, Math.max(2, w*0.35)); g.beginPath();
   if (dir){ g.moveTo(x,y); g.lineTo(x+w-hd,y); g.lineTo(x+w,y+h/2); g.lineTo(x+w-hd,y+h); g.lineTo(x,y+h); } else { g.moveTo(x+w,y); g.lineTo(x+hd,y); g.lineTo(x,y+h/2); g.lineTo(x+hd,y+h); g.lineTo(x+w,y+h); }
@@ -362,8 +384,9 @@ function drawGrid(){
       const cons = st.mode!=='own' && o.kind<4 && o.it.length>20 && p.w>=6;     // 合意座標モード: ブロック内の差異を合意座標で描く
       const inner0 = Math.max(1, p.w-2); const XC = c => p.x+1+Math.max(0,Math.min(255,c))/255*inner0;
       if (o.kind===5) arrow(g, p.x, yy, p.w, hh, o.dir, null, false, true);
-      else if (inSeg){ arrow(g, p.x, yy, p.w, hh, o.dir, colorOf(o.rank), false, false); }   // 区間の一部: 通過順に並べた各ブロックの矢印
-      else arrow(g, p.x, yy, p.w, hh, o.dir, o.kind===4 ? TH.rep : colorOf(o.rank), o.kind===4, false);
+      else if (o.kind===4) arrow(g, p.x, yy, p.w, hh, o.dir, TH.rep, true, false);
+      else if (p.w >= 6) profileArrow(g, p, o, yy, hh, colorOf(o.rank), cons, r.hapIdx);     // Mauve 風: 中を保存度の高さで塗る
+      else arrow(g, p.x, yy, p.w, hh, o.dir, colorOf(o.rank), false, false);
       if (cons){
         // 合意の錨がこの株に無い区間（欠失・分岐・コンティグ断片の外側）: 白く抜いて中央に細い線
         for (const dl of (o.it[18]||[])){ const x0 = XC(dl[0]), x1 = Math.max(XC(dl[1]), x0+1.5); g.fillStyle = TH.panel; g.fillRect(x0, yy, x1-x0, hh); g.fillStyle = TH.ink; g.globalAlpha=.45; g.fillRect(x0, yy+hh/2-.5, x1-x0, 1); g.globalAlpha=1; }
@@ -378,16 +401,6 @@ function drawGrid(){
         for (const gp of o.it[14]){ const useC = cons && gp.length>3; const wI = Math.max(3, Math.min(12, gp[2]*LY.s));
           const x0 = useC ? Math.max(p.x+1, Math.min(p.x+p.w-1-wI, XC(gp[3]))) : p.x+1+gp[0]/255*inner, x1 = useC ? x0+wI : p.x+1+gp[1]/255*inner; g.save(); g.beginPath(); g.rect(x0, yy, Math.max(2, x1-x0), hh); g.clip();
           g.fillStyle = TH.panel; g.globalAlpha = .75; g.fillRect(x0, yy, Math.max(2,x1-x0), hh); g.globalAlpha = 1; g.strokeStyle = TH.rep; g.lineWidth = 1; g.beginPath(); for (let t=-hh; t<x1-x0+hh; t+=4){ g.moveTo(x0+t, yy+hh); g.lineTo(x0+t+hh, yy); } g.stroke(); g.restore(); } }
-      if (o.kind<4 && o.it.length>12 && p.w>=3 && !(p.w - 2 >= o.it[2]/1000)){ // 粗いとき: セルの値を下側 1/3 に塗る
-        const cf = cellFill(o.it, r.hapIdx); if (cf){ const y0 = yy + hh*2/3, hv = hh/3; g.fillStyle = TH.panel; g.fillRect(p.x+1, y0, Math.max(1,p.w-2), hv); g.fillStyle = cf.color; g.globalAlpha = cf.alpha; g.fillRect(p.x+1, y0, Math.max(1,p.w-2), hv); g.globalAlpha = 1; } }
-      else if (o.kind<4 && o.it.length>12 && (o.it[12] || o.it._vs || o.it[19]) && p.w>=3){ const vs = cons ? consSites(o.it) : varSites(o.it); const y0 = yy + hh*2/3, hv = hh/3; const inner = Math.max(1, p.w - 2);   // 合意座標モードでは合意座標で（行をまたいで縦に揃う）
-        // 下側 1/3 を薄く白く敷いてから線を引く（紫のブロックでも黒線が見えるように）。サイトが px 幅を超えるときは px ごとの密度の濃淡
-        g.fillStyle = TH.panel; g.globalAlpha = 0.55; g.fillRect(p.x+1, y0, inner, hv); g.globalAlpha = 1;
-        const npx = Math.max(1, Math.floor(inner)); const cnt = new Uint16Array(npx); for (let i=0;i<vs.length;i++){ cnt[Math.min(npx-1, Math.floor(vs[i]/255*npx))]++; }
-        if (vs.length <= npx*0.5){ g.fillStyle = TH.ink; g.globalAlpha = 0.85; for (let i=0;i<npx;i++) if (cnt[i]) g.fillRect(p.x+1+i, y0, 1, hv); g.globalAlpha = 1; }
-        else { // 密なとき: px ごとの密度(サイト/kb)を、この層の典型密度の 2 倍で飽和する濃淡に（ブロック間・行間で比べられる）
-          const bpPerPx = o.it[2]/npx; const dref = levelDensRef();
-          for (let i=0;i<npx;i++){ if (!cnt[i]) continue; const dens = cnt[i]/bpPerPx*1000; g.fillStyle = TH.ink; g.globalAlpha = 0.12 + 0.78*Math.min(1, dens/dref); g.fillRect(p.x+1+i, y0, 1, hv); } g.globalAlpha = 1; } }
       if (o.kind<4 && o.it[4]>1 && p.w>=16){ g.fillStyle=TH.ink; g.font='9.5px "IBM Plex Mono"'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('×'+o.it[4], p.x+p.w/2, yy+hh/2); }
       if (o.kind===5 && p.w>=22){ g.fillStyle=TH.muted; g.font='9px "IBM Plex Mono"'; g.textAlign='center'; g.textBaseline='middle'; g.fillText(o.it[7]+'小', p.x+p.w/2, yy+hh/2); }
       if (o.kind===4 && o.it[4]>1 && p.w>=16){ g.fillStyle=TH.panel; g.font='9.5px "IBM Plex Mono"'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('×'+o.it[4], p.x+p.w/2, yy+hh/2); }
@@ -491,7 +504,7 @@ function drawLegend(){ const el=$('legend'); el.innerHTML='';
   if (st.genes.size){ const sg=document.createElement('span'); sg.textContent='列見出しの帯＝遺伝子（上＝+鎖 緑、下＝−鎖 橙。位置はブロックの参照区間の中の相対位置）'; el.appendChild(sg); }
   const mname = {minor:'少数派サイト密度（半数未満のハプロだけが持つノードを含む区間 / kb）', priv:'私有サイト密度（この株だけが持つノードを含む区間 / kb）', nonanc:'錨でない bp の割合'}[st.measure];
   const nname = {abs:'層内の百分位で灰色の濃さ（濃い＝多い）', block:'そのブロックの全株の中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）', hap:'その株の全ブロックの中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）'}[st.norm];
-  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の下側 1/3＝${mname}。${nname}。1 px が 1 kb 以下まで拡大すると個々のサイトの位置の線に切り替わる`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','連結＝隣り合う行の同じ連なり（続けて通るブロック列）を、端と端（頭は頭・尾は尾）で結ぶリボン。揃っていれば列の下の薄い長方形、位置が違えば台形、向きが違えば交差（X）＝逆位。粗い段ではブロック内部の最細ブロック同士も細線で結ぶ（交差＝内部の逆位・並び替え）。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックはブロック単位の線も出る','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
+  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の中の塗り＝Mauve 風の類似度プロファイル。高さが保存度（この層の典型密度の 2 倍以上で 0、変異なしで満杯）。尺度が「${mname}」。少数派サイトは位置ごとの山型、他の尺度は一定の高さ。${nname}`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','連結＝隣り合う行の同じ連なり（続けて通るブロック列）を、端と端（頭は頭・尾は尾）で結ぶリボン。揃っていれば列の下の薄い長方形、位置が違えば台形、向きが違えば交差（X）＝逆位。粗い段ではブロック内部の最細ブロック同士も細線で結ぶ（交差＝内部の逆位・並び替え）。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックはブロック単位の線も出る','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
 
 
 function blockRef(rank){ if (rank==null) return null; const L = level(); const B = L.blocks[rank]; if (!B) return null;
