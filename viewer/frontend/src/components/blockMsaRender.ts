@@ -273,17 +273,27 @@ function computeLayout(){
   if (st.li > 0){
     const L0 = win().levels[0]; const fineOf = new Map();
     for (const hp of L0.haps) for (const c of hp.contigs) fineOf.set(hp.hap + '\u0001' + c.path, c.inst.filter(x=>x[5]<4));
-    const posMap = (r, p) => { const out = new Map(); const it = p.o.it; const fl = fineOf.get(r.hap + '\u0001' + p.ct.c.path) || [];
+    // 最細インスタンスの位置 rel はコンティグの座標（トークン順）で測る。矢印の左端がトークンの小さい側なのは '+' 鎖の
+    // コンティグで、'-' 鎖のコンティグは表示で反転しているので左右を入れ替える（矢印の向き dir ではなく鎖で決まる）。
+    // 向きも同様に、'-' 鎖のコンティグでは表示上の向き = 1 − 生の向き。★ここを dir で反転していたため、逆鎖の株と順鎖の株の間で
+    // 線が全部左右を結び、逆位に見えていた（ecoli GCF_014170615（−鎖）と GCF_016944755（+鎖））
+    const posMap = (r, p) => { const out = new Map(); const it = p.o.it; const fl = fineOf.get(r.hap + '\u0001' + p.ct.c.path) || []; const flip = p.ct.c.strand === '-';
       for (const f of fl){ if (f[8] < it[8] || f[9] > it[9]) continue; const rel = Math.max(0, Math.min(1, (f[6] - it[6]) / Math.max(1, it[2])));
-        const x = p.o.dir ? p.x + rel*p.w : p.x + p.w - rel*p.w; if (!out.has(f[0])) out.set(f[0], {x, dir: f[1]}); }
+        const x = flip ? p.x + p.w - rel*p.w : p.x + rel*p.w; if (!out.has(f[0])) out.set(f[0], {x, dir: flip ? 1 - f[1] : f[1]}); }
       return out; };
     for (let i=0; i+1<rows.length; i++){
       const A = rows[i], B = rows[i+1]; const firstBy = r => { const m = new Map(); for (const p of r.items){ if (p.o.kind<4 && !m.has(p.o.rank)) m.set(p.o.rank, p); } return m; };
       const fA = firstBy(A), fB = firstBy(B);
       for (const [rk, pa] of fA){ const pb = fB.get(rk); if (!pb) continue; const ma = posMap(A, pa), mb = posMap(B, pb); if (ma.size < 2 && mb.size < 2) continue;
         const la = (st.mode==='own') ? 0 : pa.slot.lane, lb = (st.mode==='own') ? 0 : pb.slot.lane;
-        for (const [rf, a] of ma){ const b = mb.get(rf); if (!b) continue; const inv = a.dir !== b.dir; const diff = inv || Math.abs(a.x - b.x) > 3;
-          sub.push({ rf, x0:a.x, y0:yBot(i, la), x1:b.x, y1:yTop(i+1, lb), inv, diff }); } }
+        const cur = [];
+        for (const [rf, a] of ma){ const b = mb.get(rf); if (!b) continue; cur.push({ rf, x0:a.x, y0:yBot(i, la), x1:b.x, y1:yTop(i+1, lb), inv: a.dir !== b.dir, diff:false }); }
+        // 「ずれ」＝並びが変わっている線だけ（上の x の順に並べたとき下の x が単調でない線＝交差する線）と逆位。
+        // 内容の長さの違いでまとめて左右に寄るだけの平行な線は、順序の情報が無いので既定では描かない
+        cur.sort((u,v)=>u.x0-v.x0); const n = cur.length; const best = new Array(n).fill(1), prev = new Array(n).fill(-1); let bi = 0;
+        for (let k=0;k<n;k++){ for (let j=0;j<k;j++){ if (cur[j].x1 <= cur[k].x1 && best[j]+1 > best[k]){ best[k] = best[j]+1; prev[k] = j; } } if (best[k] > best[bi]) bi = k; }
+        const mono = new Set(); for (let k=bi; k>=0; k=prev[k]) mono.add(k);
+        cur.forEach((l,k)=>{ l.diff = l.inv || !mono.has(k); sub.push(l); }); }
     }
   }
   let maxRight = W;
