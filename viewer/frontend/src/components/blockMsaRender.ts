@@ -161,14 +161,20 @@ function computeLayout(){
     for (const ct of r.contigs){
       if (bundled.has(ct)) continue; const placed=[];
       for (const {o, slot} of ct.items){
-        let px, pw; const colw0 = (st.mode!=='own' && o.kind<4 && slot.lane===0) ? blockX.get(vis[slot.pos]).w / (cnt0.get(o.rank)||1) : null;
+        let px, pw; let p_extra = {}; const p = { get ext(){ return p_extra.ext; }, set ext(v){ p_extra.ext = v; }, get col(){ return p_extra.col; }, set col(v){ p_extra.col = v; } };
+        const colw0 = (st.mode!=='own' && o.kind<4 && slot.lane===0) ? blockX.get(vis[slot.pos]).w / (cnt0.get(o.rank)||1) : null;
         const bpw = colw0!=null ? Math.max(MINW, colw0) : Math.max(MINW, o.it[2]*(st.mode==='own'?sOwn:s));
         if (st.mode==='own'){ px = ownX; pw = bpw; ownX += bpw + 1; }
         else { const col = blockX.get(vis[slot.pos]); pw = Math.min(col.w, bpw);
-          if (slot.lane===0){ // 同じブロックが錨なし区間や小群で分断されて複数インスタンスになったら、列の中で左から順に置く（重ねない）
+          if (slot.lane===0 && o.kind<4 && o.it.length>20 && o.it[20]){
+            // 合意座標: インスタンスを列の中の自分の合意範囲 [ext0, ext1]（0..255）に置く。錨なし挿入やコンティグの切れ目で
+            // 分断された断片は、等分でなく真の位置に（例: ecoli #7 は 94% と 6% の 2 片。等分すると中央に境界線が立ち、欠失に見えた）
+            const e0 = o.it[20][0], e1 = Math.max(o.it[20][0]+1, o.it[20][1]);
+            px = col.x + e0/255*col.w; pw = Math.max(2, (e1-e0)/255*col.w); p.ext = [e0, e1]; p.col = col; }
+          else if (slot.lane===0){ // 同じブロックが分断されて複数インスタンスになったら（合意範囲の無い古いデータ）、列の中で左から順に置く
             const used0 = laneUsed.get('u'+slot.pos)||0; px = col.x + used0; pw = Math.max(2, Math.min(bpw, col.x + col.w - px)); laneUsed.set('u'+slot.pos, used0 + pw + 2); }
           else { const used = laneUsed.get(slot.pos)||0; px = col.x + Math.min(used, Math.max(0, col.w - pw)); laneUsed.set(slot.pos, used + pw + 1); } }
-        placed.push({o, slot, x:px, w:pw, ct});
+        placed.push(Object.assign({o, slot, x:px, w:pw, ct}, p_extra)); p_extra = {};
       }
       if (st.mode==='own') ownX += 8;
       // 区間 = 表示順で連続し、合意ランクが向きに沿って ±1 ずつ進み、同じ段のブロックインスタンスの並び。錨なし/小群は単独
@@ -277,9 +283,20 @@ function computeLayout(){
     // コンティグで、'-' 鎖のコンティグは表示で反転しているので左右を入れ替える（矢印の向き dir ではなく鎖で決まる）。
     // 向きも同様に、'-' 鎖のコンティグでは表示上の向き = 1 − 生の向き。★ここを dir で反転していたため、逆鎖の株と順鎖の株の間で
     // 線が全部左右を結び、逆位に見えていた（ecoli GCF_014170615（−鎖）と GCF_016944755（+鎖））
+    // 粗いインスタンス p の中の最細インスタンスの表示範囲 [x0,x1]（鎖で左右反転）と表示上の向き。
+    // 合意座標モードでは、最細ブロックの位置を members の合意上の並び（典型長の累積）で置く＝どの行でも同じ列位置になり、
+    // 内部の逆位だけが交差（X）として残る。各行の並びモードでは、その株の bp 上の位置（＝ntSynt 風に長さの差が見える）
+    const memberOff = new Map();
+    if (st.mode!=='own'){ const L = level(); const L0 = win().levels[0];
+      for (let g=0; g<L.nblocks; g++){ const mem = membersOf(L, g); const tot = mem.reduce((a,m)=>a+Math.max(1, L0.blocks[m].tbp), 0); let acc = 0;
+        for (const m of mem){ const w = Math.max(1, L0.blocks[m].tbp)/tot; memberOff.set(g+':'+m, [acc, acc+w]); acc += w; } } }
     const posMap = (r, p) => { const out = new Map(); const it = p.o.it; const fl = fineOf.get(r.hap + '\u0001' + p.ct.c.path) || []; const flip = p.ct.c.strand === '-';
-      for (const f of fl){ if (f[8] < it[8] || f[9] > it[9]) continue; const rel = Math.max(0, Math.min(1, (f[6] - it[6]) / Math.max(1, it[2])));
-        const x = flip ? p.x + p.w - rel*p.w : p.x + rel*p.w; if (!out.has(f[0])) out.set(f[0], {x, dir: flip ? 1 - f[1] : f[1]}); }
+      for (const f of fl){ if (f[8] < it[8] || f[9] > it[9]) continue; if (out.has(f[0])) continue;
+        let r0, r1;
+        if (st.mode!=='own'){ const mo = memberOff.get(p.o.rank+':'+f[0]); if (!mo) continue; const col = p.col || {x:p.x, w:p.w}; out.set(f[0], {x0: col.x + mo[0]*col.w, x1: col.x + mo[1]*col.w, dir: flip ? 1 - f[1] : f[1]}); continue; }
+        r0 = Math.max(0, Math.min(1, (f[6] - it[6]) / Math.max(1, it[2]))); r1 = Math.max(r0, Math.min(1, (f[6] + f[2] - it[6]) / Math.max(1, it[2])));
+        const a = flip ? p.x + p.w - r1*p.w : p.x + r0*p.w, b = flip ? p.x + p.w - r0*p.w : p.x + r1*p.w;
+        out.set(f[0], {x0: a, x1: Math.max(a+1, b), dir: flip ? 1 - f[1] : f[1]}); }
       return out; };
     for (let i=0; i+1<rows.length; i++){
       const A = rows[i], B = rows[i+1]; const firstBy = r => { const m = new Map(); for (const p of r.items){ if (p.o.kind<4 && !m.has(p.o.rank)) m.set(p.o.rank, p); } return m; };
@@ -287,11 +304,11 @@ function computeLayout(){
       for (const [rk, pa] of fA){ const pb = fB.get(rk); if (!pb) continue; const ma = posMap(A, pa), mb = posMap(B, pb); if (ma.size < 2 && mb.size < 2) continue;
         const la = (st.mode==='own') ? 0 : pa.slot.lane, lb = (st.mode==='own') ? 0 : pb.slot.lane;
         const cur = [];
-        for (const [rf, a] of ma){ const b = mb.get(rf); if (!b) continue; cur.push({ rf, x0:a.x, y0:yBot(i, la), x1:b.x, y1:yTop(i+1, lb), inv: a.dir !== b.dir, diff:false }); }
-        // 「ずれ」＝並びが変わっている線だけ（上の x の順に並べたとき下の x が単調でない線＝交差する線）と逆位。
-        // 内容の長さの違いでまとめて左右に寄るだけの平行な線は、順序の情報が無いので既定では描かない
-        cur.sort((u,v)=>u.x0-v.x0); const n = cur.length; const best = new Array(n).fill(1), prev = new Array(n).fill(-1); let bi = 0;
-        for (let k=0;k<n;k++){ for (let j=0;j<k;j++){ if (cur[j].x1 <= cur[k].x1 && best[j]+1 > best[k]){ best[k] = best[j]+1; prev[k] = j; } } if (best[k] > best[bi]) bi = k; }
+        for (const [rf, a] of ma){ const b = mb.get(rf); if (!b) continue; cur.push({ rf, ux0:a.x0, ux1:a.x1, lx0:b.x0, lx1:b.x1, y0:yBot(i, la), y1:yTop(i+1, lb), inv: a.dir !== b.dir, diff:false }); }
+        // 「ずれ」＝並びが変わっているもの（上の中心の順に並べたとき下の中心が単調でない＝交差する）と逆位。
+        // 内容の長さの違いでまとめて寄るだけの平行なものは、順序の情報が無いので既定では描かない
+        cur.sort((u,v)=>(u.ux0+u.ux1)-(v.ux0+v.ux1)); const n = cur.length; const best = new Array(n).fill(1), prev = new Array(n).fill(-1); let bi = 0;
+        for (let k=0;k<n;k++){ for (let j=0;j<k;j++){ if (cur[j].lx0+cur[j].lx1 <= cur[k].lx0+cur[k].lx1 && best[j]+1 > best[k]){ best[k] = best[j]+1; prev[k] = j; } } if (best[k] > best[bi]) bi = k; }
         const mono = new Set(); for (let k=bi; k>=0; k=prev[k]) mono.add(k);
         cur.forEach((l,k)=>{ l.diff = l.inv || !mono.has(k); sub.push(l); }); }
     }
@@ -334,17 +351,18 @@ function arrowPath(g, x, y, w, h, dir){ const hd = Math.min(6, Math.max(2, w*0.3
 // Mauve 風の類似度プロファイル: 矢印の中を、位置ごとの「保存度」の高さでブロック色に塗る（残りは白）。
 // 尺度が少数派サイトなら位置が分かるので山型、私有サイト／錨でない bp は位置が無いので一定の高さ（値が大きいほど低い）。
 // 高さ 1 = この層の典型密度の 2 倍以上で 0、密度 0 で満杯（既存の濃淡と同じ正規化）。返り値: ビンごとの高さ 0..1（null=満杯）
-function profileHeights(o, cons, nbins, hapIdx){ const it = o.it; if (!(it.length>12) || it[2]<=0) return null;
+function profileHeights(o, cons, nbins, hapIdx, ext){ const it = o.it; if (!(it.length>12) || it[2]<=0) return null;
   if (st.measure==='minor'){ const vs = cons ? consSites(it) : varSites(it); if (!vs.length) return null;
     const h = new Float32Array(nbins); const cnt = new Float32Array(nbins);
     const scale = (it[11]||vs.length) / vs.length;                                  // 位置は 1/255 に丸めて重複を落としているので、実数に戻す
-    for (let i=0;i<vs.length;i++){ let b = Math.min(nbins-1, Math.floor(vs[i]/255*nbins)); if (!cons && !o.dir) b = nbins-1-b; cnt[b] += scale; }
-    const bpPerBin = (cons ? Math.max(1, level().blocks[o.rank].tbp) : it[2]) / nbins; const dref = levelDensRef();
+    const e0 = (cons && ext) ? ext[0] : 0, e1 = (cons && ext) ? Math.max(ext[0]+1, ext[1]) : 255;      // 合意座標モード: この片の合意範囲だけ
+    for (let i=0;i<vs.length;i++){ if (cons && (vs[i] < e0 || vs[i] > e1)) continue; let b = Math.min(nbins-1, Math.floor((vs[i]-e0)/(e1-e0)*nbins)); if (!cons && !o.dir) b = nbins-1-b; cnt[b] += scale; }
+    const bpPerBin = (cons ? Math.max(1, level().blocks[o.rank].tbp) * (e1-e0)/255 : it[2]) / nbins; const dref = levelDensRef();
     for (let i=0;i<nbins;i++){ const dens = cnt[i]/bpPerBin*1000; h[i] = 1 - Math.min(1, dens/(2*dref)); } return h; }
   const v = measureOf(it); if (v==null) return null; const S = densStats(); const q = pct(S.all, v); const h = new Float32Array(nbins); h.fill(1 - q); return h; }
 function shade(col, f){ const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(col); if (!m) return col; return `rgb(${Math.round(+m[1]*f)},${Math.round(+m[2]*f)},${Math.round(+m[3]*f)})`; }
 function profileArrow(g, p, o, yy, hh, col, cons, hapIdx){
-  const inner = Math.max(1, p.w-2); const nbins = Math.max(2, Math.min(255, Math.floor(inner/2))); const h = profileHeights(o, cons, nbins, hapIdx);
+  const inner = Math.max(1, p.w-2); const nbins = Math.max(2, Math.min(255, Math.floor(inner/2))); const h = profileHeights(o, cons, nbins, hapIdx, p.ext);
   const hd = Math.min(7, Math.max(3, p.w*0.35));                   // 先端の長さ
   g.save(); arrowPath(g, p.x, yy, p.w, hh, o.dir); g.clip();
   if (!h){ g.fillStyle = col; g.fillRect(p.x, yy, p.w, hh); }
@@ -378,9 +396,11 @@ function drawLinks(g){
     g.fillStyle = col; g.globalAlpha = emph==null ? (R.diff ? (R.inv ? .28 : .20) : .07) : (on ? .40 : .04); g.fill();
     g.strokeStyle = col; g.lineWidth = on ? 1.8 : 1; g.globalAlpha = emph==null ? (R.diff ? .7 : .25) : (on ? .95 : .08);
     g.beginPath(); g.moveTo(R.ux0, R.y0); g.lineTo(a0, R.y1); g.moveTo(R.ux1, R.y0); g.lineTo(a1, R.y1); g.stroke(); }
-  // (2) 粗い段のサブブロック線（ブロック内部の並び。交差＝内部の逆位・並び替え）
-  for (const S of subShown()){ g.strokeStyle = colorOfFine(S.rf); g.globalAlpha = emph==null ? (S.inv ? .75 : .45) : .15; g.lineWidth = S.inv ? 1.2 : .8;
-    g.beginPath(); g.moveTo(S.x0, S.y0); g.lineTo(S.x1, S.y1); g.stroke(); }
+  // (2) 粗い段のサブブロック（最細ブロック）のリボン。範囲つきなので、どのサブブロックの対応かが分かる。逆位は端が入れ替わって交差
+  for (const S of subShown()){ const col = colorOfFine(S.rf); const a0 = S.inv ? S.lx1 : S.lx0, a1 = S.inv ? S.lx0 : S.lx1;
+    g.beginPath(); g.moveTo(S.ux0, S.y0); g.lineTo(S.ux1, S.y0); g.lineTo(a1, S.y1); g.lineTo(a0, S.y1); g.closePath();
+    g.fillStyle = col; g.globalAlpha = emph==null ? (S.inv ? .32 : .22) : .08; g.fill();
+    g.strokeStyle = shade(col, 0.7); g.lineWidth = .8; g.globalAlpha = emph==null ? (S.inv ? .85 : .55) : .15; g.beginPath(); g.moveTo(S.ux0, S.y0); g.lineTo(a0, S.y1); g.moveTo(S.ux1, S.y0); g.lineTo(a1, S.y1); g.stroke(); }
   // (3) 強調中のブロックは、ブロック単位の中心線も重ねる（どこへ移ったかを追う）
   if (emph!=null && LY.links){ for (const L of LY.links){ if (L.rank!==emph) continue; g.strokeStyle = colorOf(L.rank); g.globalAlpha = .95; g.lineWidth = 2; g.beginPath(); g.moveTo(L.x0, L.y0); g.lineTo(L.x1, L.y1); g.stroke(); } }
   g.globalAlpha = 1; }
@@ -398,14 +418,15 @@ function drawGrid(){
     for (const p of r.items){ const o = p.o; const lane = laneOf(p); const yy = yTop(lane), hh = hOf(lane);
       const inSeg = p.seg && p.seg.items.length>1 && o.kind<4;
       const cons = st.mode!=='own' && o.kind<4 && o.it.length>20 && p.w>=6;     // 合意座標モード: ブロック内の差異を合意座標で描く
-      const inner0 = Math.max(1, p.w-2); const XC = c => p.x+1+Math.max(0,Math.min(255,c))/255*inner0;
+      const inner0 = Math.max(1, p.w-2); const XC = p.col ? (c => p.col.x + Math.max(0,Math.min(255,c))/255*p.col.w) : (c => p.x+1+Math.max(0,Math.min(255,c))/255*inner0);
       if (o.kind===5) arrow(g, p.x, yy, p.w, hh, o.dir, null, false, true);
       else if (o.kind===4) arrow(g, p.x, yy, p.w, hh, o.dir, TH.rep, true, false);
       else if (p.w >= 6) profileArrow(g, p, o, yy, hh, colorOf(o.rank), cons, r.hapIdx);     // Mauve 風: 中を保存度の高さで塗る
       else arrow(g, p.x, yy, p.w, hh, o.dir, colorOf(o.rank), false, false);
       if (cons){
         // 合意の錨がこの株に無い区間（欠失・分岐・コンティグ断片の外側）: 白く抜いて中央に細い線
-        for (const dl of (o.it[18]||[])){ const x0 = XC(dl[0]), x1 = Math.max(XC(dl[1]), x0+1.5); g.fillStyle = TH.panel; g.fillRect(x0, yy, x1-x0, hh); g.fillStyle = TH.ink; g.globalAlpha=.45; g.fillRect(x0, yy+hh/2-.5, x1-x0, 1); g.globalAlpha=1; }
+        for (const dl of (o.it[18]||[])){ let x0 = XC(dl[0]), x1 = Math.max(XC(dl[1]), x0+1.5); x0 = Math.max(x0, p.x+1); x1 = Math.min(x1, p.x+p.w-1); if (x1 - x0 < 1) continue;   // この片の範囲の外（別の片が持つ部分）は描かない
+          g.fillStyle = TH.panel; g.fillRect(x0, yy, x1-x0, hh); g.fillStyle = TH.ink; g.globalAlpha=.45; g.fillRect(x0, yy+hh/2-.5, x1-x0, 1); g.globalAlpha=1; }
         // コンティグの端で切れている側に点線の縁（向きが逆なら左右も逆）
         if (o.it[17]){ const leftEnd = o.dir ? (o.it[17]&1) : (o.it[17]&2), rightEnd = o.dir ? (o.it[17]&2) : (o.it[17]&1);
           g.save(); g.setLineDash([2,2]); g.strokeStyle = TH.ink; g.lineWidth = 1.5;
@@ -520,7 +541,7 @@ function drawLegend(){ const el=$('legend'); el.innerHTML='';
   if (st.genes.size){ const sg=document.createElement('span'); sg.textContent='列見出しの帯＝遺伝子（上＝+鎖 緑、下＝−鎖 橙。位置はブロックの参照区間の中の相対位置）'; el.appendChild(sg); }
   const mname = {minor:'少数派サイト密度（半数未満のハプロだけが持つノードを含む区間 / kb）', priv:'私有サイト密度（この株だけが持つノードを含む区間 / kb）', nonanc:'錨でない bp の割合'}[st.measure];
   const nname = {abs:'層内の百分位で灰色の濃さ（濃い＝多い）', block:'そのブロックの全株の中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）', hap:'その株の全ブロックの中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）'}[st.norm];
-  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の中の塗り＝Mauve 風の類似度プロファイル。高さが保存度（この層の典型密度の 2 倍以上で 0、変異なしで満杯）。尺度が「${mname}」。少数派サイトは位置ごとの山型、他の尺度は一定の高さ。${nname}`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','連結＝隣り合う行の同じ連なり（続けて通るブロック列）を、端と端（頭は頭・尾は尾）で結ぶリボン。揃っていれば列の下の薄い長方形、位置が違えば台形、向きが違えば交差（X）＝逆位。粗い段ではブロック内部の最細ブロック同士も細線で結ぶ（交差＝内部の逆位・並び替え）。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックはブロック単位の線も出る','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
+  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の中の塗り＝Mauve 風の類似度プロファイル。高さが保存度（この層の典型密度の 2 倍以上で 0、変異なしで満杯）。尺度が「${mname}」。少数派サイトは位置ごとの山型、他の尺度は一定の高さ。${nname}`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','連結＝隣り合う行の同じ連なり（続けて通るブロック列）を、端と端（頭は頭・尾は尾）で結ぶリボン。揃っていれば列の下の薄い長方形、位置が違えば台形、向きが違えば交差（X）＝逆位。粗い段ではブロック内部の最細ブロックも範囲つきの細いリボンで結ぶ（合意座標では内部の逆位だけ交差。各行の並びでは長さの差も見える）。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックはブロック単位の線も出る','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
 
 
 function blockRef(rank){ if (rank==null) return null; const L = level(); const B = L.blocks[rank]; if (!B) return null;
