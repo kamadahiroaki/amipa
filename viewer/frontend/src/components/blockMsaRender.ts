@@ -332,14 +332,20 @@ function profileHeights(o, cons, nbins, hapIdx){ const it = o.it; if (!(it.lengt
     const bpPerBin = (cons ? Math.max(1, level().blocks[o.rank].tbp) : it[2]) / nbins; const dref = levelDensRef();
     for (let i=0;i<nbins;i++){ const dens = cnt[i]/bpPerBin*1000; h[i] = 1 - Math.min(1, dens/(2*dref)); } return h; }
   const v = measureOf(it); if (v==null) return null; const S = densStats(); const q = pct(S.all, v); const h = new Float32Array(nbins); h.fill(1 - q); return h; }
+function shade(col, f){ const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(col); if (!m) return col; return `rgb(${Math.round(+m[1]*f)},${Math.round(+m[2]*f)},${Math.round(+m[3]*f)})`; }
 function profileArrow(g, p, o, yy, hh, col, cons, hapIdx){
   const inner = Math.max(1, p.w-2); const nbins = Math.max(2, Math.min(255, Math.floor(inner/2))); const h = profileHeights(o, cons, nbins, hapIdx);
+  const hd = Math.min(7, Math.max(3, p.w*0.35));                   // 先端の長さ
   g.save(); arrowPath(g, p.x, yy, p.w, hh, o.dir); g.clip();
   if (!h){ g.fillStyle = col; g.fillRect(p.x, yy, p.w, hh); }
   else { g.fillStyle = TH.panel; g.fillRect(p.x, yy, p.w, hh); g.fillStyle = col; const bw = inner/nbins;
     for (let i=0;i<nbins;i++){ const hp = Math.max(1, Math.round(h[i]*(hh-1))); g.fillRect(p.x+1+i*bw, yy+hh-hp, bw+0.6, hp); } }
+  // 先端（向き）は中身が白でも必ず塗る。逆位（左向き）が矢印の形で読めるように、少し濃い色で
+  g.fillStyle = shade(col, 0.72); g.beginPath();
+  if (o.dir){ g.moveTo(p.x+p.w-hd, yy); g.lineTo(p.x+p.w, yy+hh/2); g.lineTo(p.x+p.w-hd, yy+hh); } else { g.moveTo(p.x+hd, yy); g.lineTo(p.x, yy+hh/2); g.lineTo(p.x+hd, yy+hh); }
+  g.closePath(); g.fill();
   g.restore();
-  arrowPath(g, p.x, yy, p.w, hh, o.dir); g.strokeStyle = col; g.globalAlpha = .95; g.lineWidth = .9; g.stroke(); g.globalAlpha = 1; }
+  arrowPath(g, p.x, yy, p.w, hh, o.dir); g.strokeStyle = shade(col, 0.72); g.globalAlpha = .95; g.lineWidth = 1.1; g.stroke(); g.globalAlpha = 1; }
 function arrow(g, x, y, w, h, dir, color, hatch, dotted){
   const hd = Math.min(6, Math.max(2, w*0.35)); g.beginPath();
   if (dir){ g.moveTo(x,y); g.lineTo(x+w-hd,y); g.lineTo(x+w,y+h/2); g.lineTo(x+w-hd,y+h); g.lineTo(x,y+h); } else { g.moveTo(x+w,y); g.lineTo(x+hd,y); g.lineTo(x,y+h/2); g.lineTo(x+hd,y+h); g.lineTo(x+w,y+h); }
