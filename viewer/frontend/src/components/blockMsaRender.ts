@@ -243,10 +243,53 @@ function computeLayout(){
       const overlap = p.x < q.x + q.w && q.x < p.x + p.w;
       links.push({rank:p.o.rank, x0:cx0, y0:i*RH + (l0===0?16:26), x1:cx1, y1:(i+1)*RH + (l1===0?4:17), diff: !overlap || l0!==l1 || p.o.kind!==q.o.kind}); }
   }
+  // ---- 連なり（seg）単位のリボン。端と端を結ぶ（頭は頭、尾は尾）ので、向きが違えば交差（X）＝逆位が形で分かる。
+  //      揃った対は列の下の長方形（薄い背景）、ずれた対は台形かねじれ。ブロック単位の線はホバー/選択時の強調にだけ使う
+  const ribbons = [];
+  const yBot = (i, lane) => i*RH + ((st.mode==='own' || lane===0) ? 16 : 26), yTop = (i, lane) => i*RH + ((st.mode==='own' || lane===0) ? 4 : 17);
+  for (let i=0; i+1<rows.length; i++){
+    const A = rows[i], B = rows[i+1];
+    const byRank = r => { const m = new Map(); for (const p of r.items){ if (p.o.kind>=4) continue; if (!m.has(p.o.rank)) m.set(p.o.rank, []); m.get(p.o.rank).push(p); } return m; };
+    const mA = byRank(A), mB = byRank(B); const seen = new Set();
+    for (const [src, mDst, srcIsUpper] of [[A, mB, true], [B, mA, false]]){
+      for (const sg of (src.segs||[])){ if (sg.kind>=4 || !sg.items.length) continue;
+        const ranks = sg.items.map(p=>p.o.rank); const key = ranks.slice().sort((a,b)=>a-b).join(','); if (seen.has(key)) continue;
+        const matched = []; for (const rk of ranks){ const c = mDst.get(rk); if (c) matched.push(...c); }
+        if (!matched.length) continue; seen.add(key);
+        const mx0 = Math.min(...matched.map(p=>p.x)), mx1 = Math.max(...matched.map(p=>p.x+p.w));
+        const mdir = (matched.filter(p=>p.o.dir===1).length*2 >= matched.length) ? 1 : 0;
+        const mlane = (st.mode==='own') ? 0 : ((matched.filter(p=>p.slot.lane===0).length*2 >= matched.length) ? 0 : 1);
+        const slane = (st.mode==='own') ? 0 : sg.lane;
+        const U = srcIsUpper ? {x0:sg.x0, x1:sg.x1, dir:sg.dir, lane:slane} : {x0:mx0, x1:mx1, dir:mdir, lane:mlane};
+        const Lw = srcIsUpper ? {x0:mx0, x1:mx1, dir:mdir, lane:mlane} : {x0:sg.x0, x1:sg.x1, dir:sg.dir, lane:slane};
+        const inv = U.dir !== Lw.dir;
+        const diff = inv || U.lane !== Lw.lane || Math.abs(U.x0 - Lw.x0) > 3 || Math.abs(U.x1 - Lw.x1) > 3;
+        ribbons.push({ ranks, rank0: ranks[Math.floor(ranks.length/2)], ux0:U.x0, ux1:U.x1, lx0:Lw.x0, lx1:Lw.x1, y0: yBot(i, U.lane), y1: yTop(i+1, Lw.lane), inv, diff, n: ranks.length }); }
+    }
+  }
+  // ---- 粗い段のサブブロック線: 粗いブロックの中での最細段ブロックの位置を、各行のインスタンスの bp 位置から求めて隣の行と結ぶ。
+  //      最細段は窓全体で計算済みなので追加計算なし（最細段を見ているときは無い）。交差＝ブロック内部の逆位・並び替え
+  const sub = [];
+  if (st.li > 0){
+    const L0 = win().levels[0]; const fineOf = new Map();
+    for (const hp of L0.haps) for (const c of hp.contigs) fineOf.set(hp.hap + '\u0001' + c.path, c.inst.filter(x=>x[5]<4));
+    const posMap = (r, p) => { const out = new Map(); const it = p.o.it; const fl = fineOf.get(r.hap + '\u0001' + p.ct.c.path) || [];
+      for (const f of fl){ if (f[8] < it[8] || f[9] > it[9]) continue; const rel = Math.max(0, Math.min(1, (f[6] - it[6]) / Math.max(1, it[2])));
+        const x = p.o.dir ? p.x + rel*p.w : p.x + p.w - rel*p.w; if (!out.has(f[0])) out.set(f[0], {x, dir: f[1]}); }
+      return out; };
+    for (let i=0; i+1<rows.length; i++){
+      const A = rows[i], B = rows[i+1]; const firstBy = r => { const m = new Map(); for (const p of r.items){ if (p.o.kind<4 && !m.has(p.o.rank)) m.set(p.o.rank, p); } return m; };
+      const fA = firstBy(A), fB = firstBy(B);
+      for (const [rk, pa] of fA){ const pb = fB.get(rk); if (!pb) continue; const ma = posMap(A, pa), mb = posMap(B, pb); if (ma.size < 2 && mb.size < 2) continue;
+        const la = (st.mode==='own') ? 0 : pa.slot.lane, lb = (st.mode==='own') ? 0 : pb.slot.lane;
+        for (const [rf, a] of ma){ const b = mb.get(rf); if (!b) continue; const inv = a.dir !== b.dir; const diff = inv || Math.abs(a.x - b.x) > 3;
+          sub.push({ rf, x0:a.x, y0:yBot(i, la), x1:b.x, y1:yTop(i+1, lb), inv, diff }); } }
+    }
+  }
   let maxRight = W;
   for (const r of rows){ for (const p of r.items) maxRight = Math.max(maxRight, p.x + p.w); for (const b of (r.bundles||[])) maxRight = Math.max(maxRight, b.x + b.w); }
   const fullW = Math.ceil(maxRight) + 8;            // はみ出した分だけキャンバスを広げる（列の配置は W のまま）
-  LY = {rows, vis, cols, blockX, s, W, n, prof, links, fullW};
+  LY = {rows, vis, cols, blockX, s, W, n, prof, links, ribbons, sub, fullW};
 }
 // 遺伝子: ブロックの参照区間 [x, x+span] に重なる遺伝子（コンティグ別・start 昇順の配列を二分探索）
 function genesOf(B){ const gs = st.genes.get(B.ref_contig!=null ? B.ref_contig : 0); if (!gs || !gs.length) return [];
@@ -285,12 +328,23 @@ function arrow(g, x, y, w, h, dir, color, hatch, dotted){
   g.strokeStyle = TH.ink; g.globalAlpha=.35; g.lineWidth=.8; g.stroke(); g.globalAlpha=1;
 }
 function linksMode(){ return st.links==='auto' ? (st.mode==='own' ? 'all' : 'diff') : st.links; }
-function linksShown(){ const m = linksMode(); if (m==='off' || !LY || !LY.links) return []; return m==='all' ? LY.links : LY.links.filter(l=>l.diff); }
-function drawLinks(g){ const ls = linksShown(); if (!ls.length) return;
-  const emph = st.sel!=null ? st.sel : st.hoverRank;          // 選択/ホバー中のブロックの線を濃く、他を薄く
-  for (const L of ls){ const on = emph!=null && L.rank===emph;
-    g.strokeStyle = colorOf(L.rank); g.globalAlpha = emph==null ? (L.diff ? .65 : .35) : (on ? .95 : .10); g.lineWidth = on ? 2 : 1.2;
-    g.beginPath(); g.moveTo(L.x0, L.y0); g.lineTo(L.x1, L.y1); g.stroke(); }
+function linksShown(){ const m = linksMode(); if (m==='off' || !LY || !LY.ribbons) return []; return m==='all' ? LY.ribbons : LY.ribbons.filter(l=>l.diff); }
+function subShown(){ const m = linksMode(); if (m==='off' || !LY || !LY.sub) return []; return m==='all' ? LY.sub : LY.sub.filter(l=>l.diff); }
+function colorOfFine(rf){ const L0 = win().levels[0]; const n0 = L0.nblocks; const o0 = L0.origin!=null ? L0.origin : 0; const pos = (DATA.meta.circular && st.win===0) ? (((rf - o0) % n0) + n0) % n0 : rf; return ramp(n0<=1?0.5:pos/(n0-1)); }
+function drawLinks(g){
+  const emph = st.sel!=null ? st.sel : st.hoverRank;          // 選択/ホバー中のブロック
+  // (1) 連なりのリボン。端と端を結ぶ。逆位は交差（X）
+  for (const R of linksShown()){ const on = emph!=null && R.ranks.includes(emph); const col = colorOf(R.rank0);
+    const a0 = R.inv ? R.lx1 : R.lx0, a1 = R.inv ? R.lx0 : R.lx1;            // 上の左端 → 下の（逆位なら右端）
+    g.beginPath(); g.moveTo(R.ux0, R.y0); g.lineTo(R.ux1, R.y0); g.lineTo(a1, R.y1); g.lineTo(a0, R.y1); g.closePath();
+    g.fillStyle = col; g.globalAlpha = emph==null ? (R.diff ? (R.inv ? .28 : .20) : .07) : (on ? .40 : .04); g.fill();
+    g.strokeStyle = col; g.lineWidth = on ? 1.8 : 1; g.globalAlpha = emph==null ? (R.diff ? .7 : .25) : (on ? .95 : .08);
+    g.beginPath(); g.moveTo(R.ux0, R.y0); g.lineTo(a0, R.y1); g.moveTo(R.ux1, R.y0); g.lineTo(a1, R.y1); g.stroke(); }
+  // (2) 粗い段のサブブロック線（ブロック内部の並び。交差＝内部の逆位・並び替え）
+  for (const S of subShown()){ g.strokeStyle = colorOfFine(S.rf); g.globalAlpha = emph==null ? (S.inv ? .75 : .45) : .15; g.lineWidth = S.inv ? 1.2 : .8;
+    g.beginPath(); g.moveTo(S.x0, S.y0); g.lineTo(S.x1, S.y1); g.stroke(); }
+  // (3) 強調中のブロックは、ブロック単位の中心線も重ねる（どこへ移ったかを追う）
+  if (emph!=null && LY.links){ for (const L of LY.links){ if (L.rank!==emph) continue; g.strokeStyle = colorOf(L.rank); g.globalAlpha = .95; g.lineWidth = 2; g.beginPath(); g.moveTo(L.x0, L.y0); g.lineTo(L.x1, L.y1); g.stroke(); } }
   g.globalAlpha = 1; }
 function drawGrid(){
   const g = cv.grid.getContext('2d'); const W = cv.grid.clientWidth, H = cv.grid.clientHeight; g.clearRect(0,0,W,H);
@@ -397,7 +451,7 @@ function drawTree(){
   svg.querySelectorAll('.ev, .br').forEach(el=>{ el.style.cursor='pointer'; el.addEventListener('mousemove', e=>{ if (st.pinned) return; showBranch(+el.getAttribute('data-node')); }); el.addEventListener('click', e=>{ st.pinned = true; showBranch(+el.getAttribute('data-node')); }); });
 }
 function drawChips(){ const L = level(); let inv=0, disp=0, rep=0, small=0; for (const r of LY.rows) for (const p of r.items){ const k=p.o.kind; if (k===3) inv++; else if (k===2) disp++; else if (k===4) rep++; else if (k===5) small++; }
-  $('chips').innerHTML = `<span class="chip">窓 <b>${st.win===0?"全体":esc(win().label)}</b>${(level().mode==='bins')?' · <b>座標分割</b>（再編成なし・等分）':''} · ${level().mode==='bins'?'錨':'原子区間'} ${win().atoms.toLocaleString()} · 深さ ${win().depth}${win().ondemand?` · <b>逐次計算</b>${win().ms?' '+win().ms+' ms':''}`:''}</span><span class="chip">${L.mode==='bins'?'ビン幅':'段の幅'} <b>${fmtbp(L.W)}</b></span><span class="chip">ブロック <b>${LY.vis.length}</b></span><span class="chip">行 <b>${LY.rows.length}</b></span><span class="chip">逆位 <b>${inv}</b> 変位 <b>${disp}</b> 小群 ${small}</span><span class="chip">${L.members?`最細段の併合 <b>${L.merges||0}</b> 回`:`併合の上限 <b>${L.mergecap||0}</b> 株`}${L.nonmono?` · 内部順序ずれ ${L.nonmono}`:''}</span>${st.filter?`<span class="chip">絞り込み <b>${st.filter.size}</b> / ${win().levels[0].nblocks}</span>`:''}${linksMode()!=='off'?`<span class="chip">連結線 <b>${linksShown().length}</b>${linksMode()==='diff'?'（ずれのみ）':''}</span>`:''}`;
+  $('chips').innerHTML = `<span class="chip">窓 <b>${st.win===0?"全体":esc(win().label)}</b>${(level().mode==='bins')?' · <b>座標分割</b>（再編成なし・等分）':''} · ${level().mode==='bins'?'錨':'原子区間'} ${win().atoms.toLocaleString()} · 深さ ${win().depth}${win().ondemand?` · <b>逐次計算</b>${win().ms?' '+win().ms+' ms':''}`:''}</span><span class="chip">${L.mode==='bins'?'ビン幅':'段の幅'} <b>${fmtbp(L.W)}</b></span><span class="chip">ブロック <b>${LY.vis.length}</b></span><span class="chip">行 <b>${LY.rows.length}</b></span><span class="chip">逆位 <b>${inv}</b> 変位 <b>${disp}</b> 小群 ${small}</span><span class="chip">${L.members?`最細段の併合 <b>${L.merges||0}</b> 回`:`併合の上限 <b>${L.mergecap||0}</b> 株`}${L.nonmono?` · 内部順序ずれ ${L.nonmono}`:''}</span>${st.filter?`<span class="chip">絞り込み <b>${st.filter.size}</b> / ${win().levels[0].nblocks}</span>`:''}${linksMode()!=='off'?`<span class="chip">連結 <b>${linksShown().length}</b> 連なり${linksShown().filter(r=>r.inv).length?` · 逆位 ${linksShown().filter(r=>r.inv).length}`:''}${st.li>0?` · サブブロック線 ${subShown().length}`:''}${linksMode()==='diff'?'（ずれのみ）':''}</span>`:''}`;
   const ld = $('ladder'); ld.innerHTML=''; win().levels.forEach((lv,i)=>{ const b=document.createElement('button'); b.className='mono'; b.textContent=fmtbp(lv.W)+' ('+lv.nblocks+')'; b.setAttribute('aria-pressed', i===st.li?'true':'false'); b.addEventListener('click',()=>{ st.li=i; st.sel=null; st.origin=null; st.pinned=false; drawAll(); emitSel(); }); ld.appendChild(b); });
   $('origingrp').style.display = (DATA.meta.circular && st.win===0) ? '' : 'none';
   $('origintxt').textContent = DATA.meta.circular ? `#${originRank()+1}${st.origin==null?'（自動）':''}` : '';
@@ -437,7 +491,7 @@ function drawLegend(){ const el=$('legend'); el.innerHTML='';
   if (st.genes.size){ const sg=document.createElement('span'); sg.textContent='列見出しの帯＝遺伝子（上＝+鎖 緑、下＝−鎖 橙。位置はブロックの参照区間の中の相対位置）'; el.appendChild(sg); }
   const mname = {minor:'少数派サイト密度（半数未満のハプロだけが持つノードを含む区間 / kb）', priv:'私有サイト密度（この株だけが持つノードを含む区間 / kb）', nonanc:'錨でない bp の割合'}[st.measure];
   const nname = {abs:'層内の百分位で灰色の濃さ（濃い＝多い）', block:'そのブロックの全株の中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）', hap:'その株の全ブロックの中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）'}[st.norm];
-  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の下側 1/3＝${mname}。${nname}。1 px が 1 kb 以下まで拡大すると個々のサイトの位置の線に切り替わる`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','連結線＝隣り合う行の同じブロックを結ぶ（Mauve 風）。揃っていれば短い縦線、ずれていれば斜線。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックの線を濃くする','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
+  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の下側 1/3＝${mname}。${nname}。1 px が 1 kb 以下まで拡大すると個々のサイトの位置の線に切り替わる`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','連結＝隣り合う行の同じ連なり（続けて通るブロック列）を、端と端（頭は頭・尾は尾）で結ぶリボン。揃っていれば列の下の薄い長方形、位置が違えば台形、向きが違えば交差（X）＝逆位。粗い段ではブロック内部の最細ブロック同士も細線で結ぶ（交差＝内部の逆位・並び替え）。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックはブロック単位の線も出る','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
 
 
 function blockRef(rank){ if (rank==null) return null; const L = level(); const B = L.blocks[rank]; if (!B) return null;
