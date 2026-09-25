@@ -164,13 +164,14 @@ function computeLayout(){
         let px, pw; let p_extra = {}; const p = { get ext(){ return p_extra.ext; }, set ext(v){ p_extra.ext = v; }, get col(){ return p_extra.col; }, set col(v){ p_extra.col = v; } };
         const colw0 = (st.mode!=='own' && o.kind<4 && slot.lane===0) ? blockX.get(vis[slot.pos]).w / (cnt0.get(o.rank)||1) : null;
         const bpw = colw0!=null ? Math.max(MINW, colw0) : Math.max(MINW, o.it[2]*(st.mode==='own'?sOwn:s));
+        if (o.kind<4 && o.it.length>20 && o.it[20]) p_extra.ext = o.it[20];      // 合意範囲は上段・下段・両モードで持つ（リボンの相手範囲の交わりに使う）
         if (st.mode==='own'){ px = ownX; pw = bpw; ownX += bpw + 1; }
         else { const col = blockX.get(vis[slot.pos]); pw = Math.min(col.w, bpw);
           if (slot.lane===0 && o.kind<4 && o.it.length>20 && o.it[20]){
             // 合意座標: インスタンスを列の中の自分の合意範囲 [ext0, ext1]（0..255）に置く。錨なし挿入やコンティグの切れ目で
             // 分断された断片は、等分でなく真の位置に（例: ecoli #7 は 94% と 6% の 2 片。等分すると中央に境界線が立ち、欠失に見えた）
             const e0 = o.it[20][0], e1 = Math.max(o.it[20][0]+1, o.it[20][1]);
-            px = col.x + e0/255*col.w; pw = Math.max(2, (e1-e0)/255*col.w); p.ext = [e0, e1]; p.col = col; }
+            px = col.x + e0/255*col.w; pw = Math.max(2, (e1-e0)/255*col.w); p.col = col; }
           else if (slot.lane===0){ // 同じブロックが分断されて複数インスタンスになったら（合意範囲の無い古いデータ）、列の中で左から順に置く
             const used0 = laneUsed.get('u'+slot.pos)||0; px = col.x + used0; pw = Math.max(2, Math.min(bpw, col.x + col.w - px)); laneUsed.set('u'+slot.pos, used0 + pw + 2); }
           else { const used = laneUsed.get(slot.pos)||0; px = col.x + Math.min(used, Math.max(0, col.w - pw)); laneUsed.set(slot.pos, used + pw + 1); } }
@@ -320,7 +321,13 @@ function computeLayout(){
         cur.sort((u,v)=>(u.ux0+u.ux1)-(v.ux0+v.ux1)); const n = cur.length; const best = new Array(n).fill(1), prev = new Array(n).fill(-1); let bi = 0;
         for (let k=0;k<n;k++){ for (let j=0;j<k;j++){ if (cur[j].lx0+cur[j].lx1 <= cur[k].lx0+cur[k].lx1 && best[j]+1 > best[k]){ best[k] = best[j]+1; prev[k] = j; } } if (best[k] > best[bi]) bi = k; }
         const mono = new Set(); for (let k=bi; k>=0; k=prev[k]) mono.add(k);
-        cur.forEach((l,k)=>{ l.diff = l.inv || !mono.has(k); sub.push(l); }); }
+        // 連続する逆位のサブブロックは 1 枚のリボン（X 1 つ）にまとめる。逆位 1 回で最細ブロックが 3 つ反転しても X が 3 つ並ばない。
+        // 単調に揃った非逆位の連続も 1 枚に（静かな帯）。順序が変わるもの（交差）は個別に残す
+        let k = 0; while (k < n){ const base = cur[k]; const isMono = mono.has(k); let j = k+1;
+          if (base.inv || isMono){ while (j < n && cur[j].inv === base.inv && (base.inv || mono.has(j))) j++; }
+          if (j - k > 1){ const grp = cur.slice(k, j); sub.push({ rf: grp[0].rf, n: grp.length, ux0: Math.min(...grp.map(x=>x.ux0)), ux1: Math.max(...grp.map(x=>x.ux1)), lx0: Math.min(...grp.map(x=>x.lx0)), lx1: Math.max(...grp.map(x=>x.lx1)), y0: base.y0, y1: base.y1, inv: base.inv, diff: base.inv }); }
+          else { base.diff = base.inv || !isMono; base.n = 1; sub.push(base); }
+          k = j; } }
     }
   }
   let maxRight = W;
