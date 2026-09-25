@@ -7,14 +7,14 @@ import { AMIPA_PYTHON, amipaScript } from './pyenv'
 //   その場で計算する。窓 1 個は 1 秒以内が目安だが、最初の 1 回はアトラス＋distill の読み込み（Ctx）に
 //   chrY 5 s / ecoli50 40 s 級かかるので、DB ごとに 1 本を**常駐**させて温めておく（/api/blocks/warm）。
 //   ・stdin/stdout の 1 行 JSON。要求に id を振り、応答を id で突き合わせる（Python 側は逐次処理）
-//   ・使われないまま AMIPA_BLOCKS_IDLE_MS（既定 15 分）経つと落とす。同時に生かす本数の上限
+//   ・使われないまま AMIPA_BLOCKS_IDLE_MS（既定 60 分）経つと落とす（温め直しが 30 秒級なので短くしない）。同時に生かす本数の上限
 //     AMIPA_BLOCKS_MAX_WORKERS（既定 3）を超えたら最も古いものを落とす（Ctx は WG で数 GB になる）
 //   ・依存は numpy（numba はあれば速い）。無い環境では state='error' になり、画面は事前計算だけで動く
 
 export type WorkerState = 'starting' | 'cold' | 'warming' | 'ready' | 'error' | 'dead'
 interface Pending { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
 
-const IDLE_MS = Number(process.env.AMIPA_BLOCKS_IDLE_MS) || 15 * 60_000
+const IDLE_MS = Number(process.env.AMIPA_BLOCKS_IDLE_MS) || 60 * 60_000
 const REQ_TIMEOUT_MS = Number(process.env.AMIPA_BLOCKS_TIMEOUT_MS) || 90_000
 const WARM_TIMEOUT_MS = Number(process.env.AMIPA_BLOCKS_WARM_MS) || 900_000
 const MAX_WORKERS = Number(process.env.AMIPA_BLOCKS_MAX_WORKERS) || 3
