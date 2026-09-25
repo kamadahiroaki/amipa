@@ -139,7 +139,7 @@ def main():
                 if res is None: emit(dict(id=rid, ok=False, error="この範囲では錨が取れず、ブロックになりません")); continue
                 win = dict(id=-1, parent=int(req.get("parent", -1)), pblock=int(req.get("pblock", -1)), depth=int(req.get("depth", 0)),
                            label=str(req.get("label", "")), atoms=res["atoms"], H=res["H"], levels=res["levels"], children={},
-                           mode=res["mode"], ondemand=True, note=res["note"])
+                           mode=res["mode"], ondemand=True, note=res["note"], anchors=res.get("anchors"))
                 emit(dict(id=rid, ok=True, window=win, ms=int((time.time() - t0) * 1000), missing=missing)); continue
             emit(dict(id=rid, ok=False, error="unknown op %r" % op))
         except Exception as e:

@@ -196,6 +196,26 @@ def coarsen(prev, W, at_x0, at_x1):
     members = [sum((prev["members"][k] for k in range(sg[0], sg[1] + 1)), []) for sg in segs]
     return dict(bid=bid, atomsA=atomsA, nb=nb2, b0=b0, b1=b1, last_rank=last_rank, supc=prev["supc"], members=members), nmerge
 
+ANCHOR_SAMPLE = 800     # 行間の対応線に使う錨の標本数（窓ごと）
+
+def sample_anchors(ctx, S, A, colx, nc, M=ANCHOR_SAMPLE):
+    """窓の錨（A）を合意順に M 本標本化し、各パスでの位置を返す。画面は隣り合う行の同じ錨を線で結ぶ（ntSynt-viz 風の対応線）。
+    返り値: dict(m, x=[錨の合意座標], rows={path: {i: b64 u16 標本番号, tok: b64 u32 トークン index（コンティグ内）,
+    bp: b64 u32 累積 bp, ori: b64 u8 向き}})。錨はパスごとに高々 1 回（mv ≤ 1）"""
+    ancols = np.flatnonzero(A)
+    if ancols.size == 0: return None
+    sel = ancols if ancols.size <= M else ancols[np.linspace(0, ancols.size - 1, M).astype(np.int64)]
+    sel_idx = np.full(nc, -1, np.int64); sel_idx[sel] = np.arange(sel.size)
+    b64 = lambda a: base64.b64encode(np.ascontiguousarray(a).tobytes()).decode()
+    rows = {}
+    for (cols_, vo, bp, ns, pi, off) in S:
+        m = sel_idx[cols_]; hit = np.flatnonzero(m >= 0)
+        if hit.size == 0: continue
+        cum = np.concatenate(([0], np.cumsum(bp)))
+        rows[ctx.at.p_names[pi]] = dict(i=b64(m[hit].astype(np.uint16)), tok=b64((hit + off).astype(np.uint32)),
+                                        bp=b64(cum[hit].astype(np.uint32)), ori=b64(vo[hit].astype(np.uint8)))
+    return dict(m=int(sel.size), x=[int(v) for v in colx[sel]], rows=rows)
+
 def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=500, varbins=256, record=None, bins=0, tree=None, want_tree=False):
     # varbins: 少数派サイトの位置（通過内 0..varbins-1）。画面は 0..255 で読むので 256。32 だと左 1/8 に寄る（改訂 30）
     """ranges: [(pi, s0, e0)]。返り値: dict(levels=[...], atoms=n, cols=[...])"""
@@ -222,6 +242,7 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
     nhap_col = nh.sum(0)
     A = (mv <= 1) & inorder & (nhap_col >= anchor_frac * H)
     if int(A.sum()) < 4: A = (mv <= 1) & (nhap_col >= anchor_frac * H)     # 順序パスが通らない窓は条件を外す
+    anchors = None if (record is not None and len(record) == 0) else sample_anchors(ctx, S, A, colx, nc)
     seq4 = [(w[0], w[1], w[2], w[3]) for w in S]
     rankA, bk, nA = breakpoints(seq4, A, nc); aid, nat = blocks_from(bk, nA)
     if bins and bins > 0 and nA > 0:
@@ -503,7 +524,7 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
         levels.append(dict(W=W, nblocks=nb, blocks=blocks, haps=hap_out, mergecap=cap, mode=('bins' if (bins and bins > 0) else 'blocks'), adj=adj_list, events=events, origin=origin, merges=nmerge, members=members,
                            nonmono=int(sum(1 for hp in hap_out for c in hp["contigs"] for x in c["inst"] if x[5] < 4 and x[16] == 0))))
         child_list.append(child_ranges)          # ★段ごとに保持。子の窓は最細段（levels[0]）のブロック番号で作る
-    return dict(levels=levels, atoms=int(nat), H=H, child_ranges=(child_list[0] if child_list else {}), child_list=child_list, ncols=nc, nb_by_W=nb_by_W, tree=tree_out)
+    return dict(levels=levels, atoms=int(nat), H=H, child_ranges=(child_list[0] if child_list else {}), child_list=child_list, ncols=nc, nb_by_W=nb_by_W, tree=tree_out, anchors=anchors)
 
 def ladder(span, steps):
     """内部の梯子は細い方から 2 倍ずつ積み上げる（段階的に落とさないと一気に 1 ブロックへ潰れる）。
@@ -572,7 +593,7 @@ def main():
         if w["depth"] == 0 and res.get("tree"): tree = res["tree"]; log("系統樹: ハプロ %d, UPGMA（葉ノードの Jaccard）" % len(tree["haps"]))
         wid = len(windows)
         wd_ = dict(id=wid, parent=w["parent"], pblock=w["pblock"], depth=w["depth"], label=w["label"],
-                   atoms=res["atoms"], H=res["H"], levels=res["levels"], children={}, mode=res["mode"])
+                   atoms=res["atoms"], H=res["H"], levels=res["levels"], children={}, mode=res["mode"], anchors=res.get("anchors"))
         if w.get("plevel"): wd_["plevel"] = w["plevel"]; wd_["pW"] = w["pW"]
         windows.append(wd_)
         if w["depth"] >= a.max_depth - 1: continue
