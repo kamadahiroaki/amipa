@@ -261,8 +261,17 @@ function computeLayout(){
       for (const sg of (src.segs||[])){ if (sg.kind>=4 || !sg.items.length) continue;
         const ranks = sg.items.map(p=>p.o.rank); const key = ranks.slice().sort((a,b)=>a-b).join(','); if (seen.has(key)) continue;
         const matched = []; for (const rk of ranks){ const c = mDst.get(rk); if (c) matched.push(...c); }
-        if (!matched.length) continue; seen.add(key);
-        const mx0 = Math.min(...matched.map(p=>p.x)), mx1 = Math.max(...matched.map(p=>p.x+p.w));
+        if (!matched.length) continue;
+        // 相手側の範囲は「同じ合意範囲」に限る（合意座標モードで ext がある片）。2 片に分かれたブロックの片を、相手の
+        // ブロック全体に結ぶと、片の境界から相手の両端へ斜線が出る（GCF_002202175 #4）。片の合意範囲 ∩ 相手の合意範囲を
+        // 相手の矢印の中の位置に写す。合意範囲が重ならなければ（相手にその部分が無い）結ばない
+        const segExt = new Map(); for (const q of sg.items) if (q.ext) segExt.set(q.o.rank, q.ext);
+        let mx0 = Infinity, mx1 = -Infinity;
+        for (const q of matched){ const se = segExt.get(q.o.rank);
+          if (se && q.ext && q.ext[1] > q.ext[0]){ const i0 = Math.max(se[0], q.ext[0]), i1 = Math.min(se[1], q.ext[1]); if (i1 <= i0) continue;
+            const f = q.w / (q.ext[1] - q.ext[0]); mx0 = Math.min(mx0, q.x + (i0 - q.ext[0])*f); mx1 = Math.max(mx1, q.x + (i1 - q.ext[0])*f); }
+          else { mx0 = Math.min(mx0, q.x); mx1 = Math.max(mx1, q.x + q.w); } }
+        if (!(mx1 > mx0)) continue; seen.add(key);
         const mdir = (matched.filter(p=>p.o.dir===1).length*2 >= matched.length) ? 1 : 0;
         const mlane = (st.mode==='own') ? 0 : ((matched.filter(p=>p.slot.lane===0).length*2 >= matched.length) ? 0 : 1);
         const slane = (st.mode==='own') ? 0 : sg.lane;
