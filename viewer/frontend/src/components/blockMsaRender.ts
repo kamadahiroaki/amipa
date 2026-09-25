@@ -217,7 +217,8 @@ function computeLayout(){
       if (placed.length){ r.marks.push({c:ct.c, x0:Math.min(...placed.map(p=>p.x)), x1:Math.max(...placed.map(p=>p.x+p.w))}); }
       if (st.showMinor){ const sorted = placed.slice().sort((a,b)=>a.o.it[6]-b.o.it[6]);
         for (const m of ct.c.minor){ let host=null; for (const p of sorted){ if (p.o.it[6]<=m[0]) host=p; else break; }
-          let mx = host ? host.x + Math.min(1, Math.max(0, (m[0]-host.o.it[6])/Math.max(1,host.o.it[2])))*host.w : (sorted.length? sorted[0].x : null);
+          let frac = host ? Math.min(1, Math.max(0, (m[0]-host.o.it[6])/Math.max(1,host.o.it[2]))) : 0; if (ct.c.strand === '-') frac = 1 - frac;   // 通過内の位置は鎖で左右反転
+          let mx = host ? host.x + frac*host.w : (sorted.length? sorted[0].x : null);
           if (mx!=null) r.minors.push({x:mx, m, c:ct.c}); } }
       r.items.push(...placed.filter(p=>!p.hidden));
     }
@@ -360,18 +361,19 @@ function arrowPath(g, x, y, w, h, dir){ const hd = Math.min(6, Math.max(2, w*0.3
 // Mauve 風の類似度プロファイル: 矢印の中を、位置ごとの「保存度」の高さでブロック色に塗る（残りは白）。
 // 尺度が少数派サイトなら位置が分かるので山型、私有サイト／錨でない bp は位置が無いので一定の高さ（値が大きいほど低い）。
 // 高さ 1 = この層の典型密度の 2 倍以上で 0、密度 0 で満杯（既存の濃淡と同じ正規化）。返り値: ビンごとの高さ 0..1（null=満杯）
-function profileHeights(o, cons, nbins, hapIdx, ext){ const it = o.it; if (!(it.length>12) || it[2]<=0) return null;
+function profileHeights(o, cons, nbins, hapIdx, ext, flip){ const it = o.it; if (!(it.length>12) || it[2]<=0) return null;
   if (st.measure==='minor'){ const vs = cons ? consSites(it) : varSites(it); if (!vs.length) return null;
     const h = new Float32Array(nbins); const cnt = new Float32Array(nbins);
     const scale = (it[11]||vs.length) / vs.length;                                  // 位置は 1/255 に丸めて重複を落としているので、実数に戻す
     const e0 = (cons && ext) ? ext[0] : 0, e1 = (cons && ext) ? Math.max(ext[0]+1, ext[1]) : 255;      // 合意座標モード: この片の合意範囲だけ
-    for (let i=0;i<vs.length;i++){ if (cons && (vs[i] < e0 || vs[i] > e1)) continue; let b = Math.min(nbins-1, Math.floor((vs[i]-e0)/(e1-e0)*nbins)); if (!cons && !o.dir) b = nbins-1-b; cnt[b] += scale; }
+    // 通過内の位置（各行の並びモード）は矢印の左端がトークンの小さい側なのは '+' 鎖のとき。'-' 鎖のコンティグは表示で反転しているので左右を入れ替える
+    for (let i=0;i<vs.length;i++){ if (cons && (vs[i] < e0 || vs[i] > e1)) continue; let b = Math.min(nbins-1, Math.floor((vs[i]-e0)/(e1-e0)*nbins)); if (!cons && flip) b = nbins-1-b; cnt[b] += scale; }
     const bpPerBin = (cons ? Math.max(1, level().blocks[o.rank].tbp) * (e1-e0)/255 : it[2]) / nbins; const dref = levelDensRef();
     for (let i=0;i<nbins;i++){ const dens = cnt[i]/bpPerBin*1000; h[i] = 1 - Math.min(1, dens/(2*dref)); } return h; }
   const v = measureOf(it); if (v==null) return null; const S = densStats(); const q = pct(S.all, v); const h = new Float32Array(nbins); h.fill(1 - q); return h; }
 function shade(col, f){ const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(col); if (!m) return col; return `rgb(${Math.round(+m[1]*f)},${Math.round(+m[2]*f)},${Math.round(+m[3]*f)})`; }
 function profileArrow(g, p, o, yy, hh, col, cons, hapIdx){
-  const inner = Math.max(1, p.w-2); const nbins = Math.max(2, Math.min(255, Math.floor(inner/2))); const h = profileHeights(o, cons, nbins, hapIdx, p.ext);
+  const inner = Math.max(1, p.w-2); const nbins = Math.max(2, Math.min(255, Math.floor(inner/2))); const h = profileHeights(o, cons, nbins, hapIdx, p.ext, p.ct && p.ct.c && p.ct.c.strand === '-');
   const hd = Math.min(7, Math.max(3, p.w*0.35));                   // 先端の長さ
   g.save(); arrowPath(g, p.x, yy, p.w, hh, o.dir); g.clip();
   if (!h){ g.fillStyle = col; g.fillRect(p.x, yy, p.w, hh); }
@@ -445,7 +447,8 @@ function drawGrid(){
       if (o.kind<4 && o.it.length>16 && o.it[16]===0){ g.save(); g.setLineDash([2,2]); g.strokeStyle = TH.sel; g.lineWidth=1.5; g.beginPath(); g.moveTo(p.x, yy-1.5); g.lineTo(p.x+p.w, yy-1.5); g.stroke(); g.restore(); }
       if (o.kind<4 && o.it.length>14 && o.it[14] && o.it[14].length && p.w>=3){ const y0 = yy + hh*2/3, hv = hh/3; const inner = Math.max(1, p.w - 2);
         for (const gp of o.it[14]){ const useC = cons && gp.length>3; const wI = Math.max(3, Math.min(12, gp[2]*LY.s));
-          const x0 = useC ? Math.max(p.x+1, Math.min(p.x+p.w-1-wI, XC(gp[3]))) : p.x+1+gp[0]/255*inner, x1 = useC ? x0+wI : p.x+1+gp[1]/255*inner; g.save(); g.beginPath(); g.rect(x0, yy, Math.max(2, x1-x0), hh); g.clip();
+          const flipS = p.ct && p.ct.c && p.ct.c.strand === '-'; const g0 = flipS ? 255-gp[1] : gp[0], g1 = flipS ? 255-gp[0] : gp[1];   // 通過内座標は鎖で左右反転
+          const x0 = useC ? Math.max(p.x+1, Math.min(p.x+p.w-1-wI, XC(gp[3]))) : p.x+1+g0/255*inner, x1 = useC ? x0+wI : p.x+1+g1/255*inner; g.save(); g.beginPath(); g.rect(x0, yy, Math.max(2, x1-x0), hh); g.clip();
           g.fillStyle = TH.panel; g.globalAlpha = .75; g.fillRect(x0, yy, Math.max(2,x1-x0), hh); g.globalAlpha = 1; g.strokeStyle = TH.rep; g.lineWidth = 1; g.beginPath(); for (let t=-hh; t<x1-x0+hh; t+=4){ g.moveTo(x0+t, yy+hh); g.lineTo(x0+t+hh, yy); } g.stroke(); g.restore(); } }
       if (o.kind<4 && o.it[4]>1 && p.w>=16){ g.fillStyle=TH.ink; g.font='9.5px "IBM Plex Mono"'; g.textAlign='center'; g.textBaseline='middle'; g.fillText('×'+o.it[4], p.x+p.w/2, yy+hh/2); }
       if (o.kind===5 && p.w>=22){ g.fillStyle=TH.muted; g.font='9px "IBM Plex Mono"'; g.textAlign='center'; g.textBaseline='middle'; g.fillText(o.it[7]+'小', p.x+p.w/2, yy+hh/2); }
