@@ -317,7 +317,7 @@ function arrow(g, x, y, w, h, dir, color, hatch, dotted){
 }
 // ---- 錨の対応線: 窓の anchors（標本 M 本、各パスでの tok/bp/向き）を復号し、行ごとに表示 x を求める
 function b64u(s_, T){ const b = atob(s_); const u8 = new Uint8Array(b.length); for (let i=0;i<b.length;i++) u8[i]=b.charCodeAt(i); return new T(u8.buffer); }
-function anchorsOf(w){ if (!w.anchors) return null; if (w._anc) return w._anc; const a = w.anchors; const rows = new Map();
+function anchorsOf(w){ if (w._anc) return w._anc; if (!w.anchors) return null; const a = w.anchors; const rows = new Map();
   for (const [path, r] of Object.entries(a.rows)) rows.set(path, { i: b64u(r.i, Uint16Array), tok: b64u(r.tok, Uint32Array), bp: b64u(r.bp, Uint32Array), ori: b64u(r.ori, Uint8Array) });
   const rows2 = new Map(); for (const [path, r] of Object.entries(a.rows2 || {})) rows2.set(path, { i: b64u(r.i, Uint16Array), tok: b64u(r.tok, Uint32Array), bp: b64u(r.bp, Uint32Array), ori: b64u(r.ori, Uint8Array) });
   w._anc = { m: a.m, x: a.x, rows, m2: a.m2 || 0, x2: a.x2 || [], rows2 }; return w._anc; }
@@ -456,7 +456,7 @@ function drawTree(){
   svg.querySelectorAll('.ev, .br').forEach(el=>{ el.style.cursor='pointer'; el.addEventListener('mousemove', e=>{ if (st.pinned) return; showBranch(+el.getAttribute('data-node')); }); el.addEventListener('click', e=>{ st.pinned = true; showBranch(+el.getAttribute('data-node')); }); });
 }
 function drawChips(){ const L = level(); let inv=0, disp=0, rep=0, small=0; for (const r of LY.rows) for (const p of r.items){ const k=p.o.kind; if (k===3) inv++; else if (k===2) disp++; else if (k===4) rep++; else if (k===5) small++; }
-  $('chips').innerHTML = `<span class="chip">窓 <b>${st.win===0?"全体":esc(win().label)}</b>${(level().mode==='bins')?' · <b>座標分割</b>（再編成なし・等分）':''} · ${level().mode==='bins'?'錨':'原子区間'} ${win().atoms.toLocaleString()} · 深さ ${win().depth}${win().ondemand?` · <b>逐次計算</b>${win().ms?' '+win().ms+' ms':''}`:''}</span><span class="chip">${L.mode==='bins'?'ビン幅':'段の幅'} <b>${fmtbp(L.W)}</b></span><span class="chip">ブロック <b>${LY.vis.length}</b></span><span class="chip">行 <b>${LY.rows.length}</b></span><span class="chip">逆位 <b>${inv}</b> 変位 <b>${disp}</b> 小群 ${small}</span><span class="chip">${L.members?`最細段の併合 <b>${L.merges||0}</b> 回`:`併合の上限 <b>${L.mergecap||0}</b> 株`}${L.nonmono?` · 内部順序ずれ ${L.nonmono}`:''}</span>${st.filter?`<span class="chip">絞り込み <b>${st.filter.size}</b> / ${win().levels[0].nblocks}</span>`:''}${st.anc && anchorsOf(win())?`<span class="chip">錨の対応線 <b>${anchorsOf(win()).m}</b> 本/行${st.anc2 && anchorsOf(win()).m2?` · 第二錨 <b>${anchorsOf(win()).m2}</b>`:''}</span>`:''}`;
+  $('chips').innerHTML = `<span class="chip">窓 <b>${st.win===0?"全体":esc(win().label)}</b>${(level().mode==='bins')?' · <b>座標分割</b>（再編成なし・等分）':''} · ${level().mode==='bins'?'錨':'原子区間'} ${win().atoms.toLocaleString()} · 深さ ${win().depth}${win().composed?` · <b>継ぎ合わせ</b>`:(win().ondemand?` · <b>逐次計算</b>${win().ms?' '+win().ms+' ms':''}`:'')}</span><span class="chip">${L.mode==='bins'?'ビン幅':'段の幅'} <b>${fmtbp(L.W)}</b></span><span class="chip">ブロック <b>${LY.vis.length}</b></span><span class="chip">行 <b>${LY.rows.length}</b></span><span class="chip">逆位 <b>${inv}</b> 変位 <b>${disp}</b> 小群 ${small}</span><span class="chip">${L.members?`最細段の併合 <b>${L.merges||0}</b> 回`:`併合の上限 <b>${L.mergecap||0}</b> 株`}${L.nonmono?` · 内部順序ずれ ${L.nonmono}`:''}</span>${st.filter?`<span class="chip">絞り込み <b>${st.filter.size}</b> / ${win().levels[0].nblocks}</span>`:''}${st.anc && anchorsOf(win())?`<span class="chip">錨の対応線 <b>${anchorsOf(win()).m}</b> 本/行${st.anc2 && anchorsOf(win()).m2?` · 第二錨 <b>${anchorsOf(win()).m2}</b>`:''}</span>`:''}`;
   const ld = $('ladder'); ld.innerHTML=''; win().levels.forEach((lv,i)=>{ const b=document.createElement('button'); b.className='mono'; b.textContent=fmtbp(lv.W)+' ('+lv.nblocks+')'; b.setAttribute('aria-pressed', i===st.li?'true':'false'); b.addEventListener('click',()=>{ st.li=i; st.sel=null; st.origin=null; st.pinned=false; drawAll(); emitSel(); }); ld.appendChild(b); });
   $('origingrp').style.display = (DATA.meta.circular && st.win===0) ? '' : 'none';
   $('origintxt').textContent = DATA.meta.circular ? `#${originRank()+1}${st.origin==null?'（自動）':''}` : '';
@@ -560,23 +560,65 @@ grid.addEventListener('click', e=>{ if (e.detail && e.detail > 1) return; const 
 // 列見出しをドラッグして合意座標の任意区間を選び、その区間の窓へ（ブロック境界に縛られない「範囲で降りる」）。
 // 各行のトークン範囲は標本錨（第一・第二）のうち区間内にあるものの最小/最大トークンで近似する
 function pxToCons(px){ for (const c of LY.cols){ if (c.type==='block' && px>=c.x && px<=c.x+c.w){ const B = level().blocks[c.rank]; return B.x + (px-c.x)/Math.max(1,c.w)*B.span; } } let best=null; for (const c of LY.cols){ if (c.type!=='block') continue; const d = px < c.x ? c.x-px : px-(c.x+c.w); if (best==null || d<best[0]) best=[d,c]; } if (!best) return null; const c=best[1], B=level().blocks[c.rank]; return px < c.x ? B.x : B.x + B.span; }
-function drillRange(xa, xb){ if (xb <= xa || st.drilling || !(cb && cb.onDrill)) return; const anc = anchorsOf(win()); if (!anc) return; const w = win();
-  const ranges = []; let ntok = 0;
-  for (const r of LY.rows){ for (const ct of r.contigs){ let lo = Infinity, hi = -Infinity;
-    for (const [rowsMap, xarr] of [[anc.rows, anc.x], [anc.rows2, anc.x2]]){ const A = rowsMap.get(ct.c.path); if (!A) continue; for (let k=0;k<A.i.length;k++){ const x = xarr[A.i[k]]; if (x >= xa && x <= xb){ lo = Math.min(lo, A.tok[k]); hi = Math.max(hi, A.tok[k]+1); } } }
-    if (hi > lo){ ranges.push([ct.c.path, lo, hi]); ntok += hi - lo; } } }
-  if (!ranges.length){ $('detailbody').innerHTML = '<p class="k">この区間に錨が無いので窓を作れません（もう少し広く）。</p>'; return; }
+// 範囲の窓は再計算せず、範囲が重なる最細ブロックの子窓（事前計算か、予算内の逐次計算）を継ぎ合わせて作る。
+// 端は子窓のブロック境界に丸める。1 ブロックに収まる範囲は、その子窓に入って絞り込む。子窓が作れない小さなブロック
+// （列 ≤ 400）は親のブロックをそのまま 1 ブロックとして継ぐ。継いだ窓の段は最細段の 1 段だけ、系統樹の枝の事象は無し
+function drillRangesAt(L, rank){ const out = []; for (const hp of L.haps) for (const c of hp.contigs) for (const x of c.inst){ if (x[5] < 4 && x[0] === rank) out.push([c.path, x[8], x[9]]); } return out; }
+function childWindowFor(rank){ const w = win(); const key = String(rank); const ch = w.children ? w.children[key] : null; if (ch!=null) return Promise.resolve(WINS[ch]);
+  if (!(cb && cb.onDrill)) return Promise.resolve(null);
+  const L0 = w.levels[0]; const B = L0.blocks[rank]; if (!B || B.tbp / Math.max(1, DATA.meta.bpt||1) <= BASE_MAX_LEAVES) return Promise.resolve(null);   // 小さすぎて子窓が無い
+  const req = { ranges: drillRangesAt(L0, rank), span: B.span, afrac: (DATA.meta.params && DATA.meta.params.sub_anchor_frac) || 0.5, label: '#'+(rank+1), depth: w.depth+1, parent: st.win, pblock: rank };
+  return cb.onDrill(req).then(r=>{ if (!r || r.error || !r.window) return null; const nw = r.window; nw.id = WINS.length; nw.parent = w.id; nw.pblock = rank; nw.plevel = 0; nw.pW = L0.W; nw.children = nw.children || {}; nw.ondemand = true; nw.ms = r.total_ms || r.ms || 0;
+    WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; return nw; }); }
+function composeRange(xa, xb, srcs){
+  // srcs: [{win: 子窓 | null, rank: 親の最細ブロック番号}] を範囲の順に。子窓が null なら親のブロックをそのまま 1 ブロックとして継ぐ
+  const w = win(); const L0 = w.levels[0]; const blocks = []; const hapMap = new Map(); const ancX = [], ancRows = new Map(), ancX2 = [], ancRows2 = new Map(); let Wmin = Infinity, nonmono = 0;
+  const addAnc = (a, keepIdx, dstX, dstRows, which) => { if (!a) return; const idxMap = new Map(); for (const i of keepIdx){ idxMap.set(i, dstX.length); dstX.push(which === 1 ? a.x[i] : a.x2[i]); }
+    const rows = which === 1 ? a.rows : a.rows2; for (const [path, A] of rows){ const ii = [], tt = [], bb = [], oo = [];
+      for (let k=0;k<A.i.length;k++){ const ni = idxMap.get(A.i[k]); if (ni==null) continue; ii.push(ni); tt.push(A.tok[k]); bb.push(A.bp[k]); oo.push(A.ori[k]); }
+      if (!ii.length) continue; const cur = dstRows.get(path) || { i: [], tok: [], bp: [], ori: [] }; cur.i.push(...ii); cur.tok.push(...tt); cur.bp.push(...bb); cur.ori.push(...oo); dstRows.set(path, cur); } };
+  for (const src of srcs){
+    const L = src.win ? src.win.levels[0] : L0; const keep = new Map();      // 元の rank → 新しい rank
+    L.blocks.forEach((B, r)=>{ if (src.win ? (B.x < xb && B.x + B.span > xa) : r === src.rank){ keep.set(r, blocks.length); blocks.push(Object.assign({}, B)); } });
+    if (!keep.size) continue; Wmin = Math.min(Wmin, L.W); nonmono += L.nonmono || 0;
+    for (const hp of L.haps){ const dst = hapMap.get(hp.hap) || { hap: hp.hap, isref: hp.isref, contigs: new Map() }; hapMap.set(hp.hap, dst);
+      for (const c of hp.contigs){ const inst = c.inst.filter(x => keep.has(x[0])).map(x => { const y = x.slice(); y[0] = keep.get(x[0]); return y; }); if (!inst.length) continue;
+        const dc = dst.contigs.get(c.path) || { name: c.name, path: c.path, strand: c.strand, start: c.start, bp: c.bp, nsteps: c.nsteps, inst: [], minor: [] }; dc.inst.push(...inst); dc.minor.push(...(c.minor||[])); dst.contigs.set(c.path, dc); } }
+    if (src.win){ const a = anchorsOf(src.win); if (a){ const k1 = []; for (let i=0;i<a.m;i++) if (a.x[i] >= xa && a.x[i] <= xb) k1.push(i); addAnc(a, k1, ancX, ancRows, 1);
+        const k2 = []; for (let i=0;i<a.m2;i++) if (a.x2[i] >= xa && a.x2[i] <= xb) k2.push(i); addAnc(a, k2, ancX2, ancRows2, 2); } }
+  }
+  if (!blocks.length) return null;
+  // 行の順は今の窓に合わせる。コンティグのインスタンスはトークン順に
+  const order = new Map(L0.haps.map((h,i)=>[h.hap, i]));
+  const haps = [...hapMap.values()].sort((u,v)=>(order.get(u.hap)??1e9)-(order.get(v.hap)??1e9)).map(h => ({ hap: h.hap, isref: h.isref, contigs: [...h.contigs.values()].map(c => { c.inst.sort((u,v)=>u[8]-v[8]); c.minor.sort((u,v)=>u[0]-v[0]); return c; }) }));
+  const toTyped = (rows) => { const m = new Map(); for (const [path, r] of rows) m.set(path, { i: Uint16Array.from(r.i), tok: Uint32Array.from(r.tok), bp: Uint32Array.from(r.bp), ori: Uint8Array.from(r.ori) }); return m; };
+  const nw = { id: -1, parent: st.win, pblock: -1, plevel: st.li, pW: level().W, depth: w.depth + 1, label: fmtbp(xa) + '–' + fmtbp(xb), atoms: blocks.reduce((a,B)=>a+(B.atoms||1),0), H: haps.length,
+    levels: [{ W: Wmin === Infinity ? L0.W : Wmin, nblocks: blocks.length, blocks, haps, mergecap: 0, mode: 'blocks', adj: [], events: {}, origin: 0, merges: 0, members: null, nonmono }],
+    children: {}, ondemand: true, composed: true, note: '範囲: ' + srcs.length + ' ブロックの子窓を継ぎ合わせ',
+    _anc: { m: ancX.length, x: ancX, rows: toTyped(ancRows), m2: ancX2.length, x2: ancX2, rows2: toTyped(ancRows2) } };
+  return nw; }
+function drillRange(xa, xb){ if (xb <= xa || st.drilling) return; const w = win(); const L0 = w.levels[0];
+  const ranks = []; L0.blocks.forEach((B, r)=>{ if (B.x < xb && B.x + B.span > xa) ranks.push(r); });
+  if (!ranks.length){ $('detailbody').innerHTML = '<p class="k">この区間にブロックがありません。</p>'; st.rangeSel = null; drawHeader(); return; }
   const label = fmtbp(xa) + '–' + fmtbp(xb); const key = 'r:' + Math.round(xa) + ':' + Math.round(xb);
-  const ch = w.children ? w.children[key] : null; if (ch!=null){ enterWindow(ch); return; }
+  const ch = w.children ? w.children[key] : null; if (ch!=null){ st.rangeSel = null; drawHeader(); enterWindow(ch); return; }
+  // 1 ブロックに収まる範囲: その子窓に入って、範囲に重なるブロックに絞り込む（子窓が無い小さなブロックは塩基へ）
   const cols = (xb - xa) / Math.max(1, DATA.meta.bpt || 1);
-  if (cols <= BASE_MAX_LEAVES && cb.onBaseMsa){ cb.onBaseMsa({ ranges, span: xb-xa, afrac: 0, label: winPath().map((p,i)=>i===0?'全体':p.label).join('›') + '›' + label, depth: w.depth+1, parent: st.win, pblock: -1 }); $('detailbody').innerHTML = `<p class="k">区間 ${label} の各行を塩基レベル MSA に渡しました。</p>`; return; }
-  const req = { ranges, span: xb-xa, afrac: (DATA.meta.params && DATA.meta.params.sub_anchor_frac) || 0.5, label, depth: w.depth+1, parent: st.win, pblock: -1 };
-  st.drilling = true; st.busy = `区間 ${label}（${ranges.length} 行、${(ntok/1e6).toFixed(1)}M トークン）の窓を計算しています…`; updateButtons(); drawGrid(); $('detailbody').innerHTML = `<p class="k">${esc(st.busy)}</p>`;
-  cb.onDrill(req).then(r=>{ st.drilling = false; st.busy = null; st.rangeSel = null; drawHeader();
-    if (!r || r.error || !r.window){ $('detailbody').innerHTML = `<p class="k">逐次計算に失敗: ${esc((r && r.error) || '応答なし')}</p>`; updateButtons(); return; }
-    const nw = r.window; nw.id = WINS.length; nw.parent = st.win; nw.pblock = -1; nw.plevel = st.li; nw.pW = level().W; nw.label = label; nw.children = nw.children || {}; nw.ondemand = true; nw.ms = r.total_ms || r.ms || 0;
-    WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; enterWindow(nw.id);
-  }).catch(e=>{ st.drilling = false; st.busy = null; st.rangeSel = null; drawHeader(); drawGrid(); $('detailbody').innerHTML = `<p class="k">逐次計算に失敗: ${esc(String(e))}</p>`; updateButtons(); }); }
+  if (ranks.length === 1 && cols <= BASE_MAX_LEAVES && cb && cb.onBaseMsa){ const rk = ranks[0]; const rr_ = drillRangesAt(L0, rk); const anc = anchorsOf(w);
+    // 範囲内の錨でトークン範囲を狭める（親ブロック全体でなく範囲だけを塩基へ）
+    const ranges = []; if (anc){ for (const [path, s0, e0] of rr_){ const A = anc.rows.get(path); let lo = Infinity, hi = -Infinity; if (A) for (let k=0;k<A.i.length;k++){ const x = anc.x[A.i[k]]; if (x >= xa && x <= xb && A.tok[k] >= s0 && A.tok[k] < e0){ lo = Math.min(lo, A.tok[k]); hi = Math.max(hi, A.tok[k]+1); } } if (hi > lo) ranges.push([path, lo, hi]); } }
+    if (ranges.length){ cb.onBaseMsa({ ranges, span: xb-xa, afrac: 0, label: winPath().map((p,i)=>i===0?'全体':p.label).join('›') + '›' + label, depth: w.depth+1, parent: st.win, pblock: -1 }); $('detailbody').innerHTML = `<p class="k">区間 ${label} の各行を塩基レベル MSA に渡しました。</p>`; st.rangeSel = null; drawHeader(); return; } }
+  st.drilling = true; st.busy = `区間 ${label}: 重なる ${ranks.length} ブロックの子窓を集めています…`; updateButtons(); drawGrid(); $('detailbody').innerHTML = `<p class="k">${esc(st.busy)}</p>`;
+  (async ()=>{ const srcs = []; let k = 0;
+    for (const r of ranks){ k++; const have = w.children && w.children[String(r)]!=null; if (!have){ st.busy = `区間 ${label}: #${r+1} の子窓を計算中（${k}/${ranks.length}）`; drawGrid(); }
+      const cw = await childWindowFor(r); srcs.push({ win: cw, rank: r }); }
+    if (ranks.length === 1 && srcs[0].win){ // 1 ブロックに収まる: 子窓に入り、範囲に重なるブロックに絞り込む
+      st.drilling = false; st.busy = null; st.rangeSel = null; enterWindow(srcs[0].win.id); const Lc = level(); const f = new Set(); Lc.blocks.forEach((B, r)=>{ if (B.x < xb && B.x + B.span > xa) f.add(r); });
+      if (f.size && f.size < Lc.nblocks){ st.filterPath.push({ label, W: Lc.W, li: st.li, rank: -1, prev: null }); st.filter = f; st.li = 0; drawAll(); emitSel(); } return; }
+    const nw = composeRange(xa, xb, srcs); st.drilling = false; st.busy = null; st.rangeSel = null;
+    if (!nw){ drawAll(); $('detailbody').innerHTML = '<p class="k">この区間の窓を作れませんでした。</p>'; return; }
+    nw.id = WINS.length; WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; enterWindow(nw.id);
+  })().catch(e=>{ st.drilling = false; st.busy = null; st.rangeSel = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; }); }
 let _hdrDrag = null, _hdrDragged = false;
 cv.hdr.style.cursor = 'crosshair';
 cv.hdr.addEventListener('mousedown', e=>{ if (e.button!==0) return; const rect = cv.hdr.getBoundingClientRect(); _hdrDrag = { x0: e.clientX-rect.left, moved:false }; _hdrDragged = false; });
