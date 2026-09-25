@@ -2,7 +2,7 @@
 import type { BlockDrillRequest, BlockDrillResult } from '../api/client'
 // 多解像度 MSA（共線ブロック）の描画。functions/msa_lod/hier_template.html の JS をそのまま移植（vanilla、canvas）。
 // React 側は components/BlockMsa.tsx が薄く包む。ここは意図的に型を付けない（試作。本番化時に整える）。
-const BODY = '\n<div class="toolbar"><div class="chips" id="bk_chips" style="margin-left:0"></div>\n  <div class="grp"><span class="t">窓</span><nav class="crumbs" id="bk_crumbs" aria-label="階層"></nav></div>\n  <div class="grp"><span class="t">段（まとめ方）</span><span id="bk_ladder"></span></div>\n  <div class="grp"><span class="t">並べ方</span><button id="bk_m_msa" aria-pressed="true">合意座標</button><button id="bk_m_own" aria-pressed="false">各行の並び</button></div>\n  <div class="grp"><label title="隣り合う行で同じ錨（共有ノード）の位置を線で結ぶ。ブロックの単位によらない対応線（ntSynt-viz 風）。交差＝逆位、扇状＝挿入・欠失、長い斜線＝転座"><input type="checkbox" id="bk_anc" checked>錨の対応線</label><span class="t">リボン</span><button id="bk_l_auto" aria-pressed="false">自動</button><button id="bk_l_off" aria-pressed="true">なし</button><button id="bk_l_diff" aria-pressed="false">ずれ</button><button id="bk_l_all" aria-pressed="false">全部</button></div>\n  <div class="grp"><span class="t">目盛り</span><button id="bk_a_cons" aria-pressed="true">ブロック累積 bp</button><button id="bk_a_ref" aria-pressed="false">参照 bp</button></div>\n  <div class="grp"><span class="t">色</span><button id="bk_c_order" aria-pressed="true" title="合意順序で色を付ける（左→右の色相の帯）">順序</button><button id="bk_c_genes" aria-pressed="false" disabled title="ブロックの参照区間に重なる遺伝子の密度（個/Mb）。アノテのある DB だけ">遺伝子密度</button></div>\n  <div class="grp"><span class="t">行順</span><button id="bk_o_tree" aria-pressed="true">系統樹</button><button id="bk_o_name" aria-pressed="false">名前</button></div>\n  <div class="grp" id="bk_origingrp"><span class="t">原点</span><span id="bk_origintxt" class="t"></span><button id="bk_setorigin" disabled>選択ブロックを原点に</button><button id="bk_autoorigin">自動</button></div>\n  <div class="grp"><button id="bk_scopein" disabled>選択ブロックの内側へ →</button><button id="bk_base" disabled title="このブロックの各行のトークン範囲を塩基レベル MSA（MSA パネル）に渡す。列（葉）が 400 以下のブロックで使える">塩基へ ↓</button><button id="bk_scopeout" disabled>← 全体へ</button></div>\n  <div class="grp"><span class="t">変異密度</span><button id="bk_v_minor" aria-pressed="true">少数派サイト</button><button id="bk_v_priv" aria-pressed="false">私有サイト</button><button id="bk_v_nonanc" aria-pressed="false">錨でない bp</button></div>\n  <div class="grp"><span class="t">基準</span><button id="bk_n_abs" aria-pressed="true">絶対（層内百分位）</button><button id="bk_n_block" aria-pressed="false">ブロック相対</button><button id="bk_n_hap" aria-pressed="false">株相対</button></div>\n  <div class="grp"><label><input type="checkbox" id="bk_bund" checked>束ねる</label></div>\n  <div class="grp"><label title="窓や絞り込みを変えると、グラフをその範囲に寄せ、範囲に合う層で表示する"><input type="checkbox" id="bk_sync" checked>グラフ連動</label><label title="パスパネルで選んだ（行ラベルをクリックした）ハプロタイプの行だけを表示"><input type="checkbox" id="bk_onlysel">選択行のみ</label></div>\n</div>\n<div class="legend" id="bk_legend"></div>\n<div class="bkmain">\n  <div id="bk_corner"><span>ハプロタイプ ↓</span><span id="bk_scopetxt"></span></div>\n  <div id="bk_hdrwrap"><canvas id="bk_hdr"></canvas></div>\n  <aside id="bk_detail"><h3>詳細 <button id="bk_copybtn" title="詳細の文字をコピー">コピー</button></h3><div id="bk_detailbody"><p class="k">矢印や列見出しにホバーすると詳細が出ます。クリックで固定。ダブルクリックでそのブロックの内側へ（どの段からでも）。</p></div></aside>\n  <div id="bk_body"><div id="bk_treewrap"><svg id="bk_tree" xmlns="http://www.w3.org/2000/svg"></svg></div><div id="bk_labwrap"></div><div id="bk_gridwrap"><canvas id="bk_grid"></canvas></div></div>\n</div>\n';
+const BODY = '\n<div class="toolbar"><div class="chips" id="bk_chips" style="margin-left:0"></div>\n  <div class="grp"><span class="t">窓</span><nav class="crumbs" id="bk_crumbs" aria-label="階層"></nav></div>\n  <div class="grp"><span class="t">段（まとめ方）</span><span id="bk_ladder"></span></div>\n  <div class="grp"><span class="t">並べ方</span><button id="bk_m_msa" aria-pressed="true">合意座標</button><button id="bk_m_own" aria-pressed="false">各行の並び</button></div>\n  <div class="grp"><label title="隣り合う行で同じ錨（80% 以上の株が持つ共有ノード）の位置を線で結ぶ。ブロックの単位によらない対応線。交差＝逆位、扇状＝挿入・欠失、長い斜線＝転座"><input type="checkbox" id="bk_anc" checked>錨の対応線</label><label title="コアでないが 2 株以上が持つ一意ノードの対応を薄い線で足す。隣り合う株が共有する島・ファージが見える"><input type="checkbox" id="bk_anc2" checked>第二錨</label></div>\n  <div class="grp"><span class="t">目盛り</span><button id="bk_a_cons" aria-pressed="true">ブロック累積 bp</button><button id="bk_a_ref" aria-pressed="false">参照 bp</button></div>\n  <div class="grp"><span class="t">色</span><button id="bk_c_order" aria-pressed="true" title="合意順序で色を付ける（左→右の色相の帯）">順序</button><button id="bk_c_genes" aria-pressed="false" disabled title="ブロックの参照区間に重なる遺伝子の密度（個/Mb）。アノテのある DB だけ">遺伝子密度</button></div>\n  <div class="grp"><span class="t">行順</span><button id="bk_o_tree" aria-pressed="true">系統樹</button><button id="bk_o_name" aria-pressed="false">名前</button></div>\n  <div class="grp" id="bk_origingrp"><span class="t">原点</span><span id="bk_origintxt" class="t"></span><button id="bk_setorigin" disabled>選択ブロックを原点に</button><button id="bk_autoorigin">自動</button></div>\n  <div class="grp"><button id="bk_scopein" disabled>選択ブロックの内側へ →</button><button id="bk_base" disabled title="このブロックの各行のトークン範囲を塩基レベル MSA（MSA パネル）に渡す。列（葉）が 400 以下のブロックで使える">塩基へ ↓</button><button id="bk_scopeout" disabled>← 全体へ</button></div>\n  <div class="grp"><span class="t">変異密度</span><button id="bk_v_minor" aria-pressed="true">少数派サイト</button><button id="bk_v_priv" aria-pressed="false">私有サイト</button><button id="bk_v_nonanc" aria-pressed="false">錨でない bp</button></div>\n  <div class="grp"><span class="t">基準</span><button id="bk_n_abs" aria-pressed="true">絶対（層内百分位）</button><button id="bk_n_block" aria-pressed="false">ブロック相対</button><button id="bk_n_hap" aria-pressed="false">株相対</button></div>\n  <div class="grp"><label><input type="checkbox" id="bk_bund" checked>束ねる</label></div>\n  <div class="grp"><label title="窓や絞り込みを変えると、グラフをその範囲に寄せ、範囲に合う層で表示する"><input type="checkbox" id="bk_sync" checked>グラフ連動</label><label title="パスパネルで選んだ（行ラベルをクリックした）ハプロタイプの行だけを表示"><input type="checkbox" id="bk_onlysel">選択行のみ</label></div>\n</div>\n<div class="legend" id="bk_legend"></div>\n<div class="bkmain">\n  <div id="bk_corner"><span>ハプロタイプ ↓</span><span id="bk_scopetxt"></span></div>\n  <div id="bk_hdrwrap"><canvas id="bk_hdr"></canvas></div>\n  <aside id="bk_detail"><h3>詳細 <button id="bk_copybtn" title="詳細の文字をコピー">コピー</button></h3><div id="bk_detailbody"><p class="k">矢印や列見出しにホバーすると詳細が出ます。クリックで固定。ダブルクリックでそのブロックの内側へ（どの段からでも）。</p></div></aside>\n  <div id="bk_body"><div id="bk_treewrap"><svg id="bk_tree" xmlns="http://www.w3.org/2000/svg"></svg></div><div id="bk_labwrap"></div><div id="bk_gridwrap"><canvas id="bk_grid"></canvas></div></div>\n</div>\n';
 const CSS = '.bkmsa{--bg:#f3f6f7;--panel:#fff;--ink:#1b2530;--muted:#64707c;--line:#d3dbe1;--line2:#e7ecf0;--accent:#0d9488;--ref:#fff3e0;--reflab:#7a4b00;\n  --sel:#ff1493;--selbg:rgba(255,20,147,.12);--hover:rgba(13,148,136,.10);--shadow:0 6px 20px rgba(20,30,40,.14);--tick:#8a96a3;--rep:#6b7480;--gap:#eef2f5;--inv:#7c3aed;--disp:#d98200;--abs:#c9d1d8}.bkmsa *{box-sizing:border-box}.bkmsa{background:var(--bg);color:var(--ink);font:13px/1.45 "IBM Plex Sans",system-ui,sans-serif;display:flex;flex-direction:column;height:100%;overflow:hidden;position:relative}.bkmsa .chips{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}.bkmsa .chip{font:11.5px "IBM Plex Mono",monospace;color:var(--muted);border:1px solid var(--line2);border-radius:999px;padding:2px 9px;background:var(--bg)}.bkmsa .chip b{color:var(--ink);font-weight:500}.bkmsa .toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:5px 16px;border-bottom:1px solid var(--line);background:var(--panel)}.bkmsa .grp{display:flex;align-items:center;gap:5px;padding-right:12px;border-right:1px solid var(--line2)}.bkmsa .grp:last-child{border-right:0}.bkmsa .grp .t{font-size:11.5px;color:var(--muted);margin-right:2px}.bkmsa button{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:6px;padding:3px 9px;font:12px "IBM Plex Sans",sans-serif;cursor:pointer}.bkmsa button:hover{border-color:var(--accent)}.bkmsa button[disabled]{opacity:.45;cursor:default}.bkmsa button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}.bkmsa button.mono{font-family:"IBM Plex Mono",monospace}.bkmsa button:focus-visible, .bkmsa input:focus-visible{outline:2px solid var(--sel);outline-offset:1px}.bkmsa label{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:4px}.bkmsa input[type=checkbox]{accent-color:var(--accent)}.bkmsa .crumbs{display:flex;align-items:center;gap:3px;flex-wrap:wrap}.bkmsa .crumbs .sep{color:var(--muted);font-size:12px}.bkmsa .crumb{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:6px;padding:2px 8px;font:12px "IBM Plex Mono",monospace;cursor:pointer}.bkmsa .crumb[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}.bkmsa .legend{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:11.5px;color:var(--muted);padding:5px 16px;border-bottom:1px solid var(--line);background:var(--panel)}.bkmsa .legend canvas{vertical-align:middle}.bkmsa .bkmain{flex:1;display:grid;grid-template-columns:var(--treew,130px) 176px minmax(0,1fr) 320px;grid-template-rows:40px 1fr;min-height:0;background:var(--panel)}.bkmsa #bk_corner{grid-column:1/3;border-right:1px solid var(--line);border-bottom:1px solid var(--line);font-size:10.5px;color:var(--muted);padding:4px 8px;display:flex;align-items:flex-end;justify-content:space-between}.bkmsa #bk_hdrwrap{border-bottom:1px solid var(--line);position:relative;overflow:hidden}.bkmsa #bk_detail{grid-row:1/3;border-left:1px solid var(--line);padding:10px 12px;overflow:auto;font:12px/1.55 "IBM Plex Mono",monospace;user-select:text;-webkit-user-select:text}.bkmsa #bk_detail h3{font:600 12px "IBM Plex Sans",sans-serif;margin:0 0 6px;color:var(--muted);display:flex;justify-content:space-between;align-items:center}.bkmsa #bk_detail .k{color:var(--muted)}.bkmsa #bk_detail .h{color:var(--accent);font-weight:500}.bkmsa #bk_detail p{margin:0 0 8px}.bkmsa #bk_detail ul{margin:0 0 8px;padding-left:16px}.bkmsa #bk_detail li{margin:0}.bkmsa #bk_body{grid-column:1/4;display:grid;grid-template-columns:var(--treew,130px) 176px minmax(0,1fr);overflow-y:auto;overflow-x:auto;min-height:0}.bkmsa #bk_treewrap{position:sticky;left:0;z-index:2;background:var(--panel)}.bkmsa #bk_labwrap{border-right:1px solid var(--line);position:sticky;left:var(--treew,130px);z-index:2;background:var(--panel)}.bkmsa .lab{position:absolute;left:0;right:0;height:30px;display:flex;align-items:center;padding:0 8px;font:11px "IBM Plex Mono",monospace;white-space:nowrap;overflow:hidden;\n  user-select:text;-webkit-user-select:text;border-bottom:1px solid var(--line2)}.bkmsa .lab.ref{background:var(--ref);color:var(--reflab)}.bkmsa .lab.hov{background:var(--hover)}.bkmsa .lab small{color:var(--muted);margin-left:6px;font-size:10px}.bkmsa #bk_gridwrap{position:relative}.bkmsa canvas{display:block}.bkmsa .sw{display:inline-block;width:9px;height:9px;border-radius:2px;vertical-align:-1px;margin-right:4px}.bkmsa #bk_copybtn{font-size:11px;padding:1px 7px}.bkmsa .hapdot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;vertical-align:-1px;flex:none}\n@media (max-width:900px){.bkmain{grid-template-columns:0 120px 1fr 0}.bkmsa #bk_body{grid-template-columns:0 120px 1fr}.bkmsa #bk_detail{display:none}}\n';
 export interface BlockRef { win: number; level: number; W: number; rank: number; name: string; ref_contig: number; x: number; span: number; tbp: number; nhap: number; label: string }
 export interface GeneLite { name: string; start: number; end: number; strand?: string }
@@ -58,7 +58,7 @@ function levelDensRef(){ if (_densRef.has(st.li)) return _densRef.get(st.li); co
 function fmtbp(x){ if (x>=1e6) return (x/1e6).toFixed(x>=1e7?1:2)+' Mb'; if (x>=1e3) return (x/1e3).toFixed(x>=1e5?0:1)+' kb'; return x+' bp'; }
 const esc = s => String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
-const st = { drilling:false, links:'off', anc:true, hoverRank:null, filter:null, filterPath:[], sync:true, onlySel:false, hapMarks:new Map(), genes:new Map(), colorBy:'order', win: 0, li: 0, mode:'msa', axis:'cons', order:'tree', origin:null, sel:null, hover:null, pinned:false, showMinor:true, bundle:true, showLinks:false, measure:'minor', norm:'abs'};
+const st = { drilling:false, anc:true, anc2:true, rangeSel:null, hoverRank:null, filter:null, filterPath:[], sync:true, onlySel:false, hapMarks:new Map(), genes:new Map(), colorBy:'order', win: 0, li: 0, mode:'msa', axis:'cons', order:'tree', origin:null, sel:null, hover:null, pinned:false, showMinor:true, bundle:true, showLinks:false, measure:'minor', norm:'abs'};
 if (st.li<0) st.li=0;
 st.li = Math.max(0, win().levels.length-1);   // 既定は最も粗い段
 const cv = {hdr:$('hdr'), grid:$('grid')};
@@ -237,103 +237,10 @@ function computeLayout(){
         else if (DATA.meta.circular || (b>rmin && b<rmax)) P.abs++; } }
     for (const [b,P] of prof){ const d = P.div.slice().sort((a,b)=>a-b); P.divmed = d.length ? d[Math.floor(d.length/2)] : null; }
   }
-  // 隣り合う行の同じブロックを結ぶ線（Mauve 風）。揃っていれば短い縦線、ずれていれば斜線になる。行の高さは変えず、
-  // 上段の下端 → 下段の空き → 次の行の上余白 → 次の行の上段の上端、と通す（相手が下段ならその上端まで）
-  const links = []; const laneOfP = p => (st.mode==='own') ? 0 : p.slot.lane;
-  for (let i=0; i+1<rows.length; i++){
-    const A = rows[i].items.filter(p=>p.o.kind<4), B = rows[i+1].items.filter(p=>p.o.kind<4);
-    if (!A.length || !B.length) continue;
-    const byR = new Map(); for (const p of B){ if (!byR.has(p.o.rank)) byR.set(p.o.rank, []); byR.get(p.o.rank).push(p); }
-    for (const p of A){ const cands = byR.get(p.o.rank); if (!cands) continue;
-      const cx0 = p.x + p.w/2; let q = cands[0]; for (const c of cands){ if (Math.abs(c.x+c.w/2-cx0) < Math.abs(q.x+q.w/2-cx0)) q = c; }
-      const cx1 = q.x + q.w/2; const l0 = laneOfP(p), l1 = laneOfP(q);
-      // 「ずれ」= 段が違う・種類（主鎖/変位/逆位）が違う・横の範囲が重ならない。同じ列を再訪で等分しただけの中心のずれは数えない
-      const overlap = p.x < q.x + q.w && q.x < p.x + p.w;
-      links.push({rank:p.o.rank, x0:cx0, y0:i*RH + (l0===0?16:26), x1:cx1, y1:(i+1)*RH + (l1===0?4:17), diff: !overlap || l0!==l1 || p.o.kind!==q.o.kind}); }
-  }
-  // ---- 連なり（seg）単位のリボン。端と端を結ぶ（頭は頭、尾は尾）ので、向きが違えば交差（X）＝逆位が形で分かる。
-  //      揃った対は列の下の長方形（薄い背景）、ずれた対は台形かねじれ。ブロック単位の線はホバー/選択時の強調にだけ使う
-  const ribbons = [];
-  const yBot = (i, lane) => i*RH + ((st.mode==='own' || lane===0) ? 16 : 26), yTop = (i, lane) => i*RH + ((st.mode==='own' || lane===0) ? 4 : 17);
-  for (let i=0; i+1<rows.length; i++){
-    const A = rows[i], B = rows[i+1];
-    const byRank = r => { const m = new Map(); for (const p of r.items){ if (p.o.kind>=4) continue; if (!m.has(p.o.rank)) m.set(p.o.rank, []); m.get(p.o.rank).push(p); } return m; };
-    const mA = byRank(A), mB = byRank(B); const seen = new Set();
-    for (const [src, mDst, srcIsUpper] of [[A, mB, true], [B, mA, false]]){
-      for (const sg of (src.segs||[])){ if (sg.kind>=4 || !sg.items.length) continue;
-        const ranks = sg.items.map(p=>p.o.rank); const key = ranks.slice().sort((a,b)=>a-b).join(','); if (seen.has(key)) continue;
-        const matched = []; for (const rk of ranks){ const c = mDst.get(rk); if (c) matched.push(...c); }
-        if (!matched.length) continue;
-        // 相手側の範囲は「同じ合意範囲」に限る（合意座標モードで ext がある片）。2 片に分かれたブロックの片を、相手の
-        // ブロック全体に結ぶと、片の境界から相手の両端へ斜線が出る（GCF_002202175 #4）。片の合意範囲 ∩ 相手の合意範囲を
-        // 相手の矢印の中の位置に写す。合意範囲が重ならなければ（相手にその部分が無い）結ばない
-        const segExt = new Map(); for (const q of sg.items) if (q.ext) segExt.set(q.o.rank, q.ext);
-        let mx0 = Infinity, mx1 = -Infinity;
-        for (const q of matched){ const se = segExt.get(q.o.rank);
-          if (se && q.ext && q.ext[1] > q.ext[0]){ const i0 = Math.max(se[0], q.ext[0]), i1 = Math.min(se[1], q.ext[1]); if (i1 <= i0) continue;
-            const f = q.w / (q.ext[1] - q.ext[0]); mx0 = Math.min(mx0, q.x + (i0 - q.ext[0])*f); mx1 = Math.max(mx1, q.x + (i1 - q.ext[0])*f); }
-          else { mx0 = Math.min(mx0, q.x); mx1 = Math.max(mx1, q.x + q.w); } }
-        if (!(mx1 > mx0)) continue; seen.add(key);
-        const mdir = (matched.filter(p=>p.o.dir===1).length*2 >= matched.length) ? 1 : 0;
-        const mlane = (st.mode==='own') ? 0 : ((matched.filter(p=>p.slot.lane===0).length*2 >= matched.length) ? 0 : 1);
-        const slane = (st.mode==='own') ? 0 : sg.lane;
-        const U = srcIsUpper ? {x0:sg.x0, x1:sg.x1, dir:sg.dir, lane:slane} : {x0:mx0, x1:mx1, dir:mdir, lane:mlane};
-        const Lw = srcIsUpper ? {x0:mx0, x1:mx1, dir:mdir, lane:mlane} : {x0:sg.x0, x1:sg.x1, dir:sg.dir, lane:slane};
-        const inv = U.dir !== Lw.dir;
-        const diff = inv || U.lane !== Lw.lane || Math.abs(U.x0 - Lw.x0) > 3 || Math.abs(U.x1 - Lw.x1) > 3;
-        ribbons.push({ ranks, rank0: ranks[Math.floor(ranks.length/2)], ux0:U.x0, ux1:U.x1, lx0:Lw.x0, lx1:Lw.x1, y0: yBot(i, U.lane), y1: yTop(i+1, Lw.lane), inv, diff, n: ranks.length }); }
-    }
-  }
-  // ---- 粗い段のサブブロック線: 粗いブロックの中での最細段ブロックの位置を、各行のインスタンスの bp 位置から求めて隣の行と結ぶ。
-  //      最細段は窓全体で計算済みなので追加計算なし（最細段を見ているときは無い）。交差＝ブロック内部の逆位・並び替え
-  const sub = [];
-  if (st.li > 0){
-    const L0 = win().levels[0]; const fineOf = new Map();
-    for (const hp of L0.haps) for (const c of hp.contigs) fineOf.set(hp.hap + '\u0001' + c.path, c.inst.filter(x=>x[5]<4));
-    // 最細インスタンスの位置 rel はコンティグの座標（トークン順）で測る。矢印の左端がトークンの小さい側なのは '+' 鎖の
-    // コンティグで、'-' 鎖のコンティグは表示で反転しているので左右を入れ替える（矢印の向き dir ではなく鎖で決まる）。
-    // 向きも同様に、'-' 鎖のコンティグでは表示上の向き = 1 − 生の向き。★ここを dir で反転していたため、逆鎖の株と順鎖の株の間で
-    // 線が全部左右を結び、逆位に見えていた（ecoli GCF_014170615（−鎖）と GCF_016944755（+鎖））
-    // 粗いインスタンス p の中の最細インスタンスの表示範囲 [x0,x1]（鎖で左右反転）と表示上の向き。
-    // 合意座標モードでは、最細ブロックの位置を members の合意上の並び（典型長の累積）で置く＝どの行でも同じ列位置になり、
-    // 内部の逆位だけが交差（X）として残る。各行の並びモードでは、その株の bp 上の位置（＝ntSynt 風に長さの差が見える）
-    const memberOff = new Map();
-    if (st.mode!=='own'){ const L = level(); const L0 = win().levels[0];
-      for (let g=0; g<L.nblocks; g++){ const mem = membersOf(L, g); const tot = mem.reduce((a,m)=>a+Math.max(1, L0.blocks[m].tbp), 0); let acc = 0;
-        for (const m of mem){ const w = Math.max(1, L0.blocks[m].tbp)/tot; memberOff.set(g+':'+m, [acc, acc+w]); acc += w; } } }
-    const posMap = (r, p) => { const out = new Map(); const it = p.o.it; const fl = fineOf.get(r.hap + '\u0001' + p.ct.c.path) || []; const flip = p.ct.c.strand === '-';
-      for (const f of fl){ if (f[8] < it[8] || f[9] > it[9]) continue; if (out.has(f[0])) continue;
-        let r0, r1;
-        if (st.mode!=='own'){ const mo = memberOff.get(p.o.rank+':'+f[0]); if (!mo) continue; const col = p.col || {x:p.x, w:p.w}; out.set(f[0], {x0: col.x + mo[0]*col.w, x1: col.x + mo[1]*col.w, dir: flip ? 1 - f[1] : f[1]}); continue; }
-        r0 = Math.max(0, Math.min(1, (f[6] - it[6]) / Math.max(1, it[2]))); r1 = Math.max(r0, Math.min(1, (f[6] + f[2] - it[6]) / Math.max(1, it[2])));
-        const a = flip ? p.x + p.w - r1*p.w : p.x + r0*p.w, b = flip ? p.x + p.w - r0*p.w : p.x + r1*p.w;
-        out.set(f[0], {x0: a, x1: Math.max(a+1, b), dir: flip ? 1 - f[1] : f[1]}); }
-      return out; };
-    for (let i=0; i+1<rows.length; i++){
-      const A = rows[i], B = rows[i+1]; const firstBy = r => { const m = new Map(); for (const p of r.items){ if (p.o.kind<4 && !m.has(p.o.rank)) m.set(p.o.rank, p); } return m; };
-      const fA = firstBy(A), fB = firstBy(B);
-      for (const [rk, pa] of fA){ const pb = fB.get(rk); if (!pb) continue; const ma = posMap(A, pa), mb = posMap(B, pb); if (ma.size < 2 && mb.size < 2) continue;
-        const la = (st.mode==='own') ? 0 : pa.slot.lane, lb = (st.mode==='own') ? 0 : pb.slot.lane;
-        const cur = [];
-        for (const [rf, a] of ma){ const b = mb.get(rf); if (!b) continue; cur.push({ rf, ux0:a.x0, ux1:a.x1, lx0:b.x0, lx1:b.x1, y0:yBot(i, la), y1:yTop(i+1, lb), inv: a.dir !== b.dir, diff:false }); }
-        // 「ずれ」＝並びが変わっているもの（上の中心の順に並べたとき下の中心が単調でない＝交差する）と逆位。
-        // 内容の長さの違いでまとめて寄るだけの平行なものは、順序の情報が無いので既定では描かない
-        cur.sort((u,v)=>(u.ux0+u.ux1)-(v.ux0+v.ux1)); const n = cur.length; const best = new Array(n).fill(1), prev = new Array(n).fill(-1); let bi = 0;
-        for (let k=0;k<n;k++){ for (let j=0;j<k;j++){ if (cur[j].lx0+cur[j].lx1 <= cur[k].lx0+cur[k].lx1 && best[j]+1 > best[k]){ best[k] = best[j]+1; prev[k] = j; } } if (best[k] > best[bi]) bi = k; }
-        const mono = new Set(); for (let k=bi; k>=0; k=prev[k]) mono.add(k);
-        // 連続する逆位のサブブロックは 1 枚のリボン（X 1 つ）にまとめる。逆位 1 回で最細ブロックが 3 つ反転しても X が 3 つ並ばない。
-        // 単調に揃った非逆位の連続も 1 枚に（静かな帯）。順序が変わるもの（交差）は個別に残す
-        let k = 0; while (k < n){ const base = cur[k]; const isMono = mono.has(k); let j = k+1;
-          if (base.inv || isMono){ while (j < n && cur[j].inv === base.inv && (base.inv || mono.has(j))) j++; }
-          if (j - k > 1){ const grp = cur.slice(k, j); sub.push({ rf: grp[0].rf, n: grp.length, ux0: Math.min(...grp.map(x=>x.ux0)), ux1: Math.max(...grp.map(x=>x.ux1)), lx0: Math.min(...grp.map(x=>x.lx0)), lx1: Math.max(...grp.map(x=>x.lx1)), y0: base.y0, y1: base.y1, inv: base.inv, diff: base.inv }); }
-          else { base.diff = base.inv || !isMono; base.n = 1; sub.push(base); }
-          k = j; } }
-    }
-  }
   let maxRight = W;
   for (const r of rows){ for (const p of r.items) maxRight = Math.max(maxRight, p.x + p.w); for (const b of (r.bundles||[])) maxRight = Math.max(maxRight, b.x + b.w); }
   const fullW = Math.ceil(maxRight) + 8;            // はみ出した分だけキャンバスを広げる（列の配置は W のまま）
-  LY = {rows, vis, cols, blockX, s, W, n, prof, links, ribbons, sub, fullW};
+  LY = {rows, vis, cols, blockX, s, W, n, prof, fullW};
 }
 // 遺伝子: ブロックの参照区間 [x, x+span] に重なる遺伝子（コンティグ別・start 昇順の配列を二分探索）
 function genesOf(B){ const gs = st.genes.get(B.ref_contig!=null ? B.ref_contig : 0); if (!gs || !gs.length) return [];
@@ -383,9 +290,13 @@ function profileArrow(g, p, o, yy, hh, col, cons, hapIdx){
   const inner = Math.max(1, p.w-2); const nbins = Math.max(2, Math.min(255, Math.floor(inner/2))); const h = profileHeights(o, cons, nbins, hapIdx, p.ext, p.ct && p.ct.c && p.ct.c.strand === '-');
   const hd = Math.min(7, Math.max(3, p.w*0.35));                   // 先端の長さ
   g.save(); arrowPath(g, p.x, yy, p.w, hh, o.dir); g.clip();
-  if (!h){ g.fillStyle = col; g.fillRect(p.x, yy, p.w, hh); }
-  else { g.fillStyle = TH.panel; g.fillRect(p.x, yy, p.w, hh); g.fillStyle = col; const bw = inner/nbins;
-    for (let i=0;i<nbins;i++){ const hp = Math.max(1, Math.round(h[i]*(hh-1))); g.fillRect(p.x+1+i*bw, yy+hh-hp, bw+0.6, hp); } }
+  // 軽い矢印: 上辺の細い帯（ブロック色）と先端だけを濃く、その下は保存度のプロファイルを薄く塗る（対応線と競合しない）
+  g.fillStyle = TH.panel; g.fillRect(p.x, yy, p.w, hh);
+  g.fillStyle = col; g.fillRect(p.x, yy, p.w, 2.5);
+  g.globalAlpha = .5; const bw = inner/nbins;
+  if (!h){ g.fillRect(p.x, yy+2.5, p.w, hh-2.5); }
+  else { for (let i=0;i<nbins;i++){ const hp = Math.max(1, Math.round(h[i]*(hh-3))); g.fillRect(p.x+1+i*bw, yy+hh-hp, bw+0.6, hp); } }
+  g.globalAlpha = 1;
   // 先端（向き）は中身が白でも必ず塗る。逆位（左向き）が矢印の形で読めるように、少し濃い色で
   g.fillStyle = shade(col, 0.72); g.beginPath();
   if (o.dir){ g.moveTo(p.x+p.w-hd, yy); g.lineTo(p.x+p.w, yy+hh/2); g.lineTo(p.x+p.w-hd, yy+hh); } else { g.moveTo(p.x+hd, yy); g.lineTo(p.x, yy+hh/2); g.lineTo(p.x+hd, yy+hh); }
@@ -405,53 +316,43 @@ function arrow(g, x, y, w, h, dir, color, hatch, dotted){
 function b64u(s_, T){ const b = atob(s_); const u8 = new Uint8Array(b.length); for (let i=0;i<b.length;i++) u8[i]=b.charCodeAt(i); return new T(u8.buffer); }
 function anchorsOf(w){ if (!w.anchors) return null; if (w._anc) return w._anc; const a = w.anchors; const rows = new Map();
   for (const [path, r] of Object.entries(a.rows)) rows.set(path, { i: b64u(r.i, Uint16Array), tok: b64u(r.tok, Uint32Array), bp: b64u(r.bp, Uint32Array), ori: b64u(r.ori, Uint8Array) });
-  w._anc = { m: a.m, x: a.x, rows }; return w._anc; }
-// 行 r の各標本錨の表示位置。cons: 錨の合意座標をブロックの合意範囲に写す（列の中の位置）。own: その株の bp 位置（鎖で反転）
-function anchorXs(r, anc, cons){ const L = level(); const xs = new Float32Array(anc.m).fill(NaN), ys = new Int8Array(anc.m), ors = new Int8Array(anc.m);
-  for (const ct of r.contigs){ const A = anc.rows.get(ct.c.path); if (!A) continue; const items = r.items.filter(q=>q.ct===ct && q.o.kind<4 && q.x!=null).sort((u,v)=>u.o.it[8]-v.o.it[8]); if (!items.length) continue;   // 配置済みの項目（x を持つ）
-    const flip = ct.c.strand === '-'; const starts = items.map(q=>q.o.it[8]);
-    for (let k=0;k<A.i.length;k++){ const tok = A.tok[k]; let lo = 0, hi = starts.length; while (lo < hi){ const m = (lo+hi)>>1; if (starts[m] <= tok) lo = m+1; else hi = m; } const p = items[lo-1]; if (!p || tok >= p.o.it[9]) continue;
-      const i = A.i[k]; let x;
-      if (cons){ const B = L.blocks[p.o.rank]; const c = Math.max(0, Math.min(1, (anc.x[i] - B.x) / Math.max(1, B.span))); x = xInInstance(p, c); }
-      else { const it = p.o.it; let rel = Math.max(0, Math.min(1, (A.bp[k] - it[6]) / Math.max(1, it[2]))); if (flip) rel = 1 - rel; x = p.x + rel*p.w; }
-      if (isNaN(xs[i])){ xs[i] = x; ys[i] = (st.mode==='own') ? 0 : p.slot.lane; ors[i] = flip ? 1 - A.ori[k] : A.ori[k]; } } }
-  return { xs, ys, ors }; }
+  const rows2 = new Map(); for (const [path, r] of Object.entries(a.rows2 || {})) rows2.set(path, { i: b64u(r.i, Uint16Array), tok: b64u(r.tok, Uint32Array), bp: b64u(r.bp, Uint32Array), ori: b64u(r.ori, Uint8Array) });
+  w._anc = { m: a.m, x: a.x, rows, m2: a.m2 || 0, x2: a.x2 || [], rows2 }; return w._anc; }
+// インスタンスの中の合意座標 c(0..1) → 表示 x。逆位（dir=0）のインスタンスは中身を鏡像にする（その株の配列は右から左に進む＝
+// 隣の行の同じブロックと線が交差する。Mauve の下段 LCB と同じ読み方）。片（ext）や下段（幅が任意）にも対応
 function xInInstance(p, c){ const inv = p.o.dir === 0; const cc = Math.max(0, Math.min(1, inv ? 1 - c : c));
   if (p.col) return p.col.x + cc*p.col.w;
   if (p.ext && p.ext[1] > p.ext[0]){ let e0 = p.ext[0], e1 = p.ext[1]; if (inv){ const t = e0; e0 = 255 - e1; e1 = 255 - t; } return p.x + Math.max(0, Math.min(1, (cc*255 - e0)/(e1 - e0)))*p.w; }
   return p.x + cc*p.w; }
-function linksMode(){ return st.links==='auto' ? (st.mode==='own' ? 'all' : 'diff') : st.links; }
-function linksShown(){ const m = linksMode(); if (m==='off' || !LY || !LY.ribbons) return []; return m==='all' ? LY.ribbons : LY.ribbons.filter(l=>l.diff); }
-function subShown(){ const m = linksMode(); if (m==='off' || !LY || !LY.sub) return []; return m==='all' ? LY.sub : LY.sub.filter(l=>l.diff); }
-function colorOfFine(rf){ const L0 = win().levels[0]; const n0 = L0.nblocks; const o0 = L0.origin!=null ? L0.origin : 0; const pos = (DATA.meta.circular && st.win===0) ? (((rf - o0) % n0) + n0) % n0 : rf; return ramp(n0<=1?0.5:pos/(n0-1)); }
+// 行 r の各標本錨の表示 x。cons: 錨の合意座標をブロックの合意範囲に写す（逆位のインスタンスは鏡像）。own: その株の bp 位置（鎖で反転）
+function anchorSetXs(r, rows, xarr, m, cons){ const L = level(); const xs = new Float32Array(m).fill(NaN), ys = new Int8Array(m), ors = new Int8Array(m);
+  for (const ct of r.contigs){ const A = rows.get(ct.c.path); if (!A) continue; const items = r.items.filter(q=>q.ct===ct && q.o.kind<4 && q.x!=null).sort((u,v)=>u.o.it[8]-v.o.it[8]); if (!items.length) continue;
+    const flip = ct.c.strand === '-'; const starts = items.map(q=>q.o.it[8]);
+    for (let k=0;k<A.i.length;k++){ const tok = A.tok[k]; let lo = 0, hi = starts.length; while (lo < hi){ const mid = (lo+hi)>>1; if (starts[mid] <= tok) lo = mid+1; else hi = mid; } const p = items[lo-1]; if (!p || tok >= p.o.it[9]) continue;
+      const i = A.i[k]; let x;
+      if (cons){ const B = L.blocks[p.o.rank]; const c = Math.max(0, Math.min(1, (xarr[i] - B.x) / Math.max(1, B.span))); x = xInInstance(p, c); }
+      else { const it = p.o.it; let rel = Math.max(0, Math.min(1, (A.bp[k] - it[6]) / Math.max(1, it[2]))); if (flip) rel = 1 - rel; x = p.x + rel*p.w; }
+      if (isNaN(xs[i])){ xs[i] = x; ys[i] = (st.mode==='own') ? 0 : p.slot.lane; ors[i] = flip ? 1 - A.ori[k] : A.ori[k]; } } }
+  return { xs, ys, ors }; }
+// 線の色は合意座標の位置。環状で全体窓なら原点のブロックから数える（ブロックの色と同じ回転）
+function ancHue(anc){ const L0 = win().levels[0]; let k0 = 0;
+  if (DATA.meta.circular && st.win===0 && L0.origin!=null && L0.blocks[L0.origin]){ const x0 = L0.blocks[L0.origin].x; k0 = anc.x.findIndex(v=>v>=x0); if (k0<0) k0 = 0; }
+  const m = anc.m; return (k)=>ramp(((k - k0 + m) % m) / Math.max(1, m-1)); }
 function drawAnchorLinks(g){ const anc = anchorsOf(win()); if (!st.anc || !anc || !LY) return 0; const cons = st.mode!=='own'; const rows = LY.rows; let n = 0;
-  if (!LY._ancXs) LY._ancXs = rows.map(r => anchorXs(r, anc, cons));
+  if (!LY._ancXs) LY._ancXs = rows.map(r => anchorSetXs(r, anc.rows, anc.x, anc.m, cons));
+  if (st.anc2 && anc.m2 && !LY._anc2Xs) LY._anc2Xs = rows.map(r => anchorSetXs(r, anc.rows2, anc.x2, anc.m2, cons));
   const yB = (i, lane) => i*RH + ((st.mode==='own' || lane===0) ? 16 : 26), yT = (i, lane) => i*RH + ((st.mode==='own' || lane===0) ? 4 : 17);
-  const emph = st.sel!=null ? st.sel : st.hoverRank; const L = level();
+  const emph = st.sel!=null ? st.sel : st.hoverRank; const hue = ancHue(anc);
+  // 第二錨の色: その合意座標に最も近い第一錨の番号の色（同じ色相の帯）
+  const hue2 = (k2)=>{ const x = anc.x2[k2]; let lo = 0, hi = anc.x.length; while (lo < hi){ const mid = (lo+hi)>>1; if (anc.x[mid] < x) lo = mid+1; else hi = mid; } return hue(Math.min(anc.m-1, lo)); };
   g.lineWidth = 1;
+  if (st.anc2 && LY._anc2Xs){ for (let i=0;i+1<rows.length;i++){ const A = LY._anc2Xs[i], B = LY._anc2Xs[i+1];
+    for (let k=0;k<anc.m2;k++){ const xa = A.xs[k], xb = B.xs[k]; if (isNaN(xa) || isNaN(xb)) continue; g.strokeStyle = hue2(k); g.globalAlpha = emph!=null ? .06 : .13; g.beginPath(); g.moveTo(xa, yB(i, A.ys[k])); g.lineTo(xb, yT(i+1, B.ys[k])); g.stroke(); n++; } } }
   for (let i=0;i+1<rows.length;i++){ const A = LY._ancXs[i], B = LY._ancXs[i+1];
     for (let k=0;k<anc.m;k++){ const xa = A.xs[k], xb = B.xs[k]; if (isNaN(xa) || isNaN(xb)) continue;
-      g.strokeStyle = ramp(k/Math.max(1, anc.m-1)); g.globalAlpha = emph!=null ? .12 : .3;
-      g.beginPath(); g.moveTo(xa, yB(i, A.ys[k])); g.lineTo(xb, yT(i+1, B.ys[k])); g.stroke(); n++; } }
+      g.strokeStyle = hue(k); g.globalAlpha = emph!=null ? .12 : .3; g.beginPath(); g.moveTo(xa, yB(i, A.ys[k])); g.lineTo(xb, yT(i+1, B.ys[k])); g.stroke(); n++; } }
   g.globalAlpha = 1; return n; }
-function drawLinks(g){
-  drawAnchorLinks(g);
-  const emph = st.sel!=null ? st.sel : st.hoverRank;          // 選択/ホバー中のブロック
-  // (1) 連なりのリボン。端と端を結ぶ。逆位は交差（X）
-  for (const R of linksShown()){ const on = emph!=null && R.ranks.includes(emph); const col = colorOf(R.rank0);
-    const a0 = R.inv ? R.lx1 : R.lx0, a1 = R.inv ? R.lx0 : R.lx1;            // 上の左端 → 下の（逆位なら右端）
-    g.beginPath(); g.moveTo(R.ux0, R.y0); g.lineTo(R.ux1, R.y0); g.lineTo(a1, R.y1); g.lineTo(a0, R.y1); g.closePath();
-    g.fillStyle = col; g.globalAlpha = emph==null ? (R.diff ? (R.inv ? .28 : .20) : .07) : (on ? .40 : .04); g.fill();
-    g.strokeStyle = col; g.lineWidth = on ? 1.8 : 1; g.globalAlpha = emph==null ? (R.diff ? .7 : .25) : (on ? .95 : .08);
-    g.beginPath(); g.moveTo(R.ux0, R.y0); g.lineTo(a0, R.y1); g.moveTo(R.ux1, R.y0); g.lineTo(a1, R.y1); g.stroke(); }
-  // (2) 粗い段のサブブロック（最細ブロック）のリボン。範囲つきなので、どのサブブロックの対応かが分かる。逆位は端が入れ替わって交差
-  for (const S of subShown()){ const col = colorOfFine(S.rf); const a0 = S.inv ? S.lx1 : S.lx0, a1 = S.inv ? S.lx0 : S.lx1;
-    g.beginPath(); g.moveTo(S.ux0, S.y0); g.lineTo(S.ux1, S.y0); g.lineTo(a1, S.y1); g.lineTo(a0, S.y1); g.closePath();
-    g.fillStyle = col; g.globalAlpha = emph==null ? (S.inv ? .32 : .22) : .08; g.fill();
-    g.strokeStyle = shade(col, 0.7); g.lineWidth = .8; g.globalAlpha = emph==null ? (S.inv ? .85 : .55) : .15; g.beginPath(); g.moveTo(S.ux0, S.y0); g.lineTo(a0, S.y1); g.moveTo(S.ux1, S.y0); g.lineTo(a1, S.y1); g.stroke(); }
-  // (3) 強調中のブロックは、ブロック単位の中心線も重ねる（どこへ移ったかを追う）
-  if (emph!=null && LY.links){ for (const L of LY.links){ if (L.rank!==emph) continue; g.strokeStyle = colorOf(L.rank); g.globalAlpha = .95; g.lineWidth = 2; g.beginPath(); g.moveTo(L.x0, L.y0); g.lineTo(L.x1, L.y1); g.stroke(); } }
-  g.globalAlpha = 1; }
+function drawLinks(g){ drawAnchorLinks(g); }
 function drawGrid(){
   const g = cv.grid.getContext('2d'); const W = cv.grid.clientWidth, H = cv.grid.clientHeight; g.clearRect(0,0,W,H);
   if (st.sel!=null && LY.blockX.has(st.sel)){ const c = LY.blockX.get(st.sel); g.fillStyle = TH.selbg; g.fillRect(c.x, 0, c.w, H); }
@@ -518,6 +419,7 @@ function drawHeader(){
       for (const gn of gs){ const x0 = c.x + Math.max(0, (gn.start - B.x)) * sc, x1 = c.x + Math.min(B.span, (gn.end - B.x)) * sc; const w = Math.max(1, x1 - x0);
         g.fillStyle = gn.strand==='-' ? '#d98200' : '#0d9488'; g.globalAlpha = .75; g.fillRect(x0, gn.strand==='-' ? 19 : 14, w, 4); g.globalAlpha = 1; }
       if (c.w >= 60 && gs.length <= 3){ g.fillStyle = TH.muted; g.font = '9px "IBM Plex Sans"'; g.textAlign = 'center'; g.textBaseline = 'alphabetic'; g.fillText(gs.map(x=>x.name).join(' '), c.x + c.w/2, 25 + 6); g.font='10px "IBM Plex Mono"'; } } }
+  if (st.rangeSel){ g.fillStyle = TH.selbg; g.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], H); g.strokeStyle = TH.sel; g.strokeRect(st.rangeSel[0]+.5, .5, st.rangeSel[1]-st.rangeSel[0]-1, H-1); }
   if (DATA.meta.circular && st.win===0){ g.fillStyle = TH.accent; g.fillRect(3, 0, 2, H); }
 }
 function drawLabels(){
@@ -550,7 +452,7 @@ function drawTree(){
   svg.querySelectorAll('.ev, .br').forEach(el=>{ el.style.cursor='pointer'; el.addEventListener('mousemove', e=>{ if (st.pinned) return; showBranch(+el.getAttribute('data-node')); }); el.addEventListener('click', e=>{ st.pinned = true; showBranch(+el.getAttribute('data-node')); }); });
 }
 function drawChips(){ const L = level(); let inv=0, disp=0, rep=0, small=0; for (const r of LY.rows) for (const p of r.items){ const k=p.o.kind; if (k===3) inv++; else if (k===2) disp++; else if (k===4) rep++; else if (k===5) small++; }
-  $('chips').innerHTML = `<span class="chip">窓 <b>${st.win===0?"全体":esc(win().label)}</b>${(level().mode==='bins')?' · <b>座標分割</b>（再編成なし・等分）':''} · ${level().mode==='bins'?'錨':'原子区間'} ${win().atoms.toLocaleString()} · 深さ ${win().depth}${win().ondemand?` · <b>逐次計算</b>${win().ms?' '+win().ms+' ms':''}`:''}</span><span class="chip">${L.mode==='bins'?'ビン幅':'段の幅'} <b>${fmtbp(L.W)}</b></span><span class="chip">ブロック <b>${LY.vis.length}</b></span><span class="chip">行 <b>${LY.rows.length}</b></span><span class="chip">逆位 <b>${inv}</b> 変位 <b>${disp}</b> 小群 ${small}</span><span class="chip">${L.members?`最細段の併合 <b>${L.merges||0}</b> 回`:`併合の上限 <b>${L.mergecap||0}</b> 株`}${L.nonmono?` · 内部順序ずれ ${L.nonmono}`:''}</span>${st.filter?`<span class="chip">絞り込み <b>${st.filter.size}</b> / ${win().levels[0].nblocks}</span>`:''}${st.anc && anchorsOf(win())?`<span class="chip">錨の対応線 <b>${anchorsOf(win()).m}</b> 本/行</span>`:''}${linksMode()!=='off'?`<span class="chip">連結 <b>${linksShown().length}</b> 連なり${linksShown().filter(r=>r.inv).length?` · 逆位 ${linksShown().filter(r=>r.inv).length}`:''}${st.li>0?` · サブブロック線 ${subShown().length}`:''}${linksMode()==='diff'?'（ずれのみ）':''}</span>`:''}`;
+  $('chips').innerHTML = `<span class="chip">窓 <b>${st.win===0?"全体":esc(win().label)}</b>${(level().mode==='bins')?' · <b>座標分割</b>（再編成なし・等分）':''} · ${level().mode==='bins'?'錨':'原子区間'} ${win().atoms.toLocaleString()} · 深さ ${win().depth}${win().ondemand?` · <b>逐次計算</b>${win().ms?' '+win().ms+' ms':''}`:''}</span><span class="chip">${L.mode==='bins'?'ビン幅':'段の幅'} <b>${fmtbp(L.W)}</b></span><span class="chip">ブロック <b>${LY.vis.length}</b></span><span class="chip">行 <b>${LY.rows.length}</b></span><span class="chip">逆位 <b>${inv}</b> 変位 <b>${disp}</b> 小群 ${small}</span><span class="chip">${L.members?`最細段の併合 <b>${L.merges||0}</b> 回`:`併合の上限 <b>${L.mergecap||0}</b> 株`}${L.nonmono?` · 内部順序ずれ ${L.nonmono}`:''}</span>${st.filter?`<span class="chip">絞り込み <b>${st.filter.size}</b> / ${win().levels[0].nblocks}</span>`:''}${st.anc && anchorsOf(win())?`<span class="chip">錨の対応線 <b>${anchorsOf(win()).m}</b> 本/行${st.anc2 && anchorsOf(win()).m2?` · 第二錨 <b>${anchorsOf(win()).m2}</b>`:''}</span>`:''}`;
   const ld = $('ladder'); ld.innerHTML=''; win().levels.forEach((lv,i)=>{ const b=document.createElement('button'); b.className='mono'; b.textContent=fmtbp(lv.W)+' ('+lv.nblocks+')'; b.setAttribute('aria-pressed', i===st.li?'true':'false'); b.addEventListener('click',()=>{ st.li=i; st.sel=null; st.origin=null; st.pinned=false; drawAll(); emitSel(); }); ld.appendChild(b); });
   $('origingrp').style.display = (DATA.meta.circular && st.win===0) ? '' : 'none';
   $('origintxt').textContent = DATA.meta.circular ? `#${originRank()+1}${st.origin==null?'（自動）':''}` : '';
@@ -590,7 +492,7 @@ function drawLegend(){ const el=$('legend'); el.innerHTML='';
   if (st.genes.size){ const sg=document.createElement('span'); sg.textContent='列見出しの帯＝遺伝子（上＝+鎖 緑、下＝−鎖 橙。位置はブロックの参照区間の中の相対位置）'; el.appendChild(sg); }
   const mname = {minor:'少数派サイト密度（半数未満のハプロだけが持つノードを含む区間 / kb）', priv:'私有サイト密度（この株だけが持つノードを含む区間 / kb）', nonanc:'錨でない bp の割合'}[st.measure];
   const nname = {abs:'層内の百分位で灰色の濃さ（濃い＝多い）', block:'そのブロックの全株の中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）', hap:'その株の全ブロックの中央値との比。青＝少ない、赤＝多い（±4 倍で飽和）'}[st.norm];
-  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の中の塗り＝Mauve 風の類似度プロファイル。高さが保存度（この層の典型密度の 2 倍以上で 0、変異なしで満杯）。尺度が「${mname}」。少数派サイトは位置ごとの山型、他の尺度は一定の高さ。${nname}`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','錨の対応線＝隣り合う行で同じ錨（共有ノード、窓ごとに 800 本を等間隔に標本化）の位置を結ぶ細線。色は合意座標（左→右）。揃っていれば縦の帯、交差＝逆位、扇状に開く・閉じる＝挿入・欠失、長い斜線＝転座。逆位の矢印（←）は中身も鏡像に描く（その株の配列は右から左へ進む）。ブロックの境界に依らない','リボン＝隣り合う行の同じ連なり（続けて通るブロック列）を、端と端（頭は頭・尾は尾）で結ぶ。揃っていれば列の下の薄い長方形、位置が違えば台形、向きが違えば交差（X）＝逆位。粗い段ではブロック内部の最細ブロックも範囲つきの細いリボンで結ぶ（合意座標では内部の逆位だけ交差。各行の並びでは長さの差も見える）。「自動」は合意座標でずれた対だけ、各行の並びで全部。ホバー/選択中のブロックはブロック単位の線も出る','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
+  for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の中の塗り＝Mauve 風の類似度プロファイル。高さが保存度（この層の典型密度の 2 倍以上で 0、変異なしで満杯）。尺度が「${mname}」。少数派サイトは位置ごとの山型、他の尺度は一定の高さ。${nname}`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','錨の対応線＝隣り合う行で同じ錨（80% 以上の株が持つ共有ノード。窓ごとに 800 本を等間隔に標本化）の位置を結ぶ細線。色は合意座標（左→右、環状なら原点から）。揃っていれば縦の帯、交差＝逆位、扇状に開く・閉じる＝挿入・欠失、長い斜線＝転座。第二錨（薄い線）＝コアでないが 2 株以上が持つノードの対応。逆位の矢印（←）は中身も鏡像に描く（その株の配列は右から左へ進む）','ブロック＝範囲（内側へ）・グラフとの接続・行をまたぐ集計の単位。矢印の細い帯と先端が向き、その下の塗りが保存度のプロファイル','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
 
 
 function blockRef(rank){ if (rank==null) return null; const L = level(); const B = L.blocks[rank]; if (!B) return null;
@@ -651,6 +553,31 @@ grid.addEventListener('click', e=>{ if (e.detail && e.detail > 1) return; const 
   else if (h && h.b){ st.sel = (st.sel===h.b.rank) ? null : h.b.rank; st.pinned = st.sel!=null; if (st.sel!=null) showItem(h); drawAll(); emitSel(); }   // 束もブロックの選択として扱う
   else if (h && h.m){ st.pinned = true; showItem(h); }
   else { st.pinned = false; st.sel = null; drawAll(); emitSel(); } });
+// 列見出しをドラッグして合意座標の任意区間を選び、その区間の窓へ（ブロック境界に縛られない「範囲で降りる」）。
+// 各行のトークン範囲は標本錨（第一・第二）のうち区間内にあるものの最小/最大トークンで近似する
+function pxToCons(px){ for (const c of LY.cols){ if (c.type==='block' && px>=c.x && px<=c.x+c.w){ const B = level().blocks[c.rank]; return B.x + (px-c.x)/Math.max(1,c.w)*B.span; } } let best=null; for (const c of LY.cols){ if (c.type!=='block') continue; const d = px < c.x ? c.x-px : px-(c.x+c.w); if (best==null || d<best[0]) best=[d,c]; } if (!best) return null; const c=best[1], B=level().blocks[c.rank]; return px < c.x ? B.x : B.x + B.span; }
+function drillRange(xa, xb){ if (xb <= xa || st.drilling || !(cb && cb.onDrill)) return; const anc = anchorsOf(win()); if (!anc) return; const w = win();
+  const ranges = []; let ntok = 0;
+  for (const r of LY.rows){ for (const ct of r.contigs){ let lo = Infinity, hi = -Infinity;
+    for (const [rowsMap, xarr] of [[anc.rows, anc.x], [anc.rows2, anc.x2]]){ const A = rowsMap.get(ct.c.path); if (!A) continue; for (let k=0;k<A.i.length;k++){ const x = xarr[A.i[k]]; if (x >= xa && x <= xb){ lo = Math.min(lo, A.tok[k]); hi = Math.max(hi, A.tok[k]+1); } } }
+    if (hi > lo){ ranges.push([ct.c.path, lo, hi]); ntok += hi - lo; } } }
+  if (!ranges.length){ $('detailbody').innerHTML = '<p class="k">この区間に錨が無いので窓を作れません（もう少し広く）。</p>'; return; }
+  const label = fmtbp(xa) + '–' + fmtbp(xb); const key = 'r:' + Math.round(xa) + ':' + Math.round(xb);
+  const ch = w.children ? w.children[key] : null; if (ch!=null){ enterWindow(ch); return; }
+  const cols = (xb - xa) / Math.max(1, DATA.meta.bpt || 1);
+  if (cols <= BASE_MAX_LEAVES && cb.onBaseMsa){ cb.onBaseMsa({ ranges, span: xb-xa, afrac: 0, label: winPath().map((p,i)=>i===0?'全体':p.label).join('›') + '›' + label, depth: w.depth+1, parent: st.win, pblock: -1 }); $('detailbody').innerHTML = `<p class="k">区間 ${label} の各行を塩基レベル MSA に渡しました。</p>`; return; }
+  const req = { ranges, span: xb-xa, afrac: (DATA.meta.params && DATA.meta.params.sub_anchor_frac) || 0.5, label, depth: w.depth+1, parent: st.win, pblock: -1 };
+  st.drilling = true; updateButtons(); $('detailbody').innerHTML = `<p class="k">区間 ${label}（${ranges.length} 行）の窓を計算しています…</p>`;
+  cb.onDrill(req).then(r=>{ st.drilling = false;
+    if (!r || r.error || !r.window){ $('detailbody').innerHTML = `<p class="k">逐次計算に失敗: ${esc((r && r.error) || '応答なし')}</p>`; updateButtons(); return; }
+    const nw = r.window; nw.id = WINS.length; nw.parent = st.win; nw.pblock = -1; nw.plevel = st.li; nw.pW = level().W; nw.label = label; nw.children = nw.children || {}; nw.ondemand = true; nw.ms = r.total_ms || r.ms || 0;
+    WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; enterWindow(nw.id);
+  }).catch(e=>{ st.drilling = false; $('detailbody').innerHTML = `<p class="k">逐次計算に失敗: ${esc(String(e))}</p>`; updateButtons(); }); }
+let _hdrDrag = null;
+cv.hdr.addEventListener('mousedown', e=>{ if (e.button!==0) return; const rect = cv.hdr.getBoundingClientRect(); _hdrDrag = { x0: e.clientX-rect.left, moved:false }; });
+window.addEventListener('mousemove', e=>{ if (!_hdrDrag) return; const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; if (Math.abs(x-_hdrDrag.x0) > 3) _hdrDrag.moved = true; st.rangeSel = _hdrDrag.moved ? [Math.min(_hdrDrag.x0, x), Math.max(_hdrDrag.x0, x)] : null; drawHeader(); });
+window.addEventListener('mouseup', e=>{ if (!_hdrDrag) return; const d = _hdrDrag; _hdrDrag = null; if (!d.moved || !st.rangeSel) { st.rangeSel = null; drawHeader(); return; }
+  const [pa, pb] = st.rangeSel; st.rangeSel = null; drawHeader(); const xa = pxToCons(pa), xb = pxToCons(pb); if (xa==null || xb==null) return; drillRange(Math.min(xa,xb), Math.max(xa,xb)); });
 cv.hdr.addEventListener('dblclick', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = c.rank; st.pinned = true; drawAll(); emitSel(); drillInto(c.rank); return; } } });
 cv.hdr.addEventListener('click', e=>{ if (e.detail && e.detail > 1) return; const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = (st.sel===c.rank)?null:c.rank; st.pinned = st.sel!=null; if (st.sel!=null) showBlock(c.rank); drawAll(); emitSel(); return; } } });
 cv.hdr.addEventListener('mousemove', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (x>=c.x && x<=c.x+c.w){ if (!st.pinned) showBlock(c.rank); emitHover(c.rank); if (st.hoverRank!==c.rank){ st.hoverRank=c.rank; drawGrid(); } return; } } emitHover(null); if (st.hoverRank!=null){ st.hoverRank=null; drawGrid(); } });
@@ -696,17 +623,12 @@ $('setorigin').addEventListener('click', ()=>{ if (st.sel==null) return; st.orig
 $('autoorigin').addEventListener('click', ()=>{ st.origin = null; drawAll(); });
 function setMode(m){ st.mode=m; $('m_msa').setAttribute('aria-pressed', m==='msa'); $('m_own').setAttribute('aria-pressed', m==='own'); drawAll(); }
 $('m_msa').addEventListener('click', ()=>setMode('msa')); $('m_own').addEventListener('click', ()=>setMode('own'));
-function setLinks(m){ st.links=m; for (const [id,k] of [['l_auto','auto'],['l_off','off'],['l_diff','diff'],['l_all','all']]) $(id).setAttribute('aria-pressed', k===m ? 'true' : 'false'); drawGrid(); drawChips(); }
-for (const [id,k] of [['l_auto','auto'],['l_off','off'],['l_diff','diff'],['l_all','all']]) $(id).addEventListener('click', ()=>setLinks(k));
-function setAxis(a){ st.axis=a; $('a_cons').setAttribute('aria-pressed', a==='cons'); $('a_ref').setAttribute('aria-pressed', a==='ref'); drawHeader(); }
-$('a_cons').addEventListener('click', ()=>setAxis('cons')); $('a_ref').addEventListener('click', ()=>setAxis('ref'));
-function setColorBy(c){ st.colorBy = c; _gdMax = null; $('c_order').setAttribute('aria-pressed', c==='order'); $('c_genes').setAttribute('aria-pressed', c==='genes'); _lastViewKey=''; drawAll(); }
-$('c_order').addEventListener('click', ()=>setColorBy('order')); $('c_genes').addEventListener('click', ()=>{ if (st.genes.size) setColorBy('genes'); });
 function setOrder(o){ st.order=o; $('o_tree').setAttribute('aria-pressed', o==='tree'); $('o_name').setAttribute('aria-pressed', o==='name'); drawAll(); }
 $('o_tree').addEventListener('click', ()=>setOrder('tree')); $('o_name').addEventListener('click', ()=>setOrder('name'));
  $('bund').addEventListener('change', e=>{ st.bundle=e.target.checked; drawAll(); });
 $('sync').addEventListener('change', e=>{ st.sync=e.target.checked; _lastViewKey=''; emitView(); });
 $('anc').addEventListener('change', e=>{ st.anc=e.target.checked; drawGrid(); drawChips(); drawLegend(); });
+$('anc2').addEventListener('change', e=>{ st.anc2=e.target.checked; drawGrid(); drawChips(); });
 $('onlysel').addEventListener('change', e=>{ st.onlySel=e.target.checked; drawAll(); });
 function setMeasure(m){ st.measure=m; for (const [id,k] of [['v_minor','minor'],['v_priv','priv'],['v_nonanc','nonanc']]) $(id).setAttribute('aria-pressed', k===m); drawGrid(); drawLegend(); }
 function setNorm(n){ st.norm=n; for (const [id,k] of [['n_abs','abs'],['n_block','block'],['n_hap','hap']]) $(id).setAttribute('aria-pressed', k===n); drawGrid(); drawLegend(); }

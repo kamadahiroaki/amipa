@@ -198,7 +198,7 @@ def coarsen(prev, W, at_x0, at_x1):
 
 ANCHOR_SAMPLE = 800     # 行間の対応線に使う錨の標本数（窓ごと）
 
-def sample_anchors(ctx, S, A, colx, nc, M=ANCHOR_SAMPLE):
+def sample_anchors(ctx, S, A, colx, nc, M=ANCHOR_SAMPLE, A2=None):
     """窓の錨（A）を合意順に M 本標本化し、各パスでの位置を返す。画面は隣り合う行の同じ錨を線で結ぶ（ntSynt-viz 風の対応線）。
     返り値: dict(m, x=[錨の合意座標], rows={path: {i: b64 u16 標本番号, tok: b64 u32 トークン index（コンティグ内）,
     bp: b64 u32 累積 bp, ori: b64 u8 向き}})。錨はパスごとに高々 1 回（mv ≤ 1）"""
@@ -214,7 +214,19 @@ def sample_anchors(ctx, S, A, colx, nc, M=ANCHOR_SAMPLE):
         cum = np.concatenate(([0], np.cumsum(bp)))
         rows[ctx.at.p_names[pi]] = dict(i=b64(m[hit].astype(np.uint16)), tok=b64((hit + off).astype(np.uint32)),
                                         bp=b64(cum[hit].astype(np.uint32)), ori=b64(vo[hit].astype(np.uint8)))
-    return dict(m=int(sel.size), x=[int(v) for v in colx[sel]], rows=rows)
+    out = dict(m=int(sel.size), x=[int(v) for v in colx[sel]], rows=rows)
+    if A2 is not None and A2.any():
+        # 第二の錨: コアでないが 2 株以上が持つ一意ノード。隣り合う行が共有するアクセサリ（島・ファージ）の対応を薄い線で見せる
+        an2 = np.flatnonzero(A2); sel2 = an2 if an2.size <= M else an2[np.linspace(0, an2.size - 1, M).astype(np.int64)]
+        idx2 = np.full(nc, -1, np.int64); idx2[sel2] = np.arange(sel2.size); rows2 = {}
+        for (cols_, vo, bp, ns, pi, off) in S:
+            m2 = idx2[cols_]; hit = np.flatnonzero(m2 >= 0)
+            if hit.size == 0: continue
+            cum = np.concatenate(([0], np.cumsum(bp)))
+            rows2[ctx.at.p_names[pi]] = dict(i=b64(m2[hit].astype(np.uint16)), tok=b64((hit + off).astype(np.uint32)),
+                                             bp=b64(cum[hit].astype(np.uint32)), ori=b64(vo[hit].astype(np.uint8)))
+        out["m2"] = int(sel2.size); out["x2"] = [int(v) for v in colx[sel2]]; out["rows2"] = rows2
+    return out
 
 def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=500, varbins=256, record=None, bins=0, tree=None, want_tree=False):
     # varbins: 少数派サイトの位置（通過内 0..varbins-1）。画面は 0..255 で読むので 256。32 だと左 1/8 に寄る（改訂 30）
@@ -242,7 +254,8 @@ def build_window(ctx, ranges, Wlist, anchor_frac, merge_frac_max, minor_floor=50
     nhap_col = nh.sum(0)
     A = (mv <= 1) & inorder & (nhap_col >= anchor_frac * H)
     if int(A.sum()) < 4: A = (mv <= 1) & (nhap_col >= anchor_frac * H)     # 順序パスが通らない窓は条件を外す
-    anchors = None if (record is not None and len(record) == 0) else sample_anchors(ctx, S, A, colx, nc)
+    A2 = (mv <= 1) & inorder & (nhap_col >= 2) & ~A
+    anchors = None if (record is not None and len(record) == 0) else sample_anchors(ctx, S, A, colx, nc, A2=A2)
     seq4 = [(w[0], w[1], w[2], w[3]) for w in S]
     rankA, bk, nA = breakpoints(seq4, A, nc); aid, nat = blocks_from(bk, nA)
     if bins and bins > 0 and nA > 0:
