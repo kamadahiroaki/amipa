@@ -596,7 +596,30 @@ function composeRange(xa, xb, srcs){
     levels: [{ W: Wmin === Infinity ? L0.W : Wmin, nblocks: blocks.length, blocks, haps, mergecap: 0, mode: 'blocks', adj: [], events: {}, origin: 0, merges: 0, members: null, nonmono }],
     children: {}, ondemand: true, composed: true, note: '範囲: ' + srcs.length + ' ブロックの子窓を継ぎ合わせ',
     _anc: { m: ancX.length, x: ancX, rows: toTyped(ancRows), m2: ancX2.length, x2: ancX2, rows2: toTyped(ancRows2) } };
+  for (const target of [30, 12]){ const g = regroupLevel(nw.levels[0], target); if (g && g.nblocks < nw.levels[nw.levels.length-1].nblocks) nw.levels.push(g); }
   return nw; }
+// 最細段 L から、隣接ブロック k|k+1 の境界を「その境界で並びが崩れている株の bp」（支持）が少ない順に併合して target 個の
+// ブロックにした段を作る（構築器の coarsen と同じ考え方を、インスタンスの並びから画面側で）。継ぎ合わせた窓の細分化対策。
+// 座標分割のビンの境界は支持 0 なので真っ先に併合され、再編成の無い区間は 1 ブロックに戻る
+function regroupLevel(L, target){ const nb = L.nblocks; if (nb <= target) return null;
+  const sup = new Float64Array(Math.max(0, nb-1));
+  for (const hp of L.haps){ for (const c of hp.contigs){ const seq = c.inst.filter(x=>x[5]<4).slice().sort((u,v)=>u[8]-v[8]); const has = new Set(seq.map(x=>x[0]));
+      const okAdj = new Set(); for (let i=0;i+1<seq.length;i++){ const a = seq[i], b = seq[i+1]; if (b[0] === a[0]+1 && a[1]===1 && b[1]===1) okAdj.add(a[0]); if (a[0] === b[0]+1 && a[1]===0 && b[1]===0) okAdj.add(b[0]); }
+      for (let k=0;k+1<nb;k++){ if (has.has(k) && has.has(k+1) && !okAdj.has(k)) sup[k] += c.bp; } } }
+  const segs = []; for (let k=0;k<nb;k++) segs.push([k,k]);
+  const spanOf = sg => (L.blocks[sg[1]].x + L.blocks[sg[1]].span) - L.blocks[sg[0]].x;
+  while (segs.length > target){ let bi = -1, bs = Infinity; for (let i=0;i+1<segs.length;i++){ const v = sup[segs[i][1]] + 1e-9*(spanOf(segs[i]) + spanOf(segs[i+1])); if (v < bs){ bs = v; bi = i; } }
+    if (bi < 0) break; segs[bi] = [segs[bi][0], segs[bi+1][1]]; segs.splice(bi+1, 1); }
+  const g_of = new Int32Array(nb); segs.forEach((sg,g)=>{ for (let k=sg[0];k<=sg[1];k++) g_of[k]=g; });
+  const blocks = segs.map(sg => { const B0 = L.blocks[sg[0]], B1 = L.blocks[sg[1]]; const mem = []; for (let k=sg[0];k<=sg[1];k++) mem.push(k);
+    return { c0: B0.c0, c1: B1.c1, span: (B1.x + B1.span) - B0.x, tbp: mem.reduce((a,k)=>a+L.blocks[k].tbp,0), bpmax: mem.reduce((a,k)=>a+L.blocks[k].bpmax,0), nhap: Math.max(...mem.map(k=>L.blocks[k].nhap)), x: B0.x, atoms: mem.reduce((a,k)=>a+(L.blocks[k].atoms||1),0), ref_contig: B0.ref_contig, name: String(B0.name).split('…')[0] + '…' + String(B1.name).split('…').pop(), ncol: mem.length }; });
+  const haps = L.haps.map(hp => ({ hap: hp.hap, isref: hp.isref, contigs: hp.contigs.map(c => { const seq = c.inst.slice().sort((u,v)=>u[8]-v[8]); const inst = [];
+      for (const x of seq){ if (x[5] >= 4){ const y = x.slice(); y[0] = g_of[x[0]]; inst.push(y); continue; } const g = g_of[x[0]]; const last = inst.length ? inst[inst.length-1] : null;
+        if (last && last[5] < 4 && last[0] === g && (x[1] === last[1])){ // 同じ群の連続 → 1 インスタンスに併合（位置の詳細は捨てる）
+          last[2] += x[2]; last[3] += x[3]; last[7] += x[7]; last[9] = Math.max(last[9], x[9]); last[10] += x[10]; last[11] += x[11]; last[13] = Math.max(last[13], x[13]); last[15] += (x[15]||0); last[17] = (last[17]|0) | ((x[17]|0) & 2); continue; }
+        inst.push([g, x[1], x[2], x[3], 1, x[5], x[6], x[7], x[8], x[9], x[10], x[11], '', x[13], [], x[15]||0, 1, (x[17]|0), [], '', [0,255]]); }
+      return { name: c.name, path: c.path, strand: c.strand, start: c.start, bp: c.bp, nsteps: c.nsteps, inst, minor: c.minor }; }) }));
+  return { W: Math.min(...blocks.map(B=>B.span)), nblocks: blocks.length, blocks, haps, mergecap: 0, mode: 'blocks', adj: [], events: {}, origin: 0, merges: nb - blocks.length, members: segs.map(sg => { const m=[]; for (let k=sg[0];k<=sg[1];k++) m.push(k); return m; }), nonmono: 0 }; }
 function drillRange(xa, xb){ if (xb <= xa || st.drilling) return; const w = win(); const L0 = w.levels[0];
   const ranks = []; L0.blocks.forEach((B, r)=>{ if (B.x < xb && B.x + B.span > xa) ranks.push(r); });
   if (!ranks.length){ $('detailbody').innerHTML = '<p class="k">この区間にブロックがありません。</p>'; st.rangeSel = null; drawHeader(); return; }
