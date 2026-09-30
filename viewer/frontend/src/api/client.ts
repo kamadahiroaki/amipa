@@ -800,6 +800,17 @@ export async function fetchBubbleMsaRanges(dbFile: string, ranges: [string, numb
 //   ranges = 親ブロックの各インスタンスのトークン範囲 [path 名, s0, e0]（blockMsaRender が inst[8..9] から組む）
 export interface BlockDrillRequest { ranges: [string, number, number][]; span: number; afrac: number; label: string; depth: number; parent: number; pblock: number }
 export interface BlockDrillResult { window?: any; error?: string; ms?: number; total_ms?: number; missing?: number; state?: string }
+// 木の範囲問い合わせ（<db>.synteny がある DB）: 合意座標 [x0, x1] の窓を backend が木から作る（Python ワーカー不要）
+export async function fetchBlockRange(dbFile: string, x0: number, x1: number, label: string, depth: number, parent: number, pblock: number, tier?: number): Promise<BlockDrillResult> {
+  const p = new URLSearchParams({ db: dbFile, x0: String(Math.floor(x0)), x1: String(Math.ceil(x1)), label, depth: String(depth), parent: String(parent), pblock: String(pblock) })
+  if (tier != null) p.set('tier', String(tier))
+  let res: Response
+  try { res = await fetch(`/api/blocks/range?${p}`) } catch (e) { return { error: String(e) } }
+  let j: BlockDrillResult | null = null
+  try { j = await res.json() } catch { /* ignore */ }
+  if (!res.ok) return { error: (j && j.error) || 'request failed (' + res.status + ')' }
+  return j ?? { error: 'empty response' }
+}
 export async function fetchBlockWindow(dbFile: string, req: BlockDrillRequest): Promise<BlockDrillResult> {
   let res: Response
   try {

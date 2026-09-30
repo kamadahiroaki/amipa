@@ -4,6 +4,7 @@ import path from 'path'
 import { getDb, getDbDir } from '../db'
 import { distillFor } from './bubbleMsa'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
+import { loadSynteny, rootData, buildWindow, syntenyPath } from '../synteny'
 
 // 多解像度 MSA（共線ブロック）のサイドカーを配る。
 //   GET /api/blocks?db=X.db            … `<db>.blocks.json`（functions/msa_lod/70_hier_build.py の出力）をそのまま返す
@@ -34,6 +35,8 @@ function blocksPath(dbFile: string): string | null {
 blocksRouter.get('/blocks', (req, res) => {
   const { db } = req.query as Record<string, string>
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
+  // 窓に依らない一つの木（<db>.synteny）があればそれを優先（plans/msa-multires.md §15）。根の窓を木から作って返す
+  try { const syn = loadSynteny(db); if (syn) { res.json(rootData(syn)); return } } catch (err) { res.status(500).json({ error: 'synteny: ' + String(err) }); return }
   const p = blocksPath(db)
   if (!p) { res.json({ error: 'この DB には多解像度 MSA のサイドカーがありません（' + path.basename(db) + BLOCKS_SUFFIX + '）' }); return }
   res.type('application/json'); fs.createReadStream(p).pipe(res)
@@ -42,7 +45,24 @@ blocksRouter.get('/blocks', (req, res) => {
 blocksRouter.get('/blocks/has', (req, res) => {
   const { db } = req.query as Record<string, string>
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
-  res.json({ has: !!blocksPath(db) })
+  res.json({ has: !!blocksPath(db) || !!syntenyPath(db) })
+})
+
+// 木の範囲問い合わせ: 合意座標 [x0, x1] の窓（段は 30/12/5 ブロックの予算切り）。ブロックの内側へ・列見出しのドラッグの両方がこれ
+blocksRouter.get('/blocks/range', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const syn = loadSynteny(q.db)
+  if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
+  const x0 = Number(q.x0), x1 = Number(q.x1)
+  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) { res.status(400).json({ error: 'x0 < x1 が要ります' }); return }
+  const t0 = Date.now()
+  try {
+    const w = buildWindow(syn, x0, x1, { label: q.label || `${x0}–${x1}`, depth: Number(q.depth || 1), parent: Number(q.parent ?? 0), pblock: Number(q.pblock ?? -1),
+                                          tierMax: q.tier != null ? Number(q.tier) : undefined })
+    if (w.error) { res.json({ error: w.error }); return }
+    res.json({ window: w, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 function refMaxSpan(d: ReturnType<typeof getDb>): number | null {
@@ -87,6 +107,7 @@ const treeCache = new Map<string, { mtime: number; haps: string[] }>()
 blocksRouter.get('/blocks/tree', (req, res) => {
   const { db } = req.query as Record<string, string>
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
+  try { const syn = loadSynteny(db); if (syn) { const t = syn.tree; res.json({ haps: (t && Array.isArray(t.order) && Array.isArray(t.haps)) ? t.order.map((i: number) => t.haps[i]) : syn.hapOrder }); return } } catch { /* fall through */ }
   const p = blocksPath(db)
   if (!p) { res.json({ haps: [] }); return }
   try {
@@ -172,6 +193,9 @@ blocksRouter.post('/blocks/nodemap', async (req, res) => {
   const names = Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
   if (!names.length || names.length > MAX_NAMES) { res.status(400).json({ error: `names must be 1..${MAX_NAMES}` }); return }
+  // 木のサイドカーがある DB: 旧ワーカーの順位は木のブロック番号と合わないので使わない（-1 = 不明。参照区間の規則だけで塗る）。
+  // 木からの葉→原子区間の対応は後で（plans/msa-multires.md §15.2 の 3）
+  try { const syn = loadSynteny(db); if (syn) { res.json({ ranks: names.map(() => -1), nblocks: 0, ms: 0, tree: true }); return } } catch { /* fall through */ }
   const r = workerFor(db)
   if (!r.w) { res.status(503).json({ error: r.error }); return }
   try {

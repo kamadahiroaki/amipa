@@ -1,0 +1,284 @@
+// 窓に依らない一つのシンテニーの木（`<db>.synteny`、SQLite）から、Blocks パネルが読む「窓」の形を作る。
+//   plans/msa-multires.md §15。作るのは functions/msa_lod/tree/tree.py（試作。本番は prep の段へ）。
+//
+//   木: 原子区間（最細ブロック、床 500 bp）と境界（層 tier・支持 support・持続度 persistence）。
+//   窓 = 合意座標の範囲 [x0, x1]。範囲内の境界を持続度の高い順に N−1 本残して N ブロックにする（30 / 12 / 5 の段）。
+//   境界が足りなければブロックは少なくなる（再編成が無い範囲は 1 ブロック。座標で無理に切らない）。
+//   ブロックのインスタンスは原子インスタンス（行 × 原子）を隣接で併合して作る。返す形は旧サイドカーの窓と同じ
+//   （blockMsaRender.ts はそのまま読める）。
+import Database from 'better-sqlite3'
+import fs from 'fs'
+import path from 'path'
+import { getDbDir } from './db'
+
+export const SYNTENY_SUFFIX = '.synteny'
+
+export function syntenyPath(dbFile: string): string | null {
+  const base = path.join(getDbDir(), path.basename(dbFile))
+  for (const p of [base + SYNTENY_SUFFIX]) { try { if (fs.existsSync(p)) return p } catch { /* ignore */ } }
+  try { const rp = fs.realpathSync(base) + SYNTENY_SUFFIX; if (fs.existsSync(rp)) return rp } catch { /* ignore */ }
+  return null
+}
+
+interface Atom { id: number; c0: number; c1: number; x0: number; span: number; nanc: number; name0: string; name1: string; refcid: number }
+interface Boundary { id: number; tier: number; support: number; persistence: number }
+interface PathRow { pid: number; path: string; hap: string; sample: string; contig: string; strand: string; ntok: number; nsteps: number; bp: number; isref: number }
+interface Inst { pid: number; atom: number; dir: number; s0: number; e0: number; pos: number; bp: number; nsteps: number; nanc: number; nminor: number; npriv: number; vs: Buffer | null; anc: Buffer | null }
+interface Junc { pid: number; a: number; b: number; a2: number; b2: number; wrap: number; type: string; ai: number; di: number; aj: number; dj: number; multi_bp: number; priv_bp: number; tier: number }
+
+export interface Synteny {
+  file: string; mtime: number
+  meta: Record<string, string>; circular: boolean; H: number; total: number; tiers: number[]; floor: number
+  atoms: Atom[]; bnd: Boundary[]; paths: PathRow[]; inst: Inst[][]      // inst[pid] は pos 昇順
+  anchorX: Int32Array; anchorTier: Int8Array                              // rank → 合意座標 / 層
+  junc: Junc[][]
+  tree: any | null
+  hapOrder: string[]                                                       // 参照ハプロを先に、名前順
+}
+
+const cache = new Map<string, Synteny>()
+
+export function loadSynteny(dbFile: string): Synteny | null {
+  const p = syntenyPath(dbFile)
+  if (!p) return null
+  let mtime = 0
+  try { mtime = fs.statSync(p).mtimeMs } catch { /* ignore */ }
+  const c = cache.get(p)
+  if (c && c.mtime === mtime) return c
+  const d = new Database(p, { readonly: true })
+  try {
+    const meta: Record<string, string> = {}
+    for (const r of d.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]) meta[r.key] = r.value
+    const atoms = d.prepare('SELECT id, c0, c1, x0, span, nanc, name0, name1, refcid FROM atoms ORDER BY id').all() as Atom[]
+    const bnd = d.prepare('SELECT id, tier, support, persistence FROM boundaries ORDER BY id').all() as Boundary[]
+    const paths = d.prepare('SELECT pid, path, hap, sample, contig, strand, ntok, nsteps, bp, isref FROM paths ORDER BY pid').all() as PathRow[]
+    const inst: Inst[][] = paths.map(() => [])
+    for (const r of d.prepare('SELECT pid, atom, dir, s0, e0, pos, bp, nsteps, nanc, nminor, npriv, vs, anc FROM inst ORDER BY pid, pos').all() as Inst[]) inst[r.pid].push(r)
+    const nA = (d.prepare('SELECT COUNT(*) AS n FROM anchors').get() as { n: number }).n
+    const anchorX = new Int32Array(nA); const anchorTier = new Int8Array(nA)
+    for (const r of d.prepare('SELECT rank, x, tier FROM anchors').iterate() as Iterable<{ rank: number; x: number; tier: number }>) { anchorX[r.rank] = r.x; anchorTier[r.rank] = r.tier }
+    const junc: Junc[][] = paths.map(() => [])
+    for (const r of d.prepare('SELECT * FROM junc ORDER BY pid, a').all() as Junc[]) junc[r.pid].push(r)
+    let tree: any = null
+    try { tree = meta.tree ? JSON.parse(meta.tree) : null } catch { tree = null }
+    const haps = [...new Set(paths.map(r => r.hap))]
+    const isrefHap = new Set(paths.filter(r => r.isref).map(r => r.hap))
+    haps.sort((a, b) => (Number(!isrefHap.has(a)) - Number(!isrefHap.has(b))) || (a < b ? -1 : a > b ? 1 : 0))
+    const syn: Synteny = {
+      file: p, mtime, meta, circular: meta.circular === '1', H: Number(meta.H || haps.length), total: Number(meta.total || 0),
+      tiers: (meta.tiers || '').split(',').map(Number).filter(v => Number.isFinite(v)), floor: Number(meta.floor || 500),
+      atoms, bnd, paths, inst, anchorX, anchorTier, junc, tree, hapOrder: haps,
+    }
+    cache.set(p, syn)
+    return syn
+  } finally { d.close() }
+}
+
+// ---- 窓を作る ----
+export interface ViewOpts { N?: number[]; tierMax?: number; label?: string; depth?: number; parent?: number; pblock?: number; maxAnchors?: number }
+
+function b64(buf: ArrayBufferView): string { return Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength).toString('base64') }
+const clamp255 = (v: number) => Math.max(0, Math.min(255, Math.round(v)))
+
+// 範囲 [x0, x1] に重なる原子（id 昇順 = 合意順）
+function atomsInRange(syn: Synteny, x0: number, x1: number): Atom[] {
+  const out: Atom[] = []
+  for (const a of syn.atoms) if (a.x0 < x1 && a.x0 + a.span > x0) out.push(a)
+  return out
+}
+
+interface Cut { groups: number[][]; W: number }     // groups: 範囲内の原子 index（0..n-1）の連なり
+// 範囲内の境界（隣り合う原子 k|k+1）を持続度で選び、N ブロックにする。tierMax より低い層の境界は無視（併合される）
+function cutByBudget(syn: Synteny, atoms: Atom[], N: number, tierMax: number): Cut {
+  const n = atoms.length
+  const cand: { k: number; p: number; s: number }[] = []
+  for (let k = 0; k < n - 1; k++) {
+    const b = syn.bnd[atoms[k].id]
+    if (!b) continue
+    if (atoms[k + 1].id !== atoms[k].id + 1) { cand.push({ k, p: Infinity, s: 999 }); continue }   // 連続でない（範囲が飛ぶ）→ 必ず切る
+    if (b.tier > tierMax) continue
+    cand.push({ k, p: b.persistence < 0 ? Infinity : b.persistence, s: b.support })
+  }
+  cand.sort((u, v) => (v.p - u.p) || (v.s - u.s) || (u.k - v.k))
+  const keep = cand.slice(0, Math.max(0, N - 1)).sort((u, v) => u.k - v.k)
+  const W = keep.length ? Math.min(...keep.map(c => c.p === Infinity ? Number.MAX_SAFE_INTEGER : c.p)) : 0
+  const groups: number[][] = []; let cur: number[] = []
+  let ki = 0
+  for (let k = 0; k < n; k++) {
+    cur.push(k)
+    if (ki < keep.length && keep[ki].k === k) { groups.push(cur); cur = []; ki++ }
+  }
+  if (cur.length) groups.push(cur)
+  return { groups, W: W === Number.MAX_SAFE_INTEGER ? 0 : W }
+}
+
+// 原子インスタンスの連なり（同じブロック、コンティグ順）を 1 インスタンスに併合して、旧サイドカーの 21 要素の配列にする
+function mergeInstances(syn: Synteny, parts: Inst[], rank: number, blk: { x: number; span: number; atoms: Atom[] }, ntok: number): any[] {
+  const first = parts[0], last = parts[parts.length - 1]
+  const pos = first.pos, bp = Math.max(1, last.pos + last.bp - pos)
+  let abp = 0, nsteps = 0, nvar = 0, npriv = 0, plus = 0
+  for (const p of parts) { abp += p.bp; nsteps += p.nsteps; nvar += p.nminor; npriv += p.npriv; if (p.dir === 1) plus += p.bp }
+  const dir = plus * 2 >= abp ? 1 : 0
+  // 少数派サイト（インスタンス内 0..255）と合意座標での位置（cvs）
+  const vsSet = new Set<number>(), cvsSet = new Set<number>()
+  const atomById = new Map(blk.atoms.map(a => [a.id, a]))
+  for (const p of parts) {
+    const f0 = (p.pos - pos) / bp, f1 = (p.pos + p.bp - pos) / bp
+    const A = atomById.get(p.atom)
+    if (p.vs && p.vs.length) for (const b of p.vs) {
+      vsSet.add(clamp255((f0 + (b / 255) * (f1 - f0)) * 255))
+      if (A) { const cf = p.dir === 1 ? b / 255 : 1 - b / 255; cvsSet.add(clamp255((A.x0 - blk.x + cf * A.span) / Math.max(1, blk.span) * 255)) }
+    }
+  }
+  const vs = Uint8Array.from([...vsSet].sort((u, v) => u - v)), cvs = Uint8Array.from([...cvsSet].sort((u, v) => u - v))
+  // 隙間（挿入）: 隣り合う部分の間の bp
+  const gaps: number[][] = []; let maxgap = 0
+  for (let i = 0; i + 1 < parts.length; i++) {
+    const g = parts[i + 1].pos - (parts[i].pos + parts[i].bp)
+    if (g > maxgap) maxgap = g
+    if (g >= Math.max(20000, 0.02 * bp)) {
+      const A = atomById.get(parts[i].atom)
+      const cpos = A ? clamp255((A.x0 + A.span - blk.x) / Math.max(1, blk.span) * 255) : 0
+      gaps.push([clamp255((parts[i].pos + parts[i].bp - pos) / bp * 255), clamp255((parts[i + 1].pos - pos) / bp * 255), g, cpos])
+    }
+  }
+  // 単調か（原子 id がコンティグ順に一方向）
+  let mono = 1
+  for (let i = 0; i + 2 < parts.length + 1 && i + 1 < parts.length; i++) {
+    const d0 = Math.sign(parts[1].atom - parts[0].atom), d = Math.sign(parts[i + 1].atom - parts[i].atom)
+    if (d !== 0 && d0 !== 0 && d !== d0) { mono = 0; break }
+  }
+  const trunc = (first.s0 === 0 ? 1 : 0) | (last.e0 === ntok ? 2 : 0)
+  // 欠け（ブロックの原子のうちこの株が持たないもの）と覆う範囲 ext
+  const present = new Set(parts.map(p => p.atom))
+  const dels: number[][] = []; let run: Atom[] = []
+  const flush = () => { if (!run.length) return; const x0 = run[0].x0, x1 = run[run.length - 1].x0 + run[run.length - 1].span
+    if (x1 - x0 >= Math.max(200, 0.01 * blk.span)) dels.push([clamp255((x0 - blk.x) / Math.max(1, blk.span) * 255), clamp255((x1 - blk.x) / Math.max(1, blk.span) * 255), x1 - x0]); run = [] }
+  for (const A of blk.atoms) { if (present.has(A.id)) flush(); else run.push(A) }
+  flush()
+  dels.sort((u, v) => v[2] - u[2]); dels.splice(32); dels.sort((u, v) => u[0] - v[0])
+  const pres = blk.atoms.filter(A => present.has(A.id))
+  const ext = pres.length ? [clamp255((pres[0].x0 - blk.x) / Math.max(1, blk.span) * 255), clamp255(Math.ceil((pres[pres.length - 1].x0 + pres[pres.length - 1].span - blk.x) / Math.max(1, blk.span) * 255))] : [0, 255]
+  return [rank, dir, bp, nsteps, 1, 0, pos, parts.length, first.s0, last.e0, abp, nvar, b64(vs), maxgap, gaps, npriv, mono, trunc, dels, b64(cvs), ext]
+}
+
+// 標本錨（対応線）: 範囲内の原子インスタンスの標本から、層 ≤ 1 を主錨、それ以外を第二錨として最大 M 本ずつ
+const ANC_REC = 14   // rank u32, tok u32, bp u32, ori u8, tier u8
+function anchorsForRange(syn: Synteny, pids: number[], instsByPid: Map<number, Inst[]>, M: number, tierPrimary = 1) {
+  type Hit = { tok: number; bp: number; ori: number }
+  const perRank1 = new Map<number, Map<number, Hit>>(), perRank2 = new Map<number, Map<number, Hit>>()
+  for (const pid of pids) {
+    for (const it of instsByPid.get(pid) || []) {
+      const buf = it.anc; if (!buf || buf.length < ANC_REC) continue
+      for (let off = 0; off + ANC_REC <= buf.length; off += ANC_REC) {
+        const rank = buf.readUInt32LE(off), tok = buf.readUInt32LE(off + 4), bp = buf.readUInt32LE(off + 8), ori = buf.readUInt8(off + 12), tier = buf.readUInt8(off + 13)
+        const tgt = tier <= tierPrimary ? perRank1 : perRank2
+        let m = tgt.get(rank); if (!m) { m = new Map(); tgt.set(rank, m) }
+        m.set(pid, { tok, bp, ori })
+      }
+    }
+  }
+  const pick = (per: Map<number, Map<number, Hit>>) => {
+    const ranks = [...per.keys()].sort((u, v) => u - v)
+    const sel = ranks.length <= M ? ranks : Array.from({ length: M }, (_, i) => ranks[Math.round(i * (ranks.length - 1) / Math.max(1, M - 1))])
+    const x = sel.map(r => syn.anchorX[r])
+    const rows: Record<string, { i: string; tok: string; bp: string; ori: string }> = {}
+    const byPid = new Map<number, { i: number[]; tok: number[]; bp: number[]; ori: number[] }>()
+    sel.forEach((r, i) => { for (const [pid, h] of per.get(r)!) { let e = byPid.get(pid); if (!e) { e = { i: [], tok: [], bp: [], ori: [] }; byPid.set(pid, e) } e.i.push(i); e.tok.push(h.tok); e.bp.push(h.bp); e.ori.push(h.ori) } })
+    for (const [pid, e] of byPid) rows[syn.paths[pid].path] = { i: b64(Uint16Array.from(e.i)), tok: b64(Uint32Array.from(e.tok)), bp: b64(Uint32Array.from(e.bp)), ori: b64(Uint8Array.from(e.ori)) }
+    return { m: sel.length, x, rows }
+  }
+  // 主錨が無い範囲（島の中など、低い層の錨しか無い）は第二錨を主錨として使う（対応線が消えないように）
+  if (perRank1.size === 0 && perRank2.size > 0) { const a = pick(perRank2); return { m: a.m, x: a.x, rows: a.rows, m2: 0, x2: [], rows2: {}, promoted: true } }
+  const a1 = pick(perRank1), a2 = pick(perRank2)
+  return { m: a1.m, x: a1.x, rows: a1.rows, m2: a2.m, x2: a2.x, rows2: a2.rows }
+}
+
+const median = (v: number[]) => { if (!v.length) return 0; const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)] }
+
+export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts = {}): any {
+  const Ns = opts.N || [30, 12, 5]
+  const tierMax = opts.tierMax ?? 1
+  const atoms = atomsInRange(syn, x0, x1)
+  if (!atoms.length) return { error: '範囲に原子区間がありません' }
+  const aidx = new Map(atoms.map((a, i) => [a.id, i]))
+  // 範囲内の原子インスタンス（パスごと、コンティグ順）
+  const instsByPid = new Map<number, Inst[]>()
+  for (const pr of syn.paths) { const arr = syn.inst[pr.pid].filter(it => aidx.has(it.atom)); if (arr.length) instsByPid.set(pr.pid, arr) }
+  const pids = [...instsByPid.keys()]
+  // 段: N ごとに切る。ブロック数が同じ段は 1 つにまとめる（最細を先に）
+  // 層: 既定は 80% 層以上の境界。範囲の中でそれだけだと 1 ブロックにしかならず、低い層の境界があるなら、境界が現れる層まで緩める
+  // （「再編成の境界が現れるまで降りる」）。緩めた層は返り値 tierUsed に出す
+  let tierUsed = tierMax
+  const maxTier = Math.max(0, syn.tiers.length - 1)
+  while (tierUsed < maxTier && cutByBudget(syn, atoms, Ns[0], tierUsed).groups.length < 2) tierUsed++
+  const cuts: Cut[] = []
+  for (const N of Ns) { const c = cutByBudget(syn, atoms, N, tierUsed); if (!cuts.length || cuts[cuts.length - 1].groups.length !== c.groups.length) cuts.push(c) }
+  const fine = cuts[0]
+  const fineRank = new Map<number, number>(); fine.groups.forEach((g, r) => g.forEach(i => fineRank.set(atoms[i].id, r)))   // 最細段の rank（members 用）
+  const levels = cuts.map((cut, li) => {
+    const blocks = cut.groups.map(g => {
+      const as = g.map(i => atoms[i]); const bx = as[0].x0, bspan = as[as.length - 1].x0 + as[as.length - 1].span - bx
+      return { c0: as[0].c0, c1: as[as.length - 1].c1, span: bspan, tbp: 0, bpmax: 0, nhap: 0, x: bx, atoms: as.length, ref_contig: Math.max(0, as[0].refcid), name: as[0].name0 + '…' + as[as.length - 1].name1, ncol: as.reduce((s, a) => s + a.nanc, 0), _atoms: as }
+    })
+    const rankOfAtom = new Map<number, number>(); cut.groups.forEach((g, r) => g.forEach(i => rankOfAtom.set(atoms[i].id, r)))
+    const bpsOf: number[][] = blocks.map(() => []); const hapsOf: Set<string>[] = blocks.map(() => new Set())
+    // 行（ハプロタイプ）→ コンティグ（パス）→ インスタンス
+    const byHap = new Map<string, PathRow[]>()
+    for (const pid of pids) { const pr = syn.paths[pid]; if (!byHap.has(pr.hap)) byHap.set(pr.hap, []); byHap.get(pr.hap)!.push(pr) }
+    let nonmono = 0
+    const haps = syn.hapOrder.filter(h => byHap.has(h)).map(h => {
+      const prs = byHap.get(h)!
+      const contigs = prs.map(pr => {
+        const its = instsByPid.get(pr.pid)!
+        const out: any[] = []; let i = 0
+        while (i < its.length) {
+          const r = rankOfAtom.get(its[i].atom)!; let j = i + 1
+          while (j < its.length && rankOfAtom.get(its[j].atom) === r) j++
+          const parts = its.slice(i, j); const B = blocks[r]
+          const m = mergeInstances(syn, parts, r, { x: B.x, span: B.span, atoms: B._atoms }, pr.ntok)
+          if (m[16] === 0) nonmono++
+          bpsOf[r].push(m[2]); hapsOf[r].add(h); out.push(m); i = j
+        }
+        // 少数派の区間（旧: 錨でないトークンの連なり ≥ 床）: 原子インスタンスの間の隙間 ≥ 床を同じ形 [pos, bp, name, colbp, s0, e0] で
+        const minor: any[] = []
+        for (let k = 0; k + 1 < its.length; k++) { const g = its[k + 1].pos - (its[k].pos + its[k].bp); if (g >= syn.floor) minor.push([its[k].pos + its[k].bp, g, '', 0, its[k].e0, its[k + 1].s0]) }
+        return { name: pr.contig, path: pr.path, strand: pr.strand, start: 0, bp: pr.bp, nsteps: pr.nsteps, inst: out, minor }
+      })
+      return { hap: h, isref: prs.some(p => p.isref) ? 1 : 0, contigs }
+    })
+    blocks.forEach((B, r) => { B.tbp = median(bpsOf[r]); B.bpmax = bpsOf[r].length ? Math.max(...bpsOf[r]) : 0; B.nhap = hapsOf[r].size; delete (B as any)._atoms })
+    // 隣接（adj）: 各行のインスタンス列から [ri, di, rj, dj]
+    const adjSet = new Set<string>()
+    for (const hp of haps) for (const c of hp.contigs) for (let k = 0; k + 1 < c.inst.length; k++) adjSet.add([c.inst[k][0], c.inst[k][1], c.inst[k + 1][0], c.inst[k + 1][1]].join(','))
+    const adj = [...adjSet].map(s => s.split(',').map(Number))
+    // 原点（環状の全体窓）: 支持が最小の境界の次のブロック
+    let origin = 0
+    if (syn.circular && li >= 0) {
+      let best = -1, bs = Infinity
+      cut.groups.forEach((g, r) => { const lastAtom = atoms[g[g.length - 1]]; const b = syn.bnd[lastAtom.id]; const s = b ? b.support : Infinity; if (s < bs) { bs = s; best = r } })
+      if (best >= 0) origin = (best + 1) % blocks.length
+    }
+    const members = li === 0 ? null : cut.groups.map(g => { const out: number[] = []; for (const i of g) { const r0 = fineRank.get(atoms[i].id); if (r0 != null && (!out.length || out[out.length - 1] !== r0)) out.push(r0) } return out })
+    return { W: cut.W, nblocks: blocks.length, blocks, haps, mergecap: 0, mode: 'blocks', adj, events: {}, origin, merges: atoms.length - blocks.length, members, nonmono }
+  })
+  const anchors = anchorsForRange(syn, pids, instsByPid, opts.maxAnchors || 800, tierUsed)
+  return {
+    id: -1, parent: opts.parent ?? -1, pblock: opts.pblock ?? -1, depth: opts.depth ?? 0, label: opts.label || '全体',
+    atoms: atoms.length, H: new Set(pids.map(p => syn.paths[p].hap)).size, levels, children: {}, mode: 'blocks', anchors,
+    range: [atoms[0].x0, atoms[atoms.length - 1].x0 + atoms[atoms.length - 1].span], tree: true, tierUsed, tierMax,
+  }
+}
+
+// 旧サイドカー（JSON）と同じ外形: {meta, windows:[根], tree}
+export function rootData(syn: Synteny): any {
+  const root = buildWindow(syn, -Infinity, Infinity, { label: '全体', depth: 0, parent: -1, pblock: -1 })
+  root.id = 0
+  const meta = {
+    name: syn.meta.name, circular: syn.circular, bpt: Number(syn.meta.bpt || 0), nhaps: syn.H, ncols: Number(syn.meta.ncols || 0),
+    order: { kind: syn.meta.order_kind || 'ref', path: syn.meta.order_path || '' }, params: { anchor_frac: syn.tiers[1] ?? 0.8, sub_anchor_frac: syn.tiers[2] ?? 0.5, tiers: syn.tiers, floor: syn.floor },
+    total_bp: syn.paths.reduce((s, p) => s + p.bp, 0), total_x: syn.total, tree: true, synteny: path.basename(syn.file),
+    natoms: syn.atoms.length, nboundaries: syn.bnd.length, t_build: syn.meta.t_build,
+  }
+  return { meta, windows: [root], tree: syn.tree }
+}

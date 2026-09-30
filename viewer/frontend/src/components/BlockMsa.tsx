@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBlocks, fetchBlockWindow, warmBlocks, BlockDrillRequest } from '../api/client'
+import { fetchBlocks, fetchBlockWindow, fetchBlockRange, warmBlocks, BlockDrillRequest } from '../api/client'
 import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView, GeneLite } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
@@ -40,7 +40,8 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
       handleRef.current = mountBlockMsa(rootRef.current, data, {
         onSelectBlock: b => cbRef.current.onSelectBlock?.(b),
         onHoverBlock: b => cbRef.current.onHoverBlock?.(b),
-        onDrill: req => fetchBlockWindow(db, req),          // 事前計算に無い窓を backend で逐次計算
+        onDrill: req => fetchBlockWindow(db, req),          // 旧サイドカー: 事前計算に無い窓を backend で逐次計算
+        onRange: (x0, x1, label, depth, parent, pblock) => fetchBlockRange(db, x0, x1, label, depth, parent, pblock),   // 木: 範囲の窓
         onView: v => cbRef.current.onView?.(v),
         onSelectHap: (k, h) => cbRef.current.onSelectHap?.(k, h),
         onBaseMsa: req => cbRef.current.onBaseMsa?.(req),
@@ -48,7 +49,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
       handleRef.current.setHapMarks(hapMarks ?? new Map())
       handleRef.current.setGenes(genes ?? new Map())
       onReady?.(handleRef.current)
-      void warmBlocks(db)                                   // ワーカーを先に起こして Ctx を温める（初回の降下を速く）
+      if (!(data.meta && data.meta.tree)) void warmBlocks(db)   // 旧サイドカーだけ: ワーカーを先に起こして Ctx を温める。木は backend が SQLite から作るので不要
     }).catch(e => { if (live) setMsg('読み込みに失敗: ' + String(e)) })
     return () => { live = false; handleRef.current?.destroy(); handleRef.current = null; onReady?.(null) }
   // eslint-disable-next-line react-hooks/exhaustive-deps
