@@ -800,6 +800,12 @@ export async function fetchBubbleMsaRanges(dbFile: string, ranges: [string, numb
 //   ranges = 親ブロックの各インスタンスのトークン範囲 [path 名, s0, e0]（blockMsaRender が inst[8..9] から組む）
 export interface BlockDrillRequest { ranges: [string, number, number][]; span: number; afrac: number; label: string; depth: number; parent: number; pblock: number }
 export interface BlockDrillResult { window?: any; error?: string; ms?: number; total_ms?: number; missing?: number; state?: string }
+// アレル行列（変異の段）: 合意列の範囲のサイト × 株のアレル番号（synteny.ts sitesForRange）
+export interface BlockSites { c0: number; c1: number; ncols: number; ncover: number; H: number; haps: string[]; nsites: number; sites: { x: number; c0: number; c1: number; ncols: number; bp: number; nall: number; counts: number[] }[]; cells: string; tooMany?: boolean; error?: string; ms?: number }
+export async function fetchBlockSites(dbFile: string, q: { c0?: number; c1?: number; x0?: number; x1?: number }): Promise<BlockSites | { error: string }> {
+  const p = new URLSearchParams({ db: dbFile }); for (const k of ['c0', 'c1', 'x0', 'x1'] as const) if (q[k] != null) p.set(k, String(Math.round(q[k]!)))
+  try { const res = await fetch(`/api/blocks/sites?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
+}
 // 木の範囲問い合わせ（<db>.synteny がある DB）: 合意座標 [x0, x1] の窓を backend が木から作る（Python ワーカー不要）
 export async function fetchBlockRange(dbFile: string, x0: number, x1: number, label: string, depth: number, parent: number, pblock: number, tier?: number): Promise<BlockDrillResult> {
   const p = new URLSearchParams({ db: dbFile, x0: String(Math.floor(x0)), x1: String(Math.ceil(x1)), label, depth: String(depth), parent: String(parent), pblock: String(pblock) })

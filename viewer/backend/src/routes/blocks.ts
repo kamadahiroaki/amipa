@@ -4,7 +4,7 @@ import path from 'path'
 import { getDb, getDbDir } from '../db'
 import { distillFor } from './bubbleMsa'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
-import { loadSynteny, rootData, buildWindow, syntenyPath } from '../synteny'
+import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange } from '../synteny'
 
 // 多解像度 MSA（共線ブロック）のサイドカーを配る。
 //   GET /api/blocks?db=X.db            … `<db>.blocks.json`（functions/msa_lod/70_hier_build.py の出力）をそのまま返す
@@ -46,6 +46,20 @@ blocksRouter.get('/blocks/has', (req, res) => {
   const { db } = req.query as Record<string, string>
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
   res.json({ has: !!blocksPath(db) || !!syntenyPath(db) })
+})
+
+// アレル行列（変異の段）: GET /api/blocks/sites?db&c0&c1 または &x0&x1 → サイト×株のアレル番号（synteny.ts sitesForRange）
+blocksRouter.get('/blocks/sites', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const syn = loadSynteny(q.db)
+  if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
+  const t0 = Date.now()
+  try {
+    const num = (v?: string) => (v != null && v !== '' ? Number(v) : undefined)
+    const r = sitesForRange(syn, { c0: num(q.c0), c1: num(q.c1), x0: num(q.x0), x1: num(q.x1) }, q.max ? Number(q.max) : undefined)
+    res.json({ ...r, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 // 木の範囲問い合わせ: 合意座標 [x0, x1] の窓（段は 30/12/5 ブロックの予算切り）。ブロックの内側へ・列見出しのドラッグの両方がこれ

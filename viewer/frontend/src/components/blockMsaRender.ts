@@ -9,7 +9,7 @@ export interface GeneLite { name: string; start: number; end: number; strand?: s
 export interface BlockMsaHandle { selectByRef(contig: number, bp: number): boolean; setHapMarks(m: Map<string, string>): void; setGenes(g: Map<number, GeneLite[]>): void; destroy(): void; _layout?: () => any }
 // 現在見えている窓・段のブロック一覧（色つき）。App がグラフのノードをブロック色で塗るのに使う
 export interface BlockView { win: number; level: number; W: number; mode: string; tree?: boolean; blocks: { rank: number; color: string; ref_contig: number; x: number; span: number; label: string; members: number[] }[]; scope: { contig: number; start: number; end: number } | null; scopeKey: string; sync: boolean; n0: number }
-export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void; onDrill?: (req: BlockDrillRequest) => Promise<BlockDrillResult>; onRange?: (x0: number, x1: number, label: string, depth: number, parent: number, pblock: number) => Promise<any>; onView?: (v: BlockView | null) => void; onSelectHap?: (groupKey: string, hap: string) => void; onBaseMsa?: (req: BlockDrillRequest) => void }
+export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void; onDrill?: (req: BlockDrillRequest) => Promise<BlockDrillResult>; onRange?: (x0: number, x1: number, label: string, depth: number, parent: number, pblock: number) => Promise<any>; onSites?: (q: { c0?: number; c1?: number; x0?: number; x1?: number }) => Promise<any>; onView?: (v: BlockView | null) => void; onSelectHap?: (groupKey: string, hap: string) => void; onBaseMsa?: (req: BlockDrillRequest) => void }
 // MSA の行（ハプロタイプ名。例 'HG00673#1', 'GCF_013459175.1#1', 'grch38#chrY'）を、グラフのパス群の鍵
 // （sample 'HG00673' / haplotype 'HG00673#1' / ecoli では haplotype 'GCF_013459175.1', sample 'GCF_013459175'）に合わせる
 export function hapCandidates(hap: string): string[] {
@@ -262,7 +262,53 @@ function colorOf(rank){ if (st.colorBy==='genes' && st.genes.size){ return densR
 
 // ---- 描画 ----
 function layoutCanvases(){ const W = Math.max($('gridwrap').clientWidth, (LY && LY.fullW) ? LY.fullW : 0); const H = Math.max(RH, (LY?LY.rows.length:1)*RH); sizeCanvas(cv.grid, W, H); sizeCanvas(cv.hdr, W, 40); $('labwrap').style.height = H+'px'; $('treewrap').style.height = H+'px'; }
-function drawAll(){ _gdMax = null; computeLayout(); layoutCanvases(); drawHeader(); drawGrid(); drawLabels(); drawTree(); drawChips(); drawLegend(); updateButtons(); emitView(); }
+
+// ---- 変異の段（アレル行列）: 原子区間の内側（再編成の境界が無い所）で、変異サイトを列、株を行にして同じアレルを同じ色で塗る。
+//      行は系統樹順なので、クレードで共有されるアレルが色の塊に見える。列数（葉）が 400 以下になったら塩基（bubble MSA）へ。
+const SITES_X0 = 4; const SITES_COLORS = ['#c9ced8', '#2f6fb3', '#e08a1e', '#3a9d5d', '#8a5cd6', '#c9302c', '#17a2b8', '#a0522d'];
+function isSites(){ return !!(level() && level().mode === 'sites'); }
+function sitesOf(){ const L = level(); return L && L.mode === 'sites' ? L.sites : null; }
+function sitesLayout(){ const S = sitesOf(); const W = $('gridwrap').clientWidth - 8; const n = Math.max(1, S.nsites); LY.siteW = Math.max(1, Math.min(14, Math.floor(W / n))); LY.fullW = SITES_X0 + n * LY.siteW + 4; LY.cols = []; LY.vis = []; LY.blockX = new Map();
+  if (!S._cells){ const raw = atob(S.cells); const u = new Uint8Array(raw.length); for (let i=0;i<raw.length;i++) u[i] = raw.charCodeAt(i); S._cells = u; S._hidx = new Map(S.haps.map((h,i)=>[h,i])); } }
+function drawSites(){ const S = sitesOf(); if (!S) return; const g = cv.grid.getContext('2d'); const sw = LY.siteW, gap = sw >= 4 ? 1 : 0; const H = S.H;
+  LY.rows.forEach((r, ri) => { const hi = S._hidx.get(r.hap); if (hi == null) return; const y = ri*RH + 5, h = RH - 10;
+    for (let k = 0; k < S.nsites; k++){ const a = S._cells[k*H + hi]; if (a === 255) continue; g.fillStyle = SITES_COLORS[Math.min(a, SITES_COLORS.length-1)]; g.fillRect(SITES_X0 + k*sw, y, sw - gap, h); } });
+  if (st.rangeSel){ g.fillStyle = TH.selbg; g.globalAlpha = .5; g.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], cv.grid.clientHeight); g.globalAlpha = 1; }
+  // 列見出し: 10 サイトごとの目盛りと合意座標、アレル数の帯
+  const gh = cv.hdr.getContext('2d'); const Hh = cv.hdr.clientHeight; gh.clearRect(0, 0, cv.hdr.clientWidth, Hh); gh.font = '10px "IBM Plex Mono"'; gh.fillStyle = TH.muted; gh.textAlign = 'left';
+  let lastX = -1e9; for (let k = 0; k < S.nsites; k++){ const x = SITES_X0 + k*sw; const s_ = S.sites[k]; gh.fillStyle = s_.nall >= 3 ? TH.disp : (s_.nall === 2 ? TH.accent : TH.line); gh.fillRect(x, Hh-6, Math.max(1, sw-gap), 4);
+    if (x - lastX >= 90){ gh.fillStyle = TH.muted; gh.fillText(fmtbp(s_.x), x, 12); gh.fillRect(x, 14, 1, 6); lastX = x; } } }
+function siteAt(px){ const S = sitesOf(); if (!S) return null; const k = Math.floor((px - SITES_X0) / LY.siteW); return (k >= 0 && k < S.nsites) ? k : null; }
+function siteInfo(k, ri){ const S = sitesOf(); const s_ = S.sites[k]; const H = S.H; const r = ri != null ? LY.rows[ri] : null; const hi = r ? S._hidx.get(r.hap) : null; const a = hi != null ? S._cells[k*H + hi] : null;
+  const names = S.sites.length ? '' : ''; const dist = s_.counts.map((n, i) => `<span style="display:inline-block;width:9px;height:9px;background:${SITES_COLORS[Math.min(i, SITES_COLORS.length-1)]};vertical-align:-1px;margin-right:3px"></span>${i===0?'参照側':'アレル '+(i+1)} ${n} 株`).join(' · ');
+  return `<p><span class="h">変異サイト ${k+1} / ${S.nsites}</span><br><span class="k">合意座標 ${fmtbp(s_.x)} · 列 ${s_.c0}–${s_.c1}（${s_.ncols} 列、最長 ${s_.bp} bp）· アレル ${s_.nall} 種</span><br>${dist}${r ? `<br><span class="k">${esc(r.hap)}:</span> ${a===255?'この区間を持たない':(a===0?'参照側のアレル':'アレル '+(a+1))}` : ''}</p>`; }
+function sitesWindow(S, label, parent, pblock, c0, c1){ const pw = WINS[parent]; const Lp = pw.levels[0];
+  const haps = Lp.haps.map(h => ({ hap: h.hap, isref: h.isref, contigs: [{ name: '', path: '', strand: '+', start: 0, bp: 0, nsteps: 0, inst: [], minor: [] }] }));
+  return { id: -1, parent, pblock, depth: pw.depth + 1, label, atoms: 0, H: haps.length, children: {}, mode: 'sites', anchors: null, ondemand: true, tree: true,
+    levels: [{ W: 0, nblocks: 0, blocks: [], haps, mergecap: 0, mode: 'sites', adj: [], events: {}, origin: 0, merges: 0, members: null, nonmono: 0, sites: S, c0, c1 }] }; }
+function openSites(q, label, pblock){ if (!(cb && cb.onSites) || st.drilling) return; const pw = st.win;
+  const ncol = (q.c0 != null && q.c1 != null) ? (q.c1 - q.c0 + 1) : null;
+  if (ncol != null && ncol <= BASE_MAX_LEAVES && pblock != null && pblock >= 0){ baseMsa(pblock); return; }   // 葉 400 以下 → 塩基へ
+  const key = 's:' + (q.c0 != null ? q.c0 + ':' + q.c1 : Math.round(q.x0) + ':' + Math.round(q.x1)); const w = win(); const ch = w.children ? w.children[key] : null; if (ch != null){ enterWindow(ch); return; }
+  st.drilling = true; st.busy = `${label} の変異サイトを集めています…`; updateButtons(); drawGrid(); $('detailbody').innerHTML = `<p class="k">${esc(st.busy)}</p>`;
+  cb.onSites(q).then(S => { st.drilling = false; st.busy = null;
+    if (!S || S.error || S.tooMany){ drawAll(); $('detailbody').innerHTML = `<p class="k">${esc((S && S.error) || '応答なし')}${S && S.tooMany ? ' 列見出しをドラッグして狭い区間を選ぶと変異サイトの段に降りられます。' : ''}</p>`; return; }
+    if (!S.nsites){ drawAll(); $('detailbody').innerHTML = `<p class="k">${esc(label)}（${S.ncols} 列）は全株同一です。変異サイトがありません。</p>`; return; }
+    const nw = sitesWindow(S, label, pw, pblock != null ? pblock : -1, S.c0, S.c1); nw.id = WINS.length; nw.plevel = st.li; WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; nw.ms = S.ms || 0;
+    enterWindow(nw.id); $('detailbody').innerHTML = `<p class="k">変異サイト ${S.nsites} 個（列 ${S.ncols}、${S.ncover} 株が被覆）。セルの色＝アレル（灰＝参照側）。行は系統樹順。列見出しをドラッグで狭い区間へ、葉 ${BASE_MAX_LEAVES} 以下で塩基 MSA へ。</p>`;
+  }).catch(e => { st.drilling = false; st.busy = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; }); }
+// アレル行列の中のドラッグ: サイトの範囲 → 列の範囲。葉 400 以下なら親ブロックの錨で絞って塩基へ、そうでなければ狭いアレル行列
+function sitesRange(xa, xb){ const S = sitesOf(); if (!S) return; const ks = []; S.sites.forEach((s_, k) => { if (s_.x + Math.max(1, s_.bp) > xa && s_.x < xb) ks.push(k); }); if (!ks.length){ st.rangeSel = null; drawAll(); return; }
+  const c0 = S.sites[ks[0]].c0, c1 = S.sites[ks[ks.length-1]].c1; const ncol = c1 - c0 + 1; const label = fmtbp(xa) + '–' + fmtbp(xb);
+  if (ncol <= BASE_MAX_LEAVES && cb && cb.onBaseMsa){ // 親（ブロックの窓）の錨で各行のトークン範囲を絞って塩基へ
+    const w = win(); const pw = WINS[w.parent]; const L0 = pw.levels[0]; const anc = anchorsOf(pw); const ranges = [];
+    const xlo = S.sites[ks[0]].x, xhi = S.sites[ks[ks.length-1]].x + Math.max(1, S.sites[ks[ks.length-1]].bp);
+    for (const hp of L0.haps) for (const c of hp.contigs) for (const it of c.inst){ if (it[5] >= 4) continue; const B = L0.blocks[it[0]]; if (!B || B.x + B.span < xlo || B.x > xhi) continue;
+      let lo = Infinity, hi = -Infinity; const A = anc ? anc.rows.get(c.path) : null; if (A) for (let k=0;k<A.i.length;k++){ const x = anc.x[A.i[k]]; if (x >= xlo - 2000 && x <= xhi + 2000 && A.tok[k] >= it[8] && A.tok[k] < it[9]){ lo = Math.min(lo, A.tok[k]); hi = Math.max(hi, A.tok[k]+1); } }
+      if (hi > lo) ranges.push([c.path, lo, hi]); }
+    if (ranges.length){ cb.onBaseMsa({ ranges, span: xb - xa, afrac: 0, label: winPath().map((p,i)=>i===0?'全体':p.label).join('›') + '›' + label, depth: w.depth+1, parent: st.win, pblock: -1 }); st.rangeSel = null; drawAll(); $('detailbody').innerHTML = `<p class="k">区間 ${label}（列 ${ncol}）の各行を塩基レベル MSA に渡しました。</p>`; return; } }
+  st.rangeSel = null; openSites({ c0, c1 }, label, -1); }
+function drawAll(){ _gdMax = null; computeLayout(); if (isSites()) sitesLayout(); layoutCanvases(); drawHeader(); drawGrid(); if (isSites()) drawSites(); drawLabels(); drawTree(); drawChips(); drawLegend(); updateButtons(); emitView(); }
 // 窓・段（＝色の割り当て）が変わったときだけ、見えているブロックと色を App へ知らせる（グラフのノードをブロック色で塗る）
 let _lastViewKey = '';
 function emitView(){ if (!(cb && cb.onView)) return; const L = level(); const key = st.win+':'+st.li+':'+LY.vis.join(',')+':'+(st.sync?1:0);
@@ -467,7 +513,7 @@ function childKey(rank){ return String(rank); }   // 子窓の鍵（最細段の
 // 塩基レベルへ渡せるか: 列（葉ノード）が bubble MSA の上限 400 以下と見込めるブロック（典型長 / bp/token）
 const BASE_MAX_LEAVES = 400;
 function baseCols(rank){ const B = level().blocks[rank]; if (!B) return Infinity; return B.tbp / Math.max(1, DATA.meta.bpt || 1); }
-function canBase(rank){ return st.li===0 && !!(cb && cb.onBaseMsa) && baseCols(rank) <= BASE_MAX_LEAVES; }
+function canBase(rank){ if (TREE){ const B = level().blocks[rank]; return !!B && st.li===0 && !!(cb && cb.onBaseMsa) && (B.c1 - B.c0 + 1) <= BASE_MAX_LEAVES; } return st.li===0 && !!(cb && cb.onBaseMsa) && baseCols(rank) <= BASE_MAX_LEAVES; }
 function canDrill(rank){ const L = level(); const B = L.blocks[rank]; if (!B) return false; if (TREE) return (B.atoms==null || B.atoms>=2); return L.mode==='bins' ? (B.atoms==null || B.atoms>=2) : true; }
 function updateButtons(){ const w=win();
   const childOK = st.sel!=null && st.li===0 && w.children && w.children[childKey(st.sel)]!=null;
@@ -560,7 +606,7 @@ grid.addEventListener('click', e=>{ if (e.detail && e.detail > 1) return; const 
   else { st.pinned = false; st.sel = null; drawAll(); emitSel(); } });
 // 列見出しをドラッグして合意座標の任意区間を選び、その区間の窓へ（ブロック境界に縛られない「範囲で降りる」）。
 // 各行のトークン範囲は標本錨（第一・第二）のうち区間内にあるものの最小/最大トークンで近似する
-function pxToCons(px){ for (const c of LY.cols){ if (c.type==='block' && px>=c.x && px<=c.x+c.w){ const B = level().blocks[c.rank]; return B.x + (px-c.x)/Math.max(1,c.w)*B.span; } } let best=null; for (const c of LY.cols){ if (c.type!=='block') continue; const d = px < c.x ? c.x-px : px-(c.x+c.w); if (best==null || d<best[0]) best=[d,c]; } if (!best) return null; const c=best[1], B=level().blocks[c.rank]; return px < c.x ? B.x : B.x + B.span; }
+function pxToCons(px){ if (isSites()){ const S = sitesOf(); if (!S || !S.nsites) return null; const k = Math.max(0, Math.min(S.nsites-1, Math.floor((px - SITES_X0) / LY.siteW))); return S.sites[k].x + (px - (SITES_X0 + k*LY.siteW)) / LY.siteW * Math.max(1, S.sites[k].bp); } for (const c of LY.cols){ if (c.type==='block' && px>=c.x && px<=c.x+c.w){ const B = level().blocks[c.rank]; return B.x + (px-c.x)/Math.max(1,c.w)*B.span; } } let best=null; for (const c of LY.cols){ if (c.type!=='block') continue; const d = px < c.x ? c.x-px : px-(c.x+c.w); if (best==null || d<best[0]) best=[d,c]; } if (!best) return null; const c=best[1], B=level().blocks[c.rank]; return px < c.x ? B.x : B.x + B.span; }
 // 範囲の窓は再計算せず、範囲が重なる最細ブロックの子窓（事前計算か、予算内の逐次計算）を継ぎ合わせて作る。
 // 端は子窓のブロック境界に丸める。1 ブロックに収まる範囲は、その子窓に入って絞り込む。子窓が作れない小さなブロック
 // （列 ≤ 400）は親のブロックをそのまま 1 ブロックとして継ぐ。継いだ窓の段は最細段の 1 段だけ、系統樹の枝の事象は無し
@@ -621,7 +667,7 @@ function regroupLevel(L, target){ const nb = L.nblocks; if (nb <= target) return
         inst.push([g, x[1], x[2], x[3], 1, x[5], x[6], x[7], x[8], x[9], x[10], x[11], '', x[13], [], x[15]||0, 1, (x[17]|0), [], '', [0,255]]); }
       return { name: c.name, path: c.path, strand: c.strand, start: c.start, bp: c.bp, nsteps: c.nsteps, inst, minor: c.minor }; }) }));
   return { W: Math.min(...blocks.map(B=>B.span)), nblocks: blocks.length, blocks, haps, mergecap: 0, mode: 'blocks', adj: [], events: {}, origin: 0, merges: nb - blocks.length, members: segs.map(sg => { const m=[]; for (let k=sg[0];k<=sg[1];k++) m.push(k); return m; }), nonmono: 0 }; }
-function drillRange(xa, xb){ if (xb <= xa || st.drilling) return; const w = win(); const L0 = w.levels[0];
+function drillRange(xa, xb){ if (xb <= xa || st.drilling) return; if (isSites()){ sitesRange(xa, xb); return; } const w = win(); const L0 = w.levels[0];
   const ranks = []; L0.blocks.forEach((B, r)=>{ if (B.x < xb && B.x + B.span > xa) ranks.push(r); });
   if (!ranks.length){ $('detailbody').innerHTML = '<p class="k">この区間にブロックがありません。</p>'; st.rangeSel = null; drawHeader(); return; }
   const label = fmtbp(xa) + '–' + fmtbp(xb); const key = 'r:' + Math.round(xa) + ':' + Math.round(xb);
@@ -662,7 +708,7 @@ window.addEventListener('mouseup', e=>{ if (!_hdrDrag) return; const d = _hdrDra
   drillRange(Math.min(xa,xb), Math.max(xa,xb)); });
 cv.hdr.addEventListener('dblclick', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = c.rank; st.pinned = true; drawAll(); emitSel(); drillInto(c.rank); return; } } });
 cv.hdr.addEventListener('click', e=>{ if (_hdrDragged){ _hdrDragged = false; return; } if (e.detail && e.detail > 1) return; const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = (st.sel===c.rank)?null:c.rank; st.pinned = st.sel!=null; if (st.sel!=null) showBlock(c.rank); drawAll(); emitSel(); return; } } });
-cv.hdr.addEventListener('mousemove', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (x>=c.x && x<=c.x+c.w){ if (!st.pinned) showBlock(c.rank); emitHover(c.rank); if (st.hoverRank!==c.rank){ st.hoverRank=c.rank; drawGrid(); } return; } } emitHover(null); if (st.hoverRank!=null){ st.hoverRank=null; drawGrid(); } });
+cv.hdr.addEventListener('mousemove', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; if (isSites()){ const k = siteAt(x); if (k != null && !st.pinned) setDetail(siteInfo(k, null)); return; } for (const c of LY.cols){ if (x>=c.x && x<=c.x+c.w){ if (!st.pinned) showBlock(c.rank); emitHover(c.rank); if (st.hoverRank!==c.rank){ st.hoverRank=c.rank; drawGrid(); } return; } } emitHover(null); if (st.hoverRank!=null){ st.hoverRank=null; drawGrid(); } });
 cv.hdr.addEventListener('mouseleave', ()=>{ emitHover(null); if (st.hoverRank!=null){ st.hoverRank=null; drawGrid(); } });
 function enterWindow(ch){ st.win = ch; st.li = Math.max(0, WINS[ch].levels.length-1); st.sel=null; st.origin=null; st.pinned=false; st.filter=null; st.filterPath=[]; drawAll(); emitSel(); }
 // 親ブロック rank の各インスタンスのトークン範囲（inst[8]=s0, inst[9]=e0、パス名で送る）。事前計算の child_ranges と同じ定義
@@ -677,6 +723,7 @@ function drillInto(rank){ if (rank==null || st.drilling) return;
   const w = win(); const key = childKey(rank); const ch = w.children ? w.children[key] : null;
   if (ch!=null){ enterWindow(ch); return; }
   if (canBase(rank)){ baseMsa(rank); return; }          // 列が少ないブロックは窓を作らず塩基レベルへ（階層の底）
+  if (TREE && !canDrill(rank) && cb && cb.onSites){ const B_ = level().blocks[rank]; openSites({ c0: B_.c0, c1: B_.c1 }, '#'+(rank+1), rank); return; }
   if (!(cb && (TREE ? cb.onRange : cb.onDrill)) || !canDrill(rank)){
     if (TREE){ const B_ = level().blocks[rank]; const cols_ = Math.round(baseCols(rank));
       $('detailbody').innerHTML = `<p class="k">#${rank+1} の内側には再編成の境界がありません（原子区間 1 個・${fmtbp(B_.span)}）。ここが木の底です。` +

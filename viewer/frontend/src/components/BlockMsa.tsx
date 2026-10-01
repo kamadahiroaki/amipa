@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBlocks, fetchBlockWindow, fetchBlockRange, warmBlocks, BlockDrillRequest } from '../api/client'
+import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockSites, warmBlocks, BlockDrillRequest } from '../api/client'
 import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView, GeneLite } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
@@ -42,6 +42,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onHoverBlock: b => cbRef.current.onHoverBlock?.(b),
         onDrill: req => fetchBlockWindow(db, req),          // 旧サイドカー: 事前計算に無い窓を backend で逐次計算
         onRange: (x0, x1, label, depth, parent, pblock) => fetchBlockRange(db, x0, x1, label, depth, parent, pblock),   // 木: 範囲の窓
+        onSites: q => fetchBlockSites(db, q),                // 木: 変異の段（アレル行列）
         onView: v => cbRef.current.onView?.(v),
         onSelectHap: (k, h) => cbRef.current.onSelectHap?.(k, h),
         onBaseMsa: req => cbRef.current.onBaseMsa?.(req),

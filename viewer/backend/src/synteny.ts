@@ -300,6 +300,64 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
   }
 }
 
+// ---- アレル行列（変異の段）: 合意列の範囲 [c0, c1] の列（cols 表: 株ビットセット）から、サイトとアレルを作る ----
+//   不変列 = その範囲で株数が最大（ncover）の列。サイト = 不変列の間の非不変列の連なり（バブル）。
+//   株のアレル = サイトの中でその株が持つ列の集合（同じ集合＝同じアレル）。被覆（左右の不変列を持つ）していて列を持たない株は
+//   「無し」のアレル（欠失側）。被覆していない株は 255（この区間を持たない）。
+export interface SitesResult { c0: number; c1: number; ncols: number; ncover: number; H: number; haps: string[]; nsites: number
+  sites: { x: number; c0: number; c1: number; ncols: number; bp: number; nall: number; counts: number[] }[]; cells: string; tooMany?: boolean; error?: string }
+const SITES_MAX = 6000
+export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: number; x1?: number }, max = SITES_MAX): SitesResult | { error: string } {
+  const d = new Database(syn.file, { readonly: true })
+  try {
+    let c0 = q.c0, c1 = q.c1
+    if (c0 == null || c1 == null) {
+      if (q.x0 == null || q.x1 == null) return { error: 'c0,c1 か x0,x1 が要ります' }
+      const a = d.prepare('SELECT MIN(col) AS c FROM cols WHERE x >= ?').get(Math.floor(q.x0)) as { c: number | null }
+      const b = d.prepare('SELECT MAX(col) AS c FROM cols WHERE x <= ?').get(Math.ceil(q.x1)) as { c: number | null }
+      if (a.c == null || b.c == null || b.c < a.c) return { error: '範囲に列がありません' }
+      c0 = a.c; c1 = b.c
+    }
+    const rows = d.prepare('SELECT col, x, bp, nhap, haps FROM cols WHERE col BETWEEN ? AND ? ORDER BY col').all(c0, c1) as { col: number; x: number; bp: number; nhap: number; haps: Buffer }[]
+    const H = syn.H; let haps: string[] = []
+    try { haps = JSON.parse(syn.meta.hapnames || '[]') } catch { haps = [] }
+    if (!rows.length) return { error: '範囲に列がありません' }
+    const ncover = Math.max(...rows.map(r => r.nhap))
+    const has = (buf: Buffer, h: number) => (buf[h >> 3] >> (h & 7)) & 1
+    // 被覆集合: 最初の不変列のビットセット
+    const inv0 = rows.find(r => r.nhap === ncover)
+    const cover: number[] = []; for (let h = 0; h < H; h++) if (!inv0 || has(inv0.haps, h)) cover.push(h)
+    const coverSet = new Set(cover)
+    // サイト = 不変列の間の非不変列の連なり
+    const sites: SitesResult['sites'] = []; const cellsArr: number[][] = []
+    let i = 0
+    while (i < rows.length) {
+      if (rows[i].nhap === ncover) { i++; continue }
+      let j = i; while (j < rows.length && rows[j].nhap !== ncover) j++
+      const run = rows.slice(i, j)
+      if (sites.length >= max) return { c0, c1, ncols: rows.length, ncover, H, haps, nsites: -1, sites: [], cells: '', tooMany: true, error: `変異サイトが ${max} を超えます（列 ${rows.length}）。範囲を狭めてください` }
+      // 株ごとの列集合（ビット列の位置の列挙）→ アレル
+      const key: (string | null)[] = new Array(H).fill(null)
+      for (let h = 0; h < H; h++) {
+        if (!coverSet.has(h)) continue
+        const ks: number[] = []; for (let k = 0; k < run.length; k++) if (has(run[k].haps, h)) ks.push(k)
+        key[h] = ks.join(',')
+      }
+      const cnt = new Map<string, number>(); for (let h = 0; h < H; h++) if (key[h] != null) cnt.set(key[h]!, (cnt.get(key[h]!) || 0) + 1)
+      const refIdx = syn.paths.filter(p => p.isref).map(p => haps.indexOf(p.hap)).find(v => v >= 0)
+      const order = [...cnt.keys()].sort((u, v) => (cnt.get(v)! - cnt.get(u)!) || (u < v ? -1 : 1))
+      if (refIdx != null && refIdx >= 0 && key[refIdx] != null) { const k = key[refIdx]!; order.splice(order.indexOf(k), 1); order.unshift(k) }
+      const idxOf = new Map(order.map((k, n) => [k, n]))
+      const cells = new Array(H).fill(255); for (let h = 0; h < H; h++) if (key[h] != null) cells[h] = Math.min(254, idxOf.get(key[h]!)!)
+      cellsArr.push(cells)
+      sites.push({ x: run[0].x, c0: run[0].col, c1: run[run.length - 1].col, ncols: run.length, bp: Math.max(...run.map(r => r.bp)), nall: order.length, counts: order.map(k => cnt.get(k)!) })
+      i = j
+    }
+    const flat = new Uint8Array(sites.length * H); cellsArr.forEach((c, k) => flat.set(c, k * H))
+    return { c0, c1, ncols: rows.length, ncover, H, haps, nsites: sites.length, sites, cells: Buffer.from(flat.buffer).toString('base64') }
+  } finally { d.close() }
+}
+
 // 旧サイドカー（JSON）と同じ外形: {meta, windows:[根], tree}
 export function rootData(syn: Synteny): any {
   const root = buildWindow(syn, -Infinity, Infinity, { label: '全体', depth: 0, parent: -1, pblock: -1 })
