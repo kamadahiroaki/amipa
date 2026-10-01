@@ -279,15 +279,19 @@ function drawSitesHeader(){ const S = sitesOf(); if (!S || !LY.siteW) return; co
   const gh = cv.hdr.getContext('2d'); const Hh = cv.hdr.clientHeight; gh.clearRect(0, 0, cv.hdr.clientWidth, Hh); gh.font = '10px "IBM Plex Mono"'; gh.fillStyle = TH.muted; gh.textAlign = 'left';
   let lastX = -1e9; for (let k = 0; k < S.nsites; k++){ const x = SITES_X0 + k*sw; const s_ = S.sites[k]; gh.fillStyle = s_.nall >= 3 ? TH.disp : (s_.nall === 2 ? TH.accent : TH.line); gh.fillRect(x, Hh-6, Math.max(1, sw-gap), 4);
     if (x - lastX >= 90){ gh.fillStyle = TH.muted; gh.fillText(fmtbp(s_.x), x, 12); gh.fillRect(x, 14, 1, 6); lastX = x; } }
+  if (st.sel!=null && st.sel < S.nsites){ gh.strokeStyle = TH.sel; gh.lineWidth = 1.5; gh.strokeRect(SITES_X0 + st.sel*sw + .5, .5, Math.max(2, sw) - 1, Hh - 1); }
   if (st.rangeSel){ gh.fillStyle = TH.selbg; gh.globalAlpha = .6; gh.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], Hh); gh.globalAlpha = 1; } }
 function siteAt(px){ const S = sitesOf(); if (!S) return null; const k = Math.floor((px - SITES_X0) / LY.siteW); return (k >= 0 && k < S.nsites) ? k : null; }
 function siteInfo(k, ri){ const S = sitesOf(); const s_ = S.sites[k]; const H = S.H; const r = ri != null ? LY.rows[ri] : null; const hi = r ? S._hidx.get(r.hap) : null; const a = hi != null ? S._cells[k*H + hi] : null;
   const names = S.sites.length ? '' : ''; const dist = s_.counts.map((n, i) => `<span style="display:inline-block;width:9px;height:9px;background:${SITES_COLORS[Math.min(i, SITES_COLORS.length-1)]};vertical-align:-1px;margin-right:3px"></span>${i===0?'参照側':'アレル '+(i+1)} ${n} 株`).join(' · ');
   return `<p><span class="h">変異サイト ${k+1} / ${S.nsites}</span><br><span class="k">合意座標 ${fmtbp(s_.x)} · 列 ${s_.c0}–${s_.c1}（${s_.ncols} 列、最長 ${s_.bp} bp）· アレル ${s_.nall} 種</span><br>${dist}${r ? `<br><span class="k">${esc(r.hap)}:</span> ${a===255?'この区間を持たない':(a===0?'参照側のアレル':'アレル '+(a+1))}` : ''}</p>`; }
-function sitesWindow(S, label, parent, pblock, c0, c1){ const pw = WINS[parent]; const Lp = pw.levels[0];
+function siteRef(k){ const S = sitesOf(); const L = level(); if (!S || k==null || !S.sites[k]) return null; const s_ = S.sites[k]; const span = Math.max(400, s_.bp * 2);
+  return { win: st.win, level: st.li, W: 0, rank: k, name: 'site', ref_contig: (L.refc!=null ? L.refc : 0), x: Math.max(0, s_.x - span/2), span, tbp: s_.bp, nhap: S.ncover, label: '変異サイト ' + (k+1), site: true }; }
+function sitesWindow(S, label, parent, pblock, c0, c1){ const pw = WINS[parent]; const Lp = pw.levels[0]; const PB = pblock>=0 ? Lp.blocks[pblock] : null;
+  const refc = PB ? (PB.ref_contig!=null ? PB.ref_contig : 0) : (Lp.blocks[0] ? (Lp.blocks[0].ref_contig||0) : 0); const pcolor = PB ? colorOf(pblock) : 'rgb(13,148,136)';
   const haps = Lp.haps.map(h => ({ hap: h.hap, isref: h.isref, contigs: [{ name: '', path: '', strand: '+', start: 0, bp: 0, nsteps: 0, inst: [], minor: [] }] }));
   return { id: -1, parent, pblock, depth: pw.depth + 1, label, atoms: 0, H: haps.length, children: {}, mode: 'sites', anchors: null, ondemand: true, tree: true,
-    levels: [{ W: 0, nblocks: 0, blocks: [], haps, mergecap: 0, mode: 'sites', adj: [], events: {}, origin: 0, merges: 0, members: null, nonmono: 0, sites: S, c0, c1 }] }; }
+    levels: [{ W: 0, nblocks: 0, blocks: [], haps, mergecap: 0, mode: 'sites', adj: [], events: {}, origin: 0, merges: 0, members: null, nonmono: 0, sites: S, c0, c1, refc, pcolor }] }; }
 function openSites(q, label, pblock){ if (!(cb && cb.onSites) || st.drilling) return; const pw = st.win;
   const ncol = (q.c0 != null && q.c1 != null) ? (q.c1 - q.c0 + 1) : null;
   if (ncol != null && ncol <= BASE_MAX_LEAVES && pblock != null && pblock >= 0){ baseMsa(pblock); return; }   // 葉 400 以下 → 塩基へ
@@ -315,6 +319,9 @@ function drawAll(){ _gdMax = null; computeLayout(); if (isSites()) sitesLayout()
 let _lastViewKey = '';
 function emitView(){ if (!(cb && cb.onView)) return; const L = level(); const key = st.win+':'+st.li+':'+LY.vis.join(',')+':'+(st.sync?1:0);
   if (key === _lastViewKey) return; _lastViewKey = key;
+  if (isSites()){ const S = L.sites; const f = S.sites[0], l = S.sites[S.nsites-1]; const x0 = f.x, x1 = l.x + Math.max(1, l.bp); const refc = L.refc!=null ? L.refc : 0;
+    cb.onView({ win: st.win, level: st.li, W: 0, mode: 'sites', tree: TREE, scope: { contig: refc, start: x0, end: x1 }, scopeKey: st.win + '|sites', sync: st.sync, n0: 0,
+      blocks: [{ rank: 0, color: L.pcolor || 'rgb(13,148,136)', ref_contig: refc, x: x0, span: Math.max(1, x1 - x0), label: win().label, members: [] }] }); return; }
   // 範囲 = 見えているブロックの参照区間の合併（最多のコンティグ）。窓・絞り込みが変わったときだけ scopeKey が変わる
   const byC = new Map(); for (const rank of LY.vis){ const B = L.blocks[rank]; const c = (B.ref_contig!=null ? B.ref_contig : 0); const g = byC.get(c) || {n:0, lo:Infinity, hi:-Infinity}; g.n++; g.lo = Math.min(g.lo, B.x); g.hi = Math.max(g.hi, B.x + B.span); byC.set(c, g); }
   let scope = null; for (const [c,g] of byC){ if (!scope || g.n > scope.n){ scope = {contig:c, start:g.lo, end:g.hi, n:g.n}; } }
@@ -550,7 +557,7 @@ function drawLegend(){ const el=$('legend'); el.innerHTML='';
   for (const t of ['行はそのハプロタイプのブロック順。合意と揃う主鎖は上段で列に揃え（幅＝典型長）、外れたブロックは下段に、前後の主鎖の間へ順に置く。隙間に入らない長い連なりは右へはみ出し、横スクロールで見る。逆位は左向き＋下線', `矢印の中の塗り＝Mauve 風の類似度プロファイル。高さが保存度（この層の典型密度の 2 倍以上で 0、変異なしで満杯）。尺度が「${mname}」。少数派サイトは位置ごとの山型、他の尺度は一定の高さ。${nname}`,'合意座標モードでは矢印の幅＝ブロックの合意座標。白い切れ目＝この株に合意の錨が無い区間（欠失・分岐・断片の外側。ブロック幅の 1% か 200 bp 以上）、点線の縁＝コンティグの端で切れている、変異の線は合意座標に揃う','灰色の縞＝ブロック内側の長い錨なし区間（20 kb 以上の挿入・反復・非コア。合意座標モードでは直前の錨の位置）。上辺のピンクの破線＝この株だけブロック内部の順序が入れ替わっている（粗い層で無視した少数派の破断点）','段（まとめ方）＝最細段のブロックを、幅が段の幅未満のものから支持の弱い境界で隣とまとめたもの。粗い段のブロックの色は含む最細ブロックの平均位置。粗い段のブロックに入ると配下の最細ブロックに絞り込む（計算なし）。最細段のブロックに入ると新しい窓','錨の対応線＝隣り合う行で同じ錨（80% 以上の株が持つ共有ノード。窓ごとに 800 本を等間隔に標本化）の位置を結ぶ細線。色は合意座標（左→右、環状なら原点から）。揃っていれば縦の帯、交差＝逆位、扇状に開く・閉じる＝挿入・欠失、長い斜線＝転座。第二錨（薄い線）＝コアでないが 2 株以上が持つノードの対応。逆位の矢印（←）は中身も鏡像に描く（その株の配列は右から左へ進む）','ブロック＝範囲（内側へ）・グラフとの接続・行をまたぐ集計の単位。矢印の細い帯と先端が向き、その下の塗りが保存度のプロファイル','系統樹の数字＝その枝で獲得／喪失した隣接の数（節約法）']){ const s=document.createElement('span'); s.textContent=t; el.appendChild(s); } }
 
 
-function blockRef(rank){ if (rank==null) return null; const L = level(); const B = L.blocks[rank]; if (!B) return null;
+function blockRef(rank){ if (isSites()) return siteRef(rank); if (rank==null) return null; const L = level(); const B = L.blocks[rank]; if (!B) return null;
   return {win: st.win, level: st.li, W: L.W, rank, name: B.name, ref_contig: (B.ref_contig!=null ? B.ref_contig : 0), x: B.x, span: B.span, tbp: B.tbp, nhap: B.nhap, label: '#'+(rank+1)}; }
 function emitSel(){ if (cb && cb.onSelectBlock) cb.onSelectBlock(blockRef(st.sel)); }
 let _lastHover = null;
@@ -597,7 +604,7 @@ function hit(x,y){ const ri = Math.floor(y/RH); if (ri<0||ri>=LY.rows.length) re
   for (const b of (r.bundles||[])){ const y0 = b.lane===1?16:3, y1 = b.lane===1?27:17; if (x>=b.x-1 && x<=b.x+b.w+1 && ly>=y0 && ly<=y1) return {ri, b}; }
   return {ri}; }
 const grid = cv.grid;
-grid.addEventListener('mousemove', e=>{ const rect = grid.getBoundingClientRect(); if (isSites()){ const ri = Math.floor((e.clientY-rect.top)/RH); const k = siteAt(e.clientX-rect.left); const h0 = (ri>=0 && ri<LY.rows.length) ? {ri} : null; if (!st.hover || !h0 || st.hover.ri!==h0.ri){ st.hover = h0; drawGrid(); drawLabels(); } if (k!=null && h0 && !st.pinned) setDetail(siteInfo(k, ri)); return; } const h = hit(e.clientX-rect.left, e.clientY-rect.top); st.hover = h; st.hoverRank = h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null); drawGrid(); drawLabels(); if (!st.pinned) showItem(h);
+grid.addEventListener('mousemove', e=>{ const rect = grid.getBoundingClientRect(); if (isSites()){ const ri = Math.floor((e.clientY-rect.top)/RH); const k = siteAt(e.clientX-rect.left); const h0 = (ri>=0 && ri<LY.rows.length) ? {ri} : null; if (!st.hover || !h0 || st.hover.ri!==h0.ri){ st.hover = h0; drawGrid(); drawLabels(); } if (k!=null && h0 && !st.pinned) setDetail(siteInfo(k, ri)); emitHover(k); return; } const h = hit(e.clientX-rect.left, e.clientY-rect.top); st.hover = h; st.hoverRank = h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null); drawGrid(); drawLabels(); if (!st.pinned) showItem(h);
   emitHover(h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null)); });
 grid.addEventListener('mouseleave', ()=>{ st.hover=null; st.hoverRank=null; drawGrid(); drawLabels(); emitHover(null); });
 grid.addEventListener('dblclick', e=>{ const rect = grid.getBoundingClientRect(); const h = hit(e.clientX-rect.left, e.clientY-rect.top);
@@ -711,8 +718,8 @@ window.addEventListener('mouseup', e=>{ if (!_hdrDrag) return; const d = _hdrDra
   const [pa, pb] = st.rangeSel; const xa = pxToCons(pa), xb = pxToCons(pb); if (xa==null || xb==null){ st.rangeSel = null; drawHeader(); return; }
   drillRange(Math.min(xa,xb), Math.max(xa,xb)); });
 cv.hdr.addEventListener('dblclick', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = c.rank; st.pinned = true; drawAll(); emitSel(); drillInto(c.rank); return; } } });
-cv.hdr.addEventListener('click', e=>{ if (_hdrDragged){ _hdrDragged = false; return; } if (e.detail && e.detail > 1) return; const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = (st.sel===c.rank)?null:c.rank; st.pinned = st.sel!=null; if (st.sel!=null) showBlock(c.rank); drawAll(); emitSel(); return; } } });
-cv.hdr.addEventListener('mousemove', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; if (isSites()){ const k = siteAt(x); if (k != null && !st.pinned) setDetail(siteInfo(k, null)); return; } for (const c of LY.cols){ if (x>=c.x && x<=c.x+c.w){ if (!st.pinned) showBlock(c.rank); emitHover(c.rank); if (st.hoverRank!==c.rank){ st.hoverRank=c.rank; drawGrid(); } return; } } emitHover(null); if (st.hoverRank!=null){ st.hoverRank=null; drawGrid(); } });
+cv.hdr.addEventListener('click', e=>{ if (_hdrDragged){ _hdrDragged = false; return; } if (e.detail && e.detail > 1) return; const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; if (isSites()){ const k = siteAt(x); st.sel = (k!=null && st.sel===k) ? null : k; st.pinned = st.sel!=null; if (st.sel!=null) setDetail(siteInfo(st.sel, null)); drawHeader(); drawGrid(); emitSel(); return; } for (const c of LY.cols){ if (c.type==='block' && x>=c.x && x<=c.x+c.w){ st.sel = (st.sel===c.rank)?null:c.rank; st.pinned = st.sel!=null; if (st.sel!=null) showBlock(c.rank); drawAll(); emitSel(); return; } } });
+cv.hdr.addEventListener('mousemove', e=>{ const rect = cv.hdr.getBoundingClientRect(); const x = e.clientX-rect.left; if (isSites()){ const k = siteAt(x); if (k != null && !st.pinned) setDetail(siteInfo(k, null)); emitHover(k); return; } for (const c of LY.cols){ if (x>=c.x && x<=c.x+c.w){ if (!st.pinned) showBlock(c.rank); emitHover(c.rank); if (st.hoverRank!==c.rank){ st.hoverRank=c.rank; drawGrid(); } return; } } emitHover(null); if (st.hoverRank!=null){ st.hoverRank=null; drawGrid(); } });
 cv.hdr.addEventListener('mouseleave', ()=>{ emitHover(null); if (st.hoverRank!=null){ st.hoverRank=null; drawGrid(); } });
 function enterWindow(ch){ st.win = ch; st.li = Math.max(0, WINS[ch].levels.length-1); st.sel=null; st.origin=null; st.pinned=false; st.filter=null; st.filterPath=[]; drawAll(); emitSel(); }
 // 親ブロック rank の各インスタンスのトークン範囲（inst[8]=s0, inst[9]=e0、パス名で送る）。事前計算の child_ranges と同じ定義

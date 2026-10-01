@@ -273,7 +273,11 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
         // 主鎖 → kind（0 主鎖 / 2 変位 / 3 逆位）と、この行の向き（鎖の向き）
         const ck = chainKinds(out.map(it => it[0]), out.map(it => it[1]), out.map(it => it[2]), blocks.length, syn.circular && wholeGenome)
         out.forEach((it, k) => { it[5] = ck.kinds[k] })
-        return { name: pr.contig, path: pr.path, strand: ck.sign < 0 ? '-' : '+', start: 0, bp: pr.bp, nsteps: pr.nsteps, inst: out, minor }
+        // 行の長さ＝この窓にあるインスタンスの bp ＋ その間の隙間（旧構築器の「範囲のトークンの bp」に相当）。コンティグ全長にすると
+        // 子窓の「各行の並び」で幅が 1/30 になり目盛りと合わない
+        const rowBp = out.reduce((a, it) => a + it[2], 0) + minor.reduce((a, m) => a + m[1], 0)
+        const rowSteps = out.reduce((a, it) => a + it[3], 0)
+        return { name: pr.contig, path: pr.path, strand: ck.sign < 0 ? '-' : '+', start: 0, bp: rowBp, nsteps: rowSteps, inst: out, minor }
       })
       return { hap: h, isref: prs.some(p => p.isref) ? 1 : 0, contigs }
     })
@@ -306,7 +310,7 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
 //   「無し」のアレル（欠失側）。被覆していない株は 255（この区間を持たない）。
 export interface SitesResult { c0: number; c1: number; ncols: number; ncover: number; H: number; haps: string[]; nsites: number
   sites: { x: number; c0: number; c1: number; ncols: number; bp: number; nall: number; counts: number[] }[]; cells: string; tooMany?: boolean; error?: string }
-const SITES_MAX = 6000
+const SITES_MAX = 20000     // 1 px/サイトで横スクロール 20,000 px まで。それ以上は範囲を狭めてもらう
 export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: number; x1?: number }, max = SITES_MAX): SitesResult | { error: string } {
   const d = new Database(syn.file, { readonly: true })
   try {
