@@ -3,6 +3,8 @@ import fs from 'fs'
 import path from 'path'
 import { getDb, getDbDir } from '../db'
 import { distillFor } from './bubbleMsa'
+import { execFile } from 'child_process'
+import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
 import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange } from '../synteny'
 
@@ -60,6 +62,24 @@ blocksRouter.get('/blocks/sites', (req, res) => {
     const r = sitesForRange(syn, { c0: num(q.c0), c1: num(q.c1), x0: num(q.x0), x1: num(q.x1) }, q.max ? Number(q.max) : undefined)
     res.json({ ...r, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) }
+})
+
+// 合意列の範囲 → 各パスのトークン範囲（塩基 MSA へ渡す）。scripts/blocks/colrange_tokens.py（distill の p_tok と木の dcol だけ）
+//   GET /api/blocks/tokranges?db&c0&c1 → {ranges:[[path,s0,e0],…], ncols}
+blocksRouter.get('/blocks/tokranges', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const sp = syntenyPath(q.db); if (!sp) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
+  const dbPath = path.join(getDbDir(), path.basename(q.db)); const distill = distillFor(dbPath)
+  if (!distill) { res.json({ error: 'distill サイドカーがありません' }); return }
+  const c0 = Number(q.c0), c1 = Number(q.c1)
+  if (!Number.isFinite(c0) || !Number.isFinite(c1) || c1 < c0) { res.status(400).json({ error: 'c0 ≤ c1 が要ります' }); return }
+  const t0 = Date.now()
+  execFile(AMIPA_PYTHON, [amipaScript('blocks/colrange_tokens.py'), '--distill', distill, '--synteny', sp, '--c0', String(Math.floor(c0)), '--c1', String(Math.ceil(c1))],
+    { timeout: 60000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) { res.json({ error: 'トークン範囲の計算に失敗: ' + (stderr ? String(stderr).slice(0, 300) : String(err)) }); return }
+      try { const j = JSON.parse(stdout); j.ms = Date.now() - t0; res.json(j) } catch (e) { res.json({ error: '出力を解釈できません: ' + String(e) }) }
+    })
 })
 
 // 木の範囲問い合わせ: 合意座標 [x0, x1] の窓（段は 30/12/5 ブロックの予算切り）。ブロックの内側へ・列見出しのドラッグの両方がこれ

@@ -806,6 +806,11 @@ export async function fetchBlockSites(dbFile: string, q: { c0?: number; c1?: num
   const p = new URLSearchParams({ db: dbFile }); for (const k of ['c0', 'c1', 'x0', 'x1'] as const) if (q[k] != null) p.set(k, String(Math.round(q[k]!)))
   try { const res = await fetch(`/api/blocks/sites?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }
+// 合意列の範囲 → 各パスのトークン範囲（塩基 MSA へ渡す）
+export async function fetchBlockTokRanges(dbFile: string, c0: number, c1: number): Promise<{ ranges?: [string, number, number][]; ncols?: number; error?: string }> {
+  const p = new URLSearchParams({ db: dbFile, c0: String(Math.floor(c0)), c1: String(Math.ceil(c1)) })
+  try { const res = await fetch(`/api/blocks/tokranges?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
+}
 // 木の範囲問い合わせ（<db>.synteny がある DB）: 合意座標 [x0, x1] の窓を backend が木から作る（Python ワーカー不要）
 export async function fetchBlockRange(dbFile: string, x0: number, x1: number, label: string, depth: number, parent: number, pblock: number, tier?: number): Promise<BlockDrillResult> {
   const p = new URLSearchParams({ db: dbFile, x0: String(Math.floor(x0)), x1: String(Math.ceil(x1)), label, depth: String(depth), parent: String(parent), pblock: String(pblock) })
