@@ -270,14 +270,16 @@ function isSites(){ return !!(level() && level().mode === 'sites'); }
 function sitesOf(){ const L = level(); return L && L.mode === 'sites' ? L.sites : null; }
 function sitesLayout(){ const S = sitesOf(); const W = $('gridwrap').clientWidth - 8; const n = Math.max(1, S.nsites); LY.siteW = Math.max(1, Math.min(14, Math.floor(W / n))); LY.fullW = SITES_X0 + n * LY.siteW + 4; LY.cols = []; LY.vis = []; LY.blockX = new Map();
   if (!S._cells){ const raw = atob(S.cells); const u = new Uint8Array(raw.length); for (let i=0;i<raw.length;i++) u[i] = raw.charCodeAt(i); S._cells = u; S._hidx = new Map(S.haps.map((h,i)=>[h,i])); } }
-function drawSites(){ const S = sitesOf(); if (!S) return; const g = cv.grid.getContext('2d'); const sw = LY.siteW, gap = sw >= 4 ? 1 : 0; const H = S.H;
+function drawSitesGrid(){ const S = sitesOf(); if (!S || !LY.siteW) return; const g = cv.grid.getContext('2d'); const sw = LY.siteW, gap = sw >= 4 ? 1 : 0; const H = S.H;
   LY.rows.forEach((r, ri) => { const hi = S._hidx.get(r.hap); if (hi == null) return; const y = ri*RH + 5, h = RH - 10;
     for (let k = 0; k < S.nsites; k++){ const a = S._cells[k*H + hi]; if (a === 255) continue; g.fillStyle = SITES_COLORS[Math.min(a, SITES_COLORS.length-1)]; g.fillRect(SITES_X0 + k*sw, y, sw - gap, h); } });
-  if (st.rangeSel){ g.fillStyle = TH.selbg; g.globalAlpha = .5; g.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], cv.grid.clientHeight); g.globalAlpha = 1; }
-  // 列見出し: 10 サイトごとの目盛りと合意座標、アレル数の帯
+  if (st.rangeSel){ g.fillStyle = TH.selbg; g.globalAlpha = .5; g.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], cv.grid.clientHeight); g.globalAlpha = 1; } }
+function drawSitesHeader(){ const S = sitesOf(); if (!S || !LY.siteW) return; const sw = LY.siteW, gap = sw >= 4 ? 1 : 0;
+  // 列見出し: 目盛りと合意座標、アレル数の帯、ドラッグ中の範囲
   const gh = cv.hdr.getContext('2d'); const Hh = cv.hdr.clientHeight; gh.clearRect(0, 0, cv.hdr.clientWidth, Hh); gh.font = '10px "IBM Plex Mono"'; gh.fillStyle = TH.muted; gh.textAlign = 'left';
   let lastX = -1e9; for (let k = 0; k < S.nsites; k++){ const x = SITES_X0 + k*sw; const s_ = S.sites[k]; gh.fillStyle = s_.nall >= 3 ? TH.disp : (s_.nall === 2 ? TH.accent : TH.line); gh.fillRect(x, Hh-6, Math.max(1, sw-gap), 4);
-    if (x - lastX >= 90){ gh.fillStyle = TH.muted; gh.fillText(fmtbp(s_.x), x, 12); gh.fillRect(x, 14, 1, 6); lastX = x; } } }
+    if (x - lastX >= 90){ gh.fillStyle = TH.muted; gh.fillText(fmtbp(s_.x), x, 12); gh.fillRect(x, 14, 1, 6); lastX = x; } }
+  if (st.rangeSel){ gh.fillStyle = TH.selbg; gh.globalAlpha = .6; gh.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], Hh); gh.globalAlpha = 1; } }
 function siteAt(px){ const S = sitesOf(); if (!S) return null; const k = Math.floor((px - SITES_X0) / LY.siteW); return (k >= 0 && k < S.nsites) ? k : null; }
 function siteInfo(k, ri){ const S = sitesOf(); const s_ = S.sites[k]; const H = S.H; const r = ri != null ? LY.rows[ri] : null; const hi = r ? S._hidx.get(r.hap) : null; const a = hi != null ? S._cells[k*H + hi] : null;
   const names = S.sites.length ? '' : ''; const dist = s_.counts.map((n, i) => `<span style="display:inline-block;width:9px;height:9px;background:${SITES_COLORS[Math.min(i, SITES_COLORS.length-1)]};vertical-align:-1px;margin-right:3px"></span>${i===0?'参照側':'アレル '+(i+1)} ${n} 株`).join(' · ');
@@ -308,7 +310,7 @@ function sitesRange(xa, xb){ const S = sitesOf(); if (!S) return; const ks = [];
       if (hi > lo) ranges.push([c.path, lo, hi]); }
     if (ranges.length){ cb.onBaseMsa({ ranges, span: xb - xa, afrac: 0, label: winPath().map((p,i)=>i===0?'全体':p.label).join('›') + '›' + label, depth: w.depth+1, parent: st.win, pblock: -1 }); st.rangeSel = null; drawAll(); $('detailbody').innerHTML = `<p class="k">区間 ${label}（列 ${ncol}）の各行を塩基レベル MSA に渡しました。</p>`; return; } }
   st.rangeSel = null; openSites({ c0, c1 }, label, -1); }
-function drawAll(){ _gdMax = null; computeLayout(); if (isSites()) sitesLayout(); layoutCanvases(); drawHeader(); drawGrid(); if (isSites()) drawSites(); drawLabels(); drawTree(); drawChips(); drawLegend(); updateButtons(); emitView(); }
+function drawAll(){ _gdMax = null; computeLayout(); if (isSites()) sitesLayout(); layoutCanvases(); drawHeader(); drawGrid(); drawLabels(); drawTree(); drawChips(); drawLegend(); updateButtons(); emitView(); }
 // 窓・段（＝色の割り当て）が変わったときだけ、見えているブロックと色を App へ知らせる（グラフのノードをブロック色で塗る）
 let _lastViewKey = '';
 function emitView(){ if (!(cb && cb.onView)) return; const L = level(); const key = st.win+':'+st.li+':'+LY.vis.join(',')+':'+(st.sync?1:0);
@@ -403,7 +405,8 @@ function drawAnchorLinks(g){ const anc = anchorsOf(win()); if (!st.anc || !anc |
       g.strokeStyle = hue(k); g.globalAlpha = emph!=null ? .12 : .3; g.beginPath(); g.moveTo(xa, yB(i, A.ys[k])); g.lineTo(xb, yT(i+1, B.ys[k])); g.stroke(); n++; } }
   g.globalAlpha = 1; return n; }
 function drawLinks(g){ drawAnchorLinks(g); }
-function drawGrid(){
+function drawGrid(){ drawGridBase(); if (isSites()) drawSitesGrid(); }
+function drawGridBase(){
   const g = cv.grid.getContext('2d'); const W = cv.grid.clientWidth, H = cv.grid.clientHeight; g.clearRect(0,0,W,H);
   if (st.sel!=null && LY.blockX.has(st.sel)){ const c = LY.blockX.get(st.sel); g.fillStyle = TH.selbg; g.fillRect(c.x, 0, c.w, H); }
   LY.rows.forEach((r,ri)=>{ const y = ri*RH;
@@ -455,7 +458,8 @@ function drawGrid(){
   if (st.busy){ g.fillStyle = 'rgba(255,255,255,.55)'; g.fillRect(0, 0, W, H); g.fillStyle = TH.sel; g.fillRect(0, 0, W, 26); g.fillStyle = '#fff'; g.font = '600 12px "IBM Plex Sans", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('計算中: ' + st.busy, 10, 13); }
   if (st.hover && st.hover.p){ const p = st.hover.p; const lane = (st.mode==='own') ? 0 : p.slot.lane; g.strokeStyle = TH.sel; g.lineWidth=1.5; g.strokeRect(p.x-1.5, st.hover.ri*RH + (lane===0?2.5:15.5), p.w+3, lane===0?15:12); }
 }
-function drawHeader(){
+function drawHeader(){ if (isSites()){ drawSitesHeader(); return; } drawHeaderBase(); }
+function drawHeaderBase(){
   const g = cv.hdr.getContext('2d'); const W = cv.hdr.clientWidth, H = cv.hdr.clientHeight; g.clearRect(0,0,W,H); const L = level();
   g.font='10px "IBM Plex Mono"'; let lastLabelX=-1e9;
   for (const c of LY.cols){
@@ -593,7 +597,7 @@ function hit(x,y){ const ri = Math.floor(y/RH); if (ri<0||ri>=LY.rows.length) re
   for (const b of (r.bundles||[])){ const y0 = b.lane===1?16:3, y1 = b.lane===1?27:17; if (x>=b.x-1 && x<=b.x+b.w+1 && ly>=y0 && ly<=y1) return {ri, b}; }
   return {ri}; }
 const grid = cv.grid;
-grid.addEventListener('mousemove', e=>{ const rect = grid.getBoundingClientRect(); const h = hit(e.clientX-rect.left, e.clientY-rect.top); st.hover = h; st.hoverRank = h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null); drawGrid(); drawLabels(); if (!st.pinned) showItem(h);
+grid.addEventListener('mousemove', e=>{ const rect = grid.getBoundingClientRect(); if (isSites()){ const ri = Math.floor((e.clientY-rect.top)/RH); const k = siteAt(e.clientX-rect.left); const h0 = (ri>=0 && ri<LY.rows.length) ? {ri} : null; if (!st.hover || !h0 || st.hover.ri!==h0.ri){ st.hover = h0; drawGrid(); drawLabels(); } if (k!=null && h0 && !st.pinned) setDetail(siteInfo(k, ri)); return; } const h = hit(e.clientX-rect.left, e.clientY-rect.top); st.hover = h; st.hoverRank = h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null); drawGrid(); drawLabels(); if (!st.pinned) showItem(h);
   emitHover(h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null)); });
 grid.addEventListener('mouseleave', ()=>{ st.hover=null; st.hoverRank=null; drawGrid(); drawLabels(); emitHover(null); });
 grid.addEventListener('dblclick', e=>{ const rect = grid.getBoundingClientRect(); const h = hit(e.clientX-rect.left, e.clientY-rect.top);
