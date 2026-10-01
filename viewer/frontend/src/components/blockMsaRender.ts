@@ -8,7 +8,7 @@ export interface BlockRef { win: number; level: number; W: number; rank: number;
 export interface GeneLite { name: string; start: number; end: number; strand?: string }
 export interface BlockMsaHandle { selectByRef(contig: number, bp: number): boolean; setHapMarks(m: Map<string, string>): void; setGenes(g: Map<number, GeneLite[]>): void; destroy(): void; _layout?: () => any }
 // 現在見えている窓・段のブロック一覧（色つき）。App がグラフのノードをブロック色で塗るのに使う
-export interface BlockView { win: number; level: number; W: number; mode: string; blocks: { rank: number; color: string; ref_contig: number; x: number; span: number; label: string; members: number[] }[]; scope: { contig: number; start: number; end: number } | null; scopeKey: string; sync: boolean; n0: number }
+export interface BlockView { win: number; level: number; W: number; mode: string; tree?: boolean; blocks: { rank: number; color: string; ref_contig: number; x: number; span: number; label: string; members: number[] }[]; scope: { contig: number; start: number; end: number } | null; scopeKey: string; sync: boolean; n0: number }
 export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void; onDrill?: (req: BlockDrillRequest) => Promise<BlockDrillResult>; onRange?: (x0: number, x1: number, label: string, depth: number, parent: number, pblock: number) => Promise<any>; onView?: (v: BlockView | null) => void; onSelectHap?: (groupKey: string, hap: string) => void; onBaseMsa?: (req: BlockDrillRequest) => void }
 // MSA の行（ハプロタイプ名。例 'HG00673#1', 'GCF_013459175.1#1', 'grch38#chrY'）を、グラフのパス群の鍵
 // （sample 'HG00673' / haplotype 'HG00673#1' / ecoli では haplotype 'GCF_013459175.1', sample 'GCF_013459175'）に合わせる
@@ -271,7 +271,7 @@ function emitView(){ if (!(cb && cb.onView)) return; const L = level(); const ke
   const byC = new Map(); for (const rank of LY.vis){ const B = L.blocks[rank]; const c = (B.ref_contig!=null ? B.ref_contig : 0); const g = byC.get(c) || {n:0, lo:Infinity, hi:-Infinity}; g.n++; g.lo = Math.min(g.lo, B.x); g.hi = Math.max(g.hi, B.x + B.span); byC.set(c, g); }
   let scope = null; for (const [c,g] of byC){ if (!scope || g.n > scope.n){ scope = {contig:c, start:g.lo, end:g.hi, n:g.n}; } }
   const scopeKey = st.win + '|' + (st.filter ? [...st.filter].sort((a,b)=>a-b).join(',') : '');
-  cb.onView({ win: st.win, level: st.li, W: L.W, mode: L.mode||'blocks', scope: scope ? {contig:scope.contig, start:scope.start, end:scope.end} : null, scopeKey, sync: st.sync, n0: win().levels[0].nblocks,
+  cb.onView({ win: st.win, level: st.li, W: L.W, mode: L.mode||'blocks', tree: TREE, scope: scope ? {contig:scope.contig, start:scope.start, end:scope.end} : null, scopeKey, sync: st.sync, n0: win().levels[0].nblocks,
     blocks: LY.vis.map(rank => { const B = L.blocks[rank]; return { rank, color: colorOf(rank), ref_contig: (B.ref_contig!=null ? B.ref_contig : 0), x: B.x, span: B.span, label: '#'+(rank+1), members: membersOf(L, rank) }; }) }); }
 function arrowPath(g, x, y, w, h, dir){ const hd = Math.min(6, Math.max(2, w*0.35)); g.beginPath();
   if (dir){ g.moveTo(x,y); g.lineTo(x+w-hd,y); g.lineTo(x+w,y+h/2); g.lineTo(x+w-hd,y+h); g.lineTo(x,y+h); } else { g.moveTo(x+w,y); g.lineTo(x+hd,y); g.lineTo(x,y+h/2); g.lineTo(x+hd,y+h); g.lineTo(x+w,y+h); }
@@ -677,7 +677,11 @@ function drillInto(rank){ if (rank==null || st.drilling) return;
   const w = win(); const key = childKey(rank); const ch = w.children ? w.children[key] : null;
   if (ch!=null){ enterWindow(ch); return; }
   if (canBase(rank)){ baseMsa(rank); return; }          // 列が少ないブロックは窓を作らず塩基レベルへ（階層の底）
-  if (!(cb && (TREE ? cb.onRange : cb.onDrill)) || !canDrill(rank)) return;
+  if (!(cb && (TREE ? cb.onRange : cb.onDrill)) || !canDrill(rank)){
+    if (TREE){ const B_ = level().blocks[rank]; const cols_ = Math.round(baseCols(rank));
+      $('detailbody').innerHTML = `<p class="k">#${rank+1} の内側には再編成の境界がありません（原子区間 1 個・${fmtbp(B_.span)}）。ここが木の底です。` +
+        (cb && cb.onBaseMsa ? (cols_ <= BASE_MAX_LEAVES ? `塩基レベルへは「塩基へ ↓」で渡せます。` : `塩基レベル MSA は列が約 ${cols_.toLocaleString()} 個で上限 ${BASE_MAX_LEAVES} を超えるため渡せません。列見出しをドラッグして狭い区間を選ぶと渡せます。`) : '') + `</p>`; }
+    return; }
   // 木: ブロックの合意座標の範囲を backend に問い合わせて窓を作る。旧: 事前計算に無い窓 → 常駐ワーカーで逐次計算。
   // 返ってきた窓を WINS に足して、親の children に登録する
   const pw = st.win, pli = st.li, L = level(), B = L.blocks[rank];

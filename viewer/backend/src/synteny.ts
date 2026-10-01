@@ -194,6 +194,32 @@ function anchorsForRange(syn: Synteny, pids: number[], instsByPid: Map<number, I
   return { m: a1.m, x: a1.x, rows: a1.rows, m2: a2.m, x2: a2.x, rows2: a2.rows }
 }
 
+
+// ---- 主鎖（旧構築器 chain_circular と同じ考え）: 行のインスタンス列から「最も重い単調な連なり」を選ぶ。環状なら順位の原点を
+//      ずらして試し、両向きを試す。鎖に入るもの kind 0、入らないものは鎖と同じ向きなら 2（変位）、逆なら 3（逆位）。
+//      鎖の向きがその行（コンティグ）の strand になる（窓ごと・段ごとに決める。旧構築器と同じ）
+function weightedLis(c: number[], w: number[]): { score: number; members: number[] } {
+  const m = c.length; const best = new Array<number>(m).fill(0), prev = new Array<number>(m).fill(-1); let bi = -1, bs = -1
+  for (let i = 0; i < m; i++) { let b = 0, p = -1; for (let j = 0; j < i; j++) if (c[j] <= c[i] && best[j] > b) { b = best[j]; p = j } best[i] = b + w[i]; prev[i] = p; if (best[i] > bs) { bs = best[i]; bi = i } }
+  const members: number[] = []; while (bi >= 0) { members.push(bi); bi = prev[bi] }
+  return { score: bs, members }
+}
+function chainKinds(rk: number[], dr: number[], w: number[], nb: number, circular: boolean): { kinds: number[]; sign: number } {
+  const m = rk.length; if (!m) return { kinds: [], sign: 1 }
+  const offsets = circular && m > 2 ? [...new Set(rk)] : [0]
+  let best: { score: number; sign: number; set: Set<number> } | null = null
+  for (const o of offsets) for (const sign of [1, -1]) {
+    const idx: number[] = []; const c: number[] = []; const ww: number[] = []
+    for (let i = 0; i < m; i++) { if (dr[i] !== (sign > 0 ? 1 : 0)) continue; idx.push(i); c.push(((sign > 0 ? rk[i] - o : o - rk[i]) % nb + nb) % nb); ww.push(w[i]) }
+    if (!idx.length) continue
+    const r = weightedLis(c, ww)
+    if (!best || r.score > best.score) best = { score: r.score, sign, set: new Set(r.members.map(k => idx[k])) }
+  }
+  if (!best) return { kinds: rk.map(() => 2), sign: 1 }
+  const fwd = best.sign > 0 ? 1 : 0
+  return { kinds: rk.map((_, i) => best!.set.has(i) ? 0 : (dr[i] === fwd ? 2 : 3)), sign: best.sign }
+}
+
 const median = (v: number[]) => { if (!v.length) return 0; const s = [...v].sort((a, b) => a - b); return s[Math.floor(s.length / 2)] }
 
 export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts = {}): any {
@@ -201,6 +227,7 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
   const tierMax = opts.tierMax ?? 1
   const atoms = atomsInRange(syn, x0, x1)
   if (!atoms.length) return { error: '範囲に原子区間がありません' }
+  const wholeGenome = atoms.length === syn.atoms.length
   const aidx = new Map(atoms.map((a, i) => [a.id, i]))
   // 範囲内の原子インスタンス（パスごと、コンティグ順）
   const instsByPid = new Map<number, Inst[]>()
@@ -243,7 +270,10 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
         // 少数派の区間（旧: 錨でないトークンの連なり ≥ 床）: 原子インスタンスの間の隙間 ≥ 床を同じ形 [pos, bp, name, colbp, s0, e0] で
         const minor: any[] = []
         for (let k = 0; k + 1 < its.length; k++) { const g = its[k + 1].pos - (its[k].pos + its[k].bp); if (g >= syn.floor) minor.push([its[k].pos + its[k].bp, g, '', 0, its[k].e0, its[k + 1].s0]) }
-        return { name: pr.contig, path: pr.path, strand: pr.strand, start: 0, bp: pr.bp, nsteps: pr.nsteps, inst: out, minor }
+        // 主鎖 → kind（0 主鎖 / 2 変位 / 3 逆位）と、この行の向き（鎖の向き）
+        const ck = chainKinds(out.map(it => it[0]), out.map(it => it[1]), out.map(it => it[2]), blocks.length, syn.circular && wholeGenome)
+        out.forEach((it, k) => { it[5] = ck.kinds[k] })
+        return { name: pr.contig, path: pr.path, strand: ck.sign < 0 ? '-' : '+', start: 0, bp: pr.bp, nsteps: pr.nsteps, inst: out, minor }
       })
       return { hap: h, isref: prs.some(p => p.isref) ? 1 : 0, contigs }
     })

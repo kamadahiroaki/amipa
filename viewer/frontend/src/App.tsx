@@ -181,7 +181,7 @@ function blockViewToColors(v: BlockView): BlockColorMap {
   for (const [k, g] of groups) { g.sort((a, b) => a.s - b.s); contigs.set(k, { starts: g.map(i => i.s), ends: g.map(i => i.e), colors: g.map(i => i.c) }) }
   // 全体窓を見ているときは「最細段のブロック番号 → 色」も作る（見えているブロックの members で写す。絞り込みで見えない番号は null）
   let rankColors: (number | null)[] | null = null
-  if (v.win === 0 && v.n0 > 0) {
+  if (v.win === 0 && v.n0 > 0 && !v.tree) {    // 木のサイドカーでは名前→ブロック番号の対応表（旧ワーカー）が無いので参照区間の規則だけで塗る
     rankColors = new Array(v.n0).fill(null)
     for (const b of v.blocks) {
       const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color); const c = m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96
