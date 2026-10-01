@@ -37,6 +37,9 @@ for path, s0, e0 in scan:
     cols = dcol[np.asarray(p_tok[off + s0:off + e0_], dtype=np.int64)]
     m = np.flatnonzero((cols >= c0) & (cols <= c1))
     if m.size == 0: continue
+    # 範囲の列を持つトークンが飛び飛び（多重コピーのノードや局所の再編成）なら、最も密な連なりだけを採る（100 トークン超の飛びで切る）
+    cuts = np.flatnonzero(np.diff(m) > 100); seg_s = np.concatenate(([0], cuts + 1)); seg_e = np.concatenate((cuts + 1, [m.size]))
+    k_ = int(np.argmax(seg_e - seg_s)); m = m[seg_s[k_]:seg_e[k_]]
     lo, hi = s0 + int(m[0]), s0 + int(m[-1]) + 1
     if path in seen:            # 同じパスに複数インスタンス（分割片）→ 範囲の列を最も多く持つ片を採る（和にすると片の間の数 kb を巻き込む）
         k = seen[path]
