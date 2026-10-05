@@ -524,7 +524,10 @@ function drawAnchorLinks(g){ const anc = anchorsOf(win()); if (!st.anc || !anc |
       g.strokeStyle = hue(k); g.globalAlpha = emph!=null ? .12 : .3; g.beginPath(); g.moveTo(xa, yB(i, A.ys[k])); g.lineTo(xb, yT(i+1, B.ys[k])); g.stroke(); n++; } }
   g.globalAlpha = 1; return n; }
 function drawLinks(g){ drawAnchorLinks(g); }
-function drawGrid(){ drawGridBase(); if (isSites()) drawSitesGrid(); if (isBase()) drawBaseGrid(); }
+function drawGrid(){ drawGridBase(); if (isSites()) drawSitesGrid(); if (isBase()) drawBaseGrid(); drawBusy(); }
+// 計算中の帯は、どの段の描画よりも後に、画面に見えている範囲（横スクロール位置）に重ねる
+function drawBusy(){ if (!st.busy) return; const g = cv.grid.getContext('2d'); const W = cv.grid.clientWidth, H = cv.grid.clientHeight; const sx = $('body').scrollLeft || 0, vw = $('gridwrap').clientWidth || W;
+  g.fillStyle = 'rgba(255,255,255,.55)'; g.fillRect(0, 0, W, H); g.fillStyle = TH.sel; g.fillRect(sx, 0, Math.min(vw, W - sx), 26); g.fillStyle = '#fff'; g.font = '600 12px "IBM Plex Sans", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('計算中: ' + st.busy, sx + 10, 13); g.textBaseline = 'alphabetic'; }
 function drawGridBase(){
   const g = cv.grid.getContext('2d'); const W = cv.grid.clientWidth, H = cv.grid.clientHeight; g.clearRect(0,0,W,H);
   if (st.sel!=null && LY.blockX.has(st.sel)){ const c = LY.blockX.get(st.sel); g.fillStyle = TH.selbg; g.fillRect(c.x, 0, c.w, H); }
@@ -574,7 +577,7 @@ function drawGridBase(){
       if (st.sel!=null && b.rank===st.sel){ g.strokeStyle = TH.sel; g.lineWidth=2; g.strokeRect(b.x-1, yy-1, b.w+2, hh+2); } }
   });
   if (st.hover && st.hover.b){ const b = st.hover.b; g.strokeStyle = TH.sel; g.lineWidth=1.5; g.strokeRect(b.x-1.5, st.hover.ri*RH + (b.lane===1?15.5:2.5), b.w+3, b.lane===1?12:15); }
-  if (st.busy){ g.fillStyle = 'rgba(255,255,255,.55)'; g.fillRect(0, 0, W, H); g.fillStyle = TH.sel; g.fillRect(0, 0, W, 26); g.fillStyle = '#fff'; g.font = '600 12px "IBM Plex Sans", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('計算中: ' + st.busy, 10, 13); }
+
   if (st.hover && st.hover.p){ const p = st.hover.p; const lane = (st.mode==='own') ? 0 : p.slot.lane; g.strokeStyle = TH.sel; g.lineWidth=1.5; g.strokeRect(p.x-1.5, st.hover.ri*RH + (lane===0?2.5:15.5), p.w+3, lane===0?15:12); }
 }
 function drawHeader(){ if (isSites()){ drawSitesHeader(); return; } if (isBase()){ drawBaseHeader(); return; } drawHeaderBase(); }
