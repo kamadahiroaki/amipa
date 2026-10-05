@@ -1036,6 +1036,7 @@ export default function App() {
   const resolveBlock = useCallback(async (b: BlockRef | null, set: (v: Set<string> | null) => void) => {
     const my = ++blkReq.current
     if (!b || !selectedDb) { set(null); return }
+    if (b.names && b.names.length) { set(new Set(b.names)); return }   // 塩基の段: ノード名が分かっているので参照区間を引かない
     const names = await fetchBlockNodes(selectedDb, mapLayer, b.ref_contig, b.x, b.x + b.span)
     if (my !== blkReq.current) return                                  // 古い問い合わせは捨てる
     set(names.length ? new Set(names) : null)
