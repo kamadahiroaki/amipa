@@ -277,7 +277,7 @@ function sitesOf(){ const L = level(); return L && L.mode === 'sites' ? L.sites 
 function sitesLayout(){ const S = sitesOf(); const W = $('gridwrap').clientWidth - 8; const n = Math.max(1, S.nsites); LY.siteW = Math.max(1, Math.min(14, Math.floor(W / n))); LY.fullW = SITES_X0 + n * LY.siteW + 4; LY.cols = []; LY.vis = []; LY.blockX = new Map();
   if (!S._cells){ const raw = atob(S.cells); const u = new Uint8Array(raw.length); for (let i=0;i<raw.length;i++) u[i] = raw.charCodeAt(i); S._cells = u; S._hidx = new Map(S.haps.map((h,i)=>[h,i])); } }
 function drawSitesGrid(){ const S = sitesOf(); if (!S || !LY.siteW) return; const g = cv.grid.getContext('2d'); const sw = LY.siteW, gap = sw >= 4 ? 1 : 0; const H = S.H;
-  LY.rows.forEach((r, ri) => { const hi = S._hidx.get(r.hap); if (hi == null) return; const y = ri*RH + 5, h = RH - 10;
+  LY.rows.forEach((r, ri) => { const hi = S._hidx.get(r.hap); if (hi == null) return; const y = ri*RH + 1, h = RH - 2;
     for (let k = 0; k < S.nsites; k++){ const a = S._cells[k*H + hi]; if (a === 255) continue; g.fillStyle = S.binned ? divRamp(a / 254) : SITES_COLORS[Math.min(a, SITES_COLORS.length-1)]; g.fillRect(SITES_X0 + k*sw, y, sw - gap, h); } });
   if (st.rangeSel){ g.fillStyle = TH.selbg; g.globalAlpha = .5; g.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], cv.grid.clientHeight); g.globalAlpha = 1; } }
 function drawSitesHeader(){ const S = sitesOf(); if (!S || !LY.siteW) return; const sw = LY.siteW, gap = sw >= 4 ? 1 : 0;
@@ -346,17 +346,18 @@ function baseLayout(){ const M = baseOf(); const W = $('gridwrap').clientWidth -
   if (!M._rowOf){ M._rowOf = new Map(); (M.rows || []).forEach((r, i) => M._rowOf.set(r.label, i)); const ri_ = (M.rows || []).findIndex(r => r.isref); M._refRow = ri_ >= 0 ? ri_ : ((M.rows || []).length ? 0 : null);
     M._inv = (M.rows || []).map(r => { const st_ = new Set(); for (const n of (r.inv || [])) cols.forEach((c, i) => { if (c.nodes.indexOf(n) >= 0) st_.add(i); }); return st_; }); } }
 function baseCellColor(ch){ const c = BASE_COLORS[ch.toUpperCase()] || BASE_COLORS.N; return c; }
-function drawBaseGrid(){ const M = baseOf(); if (!M || !LY.bxs) return; const g = cv.grid.getContext('2d'); const cols = M.cols || []; const xs = LY.bxs; const items = LY.bitems; const cw = LY.bcw; const letters = cw >= 7; g.font = `bold ${Math.min(12, cw + 1)}px "IBM Plex Mono"`; g.textAlign = 'center'; g.textBaseline = 'middle';
+function baseFontPx(cw, h){ return Math.max(0, Math.min(13, h - 2, Math.floor(cw / 0.62))); }
+function drawBaseGrid(){ const M = baseOf(); if (!M || !LY.bxs) return; const g = cv.grid.getContext('2d'); const cols = M.cols || []; const xs = LY.bxs; const items = LY.bitems; const cw = LY.bcw; const hcell = RH - 2; const fpx = baseFontPx(cw, hcell); const letters = cw >= 5 && fpx >= 8; g.font = `bold ${fpx}px "IBM Plex Mono"`; g.textAlign = 'center'; g.textBaseline = 'middle';
   const refRow = M._refRow != null ? M.rows[M._refRow] : null;
-  LY.rows.forEach((r, ri) => { const mi = M._rowOf.get(r.hap); if (mi == null) return; const row = M.rows[mi]; const y = ri*RH + 4, h = RH - 8; const inv = M._inv[mi];
-    for (let k = 0; k < items.length; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 4 ? 1 : 0);
+  LY.rows.forEach((r, ri) => { const mi = M._rowOf.get(r.hap); if (mi == null) return; const row = M.rows[mi]; const y = ri*RH + 1, h = hcell; const inv = M._inv[mi];
+    for (let k = 0; k < items.length; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 8 ? 1 : 0);
       if (it.kind === 'ell'){ let has = false; for (let i = it.ci0; i <= it.ci1; i++){ const ch = row.seq[i]; if (ch && ch !== '-') { has = true; break; } } if (!has) continue;
         g.fillStyle = TH.line; g.fillRect(x, y + 2, w, h - 4); if (w >= 20){ g.fillStyle = TH.ink; g.fillText('⋯' + (it.n ? it.n : ''), x + w/2, y + h/2); } continue; }
       const ch = row.seq[it.ci]; if (ch === '-' || ch === undefined) continue;
       if (ch === '~'){ g.fillStyle = TH.line; g.fillRect(x, y + 2, w, h - 4); continue; }
       if (st.baseDiff && refRow && mi !== M._refRow && refRow.seq[it.ci] === ch){ g.fillStyle = TH.line2; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = TH.muted; g.fillText('·', x + w/2, y + h/2 + 1); } continue; }   // 参照一致を省く
       const col = baseCellColor(ch); g.fillStyle = col[1]; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = col[0]; g.fillText(ch, x + w/2, y + h/2 + 1); }
-      if (inv && inv.has(it.ci)){ g.fillStyle = TH.inv; g.fillRect(x, y, w, 3); } } });
+      if (inv && inv.has(it.ci)){ g.fillStyle = TH.inv; g.fillRect(x, y, w, 2); } } });
   if (st.hover && st.hover.ci != null){ const k = LY.bitems.findIndex(it => it.kind === 'col' ? it.ci === st.hover.ci : (st.hover.ci >= it.ci0 && st.hover.ci <= it.ci1)); if (k >= 0){ g.fillStyle = TH.hover; g.fillRect(xs[k], 0, xs[k+1]-xs[k], cv.grid.clientHeight); } }
   g.textAlign = 'left'; g.textBaseline = 'alphabetic'; }
 function drawBaseHeader(){ const M = baseOf(); if (!M || !LY.bxs) return; const gh = cv.hdr.getContext('2d'); const Hh = cv.hdr.clientHeight; gh.clearRect(0, 0, cv.hdr.clientWidth, Hh); gh.textBaseline = 'alphabetic';
@@ -369,12 +370,12 @@ function drawBaseHeader(){ const M = baseOf(); if (!M || !LY.bxs) return; const 
     if (gr.rb){ gh.fillStyle = TH.accent; gh.fillRect(gr.x0, Hh - 5, w, 2); }
     if (gr.variant){ gh.fillStyle = TH.disp; gh.fillRect(gr.x0 + 1, Hh - 3, Math.max(1, w - 2), 3); } });
   // 参照の配列（参照行が無ければ先頭の行）
-  if (refRow){ const y = 18, h = Hh - 6 - 18; gh.font = `bold ${Math.min(12, cw + 1)}px "IBM Plex Mono"`; gh.textAlign = 'center'; gh.textBaseline = 'middle';
-    for (let k = 0; k < items.length; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 4 ? 1 : 0);
+  if (refRow){ const y = 18, h = Hh - 6 - 18; const fpx = baseFontPx(cw, h); gh.font = `bold ${fpx}px "IBM Plex Mono"`; gh.textAlign = 'center'; gh.textBaseline = 'middle';
+    for (let k = 0; k < items.length; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 8 ? 1 : 0);
       if (it.kind === 'ell'){ gh.fillStyle = TH.line; gh.fillRect(x, y + 1, w, h - 2); if (w >= 20){ gh.fillStyle = TH.ink; gh.fillText('⋯' + (it.n || ''), x + w/2, y + h/2); } continue; }
       const ch = refRow.seq[it.ci]; if (!ch || ch === '-'){ gh.fillStyle = TH.gap; gh.fillRect(x, y + 1, w, h - 2); continue; }
       if (ch === '~'){ gh.fillStyle = TH.line; gh.fillRect(x, y + 1, w, h - 2); continue; }
-      const col = baseCellColor(ch); gh.fillStyle = col[1]; gh.fillRect(x, y, w, h); if (cw >= 7){ gh.fillStyle = col[0]; gh.fillText(ch, x + w/2, y + h/2 + 1); } }
+      const col = baseCellColor(ch); gh.fillStyle = col[1]; gh.fillRect(x, y, w, h); if (cw >= 5 && fpx >= 8){ gh.fillStyle = col[0]; gh.fillText(ch, x + w/2, y + h/2 + 1); } }
     gh.textBaseline = 'alphabetic'; gh.textAlign = 'left'; }
   if (st.sel != null && LY.bgroups[st.sel]){ const gr = LY.bgroups[st.sel]; gh.strokeStyle = TH.sel; gh.lineWidth = 1.5; gh.strokeRect(gr.x0 + .5, .5, gr.x1 - gr.x0 - 1, Hh - 1); }
   if (st.rangeSel){ gh.fillStyle = TH.selbg; gh.globalAlpha = .6; gh.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], Hh); gh.globalAlpha = 1; } }
