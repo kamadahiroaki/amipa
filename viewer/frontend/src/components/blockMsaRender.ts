@@ -320,36 +320,62 @@ function baseFromCols(c0, c1, label){ if (!(cb && (cb.onBaseFetch || cb.onBaseMs
 
 // ---- 塩基の段（パネル内 MSA）: 木の底。bubble MSA と同じ計算（各行のトークン範囲）を、同じ描画器の列として描く。
 //      列＝塩基（ノードの中の位置）。ノード（群）の境界を見出しに出し、ノードの大きさ（bp）を書く。長いノードは中央を畳む（⋯）。
-const BASE_COLORS = { A: ['#166534', '#d7f2df'], C: ['#1e40af', '#dbe6fe'], G: ['#854d0e', '#fdf0a8'], T: ['#b91c1c', '#fddddd'], N: ['#555', '#eee'] };
+const BASE_COLORS = { A: ['#ffffff', '#2e8b57'], C: ['#ffffff', '#2f6fb3'], G: ['#1b1b1b', '#e0a800'], T: ['#ffffff', '#c9302c'], N: ['#ffffff', '#6b7480'] };   // [文字, 塗り]。塗りを濃くして読みやすく
 function isBase(){ return !!(level() && level().mode === 'base'); }
 function baseOf(){ const L = level(); return L && L.mode === 'base' ? L.base : null; }
-function baseLayout(){ const M = baseOf(); const W = $('gridwrap').clientWidth - 8; const cols = M.cols || []; const nEll = cols.filter(c => c.kind === 'ell').length;
-  const cw = Math.max(2, Math.min(12, Math.floor((W - nEll * 26) / Math.max(1, cols.length - nEll)))); const ew = Math.max(cw * 3, 26);
-  const xs = new Float64Array(cols.length + 1); let x = SITES_X0; cols.forEach((c, i) => { xs[i] = x; x += (c.kind === 'ell' ? ew : cw); }); xs[cols.length] = x;
-  // ノード（群）ブロック
+const BASE_CAPc = 12, BASE_HEADc = 7, BASE_TAILc = 3, BASE_MINCW = 3;
+function baseLayout(){ const M = baseOf(); const W = $('gridwrap').clientWidth - 8; const cols = M.cols || [];
+  // 群（ノード）: 列の g の連なり
   const groups = []; cols.forEach((c, i) => { const last = groups[groups.length - 1]; if (last && last.g === c.g){ last.to = i; } else groups.push({ g: c.g, from: i, to: i, nodes: c.nodes, rb: c.rb }); });
-  for (const gr of groups){ let bp = 0; for (let i = gr.from; i <= gr.to; i++) bp += (cols[i].kind === 'ell' ? (cols[i].bp || 0) - 0 : 1); const ell = cols.slice(gr.from, gr.to + 1).find(c => c.kind === 'ell'); gr.bp = ell ? (ell.bp || bp) : bp; gr.x0 = xs[gr.from]; gr.x1 = xs[gr.to + 1]; gr.variant = cols.slice(gr.from, gr.to + 1).some(c => c.variant); }
-  LY.bcw = cw; LY.bxs = xs; LY.bgroups = groups; LY.fullW = x + 4; LY.cols = []; LY.vis = []; LY.blockX = new Map();
-  if (!M._rowOf){ M._rowOf = new Map(); (M.rows || []).forEach((r, i) => M._rowOf.set(r.label, i)); const ri_ = (M.rows || []).findIndex(r => r.isref); M._refRow = ri_ >= 0 ? ri_ : ((M.rows || []).length ? 0 : null); M._inv = (M.rows || []).map(r => { const st_ = new Set(); for (const n of (r.inv || [])) cols.forEach((c, i) => { if (c.nodes.indexOf(n) >= 0) st_.add(i); }); return st_; }); } }
-function drawBaseGrid(){ const M = baseOf(); if (!M || !LY.bxs) return; const g = cv.grid.getContext('2d'); const cols = M.cols || []; const xs = LY.bxs; const cw = LY.bcw; const letters = cw >= 7; g.font = `${Math.min(12, cw + 2)}px "IBM Plex Mono"`; g.textAlign = 'center'; g.textBaseline = 'middle';
-  LY.rows.forEach((r, ri) => { const mi = M._rowOf.get(r.hap); if (mi == null) return; const row = M.rows[mi]; const y = ri*RH + 5, h = RH - 10; const inv = M._inv[mi];
-    for (let i = 0; i < cols.length; i++){ const ch = row.seq[i]; const x = xs[i], w = xs[i+1] - xs[i] - (cw >= 4 ? 1 : 0); if (ch === '-' || ch === undefined) continue;
-      if (ch === '~'){ g.fillStyle = TH.line2; g.fillRect(x, y, w, h); if (w >= 14){ g.fillStyle = TH.muted; g.fillText('⋯', x + w/2, y + h/2); } continue; }
-      if (st.baseDiff && M._refRow != null && mi !== M._refRow && M.rows[M._refRow].seq[i] === ch){ g.fillStyle = TH.line2; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = TH.muted; g.fillText('·', x + w/2, y + h/2 + 1); } continue; }   // 参照一致を省く
-      const col = BASE_COLORS[ch.toUpperCase()] || BASE_COLORS.N; g.fillStyle = col[1]; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = col[0]; g.fillText(ch, x + w/2, y + h/2 + 1); }
-      if (inv && inv.has(i)){ g.fillStyle = TH.inv; g.fillRect(x, y, w, 2); } } });
-  if (st.hover && st.hover.ci != null){ const i = st.hover.ci; g.fillStyle = TH.hover; g.fillRect(xs[i], 0, xs[i+1]-xs[i], cv.grid.clientHeight); }
+  for (const gr of groups){ const ell = cols.slice(gr.from, gr.to + 1).find(c => c.kind === 'ell'); gr.bp = ell ? (ell.bp || (gr.to - gr.from + 1)) : (gr.to - gr.from + 1); gr.variant = cols.slice(gr.from, gr.to + 1).some(c => c.variant); }   // サーバが畳んだ群は ell.bp がノード全長
+  // 表示項目: 全列が最小幅で入るなら畳まない。入らなければ長い群の中央を畳む（サーバが畳んだ ell 列はそのまま 1 項目）
+  const fitAll = cols.length * BASE_MINCW <= W; const items = [];
+  for (const gr of groups){ const n = gr.to - gr.from + 1; const hasEll = cols.slice(gr.from, gr.to + 1).some(c => c.kind === 'ell');
+    if (fitAll || hasEll || n <= BASE_CAPc){ for (let i = gr.from; i <= gr.to; i++) items.push(cols[i].kind === 'ell' ? { kind: 'ell', ci0: i, ci1: i, n: cols[i].bp || 0, g: gr.g } : { kind: 'col', ci: i, g: gr.g }); }
+    else { for (let i = gr.from; i < gr.from + BASE_HEADc; i++) items.push({ kind: 'col', ci: i, g: gr.g }); items.push({ kind: 'ell', ci0: gr.from + BASE_HEADc, ci1: gr.to - BASE_TAILc, n: n - BASE_HEADc - BASE_TAILc, g: gr.g }); for (let i = gr.to - BASE_TAILc + 1; i <= gr.to; i++) items.push({ kind: 'col', ci: i, g: gr.g }); } }
+  const nEll = items.filter(it => it.kind === 'ell').length; const nCol = items.length - nEll;
+  const cw = Math.max(2, Math.min(14, Math.floor((W - nEll * 28) / Math.max(1, nCol)))); const ew = Math.max(cw * 3, 28);
+  const xs = new Float64Array(items.length + 1); let x = SITES_X0; items.forEach((it, k) => { xs[k] = x; x += (it.kind === 'ell' ? ew : cw); }); xs[items.length] = x;
+  const gx = new Map(); items.forEach((it, k) => { const e = gx.get(it.g) || { x0: xs[k], x1: xs[k+1] }; e.x1 = xs[k+1]; gx.set(it.g, e); }); for (const gr of groups){ const e = gx.get(gr.g); gr.x0 = e ? e.x0 : 0; gr.x1 = e ? e.x1 : 0; }
+  LY.bcw = cw; LY.bxs = xs; LY.bitems = items; LY.bgroups = groups; LY.bfold = !fitAll; LY.fullW = x + 4; LY.cols = []; LY.vis = []; LY.blockX = new Map();
+  if (!M._rowOf){ M._rowOf = new Map(); (M.rows || []).forEach((r, i) => M._rowOf.set(r.label, i)); const ri_ = (M.rows || []).findIndex(r => r.isref); M._refRow = ri_ >= 0 ? ri_ : ((M.rows || []).length ? 0 : null);
+    M._inv = (M.rows || []).map(r => { const st_ = new Set(); for (const n of (r.inv || [])) cols.forEach((c, i) => { if (c.nodes.indexOf(n) >= 0) st_.add(i); }); return st_; }); } }
+function baseCellColor(ch){ const c = BASE_COLORS[ch.toUpperCase()] || BASE_COLORS.N; return c; }
+function drawBaseGrid(){ const M = baseOf(); if (!M || !LY.bxs) return; const g = cv.grid.getContext('2d'); const cols = M.cols || []; const xs = LY.bxs; const items = LY.bitems; const cw = LY.bcw; const letters = cw >= 7; g.font = `bold ${Math.min(12, cw + 1)}px "IBM Plex Mono"`; g.textAlign = 'center'; g.textBaseline = 'middle';
+  const refRow = M._refRow != null ? M.rows[M._refRow] : null;
+  LY.rows.forEach((r, ri) => { const mi = M._rowOf.get(r.hap); if (mi == null) return; const row = M.rows[mi]; const y = ri*RH + 4, h = RH - 8; const inv = M._inv[mi];
+    for (let k = 0; k < items.length; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 4 ? 1 : 0);
+      if (it.kind === 'ell'){ let has = false; for (let i = it.ci0; i <= it.ci1; i++){ const ch = row.seq[i]; if (ch && ch !== '-') { has = true; break; } } if (!has) continue;
+        g.fillStyle = TH.line; g.fillRect(x, y + 2, w, h - 4); if (w >= 20){ g.fillStyle = TH.ink; g.fillText('⋯' + (it.n ? it.n : ''), x + w/2, y + h/2); } continue; }
+      const ch = row.seq[it.ci]; if (ch === '-' || ch === undefined) continue;
+      if (ch === '~'){ g.fillStyle = TH.line; g.fillRect(x, y + 2, w, h - 4); continue; }
+      if (st.baseDiff && refRow && mi !== M._refRow && refRow.seq[it.ci] === ch){ g.fillStyle = TH.line2; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = TH.muted; g.fillText('·', x + w/2, y + h/2 + 1); } continue; }   // 参照一致を省く
+      const col = baseCellColor(ch); g.fillStyle = col[1]; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = col[0]; g.fillText(ch, x + w/2, y + h/2 + 1); }
+      if (inv && inv.has(it.ci)){ g.fillStyle = TH.inv; g.fillRect(x, y, w, 3); } } });
+  if (st.hover && st.hover.ci != null){ const k = LY.bitems.findIndex(it => it.kind === 'col' ? it.ci === st.hover.ci : (st.hover.ci >= it.ci0 && st.hover.ci <= it.ci1)); if (k >= 0){ g.fillStyle = TH.hover; g.fillRect(xs[k], 0, xs[k+1]-xs[k], cv.grid.clientHeight); } }
   g.textAlign = 'left'; g.textBaseline = 'alphabetic'; }
-function drawBaseHeader(){ const M = baseOf(); if (!M || !LY.bxs) return; const gh = cv.hdr.getContext('2d'); const Hh = cv.hdr.clientHeight; gh.clearRect(0, 0, cv.hdr.clientWidth, Hh); gh.font = '10px "IBM Plex Mono"'; gh.textBaseline = 'alphabetic';
-  LY.bgroups.forEach((gr, k) => { const w = gr.x1 - gr.x0; gh.fillStyle = k % 2 ? TH.line2 : TH.gap; gh.fillRect(gr.x0, 0, w, Hh - 8); gh.fillStyle = gr.nodes.length > 1 ? TH.accent : TH.line; gh.fillRect(gr.x0, 0, 1, Hh - 8);
-    if (gr.rb){ gh.fillStyle = TH.accent; gh.fillRect(gr.x0, Hh - 10, w, 2); }
-    const label = w >= 90 ? `${gr.nodes[0]}${gr.nodes.length > 1 ? '[' + gr.nodes.length + ']' : ''} ${gr.bp.toLocaleString()} bp` : (w >= 40 ? `${gr.bp.toLocaleString()} bp` : (w >= 18 ? String(gr.bp) : ''));
-    if (label){ gh.fillStyle = TH.ink; gh.textAlign = 'left'; gh.fillText(label, gr.x0 + 3, 13); }
-    if (gr.variant){ gh.fillStyle = TH.disp; gh.fillRect(gr.x0 + 1, Hh - 6, Math.max(1, w - 2), 4); } });
+function drawBaseHeader(){ const M = baseOf(); if (!M || !LY.bxs) return; const gh = cv.hdr.getContext('2d'); const Hh = cv.hdr.clientHeight; gh.clearRect(0, 0, cv.hdr.clientWidth, Hh); gh.textBaseline = 'alphabetic';
+  const xs = LY.bxs, items = LY.bitems, cw = LY.bcw; const refRow = M._refRow != null ? M.rows[M._refRow] : null;
+  // 上段（0..16）: ノードの帯と大きさ。下段（17..Hh-6）: 参照の配列。底（Hh-5..）: 錨・variant の印
+  LY.bgroups.forEach((gr, k) => { const w = gr.x1 - gr.x0; gh.fillStyle = k % 2 ? TH.line2 : TH.gap; gh.fillRect(gr.x0, 0, w, 16); gh.fillStyle = gr.nodes.length > 1 ? TH.accent : TH.line; gh.fillRect(gr.x0, 0, 1, Hh - 6);
+    gh.font = '10px "IBM Plex Mono"'; gh.textAlign = 'left';
+    const label = w >= 90 ? `${gr.nodes[0]}${gr.nodes.length > 1 ? '[' + gr.nodes.length + ']' : ''} ${gr.bp.toLocaleString()} bp` : (w >= 40 ? `${gr.bp.toLocaleString()} bp` : (w >= 16 ? String(gr.bp) : ''));
+    if (label){ gh.fillStyle = TH.ink; gh.fillText(label, gr.x0 + 3, 12); }
+    if (gr.rb){ gh.fillStyle = TH.accent; gh.fillRect(gr.x0, Hh - 5, w, 2); }
+    if (gr.variant){ gh.fillStyle = TH.disp; gh.fillRect(gr.x0 + 1, Hh - 3, Math.max(1, w - 2), 3); } });
+  // 参照の配列（参照行が無ければ先頭の行）
+  if (refRow){ const y = 18, h = Hh - 6 - 18; gh.font = `bold ${Math.min(12, cw + 1)}px "IBM Plex Mono"`; gh.textAlign = 'center'; gh.textBaseline = 'middle';
+    for (let k = 0; k < items.length; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 4 ? 1 : 0);
+      if (it.kind === 'ell'){ gh.fillStyle = TH.line; gh.fillRect(x, y + 1, w, h - 2); if (w >= 20){ gh.fillStyle = TH.ink; gh.fillText('⋯' + (it.n || ''), x + w/2, y + h/2); } continue; }
+      const ch = refRow.seq[it.ci]; if (!ch || ch === '-'){ gh.fillStyle = TH.gap; gh.fillRect(x, y + 1, w, h - 2); continue; }
+      if (ch === '~'){ gh.fillStyle = TH.line; gh.fillRect(x, y + 1, w, h - 2); continue; }
+      const col = baseCellColor(ch); gh.fillStyle = col[1]; gh.fillRect(x, y, w, h); if (cw >= 7){ gh.fillStyle = col[0]; gh.fillText(ch, x + w/2, y + h/2 + 1); } }
+    gh.textBaseline = 'alphabetic'; gh.textAlign = 'left'; }
   if (st.sel != null && LY.bgroups[st.sel]){ const gr = LY.bgroups[st.sel]; gh.strokeStyle = TH.sel; gh.lineWidth = 1.5; gh.strokeRect(gr.x0 + .5, .5, gr.x1 - gr.x0 - 1, Hh - 1); }
   if (st.rangeSel){ gh.fillStyle = TH.selbg; gh.globalAlpha = .6; gh.fillRect(st.rangeSel[0], 0, st.rangeSel[1]-st.rangeSel[0], Hh); gh.globalAlpha = 1; } }
 function baseGroupAt(px){ if (!LY.bgroups) return null; for (let k = 0; k < LY.bgroups.length; k++){ const gr = LY.bgroups[k]; if (px >= gr.x0 && px < gr.x1) return k; } return null; }
-function baseColAt(px){ const xs = LY.bxs; if (!xs) return null; for (let i = 0; i + 1 < xs.length; i++) if (px >= xs[i] && px < xs[i+1]) return i; return null; }
+function baseItemAt(px){ const xs = LY.bxs; if (!xs) return null; for (let i = 0; i + 1 < xs.length; i++) if (px >= xs[i] && px < xs[i+1]) return i; return null; }
+function baseColAt(px){ const k = baseItemAt(px); if (k == null) return null; const it = LY.bitems[k]; return it.kind === 'col' ? it.ci : it.ci0; }
 function baseGroupInfo(k, ri, ci){ const M = baseOf(); const gr = LY.bgroups[k]; const r = ri != null ? LY.rows[ri] : null; const mi = r ? M._rowOf.get(r.hap) : null; const row = mi != null ? M.rows[mi] : null; const col = ci != null ? M.cols[ci] : null;
   return `<p><span class="h">ノード ${esc(gr.nodes.join(' | '))}</span>${gr.nodes.length > 1 ? `<br><span class="k">同じサイトの排他アレル ${gr.nodes.length} 個（1 列に統合）</span>` : ''}<br><span class="k">大きさ ${gr.bp.toLocaleString()} bp${gr.rb ? ` · 参照 ${fmtbp(gr.rb)}` : ''}${gr.variant ? ' · 行間で塩基が違う' : ''}</span>` +
     (row ? `<br><span class="k">${esc(row.label)}（${row.strand} 鎖）:</span> ${col ? (row.seq[ci] === '-' ? '欠失（gap）' : row.seq[ci] === '~' ? '畳んだ部分' : `塩基 ${esc(row.seq[ci])}${col.off != null ? '（ノード内 ' + (col.off + 1) + ' 塩基目）' : ''}`) : ''}${(M._inv[mi] && ci != null && M._inv[mi].has(ci)) ? ' · 周りと逆向きに通過（逆相補で表示）' : ''}` : '') + `</p>`; }
@@ -371,11 +397,12 @@ function openBase(ranges, label, pblock, c0, c1){ if (!ranges || !ranges.length)
   cb.onBaseFetch(ranges, label).then(M => { st.drilling = false; st.busy = null;
     if (!M || M.error || !M.cols || !M.cols.length){ drawAll(); $('detailbody').innerHTML = `<p class="k">塩基レベル MSA を作れませんでした: ${esc((M && M.error) || '列がありません')}</p>`; return; }
     const nw = baseWindow(M, label, pw, pblock != null ? pblock : -1, c0, c1); nw.id = WINS.length; nw.plevel = st.li; WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id;
-    enterWindow(nw.id); const ng = LY.bgroups ? LY.bgroups.length : 0; $('detailbody').innerHTML = `<p class="k">塩基の段: 列 ${M.cols.length}（ノード ${ng} 個）・行 ${M.rows.length}。列見出しの帯＝ノードの境界と大きさ（bp）、下線＝参照座標の錨、橙＝行間で塩基が違う。セルの上の紫線＝周りと逆向きに通ったノード（逆相補で表示）。</p>`;
+    enterWindow(nw.id); const ng = LY.bgroups ? LY.bgroups.length : 0; $('detailbody').innerHTML = `<p class="k">塩基の段: 列 ${M.cols.length}（ノード ${ng} 個）・行 ${M.rows.length}。列見出しの上段＝ノードの境界と大きさ（bp）、下段＝参照の配列、底の線＝参照座標の錨（青）・行間で塩基が違う（橙）。長いノードは画面に入らないときだけ中央を畳む（⋯N）。列見出しをドラッグで列の範囲に絞る。セルの上の紫線＝周りと逆向きに通ったノード（逆相補で表示）。</p>`;
   }).catch(e => { st.drilling = false; st.busy = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; }); }
 
 // 塩基の段の範囲選択: ドラッグした列の範囲に絞った入れ子の窓（cols/rows を切り出すだけ。再計算なし）
-function baseRange(pa, pb){ const M = baseOf(); if (!M || !LY.bxs) return; let i0 = baseColAt(pa), i1 = baseColAt(pb); if (i0 == null) i0 = pa < LY.bxs[0] ? 0 : M.cols.length - 1; if (i1 == null) i1 = pb < LY.bxs[0] ? 0 : M.cols.length - 1;
+function baseRange(pa, pb){ const M = baseOf(); if (!M || !LY.bxs) return; const k0 = baseItemAt(pa), k1 = baseItemAt(pb); const toCol = (k, end) => { if (k == null) return null; const it = LY.bitems[k]; return it.kind === 'col' ? it.ci : (end ? it.ci1 : it.ci0); };
+  let i0 = toCol(k0, false), i1 = toCol(k1, true); if (i0 == null) i0 = pa < LY.bxs[0] ? 0 : M.cols.length - 1; if (i1 == null) i1 = pb < LY.bxs[0] ? 0 : M.cols.length - 1;
   if (i1 < i0){ const t = i0; i0 = i1; i1 = t; } if (i1 - i0 < 1 || (i0 === 0 && i1 === M.cols.length - 1)){ st.rangeSel = null; drawAll(); return; }
   const sub = { ...M, cols: M.cols.slice(i0, i1 + 1), rows: M.rows.map(r => ({ ...r, seq: r.seq.slice(i0, i1 + 1) })), _rowOf: null, _inv: null, _refRow: null, name: (M.name || '') + ` 列 ${i0 + 1}–${i1 + 1}` };
   const label = `列 ${i0 + 1}–${i1 + 1}`; const w = win(); const key = 'bc:' + i0 + ':' + i1; const ch = w.children ? w.children[key] : null; st.rangeSel = null; if (ch != null){ enterWindow(ch); return; }

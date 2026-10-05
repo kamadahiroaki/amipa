@@ -44,7 +44,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onRange: (x0, x1, label, depth, parent, pblock) => fetchBlockRange(db, x0, x1, label, depth, parent, pblock),   // 木: 範囲の窓
         onSites: q => fetchBlockSites(db, q),                // 木: 変異の段（アレル行列）
         onTokRanges: (c0, c1) => fetchBlockTokRanges(db, c0, c1),   // 木: 列の範囲 → 各行のトークン範囲（塩基へ）
-        onBaseFetch: (ranges, label) => fetchBubbleMsaRanges(db, ranges, label),   // 木: 塩基レベル MSA をパネル内に出す（bubble MSA と同じ計算）
+        onBaseFetch: (ranges, label) => fetchBubbleMsaRanges(db, ranges, label, 0, 0),   // 木: 塩基レベル MSA をパネル内に出す（畳まずに受けて画面側で畳む）
         onView: v => cbRef.current.onView?.(v),
         onSelectHap: (k, h) => cbRef.current.onSelectHap?.(k, h),
         onBaseMsa: req => cbRef.current.onBaseMsa?.(req),

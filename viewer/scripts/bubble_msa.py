@@ -58,6 +58,7 @@ def main():
     ap.add_argument("--samples", default="",
                     help="対象 sample/hap/contig キーのカンマ区切り(空=この bubble を通る全パス)。参照は常に含む")
     ap.add_argument("--flank", type=int, default=4)
+    ap.add_argument("--cap", type=int, default=None, help="この長さを超えるノードの中央を畳む（既定 12）。0 で畳まない（Blocks パネルは画面側で畳む）")
     ap.add_argument("--merge-gap", dest="merge_gap", type=int, default=8,
                     help="選択集合を一時的に離れてすぐ戻る通過を『1 回の通過』として繋ぐ token 数の上限"
                          "(既定 8。実際は max(2*flank, これ)＝flank が重なるなら同じ通過とみなす)。"
@@ -65,6 +66,8 @@ def main():
     ap.add_argument("--max-tokens", dest="max_tokens", type=int, default=MAX_TOKENS,
                     help="走査するウォーク token 数の上限(既定 %d)。越えたらエラー" % MAX_TOKENS)
     args = ap.parse_args()
+    global CAP
+    if args.cap is not None: CAP = args.cap if args.cap > 0 else 10**9
 
     try:
         p_off = np.load(args.distill + "/p_off.npy")
