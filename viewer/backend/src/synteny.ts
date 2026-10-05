@@ -309,8 +309,10 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
 //   株のアレル = サイトの中でその株が持つ列の集合（同じ集合＝同じアレル）。被覆（左右の不変列を持つ）していて列を持たない株は
 //   「無し」のアレル（欠失側）。被覆していない株は 255（この区間を持たない）。
 export interface SitesResult { c0: number; c1: number; ncols: number; ncover: number; H: number; haps: string[]; nsites: number
-  sites: { x: number; c0: number; c1: number; ncols: number; bp: number; nall: number; counts: number[] }[]; cells: string; tooMany?: boolean; error?: string }
-const SITES_MAX = 20000     // 1 px/サイトで横スクロール 20,000 px まで。それ以上は範囲を狭めてもらう
+  sites: { x: number; c0: number; c1: number; ncols: number; bp: number; nall: number; counts: number[]; nsites?: number }[]; cells: string; tooMany?: boolean; error?: string
+  binned?: boolean; sitesPerBin?: number; totalSites?: number }
+const SITES_MAX = 4000      // これを超えるサイト数はビンにまとめる（粗い段）
+const BIN_TARGET = 1500     // ビンの数の目安（画面幅 1 px/ビン）
 export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: number; x1?: number }, max = SITES_MAX): SitesResult | { error: string } {
   const d = new Database(syn.file, { readonly: true })
   try {
@@ -339,7 +341,6 @@ export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: 
       if (rows[i].nhap === ncover) { i++; continue }
       let j = i; while (j < rows.length && rows[j].nhap !== ncover) j++
       const run = rows.slice(i, j)
-      if (sites.length >= max) return { c0, c1, ncols: rows.length, ncover, H, haps, nsites: -1, sites: [], cells: '', tooMany: true, error: `変異サイトが ${max} を超えます（列 ${rows.length}）。範囲を狭めてください` }
       // 株ごとの列集合（ビット列の位置の列挙）→ アレル
       const key: (string | null)[] = new Array(H).fill(null)
       for (let h = 0; h < H; h++) {
@@ -356,6 +357,20 @@ export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: 
       cellsArr.push(cells)
       sites.push({ x: run[0].x, c0: run[0].col, c1: run[run.length - 1].col, ncols: run.length, bp: Math.max(...run.map(r => r.bp)), nall: order.length, counts: order.map(k => cnt.get(k)!) })
       i = j
+    }
+    if (sites.length > max) {
+      // 粗い段: サイトが多すぎるときは、連続するサイトを等数ずつビンにまとめ、セルを「参照のアレルと違うサイトの割合」（0..254）にする。
+      // 範囲を狭めれば（ドラッグ）サイトごとのアレルの段に降りる
+      const per = Math.ceil(sites.length / BIN_TARGET); const bins: SitesResult['sites'] = []; const bcells: number[][] = []
+      for (let b = 0; b < sites.length; b += per) {
+        const grp = sites.slice(b, b + per); const idx = Array.from({ length: grp.length }, (_, j) => b + j)
+        const cells = new Array(H).fill(255)
+        for (let h = 0; h < H; h++) { let cov = 0, dif = 0; for (const k of idx) { const a = cellsArr[k][h]; if (a === 255) continue; cov++; if (a !== 0) dif++ } if (cov) cells[h] = Math.min(254, Math.round(254 * dif / cov)) }
+        bcells.push(cells); const f = grp[0], l = grp[grp.length - 1]
+        bins.push({ x: f.x, c0: f.c0, c1: l.c1, ncols: l.c1 - f.c0 + 1, bp: Math.max(1, l.x + l.bp - f.x), nall: 0, counts: [], nsites: grp.length })
+      }
+      const flatB = new Uint8Array(bins.length * H); bcells.forEach((c, k) => flatB.set(c, k * H))
+      return { c0, c1, ncols: rows.length, ncover, H, haps, nsites: bins.length, sites: bins, cells: Buffer.from(flatB.buffer).toString('base64'), binned: true, sitesPerBin: per, totalSites: sites.length }
     }
     const flat = new Uint8Array(sites.length * H); cellsArr.forEach((c, k) => flat.set(c, k * H))
     return { c0, c1, ncols: rows.length, ncover, H, haps, nsites: sites.length, sites, cells: Buffer.from(flat.buffer).toString('base64') }
