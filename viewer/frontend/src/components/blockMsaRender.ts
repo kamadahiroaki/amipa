@@ -62,6 +62,11 @@ function levelDensRef(){ if (_densRef.has(st.li)) return _densRef.get(st.li); co
   for (const h of L.haps) for (const c of h.contigs) for (const x of c.inst) if (x[5]<4 && x.length>12 && x[2]>0) d.push(x[11]/x[2]*1000);
   d.sort((a,b)=>a-b); const ref = d.length ? Math.max(0.5, 2*d[Math.floor(d.length/2)]) : 10; _densRef.set(st.li, ref); return ref; }
 function fmtbp(x){ if (x>=1e6) return (x/1e6).toFixed(x>=1e7?1:2)+' Mb'; if (x>=1e3) return (x/1e3).toFixed(x>=1e5?0:1)+' kb'; return x+' bp'; }
+// 範囲のラベル。両端が同じ表記に丸まるときは kb の桁を増やして区別する
+function fmtRange(xa, xb){ let a = fmtbp(xa), b = fmtbp(xb); if (a !== b) return a + '–' + b;
+  const tries = xa >= 1e6 ? [[1e6, 2, ' Mb'], [1e6, 3, ' Mb'], [1e3, 1, ' kb'], [1e3, 2, ' kb']] : xa >= 1e3 ? [[1e3, 1, ' kb'], [1e3, 2, ' kb'], [1e3, 3, ' kb']] : [];
+  for (const [u, d, suf] of tries){ a = (xa/u).toFixed(d)+suf; b = (xb/u).toFixed(d)+suf; if (a !== b) return a + '–' + b; }
+  return Math.round(xa)+' bp–'+Math.round(xb)+' bp'; }
 const esc = s => String(s).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 const st = { graphAtoms:null, graphRuns:null, marks:null, rowMode:'auto', baseDiff:true, baseCmp:'ref', drilling:false, busy:null, anc:true, anc2:true, rangeSel:null, hoverRank:null, filter:null, filterPath:[], sync:true, onlySel:false, hapMarks:new Map(), genes:new Map(), colorBy:'order', win: 0, li: 0, mode:'msa', axis:'cons', order:'tree', origin:null, sel:null, hover:null, pinned:false, showMinor:true, bundle:true, showLinks:false, measure:'minor', norm:'abs'};
@@ -308,12 +313,14 @@ function openSites(q, label, pblock){ if (!(cb && cb.onSites) || st.drilling) re
   cb.onSites(q).then(S => { st.drilling = false; st.busy = null;
     if (!S || S.error || S.tooMany){ drawAll(); $('detailbody').innerHTML = `<p class="k">${esc((S && S.error) || '応答なし')}${S && S.tooMany ? ' 列見出しをドラッグして狭い区間を選ぶと変異サイトの段に降りられます。' : ''}</p>`; return; }
     if (!S.nsites){ drawAll(); $('detailbody').innerHTML = `<p class="k">${esc(label)}（${S.ncols} 列）は全株同一です。変異サイトがありません。</p>`; return; }
+    // x0/x1 で開いた狭い範囲が葉 400 以下なら、アレル行列を挟まず塩基へ（c0/c1 で開いたときは openSites の冒頭で判定済み）
+    if (ncol == null && S.c0 != null && S.c1 != null && (S.c1 - S.c0 + 1) <= BASE_MAX_LEAVES && cb.onTokRanges){ drawAll(); baseFromCols(S.c0, S.c1, label); return; }
     const nw = sitesWindow(S, label, pw, pblock != null ? pblock : -1, S.c0, S.c1); nw.id = WINS.length; nw.plevel = st.li; WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; nw.ms = S.ms || 0;
     enterWindow(nw.id); $('detailbody').innerHTML = S.binned ? `<p class="k">変異サイトが ${S.totalSites.toLocaleString()} 個あるので、${S.sitesPerBin} サイトずつ ${S.nsites} ビンにまとめた粗い段です（列 ${S.ncols}、${S.ncover} 株が被覆）。セルの濃さ＝参照と違うサイトの割合。列見出しをドラッグして狭めると、サイトごとのアレルの段へ降ります。</p>` : `<p class="k">変異サイト ${S.nsites} 個（列 ${S.ncols}、${S.ncover} 株が被覆）。セルの色＝アレル（灰＝参照側）。行は系統樹順。列見出しをドラッグで狭い区間へ、葉 ${BASE_MAX_LEAVES} 以下で塩基 MSA へ。</p>`;
   }).catch(e => { st.drilling = false; st.busy = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; }); }
 // アレル行列の中のドラッグ: サイトの範囲 → 列の範囲。葉 400 以下なら親ブロックの錨で絞って塩基へ、そうでなければ狭いアレル行列
 function sitesRange(xa, xb){ const S = sitesOf(); if (!S) return; const ks = []; S.sites.forEach((s_, k) => { if (s_.x + Math.max(1, s_.bp) > xa && s_.x < xb) ks.push(k); }); if (!ks.length){ st.rangeSel = null; drawAll(); return; }
-  const c0 = S.sites[ks[0]].c0, c1 = S.sites[ks[ks.length-1]].c1; const ncol = c1 - c0 + 1; const label = fmtbp(xa) + '–' + fmtbp(xb);
+  const c0 = S.sites[ks[0]].c0, c1 = S.sites[ks[ks.length-1]].c1; const ncol = c1 - c0 + 1; const label = fmtRange(xa, xb);
   if (ncol <= BASE_MAX_LEAVES){ st.rangeSel = null; drawAll(); baseFromCols(c0, c1, label); return; }
   st.rangeSel = null; openSites({ c0, c1 }, label, -1); }
 // 列の範囲 [c0, c1] を塩基 MSA へ: backend が distill から各行のトークン範囲を出す（錨の標本に頼らない）
@@ -869,7 +876,7 @@ function regroupLevel(L, target){ const nb = L.nblocks; if (nb <= target) return
 function drillRange(xa, xb){ if (xb <= xa || st.drilling) return; if (isBase()){ baseRange(xa, xb); return; } if (isSites()){ sitesRange(xa, xb); return; } const w = win(); const L0 = w.levels[0];
   const ranks = []; L0.blocks.forEach((B, r)=>{ if (B.x < xb && B.x + B.span > xa) ranks.push(r); });
   if (!ranks.length){ $('detailbody').innerHTML = '<p class="k">この区間にブロックがありません。</p>'; st.rangeSel = null; drawHeader(); return; }
-  const label = fmtbp(xa) + '–' + fmtbp(xb); const key = 'r:' + Math.round(xa) + ':' + Math.round(xb);
+  const label = fmtRange(xa, xb); const key = 'r:' + Math.round(xa) + ':' + Math.round(xb);
   const ch = w.children ? w.children[key] : null; if (ch!=null){ st.rangeSel = null; drawHeader(); enterWindow(ch); return; }
   // 1 ブロックに収まる範囲: その子窓に入って、範囲に重なるブロックに絞り込む（子窓が無い小さなブロックは塩基へ）
   const cols = (xb - xa) / Math.max(1, DATA.meta.bpt || 1);
@@ -878,11 +885,17 @@ function drillRange(xa, xb){ if (xb <= xa || st.drilling) return; if (isBase()){
     const ranges = []; if (anc){ for (const [path, s0, e0] of rr_){ const A = anc.rows.get(path); let lo = Infinity, hi = -Infinity; if (A) for (let k=0;k<A.i.length;k++){ const x = anc.x[A.i[k]]; if (x >= xa && x <= xb && A.tok[k] >= s0 && A.tok[k] < e0){ lo = Math.min(lo, A.tok[k]); hi = Math.max(hi, A.tok[k]+1); } } if (hi > lo) ranges.push([path, lo, hi]); } }
     if (ranges.length){ cb.onBaseMsa({ ranges, span: xb-xa, afrac: 0, label: winPath().map((p,i)=>i===0?'全体':p.label).join('›') + '›' + label, depth: w.depth+1, parent: st.win, pblock: -1 }); $('detailbody').innerHTML = `<p class="k">区間 ${label} の各行を塩基レベル MSA に渡しました。</p>`; st.rangeSel = null; drawHeader(); return; } }
   if (TREE){   // 木: 範囲をそのまま問い合わせる（境界は原子区間の単位に丸まる）
+    // 範囲が原子 1 個の内側（または窓がその原子 1 個だけ）なら木には降りる先が無い。同じ窓が繰り返しできるだけなので、範囲の変異サイトへ降りる
+    const inOneAtom = ranks.length === 1 && (B => B && B.a0 != null && B.a0 === B.a1 && (L0.nblocks === 1 || (xa >= B.x && xb <= B.x + B.span)))(L0.blocks[ranks[0]]);
+    if (inOneAtom && cb && cb.onSites){ st.rangeSel = null; drawHeader(); openSites({ x0: xa, x1: xb }, label, -1); return; }
     if (!(cb && cb.onRange)) return;
     st.drilling = true; st.busy = `区間 ${label} の窓を木から取り出しています…`; updateButtons(); drawGrid(); $('detailbody').innerHTML = `<p class="k">${esc(st.busy)}</p>`;
     cb.onRange(xa, xb, label, w.depth+1, st.win, -1).then(r=>{ st.drilling = false; st.busy = null; st.rangeSel = null;
       if (!r || r.error || !r.window){ drawAll(); $('detailbody').innerHTML = `<p class="k">この区間の窓を作れませんでした: ${esc((r && r.error) || '応答なし')}</p>`; return; }
-      const nw = r.window; nw.id = WINS.length; nw.parent = st.win; nw.pblock = -1; nw.plevel = st.li; nw.pW = level().W; nw.children = nw.children || {}; nw.ondemand = true; nw.ms = r.ms || 0;
+      const nw = r.window; const nb = nw.levels && nw.levels[0] ? nw.levels[0].blocks : [];
+      // 木が返したのが原子 1 個で、選んだ範囲がその内側（原子の 9 割未満）なら、原子 1 個の窓を挟まず範囲の変異サイトへ
+      if (nb.length === 1 && nb[0].a0 != null && nb[0].a0 === nb[0].a1 && xa >= nb[0].x - 1 && xb <= nb[0].x + nb[0].span + 1 && (xb - xa) < 0.9 * nb[0].span){ if (cb && cb.onSites){ drawAll(); openSites({ x0: xa, x1: xb }, label, -1); } else { drawAll(); $('detailbody').innerHTML = '<p class="k">この範囲は今のブロックと同じ原子区間です。ダブルクリックで変異サイトへ降りてください。</p>'; } return; }
+      nw.id = WINS.length; nw.parent = st.win; nw.pblock = -1; nw.plevel = st.li; nw.pW = level().W; nw.children = nw.children || {}; nw.ondemand = true; nw.ms = r.ms || 0;
       WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; enterWindow(nw.id);
     }).catch(e=>{ st.drilling = false; st.busy = null; st.rangeSel = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; });
     return; }
