@@ -806,6 +806,12 @@ export async function fetchBlockSites(dbFile: string, q: { c0?: number; c1?: num
   const p = new URLSearchParams({ db: dbFile }); for (const k of ['c0', 'c1', 'x0', 'x1'] as const) if (q[k] != null) p.set(k, String(Math.round(q[k]!)))
   try { const res = await fetch(`/api/blocks/sites?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }
+// ノード → 木の葉（原子）か隙間（グラフ → Blocks）
+export interface BlockLocate { nodes: { name: string; col?: number; x?: number; kind: number; nplace?: number; places?: { atom?: number; gap?: number; x0: number; x1: number }[] }[]; nat: number; error?: string }
+export async function fetchBlockLocate(dbFile: string, names: string[]): Promise<BlockLocate | { error: string }> {
+  const p = new URLSearchParams({ db: dbFile, names: names.join(',') })
+  try { const res = await fetch(`/api/blocks/locate?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
+}
 // 合意列の範囲 → 各パスのトークン範囲（塩基 MSA へ渡す）
 export async function fetchBlockTokRanges(dbFile: string, c0: number, c1: number): Promise<{ ranges?: [string, number, number][]; ncols?: number; error?: string }> {
   const p = new URLSearchParams({ db: dbFile, c0: String(Math.floor(c0)), c1: String(Math.ceil(c1)) })

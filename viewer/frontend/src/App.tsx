@@ -2317,7 +2317,11 @@ export default function App() {
                   onNodesEdited={g => setPendingEdits(prev => [...prev, g])}
                   onNodeSelect={node => {
                     setSelectedNode(node)
-                    if (blkH > 0 && node && node.ref_bp != null && node.ref_contig_id != null) blkApiRef.current?.selectByRef(node.ref_contig_id, node.ref_bp)
+                    if (blkH > 0 && node) {
+                      const h = blkApiRef.current
+                      if (h && h.isTree && h.isTree() && h.locateNodes) h.locateNodes([node.node_name])          // 木: ノード → 葉（原子）の場所を Blocks に印
+                      else if (h && node.ref_bp != null && node.ref_contig_id != null) h.selectByRef(node.ref_contig_id, node.ref_bp)
+                    }
                     // MSA ノード選択モード中はクリックしたノードを MSA 対象集合にトグル追加。
                     if (node && msaPick) {
                       const nm = node.node_name
