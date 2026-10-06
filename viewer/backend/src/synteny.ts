@@ -327,6 +327,36 @@ export interface SitesResult { c0: number; c1: number; ncols: number; ncover: nu
   sites: { x: number; c0: number; c1: number; ncols: number; bp: number; nall: number; counts: number[]; nsites?: number }[]; cells: string; tooMany?: boolean; error?: string
   binned?: boolean; sitesPerBin?: number; totalSites?: number; method?: string; boundaryTier?: number }
 const SITES_MAX = 4000      // これを超えるサイト数はビンにまとめる（粗い段）
+const LOCUS_SPLIT = 48      // 座位方式で、これより多い列を持つ座位は内側を列方式のサイトに分ける（錨の疎な島・大きな座位の内部構造を見せる）
+// 列方式の芯: [c0, c1] の列（株ビットセット）から「不変列の間の非不変列の連なり」をサイトにする。cover を与えたときはその株だけを見る
+function colSitesCore(d: InstanceType<typeof Database>, syn: Synteny, c0: number, c1: number, haps: string[], coverIn?: number[]): { sites: SitesResult['sites']; cellsArr: number[][]; ncover: number; ncols: number } {
+  const rows = d.prepare('SELECT col, x, bp, nhap, haps FROM cols WHERE col BETWEEN ? AND ? ORDER BY col').all(c0, c1) as { col: number; x: number; bp: number; nhap: number; haps: Buffer }[]
+  const H = syn.H; const has = (buf: Buffer, h: number) => (buf[h >> 3] >> (h & 7)) & 1
+  if (!rows.length) return { sites: [], cellsArr: [], ncover: 0, ncols: 0 }
+  let cover: number[]; if (coverIn) cover = coverIn; else { const ncoverMax = Math.max(...rows.map(r => r.nhap)); const inv0 = rows.find(r => r.nhap === ncoverMax); cover = []; for (let h = 0; h < H; h++) if (!inv0 || has(inv0.haps, h)) cover.push(h) }
+  const coverSet = new Set(cover); const ncover = cover.length
+  const nIn = (r: { haps: Buffer }) => { let n = 0; for (const h of cover) n += has(r.haps, h); return n }   // 被覆の中で列を持つ株の数（不変列 = 全員が持つ）
+  const inv = rows.map(r => nIn(r) === ncover)
+  const refIdx = syn.paths.filter(p => p.isref).map(p => haps.indexOf(p.hap)).find(v => v >= 0)
+  const sites: SitesResult['sites'] = []; const cellsArr: number[][] = []
+  let i = 0
+  while (i < rows.length) {
+    if (inv[i]) { i++; continue }
+    let j = i; while (j < rows.length && !inv[j]) j++
+    const run = rows.slice(i, j)
+    const key: (string | null)[] = new Array(H).fill(null)
+    for (let h = 0; h < H; h++) { if (!coverSet.has(h)) continue; const ks: number[] = []; for (let k = 0; k < run.length; k++) if (has(run[k].haps, h)) ks.push(k); key[h] = ks.join(',') }
+    const cnt = new Map<string, number>(); for (let h = 0; h < H; h++) if (key[h] != null) cnt.set(key[h]!, (cnt.get(key[h]!) || 0) + 1)
+    const order = [...cnt.keys()].sort((u, v) => (cnt.get(v)! - cnt.get(u)!) || (u < v ? -1 : 1))
+    if (refIdx != null && refIdx >= 0 && key[refIdx] != null) { const k = key[refIdx]!; order.splice(order.indexOf(k), 1); order.unshift(k) }
+    const idxOf = new Map(order.map((k, n) => [k, n]))
+    const cells = new Array(H).fill(255); for (let h = 0; h < H; h++) if (key[h] != null) cells[h] = Math.min(253, idxOf.get(key[h]!)!)
+    cellsArr.push(cells)
+    sites.push({ x: run[0].x, c0: run[0].col, c1: run[run.length - 1].col, ncols: run.length, bp: Math.max(...run.map(r => r.bp)), nall: order.length, counts: order.map(k => cnt.get(k)!) })
+    i = j
+  }
+  return { sites, cellsArr, ncover, ncols: rows.length }
+}
 const BIN_TARGET = 1500     // ビンの数の目安（画面幅 1 px/ビン）
 export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: number; x1?: number }, max = SITES_MAX): SitesResult | { error: string } {
   const d = new Database(syn.file, { readonly: true })
@@ -463,6 +493,26 @@ export function sitesForRangeLoci(syn: Synteny, q: { c0?: number; c1?: number; x
     sites.push({ x: Math.round(syn.colXc[ca + 1]), c0: ca + 1, c1: Math.max(ca + 1, cb - 1), ncols: Math.max(0, cb - ca - 1), bp: Math.max(1, bpMax), nall: order.length, counts: order.map(e => e[1].n) })
   }
   const ncover = Math.max(0, ...Array.from(coverN))
+  // 混成: 列が多い座位（錨の疎な島・大きな座位）は、その内側を列方式のサイトに分ける。被覆＝その座位にアレルを持つ株。
+  // 座位そのもの（有無・アレルの違い）は先頭に 1 列残し、続けて内側の列サイトを置く（x 順）
+  let nsplit = 0
+  if (sites.some(s => s.ncols > LOCUS_SPLIT)) {
+    const d2 = new Database(syn.file, { readonly: true })
+    try {
+      const sites2: SitesResult['sites'] = []; const cells2: number[][] = []
+      for (let k = 0; k < sites.length; k++) {
+        const s = sites[k]; sites2.push(s); cells2.push(cellsOut[k])
+        if (s.ncols <= LOCUS_SPLIT) continue
+        const cover: number[] = []; for (let h = 0; h < H; h++) if (cellsOut[k][h] < 254) cover.push(h)
+        if (cover.length < 2) continue
+        const sub = colSitesCore(d2, syn, s.c0, s.c1, haps, cover)
+        if (!sub.sites.length) continue
+        nsplit++; (s as any).split = sub.sites.length
+        for (let j = 0; j < sub.sites.length; j++) { (sub.sites[j] as any).sub = k; sites2.push(sub.sites[j]); cells2.push(sub.cellsArr[j]) }
+      }
+      if (nsplit) { sites.length = 0; cellsOut.length = 0; for (let k = 0; k < sites2.length; k++) { sites.push(sites2[k]); cellsOut.push(cells2[k]) } }
+    } finally { d2.close() }
+  }
   if (sites.length > max) {
     const per = Math.ceil(sites.length / BIN_TARGET); const bins: SitesResult['sites'] = []; const bcells: number[][] = []
     for (let b = 0; b < sites.length; b += per) {
@@ -472,10 +522,10 @@ export function sitesForRangeLoci(syn: Synteny, q: { c0?: number; c1?: number; x
       bins.push({ x: f.x, c0: f.c0, c1: l.c1, ncols: l.c1 - f.c0 + 1, bp: Math.max(1, l.x + l.bp - f.x), nall: 0, counts: [], nsites: grp.length })
     }
     const flatB = new Uint8Array(bins.length * H); bcells.forEach((c, k) => flatB.set(c, k * H))
-    return { c0, c1, ncols: c1 - c0 + 1, ncover, H, haps, nsites: bins.length, sites: bins, cells: Buffer.from(flatB.buffer).toString('base64'), binned: true, sitesPerBin: per, totalSites: sites.length, method: 'loci', boundaryTier: T } as any
+    return { c0, c1, ncols: c1 - c0 + 1, ncover, H, haps, nsites: bins.length, sites: bins, cells: Buffer.from(flatB.buffer).toString('base64'), binned: true, sitesPerBin: per, totalSites: sites.length, method: 'loci', boundaryTier: T, nsplit } as any
   }
   const flat = new Uint8Array(sites.length * H); cellsOut.forEach((c, k) => flat.set(c, k * H))
-  return { c0, c1, ncols: c1 - c0 + 1, ncover, H, haps, nsites: sites.length, sites, cells: Buffer.from(flat.buffer).toString('base64'), method: 'loci', boundaryTier: T } as any
+  return { c0, c1, ncols: c1 - c0 + 1, ncover, H, haps, nsites: sites.length, sites, cells: Buffer.from(flat.buffer).toString('base64'), method: 'loci', boundaryTier: T, nsplit } as any
 }
 
 // ---- locate: ノード名 → 木の葉（原子）または隙間。nodeleaf 表（kind 0 錨 / 1 一意一貫 / 2 私有 / 3 株で別の場所 / 4 多重）----

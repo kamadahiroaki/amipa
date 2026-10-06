@@ -59,6 +59,8 @@ def main():
                     help="対象 sample/hap/contig キーのカンマ区切り(空=この bubble を通る全パス)。参照は常に含む")
     ap.add_argument("--flank", type=int, default=4)
     ap.add_argument("--cap", type=int, default=None, help="この長さを超えるノードの中央を畳む（既定 12）。0 で畳まない（Blocks パネルは画面側で畳む）")
+    ap.add_argument("--max-cols", dest="max_cols", type=int, default=None, help="MSA の列数の上限（既定 320。--cap 0 のときは無制限。0 で無制限）")
+    ap.add_argument("--max-leaves", dest="max_leaves", type=int, default=None, help="葉（ノード）数の上限（既定 400）。変異の少ない区間を塩基で見るとき Blocks が上げる")
     ap.add_argument("--merge-gap", dest="merge_gap", type=int, default=8,
                     help="選択集合を一時的に離れてすぐ戻る通過を『1 回の通過』として繋ぐ token 数の上限"
                          "(既定 8。実際は max(2*flank, これ)＝flank が重なるなら同じ通過とみなす)。"
@@ -66,6 +68,8 @@ def main():
     ap.add_argument("--max-tokens", dest="max_tokens", type=int, default=MAX_TOKENS,
                     help="走査するウォーク token 数の上限(既定 %d)。越えたらエラー" % MAX_TOKENS)
     args = ap.parse_args()
+    global MAX_LEAVES
+    if getattr(args, 'max_leaves', None): MAX_LEAVES = max(1, int(args.max_leaves))
     global CAP
     if args.cap is not None: CAP = args.cap if args.cap > 0 else 10**9
 
@@ -463,7 +467,9 @@ def main():
     else:
         varidx = [ci for ci in range(len(cols)) if cols[ci].get("variant") or is_var(ci)]
         a, b = (max(0, min(varidx) - 3), min(len(cols), max(varidx) + 4)) if varidx else (0, len(cols))
-    if b - a > MAX_COLS: b = a + MAX_COLS
+    # 列数の上限: 既定 320（別パネルの Bubble MSA 向け）。--cap 0（Blocks パネル内、画面側で畳む）か --max-cols 0 なら切らない
+    max_cols = args.max_cols if getattr(args, 'max_cols', None) is not None else (0 if getattr(args, 'cap', None) == 0 else MAX_COLS)
+    if max_cols and b - a > max_cols: b = a + max_cols
     cols = cols[a:b]
     for r in raw: r["seq"] = r["seq"][a:b]
     # 変異フラグ(トリム後)

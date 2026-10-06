@@ -90,6 +90,7 @@ bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
   if (!distill) { res.json({ error: 'この DB には MSA 用 distill サイドカーがありません（' + path.basename(dbPath) + '.distill）' }); return }
   const argv = [SCRIPT, '--db', dbPath, '--distill', distill, '--ranges-stdin', '--flank', flank, '--label', String(b.label ?? 'Blocks')]
   if (b.cap != null && Number.isFinite(Number(b.cap))) argv.push('--cap', String(Math.max(0, Math.floor(Number(b.cap)))))   // 0 = 畳まない（Blocks パネルは画面側で畳む）
+  if (b.maxLeaves != null && Number.isFinite(Number(b.maxLeaves))) argv.push('--max-leaves', String(Math.max(1, Math.min(4000, Math.floor(Number(b.maxLeaves))))))   // 葉の上限（既定 400。変異の少ない区間は上げる）
   const child = spawn(PYTHON, argv, { stdio: ['pipe', 'pipe', 'pipe'] })
   let out = '', errTxt = ''; let done = false
   const timer = setTimeout(() => { if (!done) { done = true; try { child.kill() } catch { /* ignore */ } res.json({ error: 'MSA 抽出がタイムアウトしました' }) } }, TIMEOUT_MS)

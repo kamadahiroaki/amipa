@@ -9,7 +9,7 @@ export interface GeneLite { name: string; start: number; end: number; strand?: s
 export interface BlockMsaHandle { selectByRef(contig: number, bp: number): boolean; locateNodes?(names: string[]): void; isTree?(): boolean; setGraphAtoms?(atoms: number[] | number[][]): void; setHapMarks(m: Map<string, string>): void; setGenes(g: Map<number, GeneLite[]>): void; destroy(): void; _layout?: () => any }
 // 現在見えている窓・段のブロック一覧（色つき）。App がグラフのノードをブロック色で塗るのに使う
 export interface BlockView { win: number; level: number; W: number; mode: string; tree?: boolean; blocks: { rank: number; color: string; ref_contig: number; x: number; span: number; label: string; members: number[]; a0?: number; a1?: number }[]; scope: { contig: number; start: number; end: number } | null; scopeKey: string; sync: boolean; n0: number }
-export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void; onDrill?: (req: BlockDrillRequest) => Promise<BlockDrillResult>; onRange?: (x0: number, x1: number, label: string, depth: number, parent: number, pblock: number) => Promise<any>; onSites?: (q: { c0?: number; c1?: number; x0?: number; x1?: number }) => Promise<any>; onTokRanges?: (c0: number, c1: number) => Promise<any>; onBaseFetch?: (ranges: [string, number, number][], label: string) => Promise<any>; onLocate?: (names: string[]) => Promise<any>; onView?: (v: BlockView | null) => void; onSelectHap?: (groupKey: string, hap: string) => void; onBaseMsa?: (req: BlockDrillRequest) => void }
+export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void; onDrill?: (req: BlockDrillRequest) => Promise<BlockDrillResult>; onRange?: (x0: number, x1: number, label: string, depth: number, parent: number, pblock: number) => Promise<any>; onSites?: (q: { c0?: number; c1?: number; x0?: number; x1?: number }) => Promise<any>; onTokRanges?: (c0: number, c1: number) => Promise<any>; onBaseFetch?: (ranges: [string, number, number][], label: string, maxLeaves?: number) => Promise<any>; onLocate?: (names: string[]) => Promise<any>; onView?: (v: BlockView | null) => void; onSelectHap?: (groupKey: string, hap: string) => void; onBaseMsa?: (req: BlockDrillRequest) => void }
 // MSA の行（ハプロタイプ名。例 'HG00673#1', 'GCF_013459175.1#1', 'grch38#chrY'）を、グラフのパス群の鍵
 // （sample 'HG00673' / haplotype 'HG00673#1' / ecoli では haplotype 'GCF_013459175.1', sample 'GCF_013459175'）に合わせる
 export function hapCandidates(hap: string): string[] {
@@ -313,9 +313,11 @@ function openSites(q, label, pblock){ if (!(cb && cb.onSites) || st.drilling) re
   st.drilling = true; st.busy = `${label} の変異サイトを集めています…`; updateButtons(); drawGrid(); $('detailbody').innerHTML = `<p class="k">${esc(st.busy)}</p>`;
   cb.onSites(q).then(S => { st.drilling = false; st.busy = null;
     if (!S || S.error || S.tooMany){ drawAll(); $('detailbody').innerHTML = `<p class="k">${esc((S && S.error) || '応答なし')}${S && S.tooMany ? ' 列見出しをドラッグして狭い区間を選ぶと変異サイトの段に降りられます。' : ''}</p>`; return; }
-    // 範囲が葉 400 以下なら、変異サイトの有無に関わらずアレル行列を挟まず塩基へ（全株同一でも塩基は見せる）
-    if (S.c0 != null && S.c1 != null && (S.c1 - S.c0 + 1) <= BASE_MAX_LEAVES && cb.onTokRanges){ drawAll(); baseFromCols(S.c0, S.c1, label); return; }
-    if (!S.nsites){ drawAll(); notice(`${esc(label)}（${S.ncols.toLocaleString()} 列）は全株同一で、変異サイトがありません。塩基を見るには列見出しをドラッグして ${BASE_MAX_LEAVES} 列以下（この範囲の約 ${Math.max(1, Math.round(100 * BASE_MAX_LEAVES / S.ncols))}%）に絞ってください。`); return; }
+    // 範囲が葉 400 以下なら、変異サイトの有無に関わらずアレル行列を挟まず塩基へ（全株同一でも塩基は見せる）。
+    // 変異サイトが少ない（≤ BASE_FEW_SITES）ならアレル行列は数列で意味が無いので、葉 BASE_IDENT_MAX までは上限を上げて塩基へ
+    const ncS = (S.c0 != null && S.c1 != null) ? (S.c1 - S.c0 + 1) : null;
+    if (ncS != null && cb.onTokRanges && (ncS <= BASE_MAX_LEAVES || (S.nsites <= BASE_FEW_SITES && ncS <= BASE_IDENT_MAX))){ drawAll(); baseFromCols(S.c0, S.c1, label, ncS > BASE_MAX_LEAVES ? BASE_IDENT_MAX : undefined); return; }
+    if (!S.nsites){ drawAll(); notice(`${esc(label)}（${S.ncols.toLocaleString()} 列）は全株同一で、変異サイトがありません。塩基を見るには列見出しをドラッグして ${BASE_IDENT_MAX.toLocaleString()} 列以下（この範囲の約 ${Math.max(1, Math.round(100 * BASE_IDENT_MAX / S.ncols))}%）に絞ってください。`); return; }
     const nw = sitesWindow(S, label, pw, pblock != null ? pblock : -1, S.c0, S.c1); nw.id = WINS.length; nw.plevel = st.li; WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; nw.ms = S.ms || 0;
     enterWindow(nw.id); $('detailbody').innerHTML = S.binned ? `<p class="k">変異サイトが ${S.totalSites.toLocaleString()} 個あるので、${S.sitesPerBin} サイトずつ ${S.nsites} ビンにまとめた粗い段です（列 ${S.ncols}、${S.ncover} 株が被覆）。セルの濃さ＝参照と違うサイトの割合。列見出しをドラッグして狭めると、サイトごとのアレルの段へ降ります。</p>` : `<p class="k">変異サイト ${S.nsites} 個（列 ${S.ncols}、${S.ncover} 株が被覆）。セルの色＝アレル（灰＝参照側）。行は系統樹順。列見出しをドラッグで狭い区間へ、葉 ${BASE_MAX_LEAVES} 以下で塩基 MSA へ。</p>`;
   }).catch(e => { st.drilling = false; st.busy = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; }); }
@@ -330,10 +332,10 @@ function sitesRange(xa, xb){ const S = sitesOf(); if (!S) return; const ks = [];
   if (c0 === S.c0 && c1 === S.c1){ st.rangeSel = null; drawAll(); notice(`選んだ範囲は今の窓（列 ${S.c0.toLocaleString()}–${S.c1.toLocaleString()}）と同じです。狭く選ぶか、サイトの内側を選んでください。`); return; }
   st.rangeSel = null; openSites({ c0, c1 }, label, -1); }
 // 列の範囲 [c0, c1] を塩基 MSA へ: backend が distill から各行のトークン範囲を出す（錨の標本に頼らない）
-function baseFromCols(c0, c1, label){ if (!(cb && (cb.onBaseFetch || cb.onBaseMsa))) return; if (!(cb && cb.onTokRanges)){ $('detailbody').innerHTML = '<p class="k">この構成では列の範囲を塩基へ渡せません。</p>'; return; }
+function baseFromCols(c0, c1, label, maxLeaves){ if (!(cb && (cb.onBaseFetch || cb.onBaseMsa))) return; if (!(cb && cb.onTokRanges)){ $('detailbody').innerHTML = '<p class="k">この構成では列の範囲を塩基へ渡せません。</p>'; return; }
   if (st.drilling) return; st.drilling = true; st.busy = `${label}: 列 ${c0}–${c1} の各行のトークン範囲を求めています…`; updateButtons(); drawGrid(); $('detailbody').innerHTML = `<p class="k">${esc(st.busy)}</p>`;
   cb.onTokRanges(c0, c1).then(r => { st.busy = null; st.drilling = false; if (!r || r.error || !r.ranges || !r.ranges.length){ drawAll(); notice(`塩基へ渡せませんでした: ${esc((r && r.error) || '範囲にトークンがありません')}`); return; }
-    openBase(r.ranges, label, -1, c0, c1);
+    openBase(r.ranges, label, -1, c0, c1, maxLeaves);
   }).catch(e => { st.busy = null; st.drilling = false; drawAll(); notice(`失敗: ${esc(String(e))}`); }); }
 
 // ---- 塩基の段（パネル内 MSA）: 木の底。bubble MSA と同じ計算（各行のトークン範囲）を、同じ描画器の列として描く。
@@ -414,11 +416,11 @@ function baseWindow(M, label, parent, pblock, c0, c1){ const pw = WINS[parent]; 
   return { id: -1, parent, pblock, depth: pw.depth + 1, label, atoms: 0, H: haps.length, children: {}, mode: 'base', anchors: null, ondemand: true, tree: true,
     levels: [{ W: 0, nblocks: 0, blocks: [], haps, mergecap: 0, mode: 'base', adj: [], events: {}, origin: 0, merges: 0, members: null, nonmono: 0, base: M, c0, c1, refc }] }; }
 // 塩基の窓を開く（各行のトークン範囲 → bubble MSA と同じ計算 → パネル内に描く）。onBaseFetch が無ければ従来どおり別パネルへ
-function openBase(ranges, label, pblock, c0, c1){ if (!ranges || !ranges.length) return;
+function openBase(ranges, label, pblock, c0, c1, maxLeaves){ if (!ranges || !ranges.length) return;
   if (!(cb && cb.onBaseFetch)){ if (cb && cb.onBaseMsa) cb.onBaseMsa({ ranges, span: 0, afrac: 0, label, depth: win().depth + 1, parent: st.win, pblock: pblock != null ? pblock : -1 }); return; }
   const pw = st.win; const key = 'b:' + (c0 != null ? c0 + ':' + c1 : label); const w = win(); const ch = w.children ? w.children[key] : null; if (ch != null){ enterWindow(ch); return; }
   st.drilling = true; st.busy = `${label} の塩基レベル MSA を計算しています…（${ranges.length} 行）`; updateButtons(); drawGrid(); $('detailbody').innerHTML = `<p class="k">${esc(st.busy)}</p>`;
-  cb.onBaseFetch(ranges, label).then(M => { st.drilling = false; st.busy = null;
+  cb.onBaseFetch(ranges, label, maxLeaves).then(M => { st.drilling = false; st.busy = null;
     if (!M || M.error || !M.cols || !M.cols.length){ drawAll(); notice(`塩基レベル MSA を作れませんでした: ${esc((M && M.error) || '列がありません')}`); return; }
     const nw = baseWindow(M, label, pw, pblock != null ? pblock : -1, c0, c1); nw.id = WINS.length; nw.plevel = st.li; WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id;
     enterWindow(nw.id); const ng = LY.bgroups ? LY.bgroups.length : 0; $('detailbody').innerHTML = `<p class="k">塩基の段: 列 ${M.cols.length}（ノード ${ng} 個）・行 ${M.rows.length}。列見出しの上段＝ノード（群）の帯: 名前と大きさ（bp。「n123[2] 1 bp」の [2] は同じサイトの排他アレル 2 個を 1 列に重ねたもの、緑の縦線はその群の左端）。下段＝比較の基準の配列（参照パスの行、または多数派）。「一致を省く」は基準と同じ塩基を · にする（基準が参照パスなら参照の行も · になる。配列は下段にある）。底の線＝参照座標の錨（青）・行間で塩基が違う（橙）。長いノードは画面に入らないときだけ中央を畳む（⋯N）。列見出しをドラッグで列の範囲に絞る。セルの上の紫線＝周りと逆向きに通ったノード（逆相補で表示）。</p>`;
@@ -714,7 +716,7 @@ function drawChips(){ const L = level(); if (isBase()){ const M = L.base; const 
 }
 function childKey(rank){ return String(rank); }   // 子窓の鍵（最細段の rank）。粗い段のブロックは絞り込み表示で、子窓は作らない
 // 塩基レベルへ渡せるか: 列（葉ノード）が bubble MSA の上限 400 以下と見込めるブロック（典型長 / bp/token）
-const BASE_MAX_LEAVES = 400;
+const BASE_MAX_LEAVES = 400; const BASE_IDENT_MAX = 2000; const BASE_FEW_SITES = 20;
 function baseCols(rank){ const B = level().blocks[rank]; if (!B) return Infinity; return B.tbp / Math.max(1, DATA.meta.bpt || 1); }
 function canBase(rank){ if (TREE){ const B = level().blocks[rank]; return !!B && st.li===0 && !!(cb && (cb.onBaseFetch || cb.onBaseMsa)) && (B.c1 - B.c0 + 1) <= BASE_MAX_LEAVES; } return st.li===0 && !!(cb && cb.onBaseMsa) && baseCols(rank) <= BASE_MAX_LEAVES; }
 function canDrill(rank){ const L = level(); const B = L.blocks[rank]; if (!B) return false; if (TREE) return (B.atoms==null || B.atoms>=2); return L.mode==='bins' ? (B.atoms==null || B.atoms>=2) : true; }
