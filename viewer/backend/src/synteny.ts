@@ -523,20 +523,21 @@ export function nodesForAtoms(syn: Synteny, layer: number, a0: number, a1: numbe
   } finally { d.close() }
 }
 // 名前 → 多数派の原子（葉は nodeleaf の先頭の場所、上の層は supermap の major。-1 = 不明、隙間は -2-prev）
-export function atomsOfNames(syn: Synteny, layer: number, names: string[]): { atoms: number[]; fracs: number[] } {
-  const atoms: number[] = [], fracs: number[] = []
+// xs/xe: 葉のノードはその合意列の合意座標 [colXc[col], colXc[col+1])。上の層（supermap）は位置が無いので -1（原子の粒度）
+export function atomsOfNames(syn: Synteny, layer: number, names: string[]): { atoms: number[]; fracs: number[]; xs: number[]; xe: number[] } {
+  const atoms: number[] = [], fracs: number[] = [], xs: number[] = [], xe: number[] = []
   const d = new Database(syn.file, { readonly: true })
   try {
     const ql = d.prepare('SELECT nplace, places FROM nodeleaf WHERE col=?'), qs = d.prepare('SELECT major, frac FROM supermap WHERE node_name=? AND layer=?')
     for (const nm of names) {
-      let atom = -1, frac = 0
+      let atom = -1, frac = 0, x0 = -1, x1 = -1
       if (layer >= syn.maxlayer || !syn.hasSupermap) {
         const m = /^n(\d+)$/.exec(nm); const col = m && syn.orig2col && Number(m[1]) < syn.orig2col.length ? syn.orig2col[Number(m[1])] : -1
-        if (col >= 0) { const r = ql.get(col) as { nplace: number; places: Buffer } | undefined; if (r && r.places.length >= 4) { const p = r.places.readInt32LE(0); atom = p < syn.nat ? p : -2 - (p - syn.nat - 1); frac = r.nplace === 1 ? 1 : 1 / r.nplace } }
+        if (col >= 0) { x0 = syn.colXc[col]; x1 = syn.colXc[col + 1]; const r = ql.get(col) as { nplace: number; places: Buffer } | undefined; if (r && r.places.length >= 4) { const p = r.places.readInt32LE(0); atom = p < syn.nat ? p : -2 - (p - syn.nat - 1); frac = r.nplace === 1 ? 1 : 1 / r.nplace } }
       } else { const r = qs.get(nm, layer) as { major: number; frac: number } | undefined; if (r) { atom = r.major < syn.nat ? r.major : -2 - (r.major - syn.nat - 1); frac = r.frac } }
-      atoms.push(atom); fracs.push(frac)
+      atoms.push(atom); fracs.push(frac); xs.push(x0); xe.push(x1)
     }
-    return { atoms, fracs }
+    return { atoms, fracs, xs, xe }
   } finally { d.close() }
 }
 

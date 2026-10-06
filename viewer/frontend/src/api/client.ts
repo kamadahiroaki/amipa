@@ -856,13 +856,13 @@ export async function fetchBlockView(dbFile: string, contig: number, start: numb
   } catch { return null }
 }
 // ノード名 → 全体窓・最細段のブロック番号（-1=不明）。参照座標の無いノードの塗り分けに使う
-export async function fetchBlockNodemap(dbFile: string, layer: number, names: string[]): Promise<{ vals: number[]; fracs: number[] | null } | null> {
+export async function fetchBlockNodemap(dbFile: string, layer: number, names: string[]): Promise<{ vals: number[]; fracs: number[] | null; xs: number[] | null; xe: number[] | null } | null> {
   try {
     const r = await fetch('/api/blocks/nodemap', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names }) })
     if (!r.ok) return null; const j = await r.json()
     // 木では原子番号（GraphCanvas が bm.atomRank で段のブロック番号に直す）と、その場所に属する出現の割合 fracs（一意 1、多重 1/n、スーパーノードは bp 加重の多数派の割合）
-    if (Array.isArray(j.atoms)) return { vals: j.atoms as number[], fracs: Array.isArray(j.fracs) ? j.fracs as number[] : null }
-    return Array.isArray(j.ranks) ? { vals: j.ranks as number[], fracs: null } : null
+    if (Array.isArray(j.atoms)) return { vals: j.atoms as number[], fracs: Array.isArray(j.fracs) ? j.fracs as number[] : null, xs: Array.isArray(j.xs) ? j.xs as number[] : null, xe: Array.isArray(j.xe) ? j.xe as number[] : null }   // xs/xe: 葉の合意座標（上の層は -1）
+    return Array.isArray(j.ranks) ? { vals: j.ranks as number[], fracs: null, xs: null, xe: null } : null
   } catch { return null }
 }
 // ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）
