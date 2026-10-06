@@ -378,7 +378,7 @@ def main():
             cells[n] = s
         raw.append(dict(samp=r["samp"], label=r["label"], path=r["path"],
                         strand=("-" if rev else "+"), cells=cells, inv=inv,
-                        nodes=set(nodes), isref=r["isref"]))
+                        nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"]))
 
     # --- 固定幅列。★同じサイトの排他アレルは「アレル群」として **1 ブロック**にまとめる。
     #   旧実装は「id 隣接・等長・排他のペア」だけを統合していたので、3 アレル以上の site(G/A/C)や
@@ -387,17 +387,43 @@ def main():
     #     ・候補が群の既メンバと同じ行に共存する(=排他でない)なら別サイト → 群を閉じる
     #     ・群の支持行が全行を覆ったら、そのサイトは尽きた → 群を閉じる
     #   これで隣サイトへ連鎖せず、多アレル/不等長もまとまる。群の幅=メンバ最長、短いアレルは gap 埋め。 ---
+    #   ★さらに（2026-10-06）: 排他だけだと、連鎖不平衡で常に一緒に出る隣のサイトのアレル同士（29‖31 と 30‖32 の 2 サイトで、
+    #   29 と 30、31 と 32 が常に同じ株）を同じサイトと誤って束ね、全株に偽の欠失が出た。同じサイト＝**グラフで並列**（行の並びから
+    #   見た直前・直後のノード集合が同じ）を条件にする。群の順は行の中での位置（中央値）で決める（id 順だと島の中で乱れる）。
     alln = sorted({n for r in raw for n in r["nodes"]}, key=lambda n: int(n[1:]))
     present = {n: set(i for i, r in enumerate(raw) if n in r["nodes"]) for n in alln}
-    groups, gi = [], 0
-    while gi < len(alln):
-        g = [alln[gi]]; sup = set(present[alln[gi]]); gi += 1
-        while gi < len(alln) and len(sup) < len(raw):
-            c = alln[gi]
-            if present[c] & sup:
-                break
-            g.append(c); sup |= present[c]; gi += 1
-        groups.append(g)
+    #   やり方: 全行が持つノード（不変ノード）で各行の並びを区切り、区切りの中（＝バブルの通り方＝アレル）で、区切りの先頭からの
+    #   塩基オフセットが同じノード同士を同じ列群にする（29+32 と 31+30 の 2 bp ずつのアレルは [29|31][32|30] に揃う）。
+    #   長さの違うアレルはオフセットがずれた所から別の群＝gap になる（整列としてはそれが正しい）。
+    inv_nodes = {n for n in alln if len(present[n]) == len(raw)}
+    seg_pos = {}                                   # 不変ノード → 並びの中の位置（参照行があれば参照行、無ければ最初の行）
+    base_row = next((r for r in raw if r["isref"]), raw[0])
+    for i, n in enumerate(base_row["seq"]):
+        if n in inv_nodes and n not in seg_pos: seg_pos[n] = i
+    nseg = len(seg_pos)
+    for r in raw:                                  # 参照行に無い不変ノードは無い（全行が持つ）はずだが、順が違う行は位置を後ろに
+        for n in r["seq"]:
+            if n in inv_nodes and n not in seg_pos: seg_pos[n] = nseg; nseg += 1
+    keyof = {}                                     # ノード → (区切りの順位, オフセット bp)。行によって違えば最初の行の値
+    for r in raw:
+        seg = -1; off = 0
+        for n in r["seq"]:
+            L_ = len(seqleaf.get(n, ""))
+            if n in inv_nodes:
+                seg = seg_pos[n]; off = 0; keyof.setdefault(n, (seg, -1))      # 不変ノード自身は区切り（オフセット -1）
+                off += L_; continue
+            keyof.setdefault(n, (seg, off)); off += L_
+    bykey = {}
+    for n in alln: bykey.setdefault(keyof.get(n, (-2, int(n[1:]))), []).append(n)
+    groups = []
+    for key in sorted(bykey.keys()):
+        members = sorted(bykey[key], key=lambda n: -len(present[n]))   # 株数の多い順に、排他なら同じ群へ
+        pools = []
+        for n in members:
+            for pl in pools:
+                if not (present[n] & pl[1]): pl[0].append(n); pl[1] |= present[n]; break
+            else: pools.append([[n], set(present[n])])
+        groups.extend(pl[0] for pl in pools)
 
     cols = []
     for g in groups:

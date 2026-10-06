@@ -403,7 +403,7 @@ function openBase(ranges, label, pblock, c0, c1){ if (!ranges || !ranges.length)
   cb.onBaseFetch(ranges, label).then(M => { st.drilling = false; st.busy = null;
     if (!M || M.error || !M.cols || !M.cols.length){ drawAll(); $('detailbody').innerHTML = `<p class="k">塩基レベル MSA を作れませんでした: ${esc((M && M.error) || '列がありません')}</p>`; return; }
     const nw = baseWindow(M, label, pw, pblock != null ? pblock : -1, c0, c1); nw.id = WINS.length; nw.plevel = st.li; WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id;
-    enterWindow(nw.id); const ng = LY.bgroups ? LY.bgroups.length : 0; $('detailbody').innerHTML = `<p class="k">塩基の段: 列 ${M.cols.length}（ノード ${ng} 個）・行 ${M.rows.length}。列見出しの上段＝ノードの境界と大きさ（bp）、下段＝参照の配列、底の線＝参照座標の錨（青）・行間で塩基が違う（橙）。長いノードは画面に入らないときだけ中央を畳む（⋯N）。列見出しをドラッグで列の範囲に絞る。セルの上の紫線＝周りと逆向きに通ったノード（逆相補で表示）。</p>`;
+    enterWindow(nw.id); const ng = LY.bgroups ? LY.bgroups.length : 0; $('detailbody').innerHTML = `<p class="k">塩基の段: 列 ${M.cols.length}（ノード ${ng} 個）・行 ${M.rows.length}。列見出しの上段＝ノード（群）の帯: 名前と大きさ（bp。「n123[2] 1 bp」の [2] は同じサイトの排他アレル 2 個を 1 列に重ねたもの、緑の縦線はその群の左端）。下段＝参照の配列。底の線＝参照座標の錨（青）・行間で塩基が違う（橙）。長いノードは画面に入らないときだけ中央を畳む（⋯N）。列見出しをドラッグで列の範囲に絞る。セルの上の紫線＝周りと逆向きに通ったノード（逆相補で表示）。</p>`;
   }).catch(e => { st.drilling = false; st.busy = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; }); }
 
 // 塩基の段の範囲選択: ドラッグした列の範囲に絞った入れ子の窓（cols/rows を切り出すだけ。再計算なし）
