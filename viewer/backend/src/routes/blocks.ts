@@ -6,7 +6,7 @@ import { distillFor } from './bubbleMsa'
 import { execFile } from 'child_process'
 import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
-import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange } from '../synteny'
+import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes } from '../synteny'
 
 // 多解像度 MSA（共線ブロック）のサイドカーを配る。
 //   GET /api/blocks?db=X.db            … `<db>.blocks.json`（functions/msa_lod/70_hier_build.py の出力）をそのまま返す
@@ -59,7 +59,8 @@ blocksRouter.get('/blocks/sites', (req, res) => {
   const t0 = Date.now()
   try {
     const num = (v?: string) => (v != null && v !== '' ? Number(v) : undefined)
-    const r = sitesForRange(syn, { c0: num(q.c0), c1: num(q.c1), x0: num(q.x0), x1: num(q.x1) }, q.max ? Number(q.max) : undefined)
+    const fn = q.method === 'cols' ? sitesForRange : sitesForRangeLoci     // 既定は座位（錨の間）ベース。cols は比較用の旧方式
+    const r = fn(syn, { c0: num(q.c0), c1: num(q.c1), x0: num(q.x0), x1: num(q.x1) }, q.max ? Number(q.max) : undefined)
     res.json({ ...r, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) }
 })
@@ -80,6 +81,15 @@ blocksRouter.get('/blocks/tokranges', (req, res) => {
       if (err) { res.json({ error: 'トークン範囲の計算に失敗: ' + (stderr ? String(stderr).slice(0, 300) : String(err)) }); return }
       try { const j = JSON.parse(stdout); j.ms = Date.now() - t0; res.json(j) } catch (e) { res.json({ error: '出力を解釈できません: ' + String(e) }) }
     })
+})
+
+// ノード → 木の葉: GET /api/blocks/locate?db&names=n1,n2 → {nodes:[{name, col, x, kind, nplace, places:[{atom|gap, x0, x1}]}]}
+blocksRouter.get('/blocks/locate', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const syn = loadSynteny(q.db); if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
+  const names = String(q.names || '').split(',').filter(x => x).slice(0, 2000)
+  try { res.json(locateNodes(syn, names)) } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 // 木の範囲問い合わせ: 合意座標 [x0, x1] の窓（段は 30/12/5 ブロックの予算切り）。ブロックの内側へ・列見出しのドラッグの両方がこれ

@@ -10,6 +10,8 @@ import Database from 'better-sqlite3'
 import fs from 'fs'
 import path from 'path'
 import { getDbDir } from './db'
+import { distillFor } from './routes/bubbleMsa'
+import { openDistill } from './distill'
 
 export const SYNTENY_SUFFIX = '.synteny'
 
@@ -30,7 +32,8 @@ export interface Synteny {
   file: string; mtime: number
   meta: Record<string, string>; circular: boolean; H: number; total: number; tiers: number[]; floor: number
   atoms: Atom[]; bnd: Boundary[]; paths: PathRow[]; inst: Inst[][]      // inst[pid] は pos 昇順
-  anchorX: Int32Array; anchorTier: Int8Array                              // rank → 合意座標 / 層
+  anchorX: Int32Array; anchorTier: Int8Array; anchorCol: Int32Array      // rank → 合意座標 / 層 / 列
+  rankOfCol: Int32Array; dcol: Int32Array | null; colX: Int32Array; colBp: Int32Array; orig2col: Int32Array | null; nat: number; distill: string | null
   junc: Junc[][]
   tree: any | null
   hapOrder: string[]                                                       // 参照ハプロを先に、名前順
@@ -55,8 +58,14 @@ export function loadSynteny(dbFile: string): Synteny | null {
     const inst: Inst[][] = paths.map(() => [])
     for (const r of d.prepare('SELECT pid, atom, dir, s0, e0, pos, bp, nsteps, nanc, nminor, npriv, vs, anc FROM inst ORDER BY pid, pos').all() as Inst[]) inst[r.pid].push(r)
     const nA = (d.prepare('SELECT COUNT(*) AS n FROM anchors').get() as { n: number }).n
-    const anchorX = new Int32Array(nA); const anchorTier = new Int8Array(nA)
-    for (const r of d.prepare('SELECT rank, x, tier FROM anchors').iterate() as Iterable<{ rank: number; x: number; tier: number }>) { anchorX[r.rank] = r.x; anchorTier[r.rank] = r.tier }
+    const anchorX = new Int32Array(nA); const anchorTier = new Int8Array(nA); const anchorCol = new Int32Array(nA)
+    const ncols = Number(meta.ncols || 0); const rankOfCol = new Int32Array(ncols).fill(-1)
+    for (const r of d.prepare('SELECT rank, x, tier, col FROM anchors').iterate() as Iterable<{ rank: number; x: number; tier: number; col: number }>) { anchorX[r.rank] = r.x; anchorTier[r.rank] = r.tier; anchorCol[r.rank] = r.col; if (r.col < ncols) rankOfCol[r.col] = r.rank }
+    // 列ごとの合意座標と塩基数（座位のアレルの幅・位置）。1.5M 行で約 1 s
+    const colX = new Int32Array(ncols), colBp = new Int32Array(ncols)
+    try { for (const r of d.prepare('SELECT col, x, bp FROM cols').iterate() as Iterable<{ col: number; x: number; bp: number }>) { colX[r.col] = r.x; colBp[r.col] = r.bp } } catch { /* 古いサイドカー */ }
+    const arr = (name: string): Int32Array | null => { try { const r = d.prepare('SELECT dtype, n, blob FROM arrays WHERE name=?').get(name) as { dtype: string; n: number; blob: Buffer } | undefined; if (!r) return null; const b = r.blob; return new Int32Array(b.buffer.slice(b.byteOffset, b.byteOffset + r.n * 4)) } catch { return null } }
+    const dcol = arr('dcol'), orig2col = arr('orig2col')
     const junc: Junc[][] = paths.map(() => [])
     for (const r of d.prepare('SELECT * FROM junc ORDER BY pid, a').all() as Junc[]) junc[r.pid].push(r)
     let tree: any = null
@@ -67,7 +76,7 @@ export function loadSynteny(dbFile: string): Synteny | null {
     const syn: Synteny = {
       file: p, mtime, meta, circular: meta.circular === '1', H: Number(meta.H || haps.length), total: Number(meta.total || 0),
       tiers: (meta.tiers || '').split(',').map(Number).filter(v => Number.isFinite(v)), floor: Number(meta.floor || 500),
-      atoms, bnd, paths, inst, anchorX, anchorTier, junc, tree, hapOrder: haps,
+      atoms, bnd, paths, inst, anchorX, anchorTier, anchorCol, rankOfCol, dcol, colX, colBp, orig2col, nat: atoms.length, distill: distillFor(path.join(getDbDir(), path.basename(dbFile))), junc, tree, hapOrder: haps,
     }
     cache.set(p, syn)
     return syn
@@ -310,7 +319,7 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
 //   「無し」のアレル（欠失側）。被覆していない株は 255（この区間を持たない）。
 export interface SitesResult { c0: number; c1: number; ncols: number; ncover: number; H: number; haps: string[]; nsites: number
   sites: { x: number; c0: number; c1: number; ncols: number; bp: number; nall: number; counts: number[]; nsites?: number }[]; cells: string; tooMany?: boolean; error?: string
-  binned?: boolean; sitesPerBin?: number; totalSites?: number }
+  binned?: boolean; sitesPerBin?: number; totalSites?: number; method?: string; boundaryTier?: number }
 const SITES_MAX = 4000      // これを超えるサイト数はビンにまとめる（粗い段）
 const BIN_TARGET = 1500     // ビンの数の目安（画面幅 1 px/ビン）
 export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: number; x1?: number }, max = SITES_MAX): SitesResult | { error: string } {
@@ -374,6 +383,117 @@ export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: 
     }
     const flat = new Uint8Array(sites.length * H); cellsArr.forEach((c, k) => flat.set(c, k * H))
     return { c0, c1, ncols: rows.length, ncover, H, haps, nsites: sites.length, sites, cells: Buffer.from(flat.buffer).toString('base64') }
+  } finally { d.close() }
+}
+
+// ---- アレル行列 v2（座位＝錨の間）: 各株のトークン列を、その株が持つ境界錨の出現で区切り、同じノード列＝同じアレル。
+//      多重コピーのノードも各株の列の中に出現として入るので、座位ごとに正しく出る。列の表（株ビットセット）は使わない ----
+export function sitesForRangeLoci(syn: Synteny, q: { c0?: number; c1?: number; x0?: number; x1?: number }, max = SITES_MAX): SitesResult | { error: string } {
+  if (!syn.dcol || !syn.distill) return { error: 'サイドカーに dcol が無いか distill がありません' }
+  let c0 = q.c0, c1 = q.c1
+  if (c0 == null || c1 == null) {
+    if (q.x0 == null || q.x1 == null) return { error: 'c0,c1 か x0,x1 が要ります' }
+    const lb = (v: number) => { let lo = 0, hi = syn.colX.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.colX[m] < v) lo = m + 1; else hi = m } return lo }
+    c0 = lb(Math.floor(q.x0)); c1 = lb(Math.ceil(q.x1) + 1) - 1
+    if (c1 < c0) return { error: '範囲に列がありません' }
+  }
+  const H = syn.H; let haps: string[] = []; try { haps = JSON.parse(syn.meta.hapnames || '[]') } catch { haps = [] }
+  const hidx = new Map(haps.map((h, i) => [h, i]))
+  // 範囲内の錨（rank の区間）。境界の層: 範囲に 2 本以上ある最も厳しい層
+  const lbRank = (c: number) => { let lo = 0, hi = syn.anchorCol.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.anchorCol[m] < c) lo = m + 1; else hi = m } return lo }
+  const r0 = lbRank(c0), r1 = lbRank(c1 + 1) - 1
+  if (r1 - r0 < 1) return { c0, c1, ncols: c1 - c0 + 1, ncover: 0, H, haps, nsites: 0, sites: [], cells: '' }
+  const tiersPresent = [...new Set(Array.from(syn.anchorTier.subarray(r0, r1 + 1)))].sort((a, b) => a - b)
+  let T = tiersPresent[tiersPresent.length - 1]
+  for (const t of tiersPresent) { let n = 0; for (let r = r0; r <= r1; r++) if (syn.anchorTier[r] <= t) n++; if (n >= 2) { T = t; break } }
+  const B: number[] = []; for (let r = r0; r <= r1; r++) if (syn.anchorTier[r] <= T) B.push(r)
+  const bidx = new Map<number, number>(); B.forEach((r, i) => bidx.set(r, i))
+  const nl = B.length - 1
+  // 範囲に重なる原子 → パスごとのトークン範囲
+  const atomsIn = syn.atoms.filter(a => a.c1 >= c0 && a.c0 <= c1); const aset = new Set(atomsIn.map(a => a.id))
+  const dist = openDistill(syn.distill)
+  const alleles: Map<string, { idx: number; n: number }>[] = Array.from({ length: nl }, () => new Map())
+  const cells = new Uint8Array(nl * H).fill(255)
+  const refPath = syn.paths.find(p => p.isref)
+  const coverN = new Int32Array(nl)
+  for (const pr of syn.paths) {
+    const hi = hidx.get(pr.hap); if (hi == null) continue
+    const pi = dist.pidx.get(pr.path); if (pi == null) continue
+    const its = syn.inst[pr.pid].filter(it => aset.has(it.atom)).sort((a, b) => a.s0 - b.s0)
+    if (!its.length) continue
+    // 連続する範囲をまとめて読む
+    const runs: [number, number][] = []; for (const it of its) { const last = runs[runs.length - 1]; if (last && it.s0 <= last[1]) last[1] = Math.max(last[1], it.e0); else runs.push([it.s0, it.e0]) }
+    for (const [s0, e0] of runs) {
+      const toks = dist.read(pi, s0, e0)
+      // 境界錨の出現位置
+      let prevB = -1, prevPos = -1
+      for (let k = 0; k < toks.length; k++) {
+        const col = syn.dcol[toks[k]]; if (col < 0) continue
+        const rk = syn.rankOfCol[col]; if (rk < 0) continue; const b = bidx.get(rk); if (b == null) continue
+        if (prevB >= 0 && b !== prevB) {
+          const lo = Math.min(prevB, b), hiB = Math.max(prevB, b)
+          const inner: number[] = []; for (let j = prevPos + 1; j < k; j++) inner.push(toks[j])
+          if (prevB > b) inner.reverse()
+          const key = inner.join(',')
+          const m = alleles[lo]; let e = m.get(key); if (!e) { e = { idx: m.size, n: 0 }; m.set(key, e) } e.n++
+          cells[lo * H + hi] = Math.min(253, e.idx); coverN[lo]++
+          for (let l = lo + 1; l < hiB; l++) cells[l * H + hi] = 254      // 境界錨を欠く → 前の座位に併合
+          if (pr === refPath) (m as any)._ref = key
+        }
+        prevB = b; prevPos = k
+      }
+    }
+  }
+  // アレル番号の付け直し: 参照のアレルを 0、以下は株数順
+  const sites: SitesResult['sites'] = []; const cellsOut: number[][] = []
+  for (let l = 0; l < nl; l++) {
+    const m = alleles[l]; if (m.size < 2) continue
+    const order = [...m.entries()].sort((u, v) => (v[1].n - u[1].n) || (u[0] < v[0] ? -1 : 1))
+    const refKey = (m as any)._ref as string | undefined
+    if (refKey != null) { const i = order.findIndex(e => e[0] === refKey); if (i > 0) { const e = order.splice(i, 1)[0]; order.unshift(e) } }
+    const remap = new Map(order.map((e, i) => [e[1].idx, i]))
+    const row = new Array(H).fill(255); for (let h = 0; h < H; h++) { const v = cells[l * H + h]; row[h] = v >= 254 ? v : (remap.get(v) ?? 255) }
+    cellsOut.push(row)
+    const ca = syn.anchorCol[B[l]], cb = syn.anchorCol[B[l + 1]]
+    let bpMax = 0; for (const [key] of order) { let bp = 0; if (key) for (const t of key.split(',')) { const c = syn.dcol[Number(t)]; if (c >= 0) bp += syn.colBp[c] } bpMax = Math.max(bpMax, bp) }
+    sites.push({ x: syn.anchorX[B[l]], c0: ca + 1, c1: Math.max(ca + 1, cb - 1), ncols: Math.max(0, cb - ca - 1), bp: Math.max(1, bpMax), nall: order.length, counts: order.map(e => e[1].n) })
+  }
+  const ncover = Math.max(0, ...Array.from(coverN))
+  if (sites.length > max) {
+    const per = Math.ceil(sites.length / BIN_TARGET); const bins: SitesResult['sites'] = []; const bcells: number[][] = []
+    for (let b = 0; b < sites.length; b += per) {
+      const grp = sites.slice(b, b + per); const idx = Array.from({ length: grp.length }, (_, j) => b + j); const row = new Array(H).fill(255)
+      for (let h = 0; h < H; h++) { let cov = 0, dif = 0; for (const k of idx) { const a = cellsOut[k][h]; if (a >= 254) continue; cov++; if (a !== 0) dif++ } if (cov) row[h] = Math.min(254, Math.round(254 * dif / cov)) }
+      bcells.push(row); const f = grp[0], l = grp[grp.length - 1]
+      bins.push({ x: f.x, c0: f.c0, c1: l.c1, ncols: l.c1 - f.c0 + 1, bp: Math.max(1, l.x + l.bp - f.x), nall: 0, counts: [], nsites: grp.length })
+    }
+    const flatB = new Uint8Array(bins.length * H); bcells.forEach((c, k) => flatB.set(c, k * H))
+    return { c0, c1, ncols: c1 - c0 + 1, ncover, H, haps, nsites: bins.length, sites: bins, cells: Buffer.from(flatB.buffer).toString('base64'), binned: true, sitesPerBin: per, totalSites: sites.length, method: 'loci', boundaryTier: T } as any
+  }
+  const flat = new Uint8Array(sites.length * H); cellsOut.forEach((c, k) => flat.set(c, k * H))
+  return { c0, c1, ncols: c1 - c0 + 1, ncover, H, haps, nsites: sites.length, sites, cells: Buffer.from(flat.buffer).toString('base64'), method: 'loci', boundaryTier: T } as any
+}
+
+// ---- locate: ノード名 → 木の葉（原子）または隙間。nodeleaf 表（kind 0 錨 / 1 一意一貫 / 2 私有 / 3 株で別の場所 / 4 多重）----
+export function locateNodes(syn: Synteny, names: string[]): { nodes: any[]; nat: number } {
+  const d = new Database(syn.file, { readonly: true })
+  try {
+    const q = d.prepare('SELECT kind, nplace, places FROM nodeleaf WHERE col=?')
+    const out: any[] = []
+    for (const nm of names) {
+      const m = /^n(\d+)$/.exec(nm); if (!m || !syn.orig2col) { out.push({ name: nm, kind: -1 }); continue }
+      const oid = Number(m[1]); const col = oid < syn.orig2col.length ? syn.orig2col[oid] : -1
+      if (col < 0) { out.push({ name: nm, kind: -1 }); continue }
+      const r = q.get(col) as { kind: number; nplace: number; places: Buffer } | undefined
+      if (!r) { out.push({ name: nm, col, kind: -1 }); continue }
+      const pl = new Int32Array(r.places.buffer.slice(r.places.byteOffset, r.places.byteOffset + r.places.length))
+      const places = Array.from(pl).map(code => {
+        if (code < syn.nat) { const a = syn.atoms[code]; return { atom: code, x0: a.x0, x1: a.x0 + a.span } }
+        const prev = code - syn.nat - 1; const a = prev >= 0 ? syn.atoms[prev] : null; const x = a ? a.x0 + a.span : (syn.atoms[0] ? syn.atoms[0].x0 : 0); return { gap: prev, x0: x, x1: x }
+      })
+      out.push({ name: nm, col, x: syn.colX[col], kind: r.kind, nplace: r.nplace, places })
+    }
+    return { nodes: out, nat: syn.nat }
   } finally { d.close() }
 }
 

@@ -209,8 +209,14 @@ def consensus_order_fast(at, L, order="ref", sample_backbone=4000):
         idx = np.arange(len(sg)); last_a = np.maximum.accumulate(np.where(anch, idx, -1))
         nxt_a = np.minimum.accumulate(np.where(anch, idx, len(sg))[::-1])[::-1]
         un = np.flatnonzero(~anch)
-        key = np.where(last_a[un] >= 0, pos[sg[np.maximum(last_a[un], 0)]] + 0.5,
-                       np.where(nxt_a[un] < len(sg), pos[sg[np.minimum(nxt_a[un], len(sg) - 1)]] - 0.5, np.nan))
+        # 順序パスに無いノードの鍵: 直前の順序ノードの位置 ＋ その隙間の中での相対位置（0..1）。以前は +0.5 固定だったので、同じ隙間
+        # （島）の中のノードは全部同じ鍵になり、列の順はノード番号順＝配列の順と無関係だった。相対位置にすると、島を同じ順で通る
+        # 株の間で順序が一貫し、島の中のノードも錨（一意・順序一貫）になれる。株ごとの鍵の中央値を採る（下）
+        la = last_a[un]; na = nxt_a[un]; L_ = len(sg)
+        run0 = np.where(la >= 0, la, -1); run1 = np.where(na < L_, na, L_)
+        frac = (un - run0) / np.maximum(1, run1 - run0); frac = np.clip(frac, 0.02, 0.98)
+        key = np.where(la >= 0, pos[sg[np.maximum(la, 0)]] + frac,
+                       np.where(na < L_, pos[sg[np.minimum(na, L_ - 1)]] - 1 + frac, np.nan))
         ok = ~np.isnan(key); keys_n.append(sg[un[ok]]); keys_k.append(key[ok])
         np.add.at(plus_bp, sg[un], bpr[un] * orr[un]); np.add.at(tot_bp, sg[un], bpr[un])
     if keys_n:
