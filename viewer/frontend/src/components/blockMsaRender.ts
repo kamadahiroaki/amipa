@@ -882,7 +882,7 @@ function drillRange(xa, xb){ if (xb <= xa || st.drilling) return; if (isBase()){
   const ch = w.children ? w.children[key] : null; if (ch!=null){ st.rangeSel = null; drawHeader(); enterWindow(ch); return; }
   // 1 ブロックに収まる範囲: その子窓に入って、範囲に重なるブロックに絞り込む（子窓が無い小さなブロックは塩基へ）
   const cols = (xb - xa) / Math.max(1, DATA.meta.bpt || 1);
-  if (ranks.length === 1 && cols <= BASE_MAX_LEAVES && cb && cb.onBaseMsa){ const rk = ranks[0]; const rr_ = drillRangesAt(L0, rk); const anc = anchorsOf(w);
+  if (!TREE && ranks.length === 1 && cols <= BASE_MAX_LEAVES && cb && cb.onBaseMsa){ const rk = ranks[0]; const rr_ = drillRangesAt(L0, rk); const anc = anchorsOf(w);
     // 範囲内の錨でトークン範囲を狭める（親ブロック全体でなく範囲だけを塩基へ）
     const ranges = []; if (anc){ for (const [path, s0, e0] of rr_){ const A = anc.rows.get(path); let lo = Infinity, hi = -Infinity; if (A) for (let k=0;k<A.i.length;k++){ const x = anc.x[A.i[k]]; if (x >= xa && x <= xb && A.tok[k] >= s0 && A.tok[k] < e0){ lo = Math.min(lo, A.tok[k]); hi = Math.max(hi, A.tok[k]+1); } } if (hi > lo) ranges.push([path, lo, hi]); } }
     if (ranges.length){ cb.onBaseMsa({ ranges, span: xb-xa, afrac: 0, label: winPath().map((p,i)=>i===0?'全体':p.label).join('›') + '›' + label, depth: w.depth+1, parent: st.win, pblock: -1 }); $('detailbody').innerHTML = `<p class="k">区間 ${label} の各行を塩基レベル MSA に渡しました。</p>`; st.rangeSel = null; drawHeader(); return; } }
@@ -895,8 +895,11 @@ function drillRange(xa, xb){ if (xb <= xa || st.drilling) return; if (isBase()){
     cb.onRange(xa, xb, label, w.depth+1, st.win, -1).then(r=>{ st.drilling = false; st.busy = null; st.rangeSel = null;
       if (!r || r.error || !r.window){ drawAll(); $('detailbody').innerHTML = `<p class="k">この区間の窓を作れませんでした: ${esc((r && r.error) || '応答なし')}</p>`; return; }
       const nw = r.window; const nb = nw.levels && nw.levels[0] ? nw.levels[0].blocks : [];
-      // 木が返したのが原子 1 個で、選んだ範囲がその内側（原子の 9 割未満）なら、原子 1 個の窓を挟まず範囲の変異サイトへ
-      if (nb.length === 1 && nb[0].a0 != null && nb[0].a0 === nb[0].a1 && xa >= nb[0].x - 1 && xb <= nb[0].x + nb[0].span + 1 && (xb - xa) < 0.9 * nb[0].span){ if (cb && cb.onSites){ drawAll(); openSites({ x0: xa, x1: xb }, label, -1); } else { drawAll(); $('detailbody').innerHTML = '<p class="k">この範囲は今のブロックと同じ原子区間です。ダブルクリックで変異サイトへ降りてください。</p>'; } return; }
+      // 木が返したのが原子 1 個で、選んだ範囲がその内側（原子の 9 割未満）なら、原子 1 個の窓を挟まず範囲の変異サイトへ。
+      // 返った原子の並びが今の段で範囲に重なるブロックと同じ（範囲の中に新しい境界が現れない）ときも同じ（同じ窓が入れ子になるだけ）
+      const keyOf = bs => bs.map(b => (b.a0 != null ? b.a0 : '?') + '-' + (b.a1 != null ? b.a1 : '?')).join(',');
+      const sameAsNow = nb.length > 0 && nb[0].a0 != null && keyOf(nb) === keyOf(ranks.map(r => L0.blocks[r]));
+      if (sameAsNow || (nb.length === 1 && nb[0].a0 != null && nb[0].a0 === nb[0].a1 && xa >= nb[0].x - 1 && xb <= nb[0].x + nb[0].span + 1 && (xb - xa) < 0.9 * nb[0].span)){ if (cb && cb.onSites){ drawAll(); openSites({ x0: xa, x1: xb }, label, -1); } else { drawAll(); $('detailbody').innerHTML = '<p class="k">この範囲は今のブロックと同じ原子区間です。ダブルクリックで変異サイトへ降りてください。</p>'; } return; }
       nw.id = WINS.length; nw.parent = st.win; nw.pblock = -1; nw.plevel = st.li; nw.pW = level().W; nw.children = nw.children || {}; nw.ondemand = true; nw.ms = r.ms || 0;
       WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id; enterWindow(nw.id);
     }).catch(e=>{ st.drilling = false; st.busy = null; st.rangeSel = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; });
