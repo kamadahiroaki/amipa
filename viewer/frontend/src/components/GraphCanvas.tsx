@@ -193,7 +193,7 @@ interface Props {
   msaHighlight?: Set<string> | null          // MSA 対象に選択中のノード名(グラフ上でリング強調)
   msaHoverNodes?: Set<string> | null         // MSA パネルで hover 中の列のノード群(強い強調。排他アレルは複数)
   blockColors?: BlockColorMap | null         // Blocks パネル（多解像度 MSA）の窓・段に合わせた塗り分け。null=無効
-  onVisibleAtoms?: (atoms: number[]) => void   // 木: 見えているノードが属する原子の集合（Blocks の「グラフの表示範囲」の帯）
+  onVisibleAtoms?: (atoms: [number, number][]) => void   // 木: 見えているノードが属する原子と重み（割合の和）。Blocks の「グラフの表示範囲」の帯・ミニマップ
 }
 
 // Blocks パネルの現在の窓・段に合わせてノードを塗る。参照コンティグごとに、開始位置で昇順に並べた区間
@@ -560,8 +560,25 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   // ノード名 → 全体窓・最細段のブロック番号（/api/blocks/nodemap の記憶。db が変わったら捨てる）
   const nodeRankRef         = useRef<{ db: string; layer: number; map: Map<string, number> }>({ db: '', layer: -1, map: new Map() })
   const nodeAtomRef         = useRef<Map<string, number>>(new Map())            // 木: ノード名 → 原子番号（段が変わっても再利用できる）
+  const nodeFracRef         = useRef<Map<string, number>>(new Map())            // 木: ノード名 → その原子に属する出現の割合（重み）
   const visibleNamesRef     = useRef<string[]>([])
-  const onVisibleAtomsRef   = useRef<((atoms: number[]) => void) | undefined>(undefined); onVisibleAtomsRef.current = onVisibleAtoms
+  const visibleNodesRef     = useRef<NodeData[]>([])
+  const onVisibleAtomsRef   = useRef<((atoms: [number, number][]) => void) | undefined>(undefined); onVisibleAtomsRef.current = onVisibleAtoms
+  const visAtomsTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const visAtomsKeyRef      = useRef<string>('')
+  // 見えているノードの原子ヒストグラム（重み＝frac の和）を 250 ms 後にまとめて Blocks へ。描画のたびに呼ぶ（パン・ズーム・段の切替・対応表の到着）
+  const scheduleVisibleAtoms = () => {
+    if (!onVisibleAtomsRef.current || !blockColorsRef.current?.atomRank || visAtomsTimerRef.current) return
+    visAtomsTimerRef.current = setTimeout(() => {
+      visAtomsTimerRef.current = null
+      const acc = new Map<number, number>()
+      for (const n of visibleNodesRef.current) { const a = nodeAtomRef.current.get(n.node_name); if (a == null || a < 0) continue; acc.set(a, (acc.get(a) ?? 0) + (nodeFracRef.current.get(n.node_name) ?? 1)) }
+      const out = [...acc.entries()].sort((u, v) => u[0] - v[0]).map(([a, w]) => [a, Math.round(w * 1000) / 1000] as [number, number])
+      const key = out.map(e => e[0] + ':' + e[1]).join(',')
+      if (key === visAtomsKeyRef.current) return
+      visAtomsKeyRef.current = key; onVisibleAtomsRef.current?.(out)
+    }, 250)
+  }
   const nodeRankPendingRef  = useRef<Set<string>>(new Set())
   const nodeRankTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ribbonsRef          = useRef(ribbons)
@@ -1180,6 +1197,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const { nodeIds, edgeIds } = getVisibleIds(renderLayer, displayGz, renderRect)
       visibleNodes = [...nodeIds].map(id => nodeStore.get(id)).filter((n): n is NodeData => n != null)
       visibleEdges = [...edgeIds].map(id => edgeStore.get(id)).filter((e): e is EdgeData => e != null)
+      visibleNodesRef.current = visibleNodes; scheduleVisibleAtoms()
 
       // ノードサイズ倍率。エッジ端点・ノード本体・パスリボンを同じ倍率でノード中心周りにスケールし追従させる。
       // 1.0（既定）は変換ゼロの高速パス。エッジ端点の追従には node_name → 中心 の索引が要る。
@@ -2080,11 +2098,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           if (st.layer !== layer) { st.layer = layer; st.map = new Map() }
           const names = [...nodeRankPendingRef.current].slice(0, 20000); nodeRankPendingRef.current.clear()
           if (!names.length) return
-          fetchBlockNodemap(db, layer, names).then(ranks => {
-            if (!ranks || nodeRankRef.current.layer !== layer) return
+          fetchBlockNodemap(db, layer, names).then(res => {
+            if (!res || nodeRankRef.current.layer !== layer) return
+            const ranks = res.vals, fracs = res.fracs
             const ar = blockColorsRef.current?.atomRank
-            names.forEach((nm, i) => { const v = ranks[i]; if (ar) { nodeAtomRef.current.set(nm, v); const rk = v >= 0 ? ar(v) : null; nodeRankRef.current.map.set(nm, rk == null ? -1 : rk) } else nodeRankRef.current.map.set(nm, v) })
-            if (ar && onVisibleAtomsRef.current) { const atoms = new Set<number>(); for (const nm of visibleNamesRef.current) { const a = nodeAtomRef.current.get(nm); if (a != null && a >= 0) atoms.add(a) } onVisibleAtomsRef.current([...atoms]) }
+            names.forEach((nm, i) => { const v = ranks[i]; if (ar) { nodeAtomRef.current.set(nm, v); nodeFracRef.current.set(nm, fracs ? (fracs[i] ?? 1) : 1); const rk = v >= 0 ? ar(v) : null; nodeRankRef.current.map.set(nm, rk == null ? -1 : rk) } else nodeRankRef.current.map.set(nm, v) })
+            scheduleVisibleAtoms()
             markDirty(); renderRef.current?.()
           }).catch(() => { /* 次の描画で再試行 */ })
         }, 300)
