@@ -806,6 +806,11 @@ export async function fetchBlockSites(dbFile: string, q: { c0?: number; c1?: num
   const p = new URLSearchParams({ db: dbFile }); for (const k of ['c0', 'c1', 'x0', 'x1'] as const) if (q[k] != null) p.set(k, String(Math.round(q[k]!)))
   try { const res = await fetch(`/api/blocks/sites?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }
+// 原子の範囲 → その層のノード名（木の経路。参照座標を使わない）
+export async function fetchBlockNodesTree(dbFile: string, layer: number, a0: number, a1: number): Promise<string[]> {
+  const p = new URLSearchParams({ db: dbFile, layer: String(layer), a0: String(a0), a1: String(a1) })
+  try { const res = await fetch(`/api/blocks/nodes2?${p}`); if (!res.ok) return []; const j = await res.json(); return Array.isArray(j.names) ? j.names as string[] : [] } catch { return [] }
+}
 // ノード → 木の葉（原子）か隙間（グラフ → Blocks）
 export interface BlockLocate { nodes: { name: string; col?: number; x?: number; kind: number; nplace?: number; places?: { atom?: number; gap?: number; x0: number; x1: number }[] }[]; nat: number; error?: string }
 export async function fetchBlockLocate(dbFile: string, names: string[]): Promise<BlockLocate | { error: string }> {
@@ -854,7 +859,7 @@ export async function fetchBlockView(dbFile: string, contig: number, start: numb
 export async function fetchBlockNodemap(dbFile: string, layer: number, names: string[]): Promise<number[] | null> {
   try {
     const r = await fetch('/api/blocks/nodemap', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names }) })
-    if (!r.ok) return null; const j = await r.json(); return Array.isArray(j.ranks) ? j.ranks as number[] : null
+    if (!r.ok) return null; const j = await r.json(); return Array.isArray(j.ranks) ? j.ranks as number[] : (Array.isArray(j.atoms) ? j.atoms as number[] : null)   // 木では原子番号（GraphCanvas が bm.atomRank で段のブロック番号に直す）
   } catch { return null }
 }
 // ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）

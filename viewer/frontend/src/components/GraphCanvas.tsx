@@ -193,6 +193,7 @@ interface Props {
   msaHighlight?: Set<string> | null          // MSA 対象に選択中のノード名(グラフ上でリング強調)
   msaHoverNodes?: Set<string> | null         // MSA パネルで hover 中の列のノード群(強い強調。排他アレルは複数)
   blockColors?: BlockColorMap | null         // Blocks パネル（多解像度 MSA）の窓・段に合わせた塗り分け。null=無効
+  onVisibleAtoms?: (atoms: number[]) => void   // 木: 見えているノードが属する原子の集合（Blocks の「グラフの表示範囲」の帯）
 }
 
 // Blocks パネルの現在の窓・段に合わせてノードを塗る。参照コンティグごとに、開始位置で昇順に並べた区間
@@ -206,6 +207,7 @@ export interface BlockColorMap {
   // 全体窓を見ているときだけ入る。ノード名 → 番号は /api/blocks/nodemap で引いて GraphCanvas が記憶する
   rankColors?: (number | null)[] | null
   db?: string
+  atomRank?: (atom: number) => number | null     // 木: 原子番号 → 見ている段のブロック番号（nodemap が原子を返すとき）
 }
 export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
                              bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
@@ -303,7 +305,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     cnvMode, cnvNodes, cnvColors, onCnvSuppress, seqMode, baseMap, coverageMin,
     nodeScale, edgeMin, mapMapq, hapSel, maxRows, onLodClamp, detailDepthMode, maxEdgePx, maxEdgeReads, showNodeNames, showNodeBp, labelScale, labelColor, labelOffset, showRefPos, refContigs, nodeColors,
     selectedPaths, ribbons, layerZoom, zoomWindow, worldBbox, layerOffset, suppressHeavyWarning,
-    floodMode, floodResult, floodSeedComp, floodMaxHop, msaHighlight, msaHoverNodes, blockColors,
+    floodMode, floodResult, floodSeedComp, floodMaxHop, msaHighlight, msaHoverNodes, blockColors, onVisibleAtoms,
     onViewportChange, onHeavyView, onNodeSelect, onLoadingChange, onFetchProgress, onFastPath,
     onRibbonEdited, onNodesEdited }, ref
 ) {
@@ -557,6 +559,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const blockColorsRef      = useRef<BlockColorMap | null>(blockColors ?? null)
   // ノード名 → 全体窓・最細段のブロック番号（/api/blocks/nodemap の記憶。db が変わったら捨てる）
   const nodeRankRef         = useRef<{ db: string; layer: number; map: Map<string, number> }>({ db: '', layer: -1, map: new Map() })
+  const nodeAtomRef         = useRef<Map<string, number>>(new Map())            // 木: ノード名 → 原子番号（段が変わっても再利用できる）
+  const visibleNamesRef     = useRef<string[]>([])
+  const onVisibleAtomsRef   = useRef<((atoms: number[]) => void) | undefined>(undefined); onVisibleAtomsRef.current = onVisibleAtoms
   const nodeRankPendingRef  = useRef<Set<string>>(new Set())
   const nodeRankTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ribbonsRef          = useRef(ribbons)
@@ -1004,6 +1009,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         ;(adj.get(e.target) ?? adj.set(e.target, []).get(e.target)!).push(e.source)
       }
       const idByName = new Map<string, number>()
+      visibleNamesRef.current = visibleNodes.map(n => n.node_name)
       for (const n of visibleNodes) idByName.set(n.node_name, n.id)
       const hop = new Map<string, number>([[grabbed.node_name, 0]])
       let frontier = [grabbed.node_name]
@@ -2076,7 +2082,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           if (!names.length) return
           fetchBlockNodemap(db, layer, names).then(ranks => {
             if (!ranks || nodeRankRef.current.layer !== layer) return
-            names.forEach((nm, i) => nodeRankRef.current.map.set(nm, ranks[i]))
+            const ar = blockColorsRef.current?.atomRank
+            names.forEach((nm, i) => { const v = ranks[i]; if (ar) { nodeAtomRef.current.set(nm, v); const rk = v >= 0 ? ar(v) : null; nodeRankRef.current.map.set(nm, rk == null ? -1 : rk) } else nodeRankRef.current.map.set(nm, v) })
+            if (ar && onVisibleAtomsRef.current) { const atoms = new Set<number>(); for (const nm of visibleNamesRef.current) { const a = nodeAtomRef.current.get(nm); if (a != null && a >= 0) atoms.add(a) } onVisibleAtomsRef.current([...atoms]) }
             markDirty(); renderRef.current?.()
           }).catch(() => { /* 次の描画で再試行 */ })
         }, 300)

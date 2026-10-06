@@ -33,7 +33,7 @@ export interface Synteny {
   meta: Record<string, string>; circular: boolean; H: number; total: number; tiers: number[]; floor: number
   atoms: Atom[]; bnd: Boundary[]; paths: PathRow[]; inst: Inst[][]      // inst[pid] は pos 昇順
   anchorX: Int32Array; anchorTier: Int8Array; anchorCol: Int32Array      // rank → 合意座標 / 層 / 列
-  rankOfCol: Int32Array; dcol: Int32Array | null; colX: Int32Array; colBp: Int32Array; orig2col: Int32Array | null; nat: number; distill: string | null
+  rankOfCol: Int32Array; dcol: Int32Array | null; colX: Int32Array; colBp: Int32Array; orig2col: Int32Array | null; col2orig: Int32Array | null; nat: number; distill: string | null; maxlayer: number; hasSupermap: boolean
   junc: Junc[][]
   tree: any | null
   hapOrder: string[]                                                       // 参照ハプロを先に、名前順
@@ -65,7 +65,8 @@ export function loadSynteny(dbFile: string): Synteny | null {
     const colX = new Int32Array(ncols), colBp = new Int32Array(ncols)
     try { for (const r of d.prepare('SELECT col, x, bp FROM cols').iterate() as Iterable<{ col: number; x: number; bp: number }>) { colX[r.col] = r.x; colBp[r.col] = r.bp } } catch { /* 古いサイドカー */ }
     const arr = (name: string): Int32Array | null => { try { const r = d.prepare('SELECT dtype, n, blob FROM arrays WHERE name=?').get(name) as { dtype: string; n: number; blob: Buffer } | undefined; if (!r) return null; const b = r.blob; return new Int32Array(b.buffer.slice(b.byteOffset, b.byteOffset + r.n * 4)) } catch { return null } }
-    const dcol = arr('dcol'), orig2col = arr('orig2col')
+    const dcol = arr('dcol'), orig2col = arr('orig2col'), col2orig = arr('col2orig')
+    let hasSupermap = false; try { d.prepare('SELECT 1 FROM supermap LIMIT 1').get(); hasSupermap = true } catch { hasSupermap = false }
     const junc: Junc[][] = paths.map(() => [])
     for (const r of d.prepare('SELECT * FROM junc ORDER BY pid, a').all() as Junc[]) junc[r.pid].push(r)
     let tree: any = null
@@ -76,7 +77,7 @@ export function loadSynteny(dbFile: string): Synteny | null {
     const syn: Synteny = {
       file: p, mtime, meta, circular: meta.circular === '1', H: Number(meta.H || haps.length), total: Number(meta.total || 0),
       tiers: (meta.tiers || '').split(',').map(Number).filter(v => Number.isFinite(v)), floor: Number(meta.floor || 500),
-      atoms, bnd, paths, inst, anchorX, anchorTier, anchorCol, rankOfCol, dcol, colX, colBp, orig2col, nat: atoms.length, distill: distillFor(path.join(getDbDir(), path.basename(dbFile))), junc, tree, hapOrder: haps,
+      atoms, bnd, paths, inst, anchorX, anchorTier, anchorCol, rankOfCol, dcol, colX, colBp, orig2col, col2orig, nat: atoms.length, distill: distillFor(path.join(getDbDir(), path.basename(dbFile))), maxlayer: Number(meta.maxlayer || 0), hasSupermap, junc, tree, hapOrder: haps,
     }
     cache.set(p, syn)
     return syn
@@ -255,7 +256,7 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
   const levels = cuts.map((cut, li) => {
     const blocks = cut.groups.map(g => {
       const as = g.map(i => atoms[i]); const bx = as[0].x0, bspan = as[as.length - 1].x0 + as[as.length - 1].span - bx
-      return { c0: as[0].c0, c1: as[as.length - 1].c1, span: bspan, tbp: 0, bpmax: 0, nhap: 0, x: bx, atoms: as.length, ref_contig: Math.max(0, as[0].refcid), name: as[0].name0 + '…' + as[as.length - 1].name1, ncol: as.reduce((s, a) => s + a.nanc, 0), _atoms: as }
+      return { c0: as[0].c0, c1: as[as.length - 1].c1, span: bspan, tbp: 0, bpmax: 0, nhap: 0, x: bx, atoms: as.length, a0: as[0].id, a1: as[as.length - 1].id, ref_contig: Math.max(0, as[0].refcid), name: as[0].name0 + '…' + as[as.length - 1].name1, ncol: as.reduce((s, a) => s + a.nanc, 0), _atoms: as }
     })
     const rankOfAtom = new Map<number, number>(); cut.groups.forEach((g, r) => g.forEach(i => rankOfAtom.set(atoms[i].id, r)))
     const bpsOf: number[][] = blocks.map(() => []); const hapsOf: Set<string>[] = blocks.map(() => new Set())
@@ -481,7 +482,12 @@ export function locateNodes(syn: Synteny, names: string[]): { nodes: any[]; nat:
     const q = d.prepare('SELECT kind, nplace, places FROM nodeleaf WHERE col=?')
     const out: any[] = []
     for (const nm of names) {
-      const m = /^n(\d+)$/.exec(nm); if (!m || !syn.orig2col) { out.push({ name: nm, kind: -1 }); continue }
+      const m = /^n(\d+)$/.exec(nm)
+      if (!m || !syn.orig2col) {
+        if (syn.hasSupermap) { const r = d.prepare('SELECT layer, major, frac, nplace, places FROM supermap WHERE node_name=? ORDER BY layer DESC LIMIT 1').get(nm) as { layer: number; major: number; frac: number; nplace: number; places: Buffer } | undefined
+          if (r) { const pl = new Int32Array(r.places.buffer.slice(r.places.byteOffset, r.places.byteOffset + r.places.length)); const places = Array.from(pl).map(code => { if (code < syn.nat) { const a = syn.atoms[code]; return { atom: code, x0: a.x0, x1: a.x0 + a.span } } const prev = code - syn.nat - 1; const a = prev >= 0 ? syn.atoms[prev] : null; const x = a ? a.x0 + a.span : 0; return { gap: prev, x0: x, x1: x } })
+            out.push({ name: nm, kind: 5, layer: r.layer, nplace: r.nplace, frac: r.frac, places }); continue } }
+        out.push({ name: nm, kind: -1 }); continue }
       const oid = Number(m[1]); const col = oid < syn.orig2col.length ? syn.orig2col[oid] : -1
       if (col < 0) { out.push({ name: nm, kind: -1 }); continue }
       const r = q.get(col) as { kind: number; nplace: number; places: Buffer } | undefined
@@ -497,6 +503,40 @@ export function locateNodes(syn: Synteny, names: string[]): { nodes: any[]; nat:
   } finally { d.close() }
 }
 
+// ---- 原子（葉）の集合 ↔ グラフのノード（層ごと）。参照座標に依らない経路 ----
+//   葉の層: 原子の列範囲 [c0, c1] の列 → 名前（col2orig）。上の層: supermap の major（bp 加重の多数派の場所）が原子の範囲に入り、
+//   frac ≥ minFrac のノード（旧「参照スパン ≤ 2 × ブロック幅」の規則に相当）
+export function nodesForAtoms(syn: Synteny, layer: number, a0: number, a1: number, max = 20000, minFrac = 0.5): { names: string[]; truncated: boolean } {
+  const names: string[] = []
+  if (layer >= syn.maxlayer || !syn.hasSupermap) {
+    if (!syn.col2orig) return { names, truncated: false }
+    for (let a = a0; a <= a1 && a < syn.atoms.length; a++) { const A = syn.atoms[a]; for (let c = A.c0; c <= A.c1; c++) { const o = syn.col2orig[c]; if (o >= 0) { names.push('n' + o); if (names.length >= max) return { names, truncated: true } } } }
+    return { names, truncated: false }
+  }
+  const d = new Database(syn.file, { readonly: true })
+  try {
+    for (const r of d.prepare('SELECT node_name FROM supermap WHERE layer=? AND major BETWEEN ? AND ? AND frac>=?').iterate(layer, a0, a1, minFrac) as Iterable<{ node_name: string }>) { names.push(r.node_name); if (names.length >= max) return { names, truncated: true } }
+    return { names, truncated: false }
+  } finally { d.close() }
+}
+// 名前 → 多数派の原子（葉は nodeleaf の先頭の場所、上の層は supermap の major。-1 = 不明、隙間は -2-prev）
+export function atomsOfNames(syn: Synteny, layer: number, names: string[]): { atoms: number[]; fracs: number[] } {
+  const atoms: number[] = [], fracs: number[] = []
+  const d = new Database(syn.file, { readonly: true })
+  try {
+    const ql = d.prepare('SELECT nplace, places FROM nodeleaf WHERE col=?'), qs = d.prepare('SELECT major, frac FROM supermap WHERE node_name=? AND layer=?')
+    for (const nm of names) {
+      let atom = -1, frac = 0
+      if (layer >= syn.maxlayer || !syn.hasSupermap) {
+        const m = /^n(\d+)$/.exec(nm); const col = m && syn.orig2col && Number(m[1]) < syn.orig2col.length ? syn.orig2col[Number(m[1])] : -1
+        if (col >= 0) { const r = ql.get(col) as { nplace: number; places: Buffer } | undefined; if (r && r.places.length >= 4) { const p = r.places.readInt32LE(0); atom = p < syn.nat ? p : -2 - (p - syn.nat - 1); frac = r.nplace === 1 ? 1 : 1 / r.nplace } }
+      } else { const r = qs.get(nm, layer) as { major: number; frac: number } | undefined; if (r) { atom = r.major < syn.nat ? r.major : -2 - (r.major - syn.nat - 1); frac = r.frac } }
+      atoms.push(atom); fracs.push(frac)
+    }
+    return { atoms, fracs }
+  } finally { d.close() }
+}
+
 // 旧サイドカー（JSON）と同じ外形: {meta, windows:[根], tree}
 export function rootData(syn: Synteny): any {
   const root = buildWindow(syn, -Infinity, Infinity, { label: '全体', depth: 0, parent: -1, pblock: -1 })
@@ -505,7 +545,8 @@ export function rootData(syn: Synteny): any {
     name: syn.meta.name, circular: syn.circular, bpt: Number(syn.meta.bpt || 0), nhaps: syn.H, ncols: Number(syn.meta.ncols || 0),
     order: { kind: syn.meta.order_kind || 'ref', path: syn.meta.order_path || '' }, params: { anchor_frac: syn.tiers[1] ?? 0.8, sub_anchor_frac: syn.tiers[2] ?? 0.5, tiers: syn.tiers, floor: syn.floor },
     total_bp: syn.paths.reduce((s, p) => s + p.bp, 0), total_x: syn.total, tree: true, synteny: path.basename(syn.file),
-    natoms: syn.atoms.length, nboundaries: syn.bnd.length, t_build: syn.meta.t_build,
+    natoms: syn.atoms.length, nboundaries: syn.bnd.length, t_build: syn.meta.t_build, maxlayer: syn.maxlayer, supermap: syn.hasSupermap,
+    atoms: syn.atoms.map(a => [a.x0, a.span]),
   }
   return { meta, windows: [root], tree: syn.tree }
 }

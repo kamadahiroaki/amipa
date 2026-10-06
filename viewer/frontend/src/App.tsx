@@ -8,7 +8,7 @@ import BlockMsa from './components/BlockMsa'
 import type { BlockView } from './components/blockMsaRender'
 import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
-import { fetchBlockView, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
+import { fetchBlockView, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -181,14 +181,20 @@ function blockViewToColors(v: BlockView): BlockColorMap {
   for (const [k, g] of groups) { g.sort((a, b) => a.s - b.s); contigs.set(k, { starts: g.map(i => i.s), ends: g.map(i => i.e), colors: g.map(i => i.c) }) }
   // 全体窓を見ているときは「最細段のブロック番号 → 色」も作る（見えているブロックの members で写す。絞り込みで見えない番号は null）
   let rankColors: (number | null)[] | null = null
-  if (v.win === 0 && v.n0 > 0 && !v.tree) {    // 木のサイドカーでは名前→ブロック番号の対応表（旧ワーカー）が無いので参照区間の規則だけで塗る
+  let atomRank: ((atom: number) => number | null) | undefined
+  if (v.tree) {
+    // 木: 見えているブロックごとに色を持ち、ノード → 原子番号（nodemap）→ ブロック番号は原子の範囲 [a0, a1] で引く。窓や段に依らず使える
+    rankColors = v.blocks.map(b => { const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color); return m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96 })
+    const ranges = v.blocks.map((b, i) => [b.a0 ?? -1, b.a1 ?? -1, i] as [number, number, number]).filter(r => r[0] >= 0).sort((p, q) => p[0] - q[0])
+    atomRank = (atom: number) => { let lo = 0, hi = ranges.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ranges[m][1] < atom) lo = m + 1; else hi = m } return (lo < ranges.length && atom >= ranges[lo][0] && atom <= ranges[lo][1]) ? ranges[lo][2] : null }
+  } else if (v.win === 0 && v.n0 > 0) {
     rankColors = new Array(v.n0).fill(null)
     for (const b of v.blocks) {
       const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color); const c = m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96
       for (const r of (b.members || [b.rank])) if (r >= 0 && r < v.n0) rankColors[r] = c
     }
   }
-  return { maxSpan, contigs, rankColors }
+  return { maxSpan, contigs, rankColors, atomRank }
 }
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)
@@ -1037,7 +1043,7 @@ export default function App() {
     const my = ++blkReq.current
     if (!b || !selectedDb) { set(null); return }
     if (b.names && b.names.length) { set(new Set(b.names)); return }   // 塩基の段: ノード名が分かっているので参照区間を引かない
-    const names = await fetchBlockNodes(selectedDb, mapLayer, b.ref_contig, b.x, b.x + b.span)
+    const names = (b.tree && b.a0 != null && b.a1 != null) ? await fetchBlockNodesTree(selectedDb, mapLayer, b.a0, b.a1) : await fetchBlockNodes(selectedDb, mapLayer, b.ref_contig, b.x, b.x + b.span)   // 木: 原子の範囲 → ノード名（参照座標を使わない）
     if (my !== blkReq.current) return                                  // 古い問い合わせは捨てる
     set(names.length ? new Set(names) : null)
   }, [selectedDb, mapLayer])
@@ -2308,6 +2314,7 @@ export default function App() {
                   msaHighlight={msaHiSet}
                   msaHoverNodes={msaHoverSet}
                   blockColors={blkColors}
+                  onVisibleAtoms={atoms => { blkApiRef.current?.setGraphAtoms?.(atoms) }}
                   onViewportChange={(vp, layer, glyphs) => {
                     setMapViewport(vp); setMapLayer(layer)
                     if (glyphs !== undefined) setMapGlyphs(glyphs)

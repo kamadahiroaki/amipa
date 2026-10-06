@@ -6,7 +6,7 @@ import { distillFor } from './bubbleMsa'
 import { execFile } from 'child_process'
 import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
-import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes } from '../synteny'
+import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes, nodesForAtoms, atomsOfNames } from '../synteny'
 
 // 多解像度 MSA（共線ブロック）のサイドカーを配る。
 //   GET /api/blocks?db=X.db            … `<db>.blocks.json`（functions/msa_lod/70_hier_build.py の出力）をそのまま返す
@@ -81,6 +81,16 @@ blocksRouter.get('/blocks/tokranges', (req, res) => {
       if (err) { res.json({ error: 'トークン範囲の計算に失敗: ' + (stderr ? String(stderr).slice(0, 300) : String(err)) }); return }
       try { const j = JSON.parse(stdout); j.ms = Date.now() - t0; res.json(j) } catch (e) { res.json({ error: '出力を解釈できません: ' + String(e) }) }
     })
+})
+
+// 原子の範囲 → その層のノード名（木の経路。参照座標を使わない）: GET /api/blocks/nodes2?db&layer&a0&a1
+blocksRouter.get('/blocks/nodes2', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const syn = loadSynteny(q.db); if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
+  const a0 = Number(q.a0), a1 = Number(q.a1); if (!Number.isFinite(a0) || !Number.isFinite(a1)) { res.status(400).json({ error: 'a0, a1 が要ります' }); return }
+  const t0 = Date.now()
+  try { const r = nodesForAtoms(syn, Number(q.layer) || 0, Math.max(0, a0), Math.min(syn.nat - 1, a1)); res.json({ names: r.names, truncated: r.truncated, ms: Date.now() - t0 }) } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 // ノード → 木の葉: GET /api/blocks/locate?db&names=n1,n2 → {nodes:[{name, col, x, kind, nplace, places:[{atom|gap, x0, x1}]}]}
@@ -239,7 +249,7 @@ blocksRouter.post('/blocks/nodemap', async (req, res) => {
   if (!names.length || names.length > MAX_NAMES) { res.status(400).json({ error: `names must be 1..${MAX_NAMES}` }); return }
   // 木のサイドカーがある DB: 旧ワーカーの順位は木のブロック番号と合わないので使わない（-1 = 不明。参照区間の規則だけで塗る）。
   // 木からの葉→原子区間の対応は後で（plans/msa-multires.md §15.2 の 3）
-  try { const syn = loadSynteny(db); if (syn) { res.status(501).json({ error: '木のサイドカーでは名前→ブロックの対応表は未実装（参照区間の規則で塗る）', tree: true }); return } } catch { /* fall through */ }
+  try { const syn = loadSynteny(db); if (syn) { const t0 = Date.now(); const r = atomsOfNames(syn, Number(b.layer) || 0, names); res.json({ atoms: r.atoms, fracs: r.fracs, nat: syn.nat, ms: Date.now() - t0, tree: true }); return } } catch (e) { res.status(500).json({ error: String(e) }); return }
   const r = workerFor(db)
   if (!r.w) { res.status(503).json({ error: r.error }); return }
   try {
