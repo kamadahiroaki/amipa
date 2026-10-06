@@ -22,7 +22,7 @@ export function syntenyPath(dbFile: string): string | null {
   return null
 }
 
-interface Atom { id: number; c0: number; c1: number; x0: number; span: number; nanc: number; name0: string; name1: string; refcid: number }
+interface Atom { id: number; c0: number; c1: number; x0: number; span: number; nanc: number; name0: string; name1: string; refcid: number; rx0: number; rx1: number }   // x0/span＝合意累積 bp（原子は隙間なく並ぶ）、rx0/rx1＝参照座標（グラフ寄せ・目盛り用）
 interface Boundary { id: number; tier: number; support: number; persistence: number }
 interface PathRow { pid: number; path: string; hap: string; sample: string; contig: string; strand: string; ntok: number; nsteps: number; bp: number; isref: number }
 interface Inst { pid: number; atom: number; dir: number; s0: number; e0: number; pos: number; bp: number; nsteps: number; nanc: number; nminor: number; npriv: number; vs: Buffer | null; anc: Buffer | null }
@@ -33,7 +33,7 @@ export interface Synteny {
   meta: Record<string, string>; circular: boolean; H: number; total: number; tiers: number[]; floor: number
   atoms: Atom[]; bnd: Boundary[]; paths: PathRow[]; inst: Inst[][]      // inst[pid] は pos 昇順
   anchorX: Int32Array; anchorTier: Int8Array; anchorCol: Int32Array      // rank → 合意座標 / 層 / 列
-  rankOfCol: Int32Array; dcol: Int32Array | null; colX: Int32Array; colBp: Int32Array; orig2col: Int32Array | null; col2orig: Int32Array | null; nat: number; distill: string | null; maxlayer: number; hasSupermap: boolean
+  rankOfCol: Int32Array; dcol: Int32Array | null; colX: Int32Array; colBp: Int32Array; colXc: Float64Array; orig2col: Int32Array | null; col2orig: Int32Array | null; nat: number; distill: string | null; maxlayer: number; hasSupermap: boolean
   junc: Junc[][]
   tree: any | null
   hapOrder: string[]                                                       // 参照ハプロを先に、名前順
@@ -60,11 +60,16 @@ export function loadSynteny(dbFile: string): Synteny | null {
     const nA = (d.prepare('SELECT COUNT(*) AS n FROM anchors').get() as { n: number }).n
     const anchorX = new Int32Array(nA); const anchorTier = new Int8Array(nA); const anchorCol = new Int32Array(nA)
     const ncols = Number(meta.ncols || 0); const rankOfCol = new Int32Array(ncols).fill(-1)
-    for (const r of d.prepare('SELECT rank, x, tier, col FROM anchors').iterate() as Iterable<{ rank: number; x: number; tier: number; col: number }>) { anchorX[r.rank] = r.x; anchorTier[r.rank] = r.tier; anchorCol[r.rank] = r.col; if (r.col < ncols) rankOfCol[r.col] = r.rank }
+    for (const r of d.prepare('SELECT rank, x, tier, col FROM anchors').iterate() as Iterable<{ rank: number; x: number; tier: number; col: number }>) { anchorTier[r.rank] = r.tier; anchorCol[r.rank] = r.col; if (r.col < ncols) rankOfCol[r.col] = r.rank }
     // 列ごとの合意座標と塩基数（座位のアレルの幅・位置）。1.5M 行で約 1 s
     const colX = new Int32Array(ncols), colBp = new Int32Array(ncols)
     try { for (const r of d.prepare('SELECT col, x, bp FROM cols').iterate() as Iterable<{ col: number; x: number; bp: number }>) { colX[r.col] = r.x; colBp[r.col] = r.bp } } catch { /* 古いサイドカー */ }
+    // 合意累積 bp（全列の塩基数の前置和）。参照座標 x は参照に無い島で進まず、原子の幅（全列の bp）と座標系が合わないので、
+    // 範囲・幅・対応線・サイトの位置は全部この座標で持つ。参照座標は rx0/rx1 として別に持つ（グラフ寄せ・目盛り）
+    const colXc = new Float64Array(ncols + 1); for (let c = 0; c < ncols; c++) colXc[c + 1] = colXc[c] + colBp[c]
+    for (const a of atoms) { a.rx0 = a.x0; a.rx1 = colX[a.c1] + colBp[a.c1]; a.x0 = colXc[a.c0]; a.span = colXc[a.c1 + 1] - colXc[a.c0] }
     const arr = (name: string): Int32Array | null => { try { const r = d.prepare('SELECT dtype, n, blob FROM arrays WHERE name=?').get(name) as { dtype: string; n: number; blob: Buffer } | undefined; if (!r) return null; const b = r.blob; return new Int32Array(b.buffer.slice(b.byteOffset, b.byteOffset + r.n * 4)) } catch { return null } }
+    for (let r = 0; r < nA; r++) anchorX[r] = Math.round(colXc[anchorCol[r]])
     const dcol = arr('dcol'), orig2col = arr('orig2col'), col2orig = arr('col2orig')
     let hasSupermap = false; try { d.prepare('SELECT 1 FROM supermap LIMIT 1').get(); hasSupermap = true } catch { hasSupermap = false }
     const junc: Junc[][] = paths.map(() => [])
@@ -75,9 +80,9 @@ export function loadSynteny(dbFile: string): Synteny | null {
     const isrefHap = new Set(paths.filter(r => r.isref).map(r => r.hap))
     haps.sort((a, b) => (Number(!isrefHap.has(a)) - Number(!isrefHap.has(b))) || (a < b ? -1 : a > b ? 1 : 0))
     const syn: Synteny = {
-      file: p, mtime, meta, circular: meta.circular === '1', H: Number(meta.H || haps.length), total: Number(meta.total || 0),
+      file: p, mtime, meta, circular: meta.circular === '1', H: Number(meta.H || haps.length), total: Math.round(colXc[ncols]),
       tiers: (meta.tiers || '').split(',').map(Number).filter(v => Number.isFinite(v)), floor: Number(meta.floor || 500),
-      atoms, bnd, paths, inst, anchorX, anchorTier, anchorCol, rankOfCol, dcol, colX, colBp, orig2col, col2orig, nat: atoms.length, distill: distillFor(path.join(getDbDir(), path.basename(dbFile))), maxlayer: Number(meta.maxlayer || 0), hasSupermap, junc, tree, hapOrder: haps,
+      atoms, bnd, paths, inst, anchorX, anchorTier, anchorCol, rankOfCol, dcol, colX, colBp, colXc, orig2col, col2orig, nat: atoms.length, distill: distillFor(path.join(getDbDir(), path.basename(dbFile))), maxlayer: Number(meta.maxlayer || 0), hasSupermap, junc, tree, hapOrder: haps,
     }
     cache.set(p, syn)
     return syn
@@ -256,7 +261,7 @@ export function buildWindow(syn: Synteny, x0: number, x1: number, opts: ViewOpts
   const levels = cuts.map((cut, li) => {
     const blocks = cut.groups.map(g => {
       const as = g.map(i => atoms[i]); const bx = as[0].x0, bspan = as[as.length - 1].x0 + as[as.length - 1].span - bx
-      return { c0: as[0].c0, c1: as[as.length - 1].c1, span: bspan, tbp: 0, bpmax: 0, nhap: 0, x: bx, atoms: as.length, a0: as[0].id, a1: as[as.length - 1].id, ref_contig: Math.max(0, as[0].refcid), name: as[0].name0 + '…' + as[as.length - 1].name1, ncol: as.reduce((s, a) => s + a.nanc, 0), _atoms: as }
+      return { c0: as[0].c0, c1: as[as.length - 1].c1, span: bspan, tbp: 0, bpmax: 0, nhap: 0, x: bx, rx0: as[0].rx0, rx1: as[as.length - 1].rx1, atoms: as.length, a0: as[0].id, a1: as[as.length - 1].id, ref_contig: Math.max(0, as[0].refcid), name: as[0].name0 + '…' + as[as.length - 1].name1, ncol: as.reduce((s, a) => s + a.nanc, 0), _atoms: as }
     })
     const rankOfAtom = new Map<number, number>(); cut.groups.forEach((g, r) => g.forEach(i => rankOfAtom.set(atoms[i].id, r)))
     const bpsOf: number[][] = blocks.map(() => []); const hapsOf: Set<string>[] = blocks.map(() => new Set())
@@ -329,10 +334,8 @@ export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: 
     let c0 = q.c0, c1 = q.c1
     if (c0 == null || c1 == null) {
       if (q.x0 == null || q.x1 == null) return { error: 'c0,c1 か x0,x1 が要ります' }
-      const a = d.prepare('SELECT MIN(col) AS c FROM cols WHERE x >= ?').get(Math.floor(q.x0)) as { c: number | null }
-      const b = d.prepare('SELECT MAX(col) AS c FROM cols WHERE x <= ?').get(Math.ceil(q.x1)) as { c: number | null }
-      if (a.c == null || b.c == null || b.c < a.c) return { error: '範囲に列がありません' }
-      c0 = a.c; c1 = b.c
+      const lb = (v: number) => { let lo = 0, hi = syn.colX.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.colXc[m + 1] <= v) lo = m + 1; else hi = m } return lo }
+      c0 = lb(q.x0); c1 = Math.max(c0, lb(q.x1) - 1)
     }
     const rows = d.prepare('SELECT col, x, bp, nhap, haps FROM cols WHERE col BETWEEN ? AND ? ORDER BY col').all(c0, c1) as { col: number; x: number; bp: number; nhap: number; haps: Buffer }[]
     const H = syn.H; let haps: string[] = []
@@ -394,8 +397,8 @@ export function sitesForRangeLoci(syn: Synteny, q: { c0?: number; c1?: number; x
   let c0 = q.c0, c1 = q.c1
   if (c0 == null || c1 == null) {
     if (q.x0 == null || q.x1 == null) return { error: 'c0,c1 か x0,x1 が要ります' }
-    const lb = (v: number) => { let lo = 0, hi = syn.colX.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.colX[m] < v) lo = m + 1; else hi = m } return lo }
-    c0 = lb(Math.floor(q.x0)); c1 = lb(Math.ceil(q.x1) + 1) - 1
+    const lb = (v: number) => { let lo = 0, hi = syn.colX.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.colXc[m + 1] <= v) lo = m + 1; else hi = m } return lo }   // 列 c は [colXc[c], colXc[c+1])
+    c0 = lb(q.x0); c1 = Math.max(c0, lb(q.x1) - (Number.isInteger(q.x1) && q.x1 > q.x0 ? 1 : 0))
     if (c1 < c0) return { error: '範囲に列がありません' }
   }
   const H = syn.H; let haps: string[] = []; try { haps = JSON.parse(syn.meta.hapnames || '[]') } catch { haps = [] }
@@ -457,7 +460,7 @@ export function sitesForRangeLoci(syn: Synteny, q: { c0?: number; c1?: number; x
     cellsOut.push(row)
     const ca = syn.anchorCol[B[l]], cb = syn.anchorCol[B[l + 1]]
     let bpMax = 0; for (const [key] of order) { let bp = 0; if (key) for (const t of key.split(',')) { const c = syn.dcol[Number(t)]; if (c >= 0) bp += syn.colBp[c] } bpMax = Math.max(bpMax, bp) }
-    sites.push({ x: syn.anchorX[B[l]], c0: ca + 1, c1: Math.max(ca + 1, cb - 1), ncols: Math.max(0, cb - ca - 1), bp: Math.max(1, bpMax), nall: order.length, counts: order.map(e => e[1].n) })
+    sites.push({ x: Math.round(syn.colXc[ca + 1]), c0: ca + 1, c1: Math.max(ca + 1, cb - 1), ncols: Math.max(0, cb - ca - 1), bp: Math.max(1, bpMax), nall: order.length, counts: order.map(e => e[1].n) })
   }
   const ncover = Math.max(0, ...Array.from(coverN))
   if (sites.length > max) {
@@ -497,7 +500,7 @@ export function locateNodes(syn: Synteny, names: string[]): { nodes: any[]; nat:
         if (code < syn.nat) { const a = syn.atoms[code]; return { atom: code, x0: a.x0, x1: a.x0 + a.span } }
         const prev = code - syn.nat - 1; const a = prev >= 0 ? syn.atoms[prev] : null; const x = a ? a.x0 + a.span : (syn.atoms[0] ? syn.atoms[0].x0 : 0); return { gap: prev, x0: x, x1: x }
       })
-      out.push({ name: nm, col, x: syn.colX[col], kind: r.kind, nplace: r.nplace, places })
+      out.push({ name: nm, col, x: Math.round(syn.colXc[col]), rx: syn.colX[col], kind: r.kind, nplace: r.nplace, places })
     }
     return { nodes: out, nat: syn.nat }
   } finally { d.close() }
