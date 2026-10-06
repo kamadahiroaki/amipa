@@ -192,10 +192,12 @@ def main():
     Smin, Smax = int(Sarr[0]), int(Sarr[-1])
 
     # --- node_contig_cov 前絞り込み: S を触る contig_id → distill パス index ---
-    rows = con.execute(
-        "SELECT rowid FROM nodes WHERE layer_index=? AND node_name IN (%s)"
-        % ",".join("?" * len(leaves)), [maxlayer] + leaves).fetchall()
-    rowids = [r[0] for r in rows]
+    rowids = []                                   # 葉が多い（--max-leaves で 400 超）と IN の変数が SQLite の上限 999 を超えるので刻む
+    for i in range(0, len(leaves), 400):
+        chunk = leaves[i:i + 400]
+        rowids += [r[0] for r in con.execute(
+            "SELECT rowid FROM nodes WHERE layer_index=? AND node_name IN (%s)"
+            % ",".join("?" * len(chunk)), [maxlayer] + chunk).fetchall()]
     touch_cid = set()
     if rowids:
         for i in range(0, len(rowids), 400):
