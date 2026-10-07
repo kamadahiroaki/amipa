@@ -183,6 +183,7 @@ function blockViewToColors(v: BlockView): BlockColorMap {
   let rankColors: (number | null)[] | null = null
   let atomRank: ((atom: number) => number | null) | undefined
   let xRange: [number, number] | undefined
+  let nodeSet: Set<string> | undefined
   if (v.tree) {
     // 木: 見えているブロックごとに色を持ち、ノード → 原子番号（nodemap）→ ブロック番号は原子の範囲 [a0, a1] で引く。窓や段に依らず使える
     rankColors = v.blocks.map(b => { const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color); return m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96 })
@@ -190,6 +191,7 @@ function blockViewToColors(v: BlockView): BlockColorMap {
     // ブロックより下の段（アレル行列・塩基）: 窓の合意座標の範囲に重なる原子を 1 色で塗る（葉は GraphCanvas が xRange でノード単位に絞る）
     if (v.xRange && !ranges.length && v.atomsIn) ranges.push([v.atomsIn[0], v.atomsIn[1], 0])
     if (v.xRange) xRange = v.xRange
+    if (v.nodeNames && v.nodeNames.length) nodeSet = new Set(v.nodeNames)
     atomRank = (atom: number) => { let lo = 0, hi = ranges.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ranges[m][1] < atom) lo = m + 1; else hi = m } return (lo < ranges.length && atom >= ranges[lo][0] && atom <= ranges[lo][1]) ? ranges[lo][2] : null }
   } else if (v.win === 0 && v.n0 > 0) {
     rankColors = new Array(v.n0).fill(null)
@@ -198,7 +200,7 @@ function blockViewToColors(v: BlockView): BlockColorMap {
       for (const r of (b.members || [b.rank])) if (r >= 0 && r < v.n0) rankColors[r] = c
     }
   }
-  return { maxSpan, contigs, rankColors, atomRank, xRange }
+  return { maxSpan, contigs, rankColors, atomRank, xRange, nodeSet }
 }
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)

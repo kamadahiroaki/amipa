@@ -209,6 +209,7 @@ export interface BlockColorMap {
   db?: string
   atomRank?: (atom: number) => number | null     // 木: 原子番号 → 見ている段のブロック番号（nodemap が原子を返すとき）
   xRange?: [number, number]                      // 木・ブロックより下の段: 窓の合意座標の範囲。葉はノードの合意座標で塗る／塗らないを決める（原子より細かい）
+  nodeSet?: Set<string>                          // 塩基の段: MSA に出ている葉ノード名。葉の層ではこれだけを塗る（最も正確）
 }
 export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
                              bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
@@ -1428,7 +1429,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             if (a === undefined) { blockColor = blockColorOf(bm, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi); nodeRankPendingRef.current.add(n.node_name) }
             else {
               let rk: number | null = a >= 0 ? bm.atomRank(a) : null
-              if (bm.xRange) { const x = nodeXRef.current.get(n.node_name); if (x && x[0] >= 0) rk = (x[1] > bm.xRange[0] && x[0] < bm.xRange[1]) ? 0 : null }
+              if (bm.nodeSet && /^n\d+$/.test(n.node_name)) rk = bm.nodeSet.has(n.node_name) ? 0 : null
+              else if (bm.xRange) { const x = nodeXRef.current.get(n.node_name); if (x && x[0] >= 0) rk = (x[1] > bm.xRange[0] && x[0] < bm.xRange[1]) ? 0 : null }
               blockColor = rk != null && rk >= 0 && rk < rc.length ? rc[rk] : null
             }
           } else {
