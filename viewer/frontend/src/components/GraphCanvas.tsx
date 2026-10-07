@@ -1,7 +1,7 @@
 import type { GuardSink } from '../api/client'
 import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import * as PIXI from 'pixi.js'
-import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap } from '../api/client'
+import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap, fetchBlockSubgraph, type BlockSubgraph } from '../api/client'
 import { stainToColor, GIE_COLORS, GENE_DENSITY_LOW, GENE_DENSITY_HIGH } from '../annotColors'
 // §8.2 Phase 3: 図版の幾何＋SVG 直列化は backend の純粋モジュールを共有する(ヘッドレス CLI と一本化)。
 import { buildGraphFigure, drawListToSvg, FIG_SCALE } from '../../../backend/src/figure/svgSerialize'
@@ -502,7 +502,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   useEffect(() => { showRefPosRef.current = showRefPos; renderRef.current?.() }, [showRefPos])
   useEffect(() => { refContigsRef.current = refContigs; renderRef.current?.() }, [refContigs])
   useEffect(() => { nodeColorsRef.current = nodeColors; renderRef.current?.() }, [nodeColors])
-  useEffect(() => { blockColorsRef.current = blockColors ?? null; renderRef.current?.() }, [blockColors])
+  const subKeyPrevRef = useRef<string>('')
+  useEffect(() => { blockColorsRef.current = blockColors ?? null
+    const k = blockColors?.filter && blockColors.filterRange ? `${Math.floor(blockColors.filterRange[0])}|${Math.ceil(blockColors.filterRange[1])}` : ''
+    if (k !== subKeyPrevRef.current) { subKeyPrevRef.current = k; recheckRef.current?.() }
+    renderRef.current?.() }, [blockColors])
   useEffect(() => { ribbonsRef.current = ribbons; renderRibbonsRef.current?.() }, [ribbons])
 
   interface PathCache { nodes: CtgPathNode[]; steps: CtgPathStep[] }
@@ -513,6 +517,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const renderPathsRef = useRef<(() => void) | null>(null)
   const renderRef = useRef<(() => void) | null>(null)
   const reloadRef = useRef<(() => void) | null>(null)
+  const recheckRef = useRef<(() => void) | null>(null)   // 絞りモードの切替・範囲変更で取得をやり直す（タイルは捨てない）
   const mapMapqRef          = useRef(mapMapq)
   const hapSelRef           = useRef(hapSel ?? '')
   const maxRowsRef          = useRef(maxRows ?? 0)
@@ -970,6 +975,38 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     // ズームで autoLayer→gz が変わっても「旧 displayLayer を旧 gz で」引き続けないと（curGridZ は新 gz を返し）
     // 旧タイルが見つからず真っ白になる。昇格時に新 gz へ更新する。
     let displayGz = 0
+    // ── 絞りモード（範囲駆動の部分グラフ）──────────────────────────────────────────
+    // Blocks の「グラフをこの範囲に絞る」が on で窓の範囲があるとき、タイル（空間問い合わせ）を使わず
+    // /api/blocks/subgraph で範囲のノード・辺だけを名前で取る。コストは窓の広さに比例し、密な中央でも軽い。
+    // 範囲外の端点（outer）は隠し、その辺は橙の切れ端になる（hiddenNodeNames 経由）。
+    let sub: { key: string; layer: number; nodes: NodeData[]; edges: EdgeData[]; outerNames: Set<string>; outerIds: Set<number> } | null = null
+    let subLoading: { key: string; ctrl: AbortController } | null = null
+    function subKeyFor(layer: number): string | null { const bm = blockColorsRef.current; if (!bm?.filter || !bm.filterRange) return null; return `${dbFile}|${layer}|${Math.floor(bm.filterRange[0])}|${Math.ceil(bm.filterRange[1])}` }
+    function subOn(): boolean { const bm = blockColorsRef.current; return !!(bm?.filter && bm.filterRange) }
+    function ensureSubgraph(layer: number) {
+      const key = subKeyFor(layer); if (!key) return
+      if (sub && sub.key === key) return
+      if (subLoading && subLoading.key === key) return
+      if (subLoading) { subLoading.ctrl.abort(); subLoading = null }
+      const bm = blockColorsRef.current!; const ctrl = new AbortController(); subLoading = { key, ctrl }
+      fetchBlockSubgraph(dbFile, layer, bm.filterRange![0], bm.filterRange![1], ctrl.signal).then(r => {
+        if (!subLoading || subLoading.key !== key) return
+        subLoading = null
+        if (!r || ('error' in r && r.error)) { console.warn('subgraph:', (r as any)?.error); return }
+        const g = r as BlockSubgraph
+        const byName = new Map<string, NodeData>()
+        for (const n of g.nodes) { n.layer = layer; byName.set(n.node_name, n); nodeStore.set(n.id, n) }
+        for (const n of g.outer) { n.layer = layer; byName.set(n.node_name, n) }
+        const edges: EdgeData[] = []
+        for (const e of g.edges) { const ns = byName.get(e.source), nt = byName.get(e.target); if (!ns || !nt) continue
+          if (e.src_sign != null || e.start_x == null) { const [sx, sy] = rodEndpoint(ns, e.src_sign ?? 0, nt); const [ex, ey] = rodEndpoint(nt, e.tgt_sign ?? 0, ns); e.start_x = sx; e.start_y = sy; e.end_x = ex; e.end_y = ey; e.startc_x = sx; e.startc_y = sy; e.endc_x = ex; e.endc_y = ey }
+          edges.push(e) }
+        sub = { key, layer, nodes: g.nodes, edges, outerNames: new Set(g.outer.map(n => n.node_name)), outerIds: new Set(g.outer.map(n => n.id)) }
+        displayLayer = layer; displayGz = curGridZ()
+        if (g.truncated) console.warn(`subgraph L${layer}: 範囲のノードが上限を超えたので先頭 ${g.nodes.length} 件だけ`)
+        markDirty(); render()
+      }).catch(() => { if (subLoading && subLoading.key === key) subLoading = null })
+    }
     let autoLayer = -1        // zoom だけで決まる自動層（ヒステリシス対象。layerOffset を足す前）
     // 最後のレンダリングで使った可視ノード・エッジ (イベントハンドラが参照)
     let visibleNodes: NodeData[] = []
@@ -1202,9 +1239,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       // 格子解像度は「今表示中のタイルが載っている gz」= displayGz。curGridZ()（＝新しいカメラ zoom の gz）を
       // 使うと、層境界を跨いだ直後は旧 displayLayer のタイル（旧 gz）が見つからず真っ白になる。displayGz なら
       // 新タイル到着（maybePromote で昇格）まで旧内容を PIXI world 変換で拡大表示し続けられる。
-      const { nodeIds, edgeIds } = getVisibleIds(renderLayer, displayGz, renderRect)
-      visibleNodes = [...nodeIds].map(id => nodeStore.get(id)).filter((n): n is NodeData => n != null)
-      visibleEdges = [...edgeIds].map(id => edgeStore.get(id)).filter((e): e is EdgeData => e != null)
+      if (subOn() && sub) {
+        // 絞りモード: 部分グラフから矩形内だけ（層が切り替わって新しい部分グラフを待つ間は古いものを描き続ける）
+        const rr = expandRect(renderRect, 0.05)
+        visibleNodes = sub.nodes.filter(n => n.xCoord >= rr.x1 && n.xCoord <= rr.x2 && n.yCoord >= rr.y1 && n.yCoord <= rr.y2)
+        visibleEdges = sub.edges.filter(e => Math.max(e.start_x, e.end_x) >= rr.x1 && Math.min(e.start_x, e.end_x) <= rr.x2 && Math.max(e.start_y, e.end_y) >= rr.y1 && Math.min(e.start_y, e.end_y) <= rr.y2)
+      } else {
+        const { nodeIds, edgeIds } = getVisibleIds(renderLayer, displayGz, renderRect)
+        visibleNodes = [...nodeIds].map(id => nodeStore.get(id)).filter((n): n is NodeData => n != null)
+        visibleEdges = [...edgeIds].map(id => edgeStore.get(id)).filter((e): e is EdgeData => e != null)
+      }
       visibleNodesRef.current = visibleNodes; scheduleVisibleAtoms()
 
       // ノードサイズ倍率。エッジ端点・ノード本体・パスリボンを同じ倍率でノード中心周りにスケールし追従させる。
@@ -1247,7 +1291,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       }
       // Blocks の窓の範囲に絞る: 範囲に属さないノードを隠す（原子が未取得のノードは残す＝対応表が届いたら次の描画で消える）
       const bmF = blockColorsRef.current
-      if (bmF?.filter && bmF.rankColors && bmF.atomRank && (bmF.filterRange || bmF.nodeSet)) {
+      if (subOn() && sub) { for (const nm of sub.outerNames) hiddenNodeNames.add(nm); for (const id of sub.outerIds) hiddenNodeIds.add(id) }
+      else if (bmF?.filter && bmF.rankColors && bmF.atomRank && (bmF.filterRange || bmF.nodeSet)) {
         for (const n of visibleNodes) {
           const nm = n.node_name; const leaf = /^n\d+$/.test(nm)
           let inR: boolean | null = null
@@ -2547,6 +2592,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       }
 
       currentLayer = layer
+      if (subKeyFor(layer)) { ensureSubgraph(layer); return }   // 絞りモード: 範囲駆動で取る（タイルは使わない）
       const prefetchRect = expandRect(viewport, FETCH_MARGIN)
       const gz = curGridZ()   // 格子解像度はカメラズーム基準（内容層 layer とは独立）
       // 先読み矩形から外れた／層が変わった取得は、この時点で用済み。abort してキュー待ちを減らす。
@@ -2796,6 +2842,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       settleRecompute()
     }
     reloadRef.current = reload
+    recheckRef.current = () => { if (!subOn()) sub = null; settleRecompute() }
 
     function updateUrl(viewport: Rect) {
       const cx = ((viewport.x1 + viewport.x2) / 2).toFixed(6)

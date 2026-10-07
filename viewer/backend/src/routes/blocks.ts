@@ -7,6 +7,7 @@ import { execFile } from 'child_process'
 import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
 import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes, nodesForAtoms, atomsOfNames } from '../synteny'
+import { tableCols, parseNodes } from '../nodeQuery'
 
 // 多解像度 MSA（共線ブロック）のサイドカーを配る。
 //   GET /api/blocks?db=X.db            … `<db>.blocks.json`（functions/msa_lod/70_hier_build.py の出力）をそのまま返す
@@ -256,6 +257,59 @@ blocksRouter.post('/blocks/nodemap', async (req, res) => {
     const out = await r.w.warm().then(() => r.w!.request('nodemap', { layer: Number(b.layer) || 0, names }))
     res.json({ ranks: out.ranks, nblocks: out.nblocks, ms: out.ms })
   } catch (e) { res.status(500).json({ error: String((e as Error)?.message ?? e) }) }
+})
+
+
+// ---- 範囲駆動の部分グラフ（Blocks の窓の範囲だけをグラフに出す「絞りモード」の取得経路）----
+//   GET /api/blocks/subgraph?db&layer&x0&x1[&max]
+//   空間問い合わせをせず、窓の合意座標の範囲からノード名を決めて主キーで引く。コストは窓の広さに比例し、ビューポートの密度に依らない。
+//   葉の層: 列範囲 [c0,c1]（colXc）→ col2orig の名前。上の層: 範囲に重なる原子 → supermap（多数派の場所、frac ≥ 0.5）。
+//   辺: 端点が集合に入る辺を source / target の索引で引く（PK (layer,source,target) と idx_edges_ts）。片端が集合の外の辺は
+//   その端点ノード（outer）も返す（viewer は隠して、辺を橙の切れ端にする）。座標は返さず src_sign/tgt_sign（viewer が復元）。
+const SUBGRAPH_MAX = 20000
+blocksRouter.get('/blocks/subgraph', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const syn = loadSynteny(q.db)
+  if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
+  const layer = Number(q.layer) || 0; const x0 = Number(q.x0), x1 = Number(q.x1)
+  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) { res.status(400).json({ error: 'x0 < x1 が要ります' }); return }
+  const max = Math.max(100, Math.min(SUBGRAPH_MAX, Number(q.max) || SUBGRAPH_MAX))
+  const t0 = Date.now()
+  try {
+    // 1) 範囲のノード名
+    let names: string[] = []; let truncated = false; let c0 = -1, c1 = -1
+    const lb = (v: number) => { let lo = 0, hi = syn.colX.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.colXc[m + 1] <= v) lo = m + 1; else hi = m } return lo }
+    if (layer >= syn.maxlayer || !syn.hasSupermap) {
+      c0 = lb(x0); c1 = Math.max(c0, lb(x1) - 1)
+      const c2o = syn.col2orig; if (!c2o) { res.json({ error: "サイドカーに col2orig がありません（tree.py を更新して作り直す）" }); return }
+      for (let c = c0; c <= c1 && c < c2o.length; c++) { const o = c2o[c]; if (o >= 0) { if (names.length >= max) { truncated = true; break } names.push('n' + o) } }
+    } else {
+      const atoms = syn.atoms.filter(a => a.x0 < x1 && a.x0 + a.span > x0)
+      if (atoms.length) { const r = nodesForAtoms(syn, layer, atoms[0].id, atoms[atoms.length - 1].id, max, 0.5); names = r.names; truncated = r.truncated }
+    }
+    if (!names.length) { res.json({ nodes: [], outer: [], edges: [], c0, c1, n: 0, truncated, ms: Date.now() - t0 }); return }
+    // 2) ノード（主キーで点引き）
+    const d = getDb(q.db)
+    const cols = tableCols(d, 'nodes')
+    const opt = ['coverage', 'cov_hist', 'haplotype', 'ref_contig_id', 'ref_bp', 'ref_bp_end', 'is_anchor', 'ref_multi', 'ref_strand', 'comp_id', 'kind'].filter(c => cols.has(c)).map(c => `, n.${c}`).join('')
+    const selNodes = (ph: string) => `SELECT n.rowid AS id, n.node_name, n.is_bubble, n.size, n.xCoord, n.yCoord, n.angle, n.radius, n.color${opt}, n.layer_index AS layer FROM nodes n WHERE n.layer_index = ? AND n.node_name IN (${ph})`
+    const fetchNodes = (list: string[]) => { const out: any[] = []; for (let i = 0; i < list.length; i += 400) { const ch = list.slice(i, i + 400); out.push(...d.prepare(selNodes(ch.map(() => '?').join(','))).all(layer, ...ch)) } return parseNodes(out) }
+    const nodes = fetchNodes(names)
+    const inSet = new Set(nodes.map((n: any) => n.node_name as string))
+    // 3) 辺（端点の索引で引き、rowid で重複を落とす）
+    const edges: any[] = []; const seen = new Set<number>()
+    const selE = (side: string, ph: string) => `SELECT e.rowid AS id, e.source, e.target, e.src_sign, e.tgt_sign FROM edges e WHERE e.layer_index = ? AND e.${side} IN (${ph})`
+    const list = [...inSet]
+    for (const side of ['source', 'target']) for (let i = 0; i < list.length; i += 400) {
+      const ch = list.slice(i, i + 400)
+      for (const e of d.prepare(selE(side, ch.map(() => '?').join(','))).all(layer, ...ch) as any[]) { if (!seen.has(e.id)) { seen.add(e.id); edges.push(e) } }
+    }
+    // 4) 集合の外の端点（切れ端用）
+    const outerNames = new Set<string>(); for (const e of edges) { if (!inSet.has(e.source)) outerNames.add(e.source); if (!inSet.has(e.target)) outerNames.add(e.target) }
+    const outer = fetchNodes([...outerNames].slice(0, max))
+    res.json({ nodes, outer, edges, c0, c1, n: names.length, truncated, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 const MAX_RANGES = 200000

@@ -865,6 +865,13 @@ export async function fetchBlockNodemap(dbFile: string, layer: number, names: st
     return Array.isArray(j.ranks) ? { vals: j.ranks as number[], fracs: null, xs: null, xe: null } : null
   } catch { return null }
 }
+// 木: 範囲駆動の部分グラフ（Blocks の窓の範囲だけ）。空間問い合わせをせず名前で引くので、密な中央でも窓の広さぶんの時間で返る。
+//   nodes = 範囲のノード、outer = 範囲外だが辺で繋がる端点（隠す・切れ端用）、edges = src_sign/tgt_sign だけ（端点は GraphCanvas が復元）
+export interface BlockSubgraph { nodes: NodeData[]; outer: NodeData[]; edges: EdgeData[]; c0: number; c1: number; n: number; truncated: boolean; ms: number; error?: string }
+export async function fetchBlockSubgraph(dbFile: string, layer: number, x0: number, x1: number, signal?: AbortSignal): Promise<BlockSubgraph | { error: string }> {
+  const p = new URLSearchParams({ db: dbFile, layer: String(layer), x0: String(Math.floor(x0)), x1: String(Math.ceil(x1)) })
+  try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
+}
 // ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）
 export async function warmBlocks(dbFile: string): Promise<{ state: string; error?: string; warm_ms?: number }> {
   try { const r = await fetch(`/api/blocks/warm?db=${encodeURIComponent(dbFile)}`); return await r.json() } catch (e) { return { state: 'error', error: String(e) } }
