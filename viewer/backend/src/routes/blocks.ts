@@ -281,33 +281,27 @@ blocksRouter.get('/blocks/bbox', (req, res) => {
     const c2o = syn.col2orig; if (!c2o) { res.json({ error: 'サイドカーに col2orig がありません' }); return }
     const atoms = syn.atoms.filter(a => a.x0 < x1 && a.x0 + a.span > x0); const a0 = atoms.length ? atoms[0].id : -1, a1 = atoms.length ? atoms[atoms.length - 1].id : -1
     const d = getDb(q.db)
-    // 層ごとの件数（細かい層ほど増える。target を超えたら打ち切り）
+    // 矩形は常に葉の列から（範囲に対して正確。上の層の supermap は原子の粒度なので、大きな原子の内側の小さな範囲では原子全体に化ける）。
+    // 層は「範囲のノードが target 以下になる最も細かい層」: 葉の件数が target 以下なら葉、超えるときだけ上の層を件数で選ぶ
+    const all: string[] = []; for (let c = c0; c <= c1 && c < c2o.length; c++) if (c2o[c] >= 0) all.push('n' + c2o[c])
     const counts: number[] = []; let layer = syn.maxlayer
-    const ds = new Database(syn.file, { readonly: true })
-    try {
-      const qc = ds.prepare('SELECT COUNT(*) AS n FROM supermap WHERE layer=? AND major BETWEEN ? AND ? AND frac>=0.5')
-      let chosen = -1
-      for (let L = 0; L <= syn.maxlayer; L++) {
-        let n = 0
-        if (L >= syn.maxlayer || !syn.hasSupermap) { for (let c = c0; c <= c1 && c < c2o.length; c++) if (c2o[c] >= 0) n++ }
-        else if (a0 >= 0) n = Number((qc.get(L, a0, a1) as { n: number }).n)
-        counts.push(n)
-        if (n > 0 && n <= tgt) chosen = L
-        if (n > tgt) break
-      }
-      layer = chosen >= 0 ? chosen : (counts.findIndex(n => n > 0) >= 0 ? counts.findIndex(n => n > 0) : syn.maxlayer)
-    } finally { ds.close() }
-    // その層の名前（葉は等間隔に標本化）
-    let names: string[] = []
-    if (layer >= syn.maxlayer || !syn.hasSupermap) {
-      const all: string[] = []; for (let c = c0; c <= c1 && c < c2o.length; c++) if (c2o[c] >= 0) all.push('n' + c2o[c])
-      const step = Math.max(1, Math.ceil(all.length / 4000)); for (let i = 0; i < all.length; i += step) names.push(all[i])
-    } else if (a0 >= 0) names = nodesForAtoms(syn, layer, a0, a1, 4000, 0.5).names
+    if (all.length > tgt && syn.hasSupermap && a0 >= 0) {
+      const ds = new Database(syn.file, { readonly: true })
+      try {
+        const qc = ds.prepare('SELECT COUNT(*) AS n FROM supermap WHERE layer=? AND major BETWEEN ? AND ? AND frac>=0.5')
+        let chosen = -1
+        for (let L = 0; L < syn.maxlayer; L++) { const n = Number((qc.get(L, a0, a1) as { n: number }).n); counts.push(n); if (n > 0 && n <= tgt) chosen = L; if (n > tgt) break }
+        counts.push(all.length)
+        layer = chosen >= 0 ? chosen : 0
+      } finally { ds.close() }
+    } else counts.push(all.length)
+    const names: string[] = []; const step = Math.max(1, Math.ceil(all.length / 4000)); for (let i = 0; i < all.length; i += step) names.push(all[i])
+    const bboxLayer = syn.maxlayer
     if (!names.length) { res.json({ layer, count: 0, counts, c0, c1, ms: Date.now() - t0 }); return }
     let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity, sx = 0, sy = 0, n = 0
     const sel = (ph: string) => `SELECT xCoord, yCoord FROM nodes WHERE layer_index = ? AND node_name IN (${ph})`
     for (let i = 0; i < names.length; i += 400) { const ch = names.slice(i, i + 400)
-      for (const r of d.prepare(sel(ch.map(() => '?').join(','))).all(layer, ...ch) as { xCoord: number; yCoord: number }[]) { if (r.xCoord == null) continue; minx = Math.min(minx, r.xCoord); maxx = Math.max(maxx, r.xCoord); miny = Math.min(miny, r.yCoord); maxy = Math.max(maxy, r.yCoord); sx += r.xCoord; sy += r.yCoord; n++ } }
+      for (const r of d.prepare(sel(ch.map(() => '?').join(','))).all(bboxLayer, ...ch) as { xCoord: number; yCoord: number }[]) { if (r.xCoord == null) continue; minx = Math.min(minx, r.xCoord); maxx = Math.max(maxx, r.xCoord); miny = Math.min(miny, r.yCoord); maxy = Math.max(maxy, r.yCoord); sx += r.xCoord; sy += r.yCoord; n++ } }
     if (!n) { res.json({ layer, count: 0, counts, c0, c1, ms: Date.now() - t0 }); return }
     res.json({ layer, count: n, counts, c0, c1, minx, miny, maxx, maxy, cx: sx / n, cy: sy / n, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) }

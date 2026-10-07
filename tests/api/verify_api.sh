@@ -126,10 +126,10 @@ BTREE=$("$PY" -c 'import sys,json; j=json.load(sys.stdin); m=j.get("meta",{}); p
 read -r BT BD BX BML <<<"$BTREE"
 if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
   BX0=$((BX / 2)); BX1=$((BX / 2 + BX / 200))          # 全体の 0.5% 幅の範囲（ecoli50 で ~90 kb）
-  SX0=$((BX / 2)); SX1=$((BX / 2 + BX / 5000))         # 全体の 0.02% 幅（~3.6 kb。塩基の段に入る広さ）
+  SX0=$((BX / 2)); SX1=$((BX / 2 + BX / 1000))         # 全体の 0.1% 幅（ecoli50 で ~18 kb。大きなノード 1 個に収まらない広さ）
   hit "/blocks (木)"            "blocks?db=$DB"
   hit "/blocks/range"           "blocks/range?db=$DB&x0=$BX0&x1=$BX1"
-  hit "/blocks/sites (x0/x1)"   "blocks/sites?db=$DB&x0=$SX0&x1=$SX1"
+  hit "/blocks/sites (x0/x1)"   "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" allow-empty   # 変異サイト 0 は全株同一で正常。error は NG
   hit "/blocks/bbox"            "blocks/bbox?db=$DB&x0=$SX0&x1=$SX1"
   hit "/blocks/subgraph (葉)"   "blocks/subgraph?db=$DB&layer=$BML&x0=$SX0&x1=$SX1"
   hit "/blocks/nodemap (POST)"  "blocks/nodemap" "" '{"db":"'"$DB"'","layer":'"$BML"',"names":["n1","n2"]}'
