@@ -200,7 +200,7 @@ function blockViewToColors(v: BlockView): BlockColorMap {
       for (const r of (b.members || [b.rank])) if (r >= 0 && r < v.n0) rankColors[r] = c
     }
   }
-  return { maxSpan, contigs, rankColors, atomRank, xRange, nodeSet }
+  return { maxSpan, contigs, rankColors, atomRank, xRange, nodeSet, filter: !!v.filterGraph, filterRange: v.filterRange ?? undefined }
 }
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)

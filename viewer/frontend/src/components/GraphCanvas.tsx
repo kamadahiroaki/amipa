@@ -210,6 +210,8 @@ export interface BlockColorMap {
   atomRank?: (atom: number) => number | null     // 木: 原子番号 → 見ている段のブロック番号（nodemap が原子を返すとき）
   xRange?: [number, number]                      // 木・ブロックより下の段: 窓の合意座標の範囲。葉はノードの合意座標で塗る／塗らないを決める（原子より細かい）
   nodeSet?: Set<string>                          // 塩基の段: MSA に出ている葉ノード名。葉の層ではこれだけを塗る（最も正確）
+  filter?: boolean                               // Blocks の窓の範囲にグラフを絞る（範囲外のノードと辺を描かない）
+  filterRange?: [number, number]                 // 絞る範囲（窓の合意座標の張り）。葉はノードの合意座標で判定、スーパーノードは原子で判定
 }
 export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
                              bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
@@ -1243,6 +1245,19 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           }
         }
       }
+      // Blocks の窓の範囲に絞る: 範囲に属さないノードを隠す（原子が未取得のノードは残す＝対応表が届いたら次の描画で消える）
+      const bmF = blockColorsRef.current
+      if (bmF?.filter && bmF.rankColors && bmF.atomRank && (bmF.filterRange || bmF.nodeSet)) {
+        for (const n of visibleNodes) {
+          const nm = n.node_name; const leaf = /^n\d+$/.test(nm)
+          let inR: boolean | null = null
+          if (leaf && bmF.nodeSet) inR = bmF.nodeSet.has(nm)
+          else { const x = leaf ? nodeXRef.current.get(nm) : undefined
+            if (bmF.filterRange && x && x[0] >= 0) inR = x[1] > bmF.filterRange[0] && x[0] < bmF.filterRange[1]
+            else { const a = nodeAtomRef.current.get(nm); if (a === undefined) { inR = null; nodeRankPendingRef.current.add(nm) } else inR = a >= 0 && bmF.atomRank(a) != null } }
+          if (inR === false) { hiddenNodeIds.add(n.id); hiddenNodeNames.add(nm) }
+        }
+      }
 
       edgeLayer.clear()
       const edgeMinVal = edgeMinRef.current
@@ -1284,7 +1299,19 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             edgeLayer.endFill()
           }
         }
-      } else if (inDetailMode) {
+      }
+      if (blockColorsRef.current?.filter && hiddenNodeNames.size) {
+        // 片端だけが範囲外の辺: 見える端から 35% だけ橙で描く（範囲の外へ繋がる＝再編成の接合点）
+        edgeLayer.lineStyle(1.5, 0xf59e0b, 0.85, 0.5, true)
+        for (const e of visibleEdges) {
+          const hs = hiddenNodeNames.has(e.source), ht = hiddenNodeNames.has(e.target); if (hs === ht) continue
+          if (Math.min(e.start_x, e.end_x) > renderRect.x2 || Math.max(e.start_x, e.end_x) < renderRect.x1 || Math.min(e.start_y, e.end_y) > renderRect.y2 || Math.max(e.start_y, e.end_y) < renderRect.y1) continue
+          const [sx, sy, ex, ey] = edgePts(e); const f = 0.35
+          if (hs) { edgeLayer.moveTo(ex, ey); edgeLayer.lineTo(ex + (sx - ex) * f, ey + (sy - ey) * f) } else { edgeLayer.moveTo(sx, sy); edgeLayer.lineTo(sx + (ex - sx) * f, sy + (ey - sy) * f) }
+        }
+        edgeLayer.lineStyle(0)
+      }
+      if (isBreadthE) { /* 描画済み */ } else if (inDetailMode) {
         const maxPx = maxEdgePxRef.current
         const maxRs = maxEdgeReadsRef.current
         const detailEdges = visibleEdges.filter(e => {
@@ -2799,6 +2826,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const scale = nodeScaleRef.current
       const w = screenToWorld(sx, sy)
       for (let i = visibleNodes.length - 1; i >= 0; i--) {
+        if (hiddenNodeIds.has(visibleNodes[i].id)) continue
         if (hitTestNode(visibleNodes[i], w.x, w.y, minW, scale)) return visibleNodes[i]
       }
       return null
