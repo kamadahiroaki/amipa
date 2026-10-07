@@ -520,7 +520,8 @@ function drawAll(){ const nrows = buildRows().length; const tgt = targetRH(nrows
 let _lastViewKey = '';
 // 合意座標の範囲 [a, b] に重なる原子の番号の範囲（原子は合意座標順）。無ければ null
 // 原子の内側の窓（アレル行列・塩基）の列範囲。塩基の窓は c0/c1 を持つ（入れ子は親から）
-function colsSelOf(w){ let p = w; for (let i = 0; i < 8 && p; i++){ if (p.c0 != null && p.c1 != null) return { cols: [p.c0, p.c1] }; if (p.mode === 'sites' && p.levels && p.levels[0] && p.levels[0].c0 != null) return { cols: [p.levels[0].c0, p.levels[0].c1] }; p = p.parent >= 0 ? WINS[p.parent] : null; } return null; }
+function colsSelOf(w){ let p = w; for (let i = 0; i < 8 && p; i++){ const L0 = p.levels && p.levels[0]; if (L0 && L0.c0 != null && L0.c1 != null) return { cols: [L0.c0, L0.c1] };   // 塩基もアレル行列も列範囲は levels[0] に持つ（入れ子の塩基は null → 親へ）
+  p = p.parent >= 0 ? WINS[p.parent] : null; } return null; }
 function atomsOverlapping(xr){ if (!xr || !DATA.meta.atoms) return null; const A = DATA.meta.atoms; let lo = -1, hi = -1; for (let i = 0; i < A.length; i++){ const x0 = A[i][0], x1 = x0 + Math.max(1, A[i][1]); if (x1 > xr[0] && x0 < xr[1]){ if (lo < 0) lo = i; hi = i; } } return lo < 0 ? null : [lo, hi]; }
 function emitView(){ if (!(cb && cb.onView)) return; const L = level(); const key = st.win+':'+st.li+':'+LY.vis.join(',')+':'+(st.sync?1:0)+':'+(st.gfilter?1:0);
   if (key === _lastViewKey) return; _lastViewKey = key;
