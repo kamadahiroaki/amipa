@@ -572,6 +572,58 @@ export function nodesForAtoms(syn: Synteny, layer: number, a0: number, a1: numbe
     return { names, truncated: false }
   } finally { d.close() }
 }
+// ---- 集合の意味での解決（bp の近似を使わない）----
+//   原子の集合 [a0,a1] に「場所」が重なるノード: 葉は atomnodes（場所→列、全場所）、上の層は atomsuper（層・場所→名前、全場所）。
+//   どちらも tree.py が 2026-10-07 以降に作る逆引き表。無い古いサイドカーでは従来（列範囲・supermap の多数派）に落ちる。
+export function hasSetTables(syn: Synteny): boolean {
+  if ((syn as any)._setTables != null) return (syn as any)._setTables
+  const d = new Database(syn.file, { readonly: true })
+  try { const r = d.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('atomnodes','atomsuper')").get() as { n: number }; (syn as any)._setTables = r.n === 2; return r.n === 2 }
+  finally { d.close() }
+}
+export function namesForAtomsExact(syn: Synteny, layer: number, a0: number, a1: number, max = 20000, gaps = true): { names: string[]; truncated: boolean; exact: boolean } {
+  if (!hasSetTables(syn)) { const r = nodesForAtoms(syn, layer, a0, a1, max, 0.5); return { ...r, exact: false } }
+  const d = new Database(syn.file, { readonly: true })
+  try {
+    const names: string[] = []; const seen = new Set<string>(); let truncated = false
+    // 隙間の場所コード = nat+1+直前の原子。窓の原子の直後の隙間も含める（原子の間の列はその隙間に属する）
+    const ranges: [number, number][] = [[a0, a1]]; if (gaps) ranges.push([syn.nat + 1 + a0, syn.nat + 1 + a1])
+    if (layer >= syn.maxlayer || !syn.hasSupermap) {
+      if (!syn.col2orig) return { names, truncated, exact: true }
+      const q = d.prepare('SELECT DISTINCT col FROM atomnodes WHERE place BETWEEN ? AND ?')
+      for (const [p0, p1] of ranges) for (const r of q.iterate(p0, p1) as Iterable<{ col: number }>) { const o = syn.col2orig[r.col]; if (o < 0) continue; const nm = 'n' + o; if (seen.has(nm)) continue; if (names.length >= max) { truncated = true; break } seen.add(nm); names.push(nm) }
+    } else {
+      const q = d.prepare('SELECT DISTINCT node_name FROM atomsuper WHERE layer=? AND place BETWEEN ? AND ?')
+      for (const [p0, p1] of ranges) for (const r of q.iterate(layer, p0, p1) as Iterable<{ node_name: string }>) { if (seen.has(r.node_name)) continue; if (names.length >= max) { truncated = true; break } seen.add(r.node_name); names.push(r.node_name) }
+    }
+    return { names, truncated, exact: true }
+  } finally { d.close() }
+}
+// 列範囲 [c0,c1]（原子の内側の窓: アレル行列・塩基）→ 各パスのトークン範囲（colrange_tokens.py と同じ規則: 範囲の列を持つトークンの
+// 最も密な連なり）→ その範囲の全トークンの名前の和。列がずれたノード（私有の 22%）も、パスが通る以上は含まれる
+export function namesForCols(syn: Synteny, layer: number, c0: number, c1: number, max = 20000): { names: string[]; truncated: boolean; exact: boolean } {
+  if (!syn.dcol || !syn.distill || !syn.col2orig) return { names: [], truncated: false, exact: false }
+  const dist = openDistill(syn.distill)
+  const atomsIn = syn.atoms.filter(a => a.c1 >= c0 && a.c0 <= c1); const aset = new Set(atomsIn.map(a => a.id))
+  const names: string[] = []; const seen = new Set<string>(); let truncated = false
+  for (const pr of syn.paths) {
+    const pi = dist.pidx.get(pr.path); if (pi == null) continue
+    const its = syn.inst[pr.pid].filter(it => aset.has(it.atom)).sort((a, b) => a.s0 - b.s0)
+    const runs: [number, number][] = []; for (const it of its) { const last = runs[runs.length - 1]; if (last && it.s0 <= last[1]) last[1] = Math.max(last[1], it.e0); else runs.push([it.s0, it.e0]) }
+    for (const [s0, e0] of runs) {
+      const toks = dist.read(pi, s0, e0)
+      const m: number[] = []; for (let k = 0; k < toks.length; k++) { const c = syn.dcol[toks[k]]; if (c >= c0 && c <= c1) m.push(k) }
+      if (!m.length) continue
+      // 最も密な連なり（100 トークン超の飛びで切る）
+      let bs = 0, be = 0, cs = 0; for (let i = 1; i <= m.length; i++) { if (i === m.length || m[i] - m[i - 1] > 100) { if (i - cs > be - bs) { bs = cs; be = i } cs = i } }
+      const lo = m[bs], hi = m[be - 1]
+      for (let k = lo; k <= hi; k++) { const c = syn.dcol[toks[k]]; if (c < 0) continue; const o = syn.col2orig[c]; if (o < 0) continue; const nm = 'n' + o; if (seen.has(nm)) continue; if (names.length >= max) { truncated = true; return { names, truncated, exact: true } } seen.add(nm); names.push(nm) }
+    }
+  }
+  // 上の層: 葉の集合をスーパーノードに写す（supermap の多数派ではなく、葉の親を辿るのが正確だが、ここでは葉名→原子→atomsuper で近似せず、葉だけ返す）
+  return { names, truncated, exact: layer >= syn.maxlayer }
+}
+
 // 名前 → 多数派の原子（葉は nodeleaf の先頭の場所、上の層は supermap の major。-1 = 不明、隙間は -2-prev）
 // xs/xe: 葉のノードはその合意列の合意座標 [colXc[col], colXc[col+1])。上の層（supermap）は位置が無いので -1（原子の粒度）
 export function atomsOfNames(syn: Synteny, layer: number, names: string[]): { atoms: number[]; fracs: number[]; xs: number[]; xe: number[] } {

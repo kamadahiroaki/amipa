@@ -7,7 +7,7 @@ import { distillFor } from './bubbleMsa'
 import { execFile } from 'child_process'
 import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
-import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes, nodesForAtoms, atomsOfNames } from '../synteny'
+import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes, nodesForAtoms, atomsOfNames, namesForAtomsExact, namesForCols } from '../synteny'
 import { tableCols, parseNodes } from '../nodeQuery'
 import { edgeExtraSel } from '../edgeQuery'
 
@@ -272,18 +272,15 @@ blocksRouter.get('/blocks/bbox', (req, res) => {
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const syn = loadSynteny(q.db)
   if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
-  const x0 = Number(q.x0), x1 = Number(q.x1); const tgt = Math.max(50, Number(q.target) || 800)
-  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) { res.status(400).json({ error: 'x0 < x1 が要ります' }); return }
+  const tgt = Math.max(50, Number(q.target) || 800)
   const t0 = Date.now()
   try {
-    const lb = (v: number) => { let lo = 0, hi = syn.colX.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.colXc[m + 1] <= v) lo = m + 1; else hi = m } return lo }
-    const c0 = lb(x0), c1 = Math.max(c0, lb(x1) - 1)
-    const c2o = syn.col2orig; if (!c2o) { res.json({ error: 'サイドカーに col2orig がありません' }); return }
-    const atoms = syn.atoms.filter(a => a.x0 < x1 && a.x0 + a.span > x0); const a0 = atoms.length ? atoms[0].id : -1, a1 = atoms.length ? atoms[atoms.length - 1].id : -1
+    // 葉の集合（a0,a1 / c0,c1 / x0,x1 のどれでも。集合の意味で解決）
+    const rsel = resolveNames(syn, syn.maxlayer, q, 200000); if ('error' in rsel) { res.status(400).json({ error: rsel.error }); return }
+    const all = rsel.names; const c0 = rsel.c0, c1 = rsel.c1
+    const atoms = (q.a0 != null && q.a1 != null) ? syn.atoms.slice(Number(q.a0), Number(q.a1) + 1) : syn.atoms.filter(a => a.c1 >= c0 && a.c0 <= c1); const a0 = atoms.length ? atoms[0].id : -1, a1 = atoms.length ? atoms[atoms.length - 1].id : -1
     const d = getDb(q.db)
-    // 矩形は常に葉の列から（範囲に対して正確。上の層の supermap は原子の粒度なので、大きな原子の内側の小さな範囲では原子全体に化ける）。
-    // 層は「範囲のノードが target 以下になる最も細かい層」: 葉の件数が target 以下なら葉、超えるときだけ上の層を件数で選ぶ
-    const all: string[] = []; for (let c = c0; c <= c1 && c < c2o.length; c++) if (c2o[c] >= 0) all.push('n' + c2o[c])
+    // 矩形は常に葉から（範囲に対して正確）。層は「範囲のノードが target 以下になる最も細かい層」: 葉の件数が target 以下なら葉、超えるときだけ上の層を件数で選ぶ
     const counts: number[] = []; let layer = syn.maxlayer
     if (all.length > tgt && syn.hasSupermap && a0 >= 0) {
       const ds = new Database(syn.file, { readonly: true })
@@ -314,28 +311,39 @@ blocksRouter.get('/blocks/bbox', (req, res) => {
 //   辺: 端点が集合に入る辺を source / target の索引で引く（PK (layer,source,target) と idx_edges_ts）。片端が集合の外の辺は
 //   その端点ノード（outer）も返す（viewer は隠して、辺を橙の切れ端にする）。座標は返さず src_sign/tgt_sign（viewer が復元）。
 const SUBGRAPH_MAX = 20000
+// 窓 → ノード名の集合。優先順: a0,a1（原子の集合。葉は atomnodes、上は atomsuper）→ c0,c1（原子の内側の列範囲。パスのトークン範囲の和）
+// → x0,x1（合意座標。重なる原子の集合に直す＝旧 API 互換）。how にどの経路で解決したかを返す
+function resolveNames(syn: ReturnType<typeof loadSynteny> & object, layer: number, q: Record<string, string>, max: number): { names: string[]; truncated: boolean; c0: number; c1: number; how: string } | { error: string } {
+  const S = syn as any
+  if (q.a0 != null && q.a1 != null) {
+    const a0 = Number(q.a0), a1 = Number(q.a1); if (!Number.isInteger(a0) || !Number.isInteger(a1) || a1 < a0) return { error: 'a0 ≤ a1 の整数が要ります' }
+    const r = namesForAtomsExact(S, layer, a0, a1, max)
+    return { names: r.names, truncated: r.truncated, c0: S.atoms[a0]?.c0 ?? -1, c1: S.atoms[Math.min(a1, S.atoms.length - 1)]?.c1 ?? -1, how: r.exact ? 'atoms' : 'atoms-approx' }
+  }
+  if (q.c0 != null && q.c1 != null) {
+    const c0 = Number(q.c0), c1 = Number(q.c1); if (!Number.isInteger(c0) || !Number.isInteger(c1) || c1 < c0) return { error: 'c0 ≤ c1 の整数が要ります' }
+    if (layer >= S.maxlayer || !S.hasSupermap) { const r = namesForCols(S, layer, c0, c1, max); return { names: r.names, truncated: r.truncated, c0, c1, how: 'cols' } }
+    // 上の層で列範囲: 重なる原子の集合で近似
+    const atoms = S.atoms.filter((a: any) => a.c1 >= c0 && a.c0 <= c1); if (!atoms.length) return { names: [], truncated: false, c0, c1, how: 'cols-empty' }
+    const r = namesForAtomsExact(S, layer, atoms[0].id, atoms[atoms.length - 1].id, max); return { names: r.names, truncated: r.truncated, c0, c1, how: 'cols→atoms' }
+  }
+  const x0 = Number(q.x0), x1 = Number(q.x1); if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) return { error: 'a0,a1 か c0,c1 か x0,x1 が要ります' }
+  const atoms = S.atoms.filter((a: any) => a.x0 < x1 && a.x0 + a.span > x0); if (!atoms.length) return { names: [], truncated: false, c0: -1, c1: -1, how: 'x-empty' }
+  const r = namesForAtomsExact(S, layer, atoms[0].id, atoms[atoms.length - 1].id, max); return { names: r.names, truncated: r.truncated, c0: atoms[0].c0, c1: atoms[atoms.length - 1].c1, how: 'x→atoms' }
+}
 blocksRouter.get('/blocks/subgraph', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const syn = loadSynteny(q.db)
   if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
-  const layer = Number(q.layer) || 0; const x0 = Number(q.x0), x1 = Number(q.x1)
-  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) { res.status(400).json({ error: 'x0 < x1 が要ります' }); return }
+  const layer = Number(q.layer) || 0
   const max = Math.max(100, Math.min(SUBGRAPH_MAX, Number(q.max) || SUBGRAPH_MAX))
   const t0 = Date.now()
   try {
-    // 1) 範囲のノード名
-    let names: string[] = []; let truncated = false; let c0 = -1, c1 = -1
-    const lb = (v: number) => { let lo = 0, hi = syn.colX.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.colXc[m + 1] <= v) lo = m + 1; else hi = m } return lo }
-    if (layer >= syn.maxlayer || !syn.hasSupermap) {
-      c0 = lb(x0); c1 = Math.max(c0, lb(x1) - 1)
-      const c2o = syn.col2orig; if (!c2o) { res.json({ error: "サイドカーに col2orig がありません（tree.py を更新して作り直す）" }); return }
-      for (let c = c0; c <= c1 && c < c2o.length; c++) { const o = c2o[c]; if (o >= 0) { if (names.length >= max) { truncated = true; break } names.push('n' + o) } }
-    } else {
-      const atoms = syn.atoms.filter(a => a.x0 < x1 && a.x0 + a.span > x0)
-      if (atoms.length) { const r = nodesForAtoms(syn, layer, atoms[0].id, atoms[atoms.length - 1].id, max, 0.5); names = r.names; truncated = r.truncated }
-    }
-    if (!names.length) { res.json({ nodes: [], outer: [], edges: [], c0, c1, n: 0, truncated, ms: Date.now() - t0 }); return }
+    // 1) 範囲のノード名（集合の意味）: a0,a1=原子の集合 / c0,c1=原子の内側の列範囲（パスのトークン範囲の和）/ x0,x1=合意座標（旧: 重なる原子に直す）
+    const sel = resolveNames(syn, layer, q, max); if ('error' in sel) { res.json({ error: sel.error }); return }
+    const { names, truncated, c0, c1, how } = sel
+    if (!names.length) { res.json({ nodes: [], outer: [], edges: [], c0, c1, n: 0, truncated, how, ms: Date.now() - t0 }); return }
     // 2) ノード（主キーで点引き）
     const d = getDb(q.db)
     const cols = tableCols(d, 'nodes')
@@ -356,7 +364,7 @@ blocksRouter.get('/blocks/subgraph', (req, res) => {
     // 4) 集合の外の端点（切れ端用）
     const outerNames = new Set<string>(); for (const e of edges) { if (!inSet.has(e.source)) outerNames.add(e.source); if (!inSet.has(e.target)) outerNames.add(e.target) }
     const outer = fetchNodes([...outerNames].slice(0, max))
-    res.json({ nodes, outer, edges, c0, c1, n: names.length, truncated, ms: Date.now() - t0 })
+    res.json({ nodes, outer, edges, c0, c1, n: names.length, truncated, how, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 

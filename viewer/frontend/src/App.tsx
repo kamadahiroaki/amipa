@@ -8,7 +8,7 @@ import BlockMsa from './components/BlockMsa'
 import type { BlockView } from './components/blockMsaRender'
 import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
-import { fetchBlockView, fetchBlockBbox, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
+import { fetchBlockView, fetchBlockBbox, blockSelKey, type BlockSel, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -200,7 +200,7 @@ function blockViewToColors(v: BlockView): BlockColorMap {
       for (const r of (b.members || [b.rank])) if (r >= 0 && r < v.n0) rankColors[r] = c
     }
   }
-  return { maxSpan, contigs, rankColors, atomRank, xRange, nodeSet, filter: !!v.filterGraph, filterRange: v.filterRange ?? undefined }
+  return { maxSpan, contigs, rankColors, atomRank, xRange, nodeSet, filter: !!v.filterGraph, filterRange: v.filterRange ?? undefined, filterSel: v.filterSel ?? (v.filterRange ? { x: v.filterRange } : undefined) }
 }
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)
@@ -997,11 +997,12 @@ export default function App() {
     setBlkColors(v ? { ...blockViewToColors(v), db: selectedDb ?? undefined } : null)
     if (!v || !v.sync || !selectedDb) return
     // 木の窓は合意座標の範囲で寄せる（参照区間は島で潰れる: ecoli50 の原子 393 中 110 が合意幅の 5% 未満）。根（範囲なし）は寄せない
-    if (v.tree && v.filterRange) {
-      const key = `x:${Math.floor(v.filterRange[0])}:${Math.ceil(v.filterRange[1])}`
+    if (v.tree && (v.filterSel || v.filterRange)) {
+      const sel: BlockSel = v.filterSel ?? { x: v.filterRange! }
+      const key = 'sel:' + blockSelKey(sel)
       if (key === blkScopeKeyRef.current) return
       blkScopeKeyRef.current = key
-      void fetchBlockBbox(selectedDb, v.filterRange[0], v.filterRange[1]).then(f => {
+      void fetchBlockBbox(selectedDb, sel).then(f => {
         if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return
         graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer)
       })

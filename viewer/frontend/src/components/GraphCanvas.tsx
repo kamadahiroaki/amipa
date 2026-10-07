@@ -1,7 +1,7 @@
 import type { GuardSink } from '../api/client'
 import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import * as PIXI from 'pixi.js'
-import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap, fetchBlockSubgraph, type BlockSubgraph } from '../api/client'
+import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap, fetchBlockSubgraph, blockSelKey, type BlockSubgraph, type BlockSel } from '../api/client'
 import { stainToColor, GIE_COLORS, GENE_DENSITY_LOW, GENE_DENSITY_HIGH } from '../annotColors'
 // §8.2 Phase 3: 図版の幾何＋SVG 直列化は backend の純粋モジュールを共有する(ヘッドレス CLI と一本化)。
 import { buildGraphFigure, drawListToSvg, FIG_SCALE } from '../../../backend/src/figure/svgSerialize'
@@ -212,6 +212,7 @@ export interface BlockColorMap {
   nodeSet?: Set<string>                          // 塩基の段: MSA に出ている葉ノード名。葉の層ではこれだけを塗る（最も正確）
   filter?: boolean                               // Blocks の窓の範囲にグラフを絞る（範囲外のノードと辺を描かない）
   filterRange?: [number, number]                 // 絞る範囲（窓の合意座標の張り）。葉はノードの合意座標で判定、スーパーノードは原子で判定
+  filterSel?: BlockSel                           // 集合の意味での窓（原子の範囲／列範囲）。部分グラフはこれで引く（bp の近似を使わない）
 }
 export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
                              bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
@@ -504,7 +505,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   useEffect(() => { nodeColorsRef.current = nodeColors; renderRef.current?.() }, [nodeColors])
   const subKeyPrevRef = useRef<string>('')
   useEffect(() => { blockColorsRef.current = blockColors ?? null
-    const k = blockColors?.filter && blockColors.filterRange ? `${Math.floor(blockColors.filterRange[0])}|${Math.ceil(blockColors.filterRange[1])}` : ''
+    const k = blockColors?.filter ? (blockColors.filterSel ? blockSelKey(blockColors.filterSel) : (blockColors.filterRange ? `x${Math.floor(blockColors.filterRange[0])}|${Math.ceil(blockColors.filterRange[1])}` : '')) : ''
     if (k !== subKeyPrevRef.current) { subKeyPrevRef.current = k; recheckRef.current?.() }
     renderRef.current?.() }, [blockColors])
   useEffect(() => { ribbonsRef.current = ribbons; renderRibbonsRef.current?.() }, [ribbons])
@@ -981,15 +982,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     // 範囲外の端点（outer）は隠し、その辺は橙の切れ端になる（hiddenNodeNames 経由）。
     let sub: { key: string; layer: number; nodes: NodeData[]; edges: EdgeData[]; outerNames: Set<string>; outerIds: Set<number> } | null = null
     let subLoading: { key: string; ctrl: AbortController } | null = null
-    function subKeyFor(layer: number): string | null { const bm = blockColorsRef.current; if (!bm?.filter || !bm.filterRange) return null; return `${dbFile}|${layer}|${Math.floor(bm.filterRange[0])}|${Math.ceil(bm.filterRange[1])}` }
-    function subOn(): boolean { const bm = blockColorsRef.current; return !!(bm?.filter && bm.filterRange) }
+    function subSel(): BlockSel | null { const bm = blockColorsRef.current; if (!bm?.filter) return null; return bm.filterSel ?? (bm.filterRange ? { x: bm.filterRange } : null) }
+    function subKeyFor(layer: number): string | null { const sel = subSel(); if (!sel) return null; return `${dbFile}|${layer}|${blockSelKey(sel)}` }
+    function subOn(): boolean { return !!subSel() }
     function ensureSubgraph(layer: number) {
       const key = subKeyFor(layer); if (!key) return
       if (sub && sub.key === key) return
       if (subLoading && subLoading.key === key) return
       if (subLoading) { subLoading.ctrl.abort(); subLoading = null }
-      const bm = blockColorsRef.current!; const ctrl = new AbortController(); subLoading = { key, ctrl }
-      fetchBlockSubgraph(dbFile, layer, bm.filterRange![0], bm.filterRange![1], ctrl.signal).then(r => {
+      const sel = subSel()!; const ctrl = new AbortController(); subLoading = { key, ctrl }
+      fetchBlockSubgraph(dbFile, layer, sel, ctrl.signal).then(r => {
         if (!subLoading || subLoading.key !== key) return
         subLoading = null
         if (!r || ('error' in r && r.error)) { console.warn('subgraph:', (r as any)?.error); return }

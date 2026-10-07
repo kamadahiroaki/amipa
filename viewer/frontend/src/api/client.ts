@@ -866,14 +866,18 @@ export async function fetchBlockNodemap(dbFile: string, layer: number, names: st
   } catch { return null }
 }
 // 木: 合意座標の範囲 → グラフを寄せる先（層と外接矩形）。参照座標に依らないので、参照に無い島の窓でも正しく寄る
-export async function fetchBlockBbox(dbFile: string, x0: number, x1: number, target = 800): Promise<BlockViewFit | null> {
-  try { const p = new URLSearchParams({ db: dbFile, x0: String(Math.floor(x0)), x1: String(Math.ceil(x1)), target: String(target) }); const r = await fetch(`/api/blocks/bbox?${p}`); if (!r.ok) return null; return await r.json() } catch { return null }
+// 窓の指定（集合の意味）: atoms=原子の番号の範囲 / cols=原子の内側の列範囲 / x=合意座標（旧）
+export type BlockSel = { atoms: [number, number] } | { cols: [number, number] } | { x: [number, number] }
+export function blockSelParams(sel: BlockSel): Record<string, string> { return 'atoms' in sel ? { a0: String(sel.atoms[0]), a1: String(sel.atoms[1]) } : 'cols' in sel ? { c0: String(Math.floor(sel.cols[0])), c1: String(Math.ceil(sel.cols[1])) } : { x0: String(Math.floor(sel.x[0])), x1: String(Math.ceil(sel.x[1])) } }
+export function blockSelKey(sel: BlockSel): string { const p = blockSelParams(sel); return Object.entries(p).map(([k, v]) => k + v).join('|') }
+export async function fetchBlockBbox(dbFile: string, sel: BlockSel, target = 800): Promise<BlockViewFit | null> {
+  try { const p = new URLSearchParams({ db: dbFile, ...blockSelParams(sel), target: String(target) }); const r = await fetch(`/api/blocks/bbox?${p}`); if (!r.ok) return null; return await r.json() } catch { return null }
 }
 // 木: 範囲駆動の部分グラフ（Blocks の窓の範囲だけ）。空間問い合わせをせず名前で引くので、密な中央でも窓の広さぶんの時間で返る。
 //   nodes = 範囲のノード、outer = 範囲外だが辺で繋がる端点（隠す・切れ端用）、edges = src_sign/tgt_sign だけ（端点は GraphCanvas が復元）
 export interface BlockSubgraph { nodes: NodeData[]; outer: NodeData[]; edges: EdgeData[]; c0: number; c1: number; n: number; truncated: boolean; ms: number; error?: string }
-export async function fetchBlockSubgraph(dbFile: string, layer: number, x0: number, x1: number, signal?: AbortSignal): Promise<BlockSubgraph | { error: string }> {
-  const p = new URLSearchParams({ db: dbFile, layer: String(layer), x0: String(Math.floor(x0)), x1: String(Math.ceil(x1)) })
+export async function fetchBlockSubgraph(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal): Promise<BlockSubgraph | { error: string }> {
+  const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel) })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }
 // ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）
