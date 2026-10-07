@@ -171,6 +171,8 @@ def blocks_from(bk, nA):
     bid = np.concatenate(([0], np.cumsum(bk[:nA - 1]))).astype(np.int64)
     return bid, int(bid[-1]) + 1
 
+RELAX_PASSES = 1   # 合意順序の緩和（v3: 支持順の帯で既置ノードの間に補間。0 で無効。2026-10-07）
+RELAX_SPREAD = 20  # 出現ごとの鍵のばらつき（順序ノード単位）がこれ以下のノードだけ動かす
 def consensus_order_fast(at, L, order="ref", sample_backbone=4000):
     """consensus_order のベクトル化版(葉レベル 100 万列でも回る)。返り値は同じ dict。"""
     T = at.trav[L]; V = at.V
@@ -224,6 +226,34 @@ def consensus_order_fast(at, L, order="ref", sample_backbone=4000):
         srt = np.lexsort((kk, kn)); kn, kk = kn[srt], kk[srt]
         u, st, cnt = np.unique(kn, return_index=True, return_counts=True)
         pos[u] = kk[st + cnt // 2]
+    # ---- 緩和 v3（2026-10-07）: 支持する株数の多い順に帯で置く。各帯のノードは、各パスで前後の最も近い「既に置かれたノード」の間に
+    # 連なりの相対位置で補間し、出現ごとの鍵の中央値を採る。出現ごとの鍵のばらつきが大きいノード（株で場所が違う・反復）は動かさない
+    # （v1/v2 はこれらを文脈の混ざった中間に押し出して悪化した）。基準（順序ノード・骨格）は動かさない。
+    #   v1: 隣接の中点を 6 回拡散 → 株で別 25→51%。v2: 骨格の間に 1 回補間 → 一意一貫 7.5→3.4% だが 株で別 25→31%、私有 22→20%
+    if RELAX_PASSES > 0:
+        done = np.zeros(V, bool); done[uo] = True; done |= backbone & (pos >= 0)
+        for thr in [max(2, (H * 3) // 4), max(2, H // 2), max(2, H // 4), max(2, H // 8), 2, 1]:
+            band = (pos >= 0) & ~done & (nhap >= thr)
+            if not band.any(): continue
+            rn, rk = [], []
+            for pi in present:
+                sg = T[pi][0]; st_ = done[sg]
+                if not st_.any() or len(sg) < 3: continue
+                idx = np.arange(len(sg)); last_s = np.maximum.accumulate(np.where(st_, idx, -1))
+                nxt_s = np.minimum.accumulate(np.where(st_, idx, len(sg))[::-1])[::-1]
+                mv = np.flatnonzero(band[sg] & (last_s >= 0) & (nxt_s < len(sg)))
+                if not mv.size: continue
+                la = last_s[mv]; na = nxt_s[mv]; p0 = pos[sg[la]]; p1 = pos[sg[na]]
+                frac = (mv - la) / np.maximum(1, na - la); frac = np.clip(frac, 0.02, 0.98)
+                rn.append(sg[mv]); rk.append(p0 + frac * (p1 - p0))
+            if rn:
+                kn = np.concatenate(rn); kk = np.concatenate(rk)
+                srt = np.lexsort((kk, kn)); kn, kk = kn[srt], kk[srt]
+                u, st, cnt = np.unique(kn, return_index=True, return_counts=True)
+                med = kk[st + cnt // 2]; lo = kk[st]; hi = kk[st + cnt - 1]
+                okn = (hi - lo) <= RELAX_SPREAD          # 出現ごとの鍵がそろうノードだけ動かす
+                pos[u[okn]] = med[okn]
+            done |= band
     un_all = np.flatnonzero((ori0 < 0) & (tot_bp > 0)); ori0[un_all] = (plus_bp[un_all] * 2 >= tot_bp[un_all]).astype(np.int8)
     allsig = np.unique(np.concatenate([T[pi][0] for pi in present]))
     unplaced = allsig[pos[allsig] < 0]
