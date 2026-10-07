@@ -390,10 +390,15 @@ function drawBaseGrid(){ const M = baseOf(); if (!M || !LY.bxs) return; const g 
 function drawBaseHeader(){ const M = baseOf(); if (!M || !LY.bxs) return; const gh = cv.hdr.getContext('2d'); const Hh = cv.hdr.clientHeight; gh.clearRect(0, 0, cv.hdr.clientWidth, Hh); gh.textBaseline = 'alphabetic';
   const xs = LY.bxs, items = LY.bitems, cw = LY.bcw; const cmp = baseCmpSeq(M); const refRow = cmp.seq ? { seq: cmp.seq } : null;
   // 上段（0..16）: ノードの帯と大きさ。下段（17..Hh-6）: 比較の基準の配列（参照パス or 多数派）。底（Hh-5..）: 錨・variant の印
-  LY.bgroups.forEach((gr, k) => { const w = gr.x1 - gr.x0; gh.fillStyle = k % 2 ? TH.line2 : TH.gap; gh.fillRect(gr.x0, 0, w, 16); gh.fillStyle = gr.nodes.length > 1 ? TH.accent : TH.line; gh.fillRect(gr.x0, 0, 1, Hh - 6);
+  // 上段 = ノードの帯: 1 ノード（群）＝ 1 つの箱。箱の中に名前と長さ（bp）。複数の排他アレルを 1 列に重ねた群は上に青緑の帯線。
+  // 以前は群の左端に 1 本の縦線（複数アレルだけ緑）と、幅が狭いと単位の無い数字だけを出していて意味が読めなかった（2026-10-07）
+  LY.bgroups.forEach((gr, k) => { const w = gr.x1 - gr.x0; gh.fillStyle = k % 2 ? TH.line2 : TH.gap; gh.fillRect(gr.x0, 0, w, 16);
+    gh.fillStyle = TH.line; gh.fillRect(gr.x0, 0, 1, 16); gh.fillRect(gr.x1 - 1, 0, 1, 16);                                   // 箱の仕切り（両端）
+    if (gr.nodes.length > 1){ gh.fillStyle = TH.accent; gh.fillRect(gr.x0, 0, w, 3); }                                        // 排他アレルの群
     gh.font = '10px "IBM Plex Mono"'; gh.textAlign = 'left';
-    const label = w >= 90 ? `${gr.nodes[0]}${gr.nodes.length > 1 ? '[' + gr.nodes.length + ']' : ''} ${gr.bp.toLocaleString()} bp` : (w >= 40 ? `${gr.bp.toLocaleString()} bp` : (w >= 16 ? String(gr.bp) : ''));
-    if (label){ gh.fillStyle = TH.ink; gh.fillText(label, gr.x0 + 3, 12); }
+    const nm = gr.nodes[0] + (gr.nodes.length > 1 ? '+' + (gr.nodes.length - 1) : ''); const bp = gr.bp.toLocaleString() + ' bp';
+    const label = w >= 118 ? `${nm} · ${bp}` : (w >= 62 ? nm : (w >= 40 ? bp : ''));                                           // 名前を優先。数字だけは出さない
+    if (label){ gh.fillStyle = TH.ink; gh.fillText(label, gr.x0 + 4, 12); }
     if (gr.rb){ gh.fillStyle = TH.accent; gh.fillRect(gr.x0, Hh - 5, w, 2); }
     if (gr.variant){ gh.fillStyle = TH.disp; gh.fillRect(gr.x0 + 1, Hh - 3, Math.max(1, w - 2), 3); } });
   // 参照の配列（参照行が無ければ先頭の行）
@@ -410,7 +415,7 @@ function baseGroupAt(px){ if (!LY.bgroups) return null; for (let k = 0; k < LY.b
 function baseItemAt(px){ const xs = LY.bxs; if (!xs) return null; for (let i = 0; i + 1 < xs.length; i++) if (px >= xs[i] && px < xs[i+1]) return i; return null; }
 function baseColAt(px){ const k = baseItemAt(px); if (k == null) return null; const it = LY.bitems[k]; return it.kind === 'col' ? it.ci : it.ci0; }
 function baseGroupInfo(k, ri, ci){ const M = baseOf(); const gr = LY.bgroups[k]; const r = ri != null ? LY.rows[ri] : null; const mi = r ? M._rowOf.get(r.hap) : null; const row = mi != null ? M.rows[mi] : null; const col = ci != null ? M.cols[ci] : null;
-  return `<p><span class="h">ノード ${esc(gr.nodes.join(' | '))}</span>${gr.nodes.length > 1 ? `<br><span class="k">同じサイトの排他アレル ${gr.nodes.length} 個（1 列に統合）</span>` : ''}<br><span class="k">大きさ ${gr.bp.toLocaleString()} bp${gr.rb ? ` · 参照 ${fmtbp(gr.rb)}` : ''}${gr.variant ? ' · 行間で塩基が違う' : ''}</span>` +
+  return `<p><span class="h">ノード ${esc(gr.nodes.join(' | '))}</span>${gr.nodes.length > 1 ? `<br><span class="k">同じサイトの排他アレル ${gr.nodes.length} 個を 1 列に重ねた群（帯の上の青緑線）</span>` : ''}<br><span class="k">ノードの長さ ${gr.bp.toLocaleString()} bp${gr.rb ? ` · 参照 ${fmtbp(gr.rb)}` : ''}${gr.variant ? ' · 行間で塩基が違う' : ''}</span>` +
     (row ? `<br><span class="k">${esc(row.label)}（${row.strand} 鎖）:</span> ${col ? (row.seq[ci] === '-' ? '欠失（gap）' : row.seq[ci] === '~' ? '畳んだ部分' : `塩基 ${esc(row.seq[ci])}${col.off != null ? '（ノード内 ' + (col.off + 1) + ' 塩基目）' : ''}`) : ''}${(M._inv[mi] && ci != null && M._inv[mi].has(ci)) ? ' · 周りと逆向きに通過（逆相補で表示）' : ''}` : '') + `</p>`; }
 function baseRef(k){ const M = baseOf(); if (!M || k == null || !LY.bgroups || !LY.bgroups[k]) return null; const gr = LY.bgroups[k]; const L = level();
   return { win: st.win, level: st.li, W: 0, rank: k, name: gr.nodes[0], ref_contig: (L.refc != null ? L.refc : 0), x: gr.rb || 0, span: Math.max(1, gr.bp), tbp: gr.bp, nhap: 0, label: gr.nodes.join('|'), names: gr.nodes, base: true }; }
@@ -680,7 +685,9 @@ function drawGridBase(){
 
   if (st.hover && st.hover.p){ const p = st.hover.p; const lane = (st.mode==='own') ? 0 : p.slot.lane; g.strokeStyle = TH.sel; g.lineWidth=1.5; g.strokeRect(p.x-1.5, st.hover.ri*RH + (lane===0?2.5:15.5), p.w+3, lane===0?15:12); }
 }
-function drawHeader(){ if (isSites()){ drawSitesHeader(); drawMarks(); return; } if (isBase()){ drawBaseHeader(); return; } drawHeaderBase(); drawMarks(); }
+const CORNER_TXT = { blocks: 'ハプロタイプ ↓ · 列見出しをドラッグ＝範囲の窓', sites: '上段: 変異サイト（列）。ドラッグ＝狭い区間（葉 400 以下で塩基）', base: '上段: ノードの箱（名前 · 長さ bp。上の青緑線＝同じサイトの排他アレルを 1 列に重ねた群）· 下段: 比較の基準の配列' };
+function setCorner(mode){ const c = $('corner'); if (!c) return; const sp = c.querySelector('span'); if (sp && sp.textContent !== CORNER_TXT[mode]) sp.textContent = CORNER_TXT[mode]; }
+function drawHeader(){ if (isSites()){ setCorner('sites'); drawSitesHeader(); drawMarks(); return; } if (isBase()){ setCorner('base'); drawBaseHeader(); return; } setCorner('blocks'); drawHeaderBase(); drawMarks(); }
 function drawHeaderBase(){
   const g = cv.hdr.getContext('2d'); const W = cv.hdr.clientWidth, H = cv.hdr.clientHeight; g.clearRect(0,0,W,H); const L = level();
   g.font='10px "IBM Plex Mono"'; let lastLabelX=-1e9;
