@@ -626,20 +626,22 @@ export function namesForCols(syn: Synteny, layer: number, c0: number, c1: number
 
 // 名前 → 多数派の原子（葉は nodeleaf の先頭の場所、上の層は supermap の major。-1 = 不明、隙間は -2-prev）
 // xs/xe: 葉のノードはその合意列の合意座標 [colXc[col], colXc[col+1])。上の層（supermap）は位置が無いので -1（原子の粒度）
-export function atomsOfNames(syn: Synteny, layer: number, names: string[]): { atoms: number[]; fracs: number[]; xs: number[]; xe: number[] } {
-  const atoms: number[] = [], fracs: number[] = [], xs: number[] = [], xe: number[] = []
+// places: 全場所（葉は nodeleaf の ≤16、上の層は supermap の ≤8。原子 id、隙間は -2-prev）。kinds: 葉の種類（0 錨 /1 一意一貫 /2 私有 /3 株で別 /4 多重、上の層は -1）
+export function atomsOfNames(syn: Synteny, layer: number, names: string[]): { atoms: number[]; fracs: number[]; xs: number[]; xe: number[]; places: number[][]; kinds: number[] } {
+  const atoms: number[] = [], fracs: number[] = [], xs: number[] = [], xe: number[] = [], places: number[][] = [], kinds: number[] = []
+  const decode = (buf: Buffer) => { const out: number[] = []; for (let i = 0; i + 4 <= buf.length; i += 4) { const p = buf.readInt32LE(i); out.push(p < syn.nat ? p : -2 - (p - syn.nat - 1)) } return out }
   const d = new Database(syn.file, { readonly: true })
   try {
-    const ql = d.prepare('SELECT nplace, places FROM nodeleaf WHERE col=?'), qs = d.prepare('SELECT major, frac FROM supermap WHERE node_name=? AND layer=?')
+    const ql = d.prepare('SELECT kind, nplace, places FROM nodeleaf WHERE col=?'), qs = d.prepare('SELECT major, frac, places FROM supermap WHERE node_name=? AND layer=?')
     for (const nm of names) {
-      let atom = -1, frac = 0, x0 = -1, x1 = -1
+      let atom = -1, frac = 0, x0 = -1, x1 = -1, pl: number[] = [], kind = -1
       if (layer >= syn.maxlayer || !syn.hasSupermap) {
         const m = /^n(\d+)$/.exec(nm); const col = m && syn.orig2col && Number(m[1]) < syn.orig2col.length ? syn.orig2col[Number(m[1])] : -1
-        if (col >= 0) { x0 = syn.colXc[col]; x1 = syn.colXc[col + 1]; const r = ql.get(col) as { nplace: number; places: Buffer } | undefined; if (r && r.places.length >= 4) { const p = r.places.readInt32LE(0); atom = p < syn.nat ? p : -2 - (p - syn.nat - 1); frac = r.nplace === 1 ? 1 : 1 / r.nplace } }
-      } else { const r = qs.get(nm, layer) as { major: number; frac: number } | undefined; if (r) { atom = r.major < syn.nat ? r.major : -2 - (r.major - syn.nat - 1); frac = r.frac } }
-      atoms.push(atom); fracs.push(frac); xs.push(x0); xe.push(x1)
+        if (col >= 0) { x0 = syn.colXc[col]; x1 = syn.colXc[col + 1]; const r = ql.get(col) as { kind: number; nplace: number; places: Buffer } | undefined; if (r && r.places.length >= 4) { const p = r.places.readInt32LE(0); atom = p < syn.nat ? p : -2 - (p - syn.nat - 1); frac = r.nplace === 1 ? 1 : 1 / r.nplace; pl = decode(r.places); kind = r.kind } }
+      } else { const r = qs.get(nm, layer) as { major: number; frac: number; places: Buffer } | undefined; if (r) { atom = r.major < syn.nat ? r.major : -2 - (r.major - syn.nat - 1); frac = r.frac; pl = r.places ? decode(r.places) : [atom] } }
+      atoms.push(atom); fracs.push(frac); xs.push(x0); xe.push(x1); places.push(pl); kinds.push(kind)
     }
-    return { atoms, fracs, xs, xe }
+    return { atoms, fracs, xs, xe, places, kinds }
   } finally { d.close() }
 }
 

@@ -252,7 +252,7 @@ blocksRouter.post('/blocks/nodemap', async (req, res) => {
   if (!names.length || names.length > MAX_NAMES) { res.status(400).json({ error: `names must be 1..${MAX_NAMES}` }); return }
   // 木のサイドカーがある DB: 旧ワーカーの順位は木のブロック番号と合わないので使わない（-1 = 不明。参照区間の規則だけで塗る）。
   // 木からの葉→原子区間の対応は後で（plans/msa-multires.md §15.2 の 3）
-  try { const syn = loadSynteny(db); if (syn) { const t0 = Date.now(); const r = atomsOfNames(syn, Number(b.layer) || 0, names); res.json({ atoms: r.atoms, fracs: r.fracs, xs: r.xs, xe: r.xe, nat: syn.nat, ms: Date.now() - t0, tree: true }); return } } catch (e) { res.status(500).json({ error: String(e) }); return }
+  try { const syn = loadSynteny(db); if (syn) { const t0 = Date.now(); const r = atomsOfNames(syn, Number(b.layer) || 0, names); res.json({ atoms: r.atoms, fracs: r.fracs, xs: r.xs, xe: r.xe, places: r.places, kinds: r.kinds, nat: syn.nat, ms: Date.now() - t0, tree: true }); return } } catch (e) { res.status(500).json({ error: String(e) }); return }
   const r = workerFor(db)
   if (!r.w) { res.status(503).json({ error: r.error }); return }
   try {
@@ -343,6 +343,7 @@ blocksRouter.get('/blocks/subgraph', (req, res) => {
     // 1) 範囲のノード名（集合の意味）: a0,a1=原子の集合 / c0,c1=原子の内側の列範囲（パスのトークン範囲の和）/ x0,x1=合意座標（旧: 重なる原子に直す）
     const sel = resolveNames(syn, layer, q, max); if ('error' in sel) { res.json({ error: sel.error }); return }
     const { names, truncated, c0, c1, how } = sel
+    if (q.names === '1') { res.json({ names, c0, c1, n: names.length, truncated, how, ms: Date.now() - t0 }); return }   // 名前だけ（塗り分け用）
     if (!names.length) { res.json({ nodes: [], outer: [], edges: [], c0, c1, n: 0, truncated, how, ms: Date.now() - t0 }); return }
     // 2) ノード（主キーで点引き）
     const d = getDb(q.db)

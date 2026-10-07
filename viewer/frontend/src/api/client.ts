@@ -856,13 +856,13 @@ export async function fetchBlockView(dbFile: string, contig: number, start: numb
   } catch { return null }
 }
 // ノード名 → 全体窓・最細段のブロック番号（-1=不明）。参照座標の無いノードの塗り分けに使う
-export async function fetchBlockNodemap(dbFile: string, layer: number, names: string[]): Promise<{ vals: number[]; fracs: number[] | null; xs: number[] | null; xe: number[] | null } | null> {
+export async function fetchBlockNodemap(dbFile: string, layer: number, names: string[]): Promise<{ vals: number[]; fracs: number[] | null; xs: number[] | null; xe: number[] | null; places: number[][] | null; kinds: number[] | null } | null> {
   try {
     const r = await fetch('/api/blocks/nodemap', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names }) })
     if (!r.ok) return null; const j = await r.json()
     // 木では原子番号（GraphCanvas が bm.atomRank で段のブロック番号に直す）と、その場所に属する出現の割合 fracs（一意 1、多重 1/n、スーパーノードは bp 加重の多数派の割合）
-    if (Array.isArray(j.atoms)) return { vals: j.atoms as number[], fracs: Array.isArray(j.fracs) ? j.fracs as number[] : null, xs: Array.isArray(j.xs) ? j.xs as number[] : null, xe: Array.isArray(j.xe) ? j.xe as number[] : null }   // xs/xe: 葉の合意座標（上の層は -1）
-    return Array.isArray(j.ranks) ? { vals: j.ranks as number[], fracs: null, xs: null, xe: null } : null
+    if (Array.isArray(j.atoms)) return { vals: j.atoms as number[], fracs: Array.isArray(j.fracs) ? j.fracs as number[] : null, xs: Array.isArray(j.xs) ? j.xs as number[] : null, xe: Array.isArray(j.xe) ? j.xe as number[] : null, places: Array.isArray(j.places) ? j.places as number[][] : null, kinds: Array.isArray(j.kinds) ? j.kinds as number[] : null }   // xs/xe: 葉の合意座標（上の層は -1）。places: 全場所。kinds: 葉の種類
+    return Array.isArray(j.ranks) ? { vals: j.ranks as number[], fracs: null, xs: null, xe: null, places: null, kinds: null } : null
   } catch { return null }
 }
 // 木: 合意座標の範囲 → グラフを寄せる先（層と外接矩形）。参照座標に依らないので、参照に無い島の窓でも正しく寄る
@@ -876,6 +876,11 @@ export async function fetchBlockBbox(dbFile: string, sel: BlockSel, target = 800
 // 木: 範囲駆動の部分グラフ（Blocks の窓の範囲だけ）。空間問い合わせをせず名前で引くので、密な中央でも窓の広さぶんの時間で返る。
 //   nodes = 範囲のノード、outer = 範囲外だが辺で繋がる端点（隠す・切れ端用）、edges = src_sign/tgt_sign だけ（端点は GraphCanvas が復元）
 export interface BlockSubgraph { nodes: NodeData[]; outer: NodeData[]; edges: EdgeData[]; c0: number; c1: number; n: number; truncated: boolean; ms: number; error?: string }
+// 窓のノード名だけ（アレル行列の窓の塗り分け用。絞りモードでなくても使う）
+export async function fetchBlockNames(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal): Promise<{ names: string[]; truncated: boolean } | null> {
+  const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel), names: '1' })
+  try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok || j.error) return null; return { names: j.names || [], truncated: !!j.truncated } } catch { return null }
+}
 export async function fetchBlockSubgraph(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal): Promise<BlockSubgraph | { error: string }> {
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel) })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }

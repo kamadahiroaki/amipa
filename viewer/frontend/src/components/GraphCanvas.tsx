@@ -1,7 +1,7 @@
 import type { GuardSink } from '../api/client'
 import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import * as PIXI from 'pixi.js'
-import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap, fetchBlockSubgraph, blockSelKey, type BlockSubgraph, type BlockSel } from '../api/client'
+import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap, fetchBlockSubgraph, fetchBlockNames, blockSelKey, type BlockSubgraph, type BlockSel } from '../api/client'
 import { stainToColor, GIE_COLORS, GENE_DENSITY_LOW, GENE_DENSITY_HIGH } from '../annotColors'
 // §8.2 Phase 3: 図版の幾何＋SVG 直列化は backend の純粋モジュールを共有する(ヘッドレス CLI と一本化)。
 import { buildGraphFigure, drawListToSvg, FIG_SCALE } from '../../../backend/src/figure/svgSerialize'
@@ -572,6 +572,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const nodeAtomRef         = useRef<Map<string, number>>(new Map())            // 木: ノード名 → 原子番号（段が変わっても再利用できる）
   const nodeFracRef         = useRef<Map<string, number>>(new Map())            // 木: ノード名 → その原子に属する出現の割合（重み）
   const nodeXRef            = useRef<Map<string, [number, number]>>(new Map())  // 木: ノード名 → 合意座標 [x0, x1)（葉だけ。上の層は無い）
+  const nodePlacesRef       = useRef<Map<string, number[]>>(new Map())          // 木: ノード名 → 全場所（原子 id）。窓の原子のどれかにあれば帰属
+  const nodeKindRef         = useRef<Map<string, number>>(new Map())            // 木: 葉の種類（0 錨 1 一意一貫 2 私有 3 株で別 4 多重）
+  const colsNamesRef        = useRef<{ key: string; set: Set<string> | null; loading: boolean }>({ key: '', set: null, loading: false })   // アレル行列の窓: 列範囲のノード名集合（塗り分け用）
   const visibleNamesRef     = useRef<string[]>([])
   const visibleNodesRef     = useRef<NodeData[]>([])
   const onVisibleAtomsRef   = useRef<((atoms: [number, number, number, number][]) => void) | undefined>(undefined); onVisibleAtomsRef.current = onVisibleAtoms
@@ -586,6 +589,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       for (const n of visibleNodesRef.current) { const a = nodeAtomRef.current.get(n.node_name); if (a == null || a < 0) continue
         let e = acc.get(a); if (!e) { e = { w: 0, x0: -1, x1: -1 }; acc.set(a, e) }
         e.w += nodeFracRef.current.get(n.node_name) ?? 1
+        const kd = nodeKindRef.current.get(n.node_name); if (kd != null && kd >= 2) continue   // 張りは錨・一意一貫の葉だけ（私有・株で別・多重は合意列がずれうる）
         const x = nodeXRef.current.get(n.node_name); if (x && x[0] >= 0) { e.x0 = e.x0 < 0 ? x[0] : Math.min(e.x0, x[0]); e.x1 = Math.max(e.x1, x[1]) } }
       const out = [...acc.entries()].sort((u, v) => u[0] - v[0]).map(([a, e]) => [a, Math.round(e.w * 1000) / 1000, Math.round(e.x0), Math.round(e.x1)] as [number, number, number, number])
       const key = out.map(e => e.join(':')).join(',')
@@ -982,6 +986,20 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     // 範囲外の端点（outer）は隠し、その辺は橙の切れ端になる（hiddenNodeNames 経由）。
     let sub: { key: string; layer: number; nodes: NodeData[]; edges: EdgeData[]; outerNames: Set<string>; outerIds: Set<number> } | null = null
     let subLoading: { key: string; ctrl: AbortController } | null = null
+    // 木: ノードの帰属（見えている段のブロック番号）。全場所のどれかが見えているブロックに入ればその番号（反復ノードも今の窓の場所で塗る）
+    function rankOfName(nm: string, bm: BlockColorMap): number | null {
+      const pl = nodePlacesRef.current.get(nm)
+      if (pl && pl.length) { for (const a of pl) { if (a >= 0) { const r = bm.atomRank!(a); if (r != null) return r } } return null }
+      const a = nodeAtomRef.current.get(nm); return (a != null && a >= 0) ? bm.atomRank!(a) : null
+    }
+    // アレル行列の窓（列範囲）の名前集合を 1 回取って塗り分けに使う（塩基の窓は nodeSet を持つので不要）
+    function colsNameSet(bm: BlockColorMap, layer: number): Set<string> | null {
+      const sel = bm.filterSel; if (!sel || !('cols' in sel) || bm.nodeSet) return null
+      const key = `${dbFile}|${layer}|${blockSelKey(sel)}`; const c = colsNamesRef.current
+      if (c.key === key) return c.set
+      if (!c.loading) { colsNamesRef.current = { key, set: null, loading: true }; fetchBlockNames(dbFile, layer, sel).then(r => { if (colsNamesRef.current.key !== key) return; colsNamesRef.current = { key, set: r ? new Set(r.names) : new Set(), loading: false }; markDirty(); render() }).catch(() => { colsNamesRef.current = { key, set: new Set(), loading: false } }) }
+      return null
+    }
     function subSel(): BlockSel | null { const bm = blockColorsRef.current; if (!bm?.filter) return null; return bm.filterSel ?? (bm.filterRange ? { x: bm.filterRange } : null) }
     function subKeyFor(layer: number): string | null { const sel = subSel(); if (!sel) return null; return `${dbFile}|${layer}|${blockSelKey(sel)}` }
     function subOn(): boolean { return !!subSel() }
@@ -1298,10 +1316,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         for (const n of visibleNodes) {
           const nm = n.node_name; const leaf = /^n\d+$/.test(nm)
           let inR: boolean | null = null
-          if (leaf && bmF.nodeSet) inR = bmF.nodeSet.has(nm)
-          else { const x = leaf ? nodeXRef.current.get(nm) : undefined
-            if (bmF.filterRange && x && x[0] >= 0) inR = x[1] > bmF.filterRange[0] && x[0] < bmF.filterRange[1]
-            else { const a = nodeAtomRef.current.get(nm); if (a === undefined) { inR = null; nodeRankPendingRef.current.add(nm) } else inR = a >= 0 && bmF.atomRank(a) != null } }
+          const nsetF = leaf ? (bmF.nodeSet ?? colsNameSet(bmF, Math.max(0, displayLayer))) : null
+          if (nsetF) inR = nsetF.has(nm)
+          else { const a = nodeAtomRef.current.get(nm); if (a === undefined) { inR = null; nodeRankPendingRef.current.add(nm) } else inR = rankOfName(nm, bmF) != null }
           if (inR === false) { hiddenNodeIds.add(n.id); hiddenNodeNames.add(nm) }
         }
       }
@@ -1502,9 +1519,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             const a = nodeAtomRef.current.get(n.node_name)
             if (a === undefined) { blockColor = blockColorOf(bm, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi); nodeRankPendingRef.current.add(n.node_name) }
             else {
-              let rk: number | null = a >= 0 ? bm.atomRank(a) : null
-              if (bm.nodeSet && /^n\d+$/.test(n.node_name)) rk = bm.nodeSet.has(n.node_name) ? 0 : null
-              else if (bm.xRange) { const x = nodeXRef.current.get(n.node_name); if (x && x[0] >= 0) rk = (x[1] > bm.xRange[0] && x[0] < bm.xRange[1]) ? 0 : null }
+              let rk: number | null = rankOfName(n.node_name, bm)
+              const leafN = /^n\d+$/.test(n.node_name); const nset = leafN ? (bm.nodeSet ?? colsNameSet(bm, Math.max(0, displayLayer))) : null
+              if (nset) rk = nset.has(n.node_name) ? 0 : null
+              else if (leafN && bm.xRange && !bm.filterSel) { const x = nodeXRef.current.get(n.node_name); if (x && x[0] >= 0) rk = (x[1] > bm.xRange[0] && x[0] < bm.xRange[1]) ? 0 : null }
               blockColor = rk != null && rk >= 0 && rk < rc.length ? rc[rk] : null
             }
           } else {
@@ -2193,9 +2211,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           if (!names.length) return
           fetchBlockNodemap(db, layer, names).then(res => {
             if (!res || nodeRankRef.current.layer !== layer) return
-            const ranks = res.vals, fracs = res.fracs, xs = res.xs, xe = res.xe
+            const ranks = res.vals, fracs = res.fracs, xs = res.xs, xe = res.xe, pls = res.places, kds = res.kinds
             const ar = blockColorsRef.current?.atomRank
-            names.forEach((nm, i) => { const v = ranks[i]; if (ar) { nodeAtomRef.current.set(nm, v); nodeFracRef.current.set(nm, fracs ? (fracs[i] ?? 1) : 1); if (xs && xe && xs[i] >= 0) nodeXRef.current.set(nm, [xs[i], xe[i]]); else nodeXRef.current.delete(nm); const rk = v >= 0 ? ar(v) : null; nodeRankRef.current.map.set(nm, rk == null ? -1 : rk) } else nodeRankRef.current.map.set(nm, v) })
+            names.forEach((nm, i) => { const v = ranks[i]; if (ar) { nodeAtomRef.current.set(nm, v); nodeFracRef.current.set(nm, fracs ? (fracs[i] ?? 1) : 1); if (xs && xe && xs[i] >= 0) nodeXRef.current.set(nm, [xs[i], xe[i]]); else nodeXRef.current.delete(nm); if (pls && pls[i]) nodePlacesRef.current.set(nm, pls[i]); if (kds) nodeKindRef.current.set(nm, kds[i]); const rk = v >= 0 ? ar(v) : null; nodeRankRef.current.map.set(nm, rk == null ? -1 : rk) } else nodeRankRef.current.map.set(nm, v) })
             scheduleVisibleAtoms()
             markDirty(); renderRef.current?.()
           }).catch(() => { /* 次の描画で再試行 */ })
