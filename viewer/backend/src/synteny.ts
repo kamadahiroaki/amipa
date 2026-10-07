@@ -598,7 +598,7 @@ export function rootData(syn: Synteny): any {
   const meta = {
     name: syn.meta.name, circular: syn.circular, bpt: Number(syn.meta.bpt || 0), nhaps: syn.H, ncols: Number(syn.meta.ncols || 0),
     order: { kind: syn.meta.order_kind || 'ref', path: syn.meta.order_path || '' }, params: { anchor_frac: syn.tiers[1] ?? 0.8, sub_anchor_frac: syn.tiers[2] ?? 0.5, tiers: syn.tiers, floor: syn.floor },
-    total_bp: syn.paths.reduce((s, p) => s + p.bp, 0), total_x: syn.total, tree: true, synteny: path.basename(syn.file),
+    total_bp: syn.paths.reduce((s, p) => s + p.bp, 0), total_x: syn.total, tree: true, synteny: path.basename(syn.file), distill: !!syn.distill,   // distill: tokranges / 塩基 MSA が使えるか（試験の gating にも使う）
     natoms: syn.atoms.length, nboundaries: syn.bnd.length, t_build: syn.meta.t_build, maxlayer: syn.maxlayer, supermap: syn.hasSupermap,
     atoms: syn.atoms.map(a => [a.x0, a.span]),
   }

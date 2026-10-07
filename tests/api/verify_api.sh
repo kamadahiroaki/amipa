@@ -25,10 +25,14 @@ PASS=0; FAIL=0; declare -a FAILED
 
 get() { curl -sS --max-time 300 "$API/$1" 2>/dev/null; }
 
-hit() {  # hit <ラベル> <パス+クエリ> [allow-empty]
-  local label="$1" q="$2" allow="${3:-}" code v tmp
+hit() {  # hit <ラベル> <パス+クエリ> [allow-empty] [JSON 本文（あれば POST）]
+  local label="$1" q="$2" allow="${3:-}" body="${4:-}" code v tmp
   tmp=$(mktemp)
-  code=$(curl -sS -o "$tmp" -w '%{http_code}' --max-time 300 "$API/$q" 2>/dev/null || echo 000)
+  if [ -n "$body" ]; then
+    code=$(curl -sS -o "$tmp" -w '%{http_code}' --max-time 300 -X POST -H 'Content-Type: application/json' --data-binary "$body" "$API/$q" 2>/dev/null || echo 000)
+  else
+    code=$(curl -sS -o "$tmp" -w '%{http_code}' --max-time 300 "$API/$q" 2>/dev/null || echo 000)
+  fi
   v=$("$PY" judge.py "$code" "$allow" < "$tmp")
   rm -f "$tmp"
   if [[ "$v" == OK* ]]; then
@@ -111,6 +115,39 @@ fi
 if [ -n "$LEAF" ]; then
   hit "/node_sequence (葉)" "node_sequence?db=$DB&name=$LEAF"
   hit "/leaf_bases (葉)"    "leaf_bases?db=$DB&layer=$ML&$R"
+fi
+
+echo "-- Blocks（木のサイドカー .synteny がある DB だけ。無ければ SKIP）"
+# ★2026-10-07 の事故: 配信ジョブのローカル複製で distill ディレクトリが空になり、sites / tokranges / bubble_msa が
+#   HTTP 200 の {error:...} で全滅したのに気づけなかった。ここでは木の窓・変異サイト・寄せ先・部分グラフ・トークン範囲・塩基 MSA を
+#   一通り往復し、error キーを失敗にする（judge.py）。範囲は /blocks の応答（total_x）から取る。
+BLK=$(get "blocks?db=$DB")
+BTREE=$("$PY" -c 'import sys,json; j=json.load(sys.stdin); m=j.get("meta",{}); print("1" if m.get("tree") else "0", "1" if m.get("distill") else "0", int(m.get("total_x") or 0), int(m.get("maxlayer") or 0))' <<<"$BLK" 2>/dev/null || echo "0 0 0 0")
+read -r BT BD BX BML <<<"$BTREE"
+if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
+  BX0=$((BX / 2)); BX1=$((BX / 2 + BX / 200))          # 全体の 0.5% 幅の範囲（ecoli50 で ~90 kb）
+  SX0=$((BX / 2)); SX1=$((BX / 2 + BX / 5000))         # 全体の 0.02% 幅（~3.6 kb。塩基の段に入る広さ）
+  hit "/blocks (木)"            "blocks?db=$DB"
+  hit "/blocks/range"           "blocks/range?db=$DB&x0=$BX0&x1=$BX1"
+  hit "/blocks/sites (x0/x1)"   "blocks/sites?db=$DB&x0=$SX0&x1=$SX1"
+  hit "/blocks/bbox"            "blocks/bbox?db=$DB&x0=$SX0&x1=$SX1"
+  hit "/blocks/subgraph (葉)"   "blocks/subgraph?db=$DB&layer=$BML&x0=$SX0&x1=$SX1"
+  hit "/blocks/nodemap (POST)"  "blocks/nodemap" "" '{"db":"'"$DB"'","layer":'"$BML"',"names":["n1","n2"]}'
+  if [ "$BD" = 1 ]; then
+    TK=$(get "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); print(j.get("c0",""), j.get("c1",""))' 2>/dev/null)
+    read -r TC0 TC1 <<<"$TK"
+    if [ -n "$TC0" ] && [ -n "$TC1" ]; then
+      hit "/blocks/tokranges"     "blocks/tokranges?db=$DB&c0=$TC0&c1=$TC1"
+      BMB=$(get "blocks/tokranges?db=$DB&c0=$TC0&c1=$TC1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); print(json.dumps({"db": sys.argv[1], "ranges": j.get("ranges") or [], "flank": 0, "cap": 0, "maxLeaves": 2000}))' "$DB" 2>/dev/null)
+      [ -n "$BMB" ] && hit "/bubble_msa/ranges (POST)" "bubble_msa/ranges" "" "$BMB"
+    else
+      FAIL=$((FAIL+1)); FAILED+=("/blocks/sites c0/c1"); echo "  NG   /blocks/sites c0/c1               応答に c0/c1 が無い"
+    fi
+  else
+    echo "  SKIP /blocks/tokranges, /bubble_msa/ranges（distill サイドカー無し）"
+  fi
+else
+  echo "  SKIP Blocks の木（.synteny 無し）"
 fi
 
 echo "-- アノテ / その他（データが無ければ空が正常 = allow-empty）"

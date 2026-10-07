@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import Database from 'better-sqlite3'
 import fs from 'fs'
 import path from 'path'
 import { getDb, getDbDir } from '../db'
@@ -8,6 +9,7 @@ import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
 import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes, nodesForAtoms, atomsOfNames } from '../synteny'
 import { tableCols, parseNodes } from '../nodeQuery'
+import { edgeExtraSel } from '../edgeQuery'
 
 // 多解像度 MSA（共線ブロック）のサイドカーを配る。
 //   GET /api/blocks?db=X.db            … `<db>.blocks.json`（functions/msa_lod/70_hier_build.py の出力）をそのまま返す
@@ -260,6 +262,57 @@ blocksRouter.post('/blocks/nodemap', async (req, res) => {
 })
 
 
+
+// ---- 合意座標の範囲 → グラフを寄せる先（層と外接矩形）。/blocks/view の参照座標版に代わる、木の窓のための「グラフ連動」----
+//   GET /api/blocks/bbox?db&x0&x1[&target]
+//   層: 範囲に属するノードが target（既定 800）以下になる最も細かい層（/blocks/view と同じ考え）。葉は列数、上は supermap の件数。
+//   矩形: その層の範囲のノード座標の min/max（葉は列を等間隔に最大 4,000 本標本化）。参照に無い島でも正しく寄る。
+blocksRouter.get('/blocks/bbox', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const syn = loadSynteny(q.db)
+  if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
+  const x0 = Number(q.x0), x1 = Number(q.x1); const tgt = Math.max(50, Number(q.target) || 800)
+  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) { res.status(400).json({ error: 'x0 < x1 が要ります' }); return }
+  const t0 = Date.now()
+  try {
+    const lb = (v: number) => { let lo = 0, hi = syn.colX.length; while (lo < hi) { const m = (lo + hi) >> 1; if (syn.colXc[m + 1] <= v) lo = m + 1; else hi = m } return lo }
+    const c0 = lb(x0), c1 = Math.max(c0, lb(x1) - 1)
+    const c2o = syn.col2orig; if (!c2o) { res.json({ error: 'サイドカーに col2orig がありません' }); return }
+    const atoms = syn.atoms.filter(a => a.x0 < x1 && a.x0 + a.span > x0); const a0 = atoms.length ? atoms[0].id : -1, a1 = atoms.length ? atoms[atoms.length - 1].id : -1
+    const d = getDb(q.db)
+    // 層ごとの件数（細かい層ほど増える。target を超えたら打ち切り）
+    const counts: number[] = []; let layer = syn.maxlayer
+    const ds = new Database(syn.file, { readonly: true })
+    try {
+      const qc = ds.prepare('SELECT COUNT(*) AS n FROM supermap WHERE layer=? AND major BETWEEN ? AND ? AND frac>=0.5')
+      let chosen = -1
+      for (let L = 0; L <= syn.maxlayer; L++) {
+        let n = 0
+        if (L >= syn.maxlayer || !syn.hasSupermap) { for (let c = c0; c <= c1 && c < c2o.length; c++) if (c2o[c] >= 0) n++ }
+        else if (a0 >= 0) n = Number((qc.get(L, a0, a1) as { n: number }).n)
+        counts.push(n)
+        if (n > 0 && n <= tgt) chosen = L
+        if (n > tgt) break
+      }
+      layer = chosen >= 0 ? chosen : (counts.findIndex(n => n > 0) >= 0 ? counts.findIndex(n => n > 0) : syn.maxlayer)
+    } finally { ds.close() }
+    // その層の名前（葉は等間隔に標本化）
+    let names: string[] = []
+    if (layer >= syn.maxlayer || !syn.hasSupermap) {
+      const all: string[] = []; for (let c = c0; c <= c1 && c < c2o.length; c++) if (c2o[c] >= 0) all.push('n' + c2o[c])
+      const step = Math.max(1, Math.ceil(all.length / 4000)); for (let i = 0; i < all.length; i += step) names.push(all[i])
+    } else if (a0 >= 0) names = nodesForAtoms(syn, layer, a0, a1, 4000, 0.5).names
+    if (!names.length) { res.json({ layer, count: 0, counts, c0, c1, ms: Date.now() - t0 }); return }
+    let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity, sx = 0, sy = 0, n = 0
+    const sel = (ph: string) => `SELECT xCoord, yCoord FROM nodes WHERE layer_index = ? AND node_name IN (${ph})`
+    for (let i = 0; i < names.length; i += 400) { const ch = names.slice(i, i + 400)
+      for (const r of d.prepare(sel(ch.map(() => '?').join(','))).all(layer, ...ch) as { xCoord: number; yCoord: number }[]) { if (r.xCoord == null) continue; minx = Math.min(minx, r.xCoord); maxx = Math.max(maxx, r.xCoord); miny = Math.min(miny, r.yCoord); maxy = Math.max(maxy, r.yCoord); sx += r.xCoord; sy += r.yCoord; n++ } }
+    if (!n) { res.json({ layer, count: 0, counts, c0, c1, ms: Date.now() - t0 }); return }
+    res.json({ layer, count: n, counts, c0, c1, minx, miny, maxx, maxy, cx: sx / n, cy: sy / n, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
+})
+
 // ---- 範囲駆動の部分グラフ（Blocks の窓の範囲だけをグラフに出す「絞りモード」の取得経路）----
 //   GET /api/blocks/subgraph?db&layer&x0&x1[&max]
 //   空間問い合わせをせず、窓の合意座標の範囲からノード名を決めて主キーで引く。コストは窓の広さに比例し、ビューポートの密度に依らない。
@@ -299,7 +352,8 @@ blocksRouter.get('/blocks/subgraph', (req, res) => {
     const inSet = new Set(nodes.map((n: any) => n.node_name as string))
     // 3) 辺（端点の索引で引き、rowid で重複を落とす）
     const edges: any[] = []; const seen = new Set<number>()
-    const selE = (side: string, ph: string) => `SELECT e.rowid AS id, e.source, e.target, e.src_sign, e.tgt_sign FROM edges e WHERE e.layer_index = ? AND e.${side} IN (${ph})`
+    const ex = edgeExtraSel(d)   // edge_hb（edge_contig_cov.hb）があれば相乗り: 絞りモードでもパス多重度の太さが出る
+    const selE = (side: string, ph: string) => `SELECT e.rowid AS id, e.source, e.target, e.src_sign, e.tgt_sign${ex.sel} FROM edges e${ex.join} WHERE e.layer_index = ? AND e.${side} IN (${ph})`
     const list = [...inSet]
     for (const side of ['source', 'target']) for (let i = 0; i < list.length; i += 400) {
       const ch = list.slice(i, i + 400)

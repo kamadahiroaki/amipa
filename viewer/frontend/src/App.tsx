@@ -8,7 +8,7 @@ import BlockMsa from './components/BlockMsa'
 import type { BlockView } from './components/blockMsaRender'
 import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
-import { fetchBlockView, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
+import { fetchBlockView, fetchBlockBbox, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -995,7 +995,19 @@ export default function App() {
   // Blocks の窓・絞り込みが変わったら、グラフをその参照区間へ寄せ、区間に合う層（属するノードが ~800 個以下の最も細かい層）で表示
   const onBlockView = useCallback((v: BlockView | null) => {
     setBlkColors(v ? { ...blockViewToColors(v), db: selectedDb ?? undefined } : null)
-    if (!v || !v.sync || !v.scope || !selectedDb) return
+    if (!v || !v.sync || !selectedDb) return
+    // 木の窓は合意座標の範囲で寄せる（参照区間は島で潰れる: ecoli50 の原子 393 中 110 が合意幅の 5% 未満）。根（範囲なし）は寄せない
+    if (v.tree && v.filterRange) {
+      const key = `x:${Math.floor(v.filterRange[0])}:${Math.ceil(v.filterRange[1])}`
+      if (key === blkScopeKeyRef.current) return
+      blkScopeKeyRef.current = key
+      void fetchBlockBbox(selectedDb, v.filterRange[0], v.filterRange[1]).then(f => {
+        if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return
+        graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer)
+      })
+      return
+    }
+    if (!v.scope) return
     if (v.scopeKey === blkScopeKeyRef.current) return
     blkScopeKeyRef.current = v.scopeKey
     const sc = v.scope
