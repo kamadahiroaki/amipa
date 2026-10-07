@@ -208,6 +208,7 @@ export interface BlockColorMap {
   rankColors?: (number | null)[] | null
   db?: string
   atomRank?: (atom: number) => number | null     // 木: 原子番号 → 見ている段のブロック番号（nodemap が原子を返すとき）
+  xRange?: [number, number]                      // 木・ブロックより下の段: 窓の合意座標の範囲。葉はノードの合意座標で塗る／塗らないを決める（原子より細かい）
 }
 export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
                              bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
@@ -1420,11 +1421,23 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         let blockColor: number | null | undefined = undefined
         if (bm) {
           const rc = bm.rankColors
-          const rk = rc ? nodeRankRef.current.map.get(n.node_name) : undefined
-          if (rc && rk !== undefined) blockColor = rk >= 0 && rk < rc.length ? rc[rk] : null
-          else {
-            blockColor = blockColorOf(bm, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi)
-            if (rc && rk === undefined) nodeRankPendingRef.current.add(n.node_name)      // 後で対応表を引く
+          if (rc && bm.atomRank) {
+            // 木: ノード → 原子（nodemap の記憶）→ 今の段のブロック番号を描画のたびに引く（窓が変わっても記憶はそのまま使える）。
+            // ブロックより下の段は xRange: 葉はノードの合意座標が範囲に重なるときだけ塗る（スーパーノードは原子の粒度）
+            const a = nodeAtomRef.current.get(n.node_name)
+            if (a === undefined) { blockColor = blockColorOf(bm, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi); nodeRankPendingRef.current.add(n.node_name) }
+            else {
+              let rk: number | null = a >= 0 ? bm.atomRank(a) : null
+              if (bm.xRange) { const x = nodeXRef.current.get(n.node_name); if (x && x[0] >= 0) rk = (x[1] > bm.xRange[0] && x[0] < bm.xRange[1]) ? 0 : null }
+              blockColor = rk != null && rk >= 0 && rk < rc.length ? rc[rk] : null
+            }
+          } else {
+            const rk = rc ? nodeRankRef.current.map.get(n.node_name) : undefined
+            if (rc && rk !== undefined) blockColor = rk >= 0 && rk < rc.length ? rc[rk] : null
+            else {
+              blockColor = blockColorOf(bm, n.ref_contig_id, n.ref_bp, n.ref_bp_end, n.ref_multi)
+              if (rc && rk === undefined) nodeRankPendingRef.current.add(n.node_name)      // 後で対応表を引く
+            }
           }
         }
         // アノテ着色(band/region/gene 密度)。node fill は単値なので相互排他、優先 band>region>gene。

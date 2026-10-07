@@ -8,7 +8,8 @@ export interface BlockRef { win: number; level: number; W: number; rank: number;
 export interface GeneLite { name: string; start: number; end: number; strand?: string }
 export interface BlockMsaHandle { selectByRef(contig: number, bp: number): boolean; locateNodes?(names: string[]): void; isTree?(): boolean; setGraphAtoms?(atoms: number[] | number[][]): void; setHapMarks(m: Map<string, string>): void; setGenes(g: Map<number, GeneLite[]>): void; destroy(): void; _layout?: () => any }
 // 現在見えている窓・段のブロック一覧（色つき）。App がグラフのノードをブロック色で塗るのに使う
-export interface BlockView { win: number; level: number; W: number; mode: string; tree?: boolean; blocks: { rank: number; color: string; ref_contig: number; x: number; span: number; label: string; members: number[]; a0?: number; a1?: number }[]; scope: { contig: number; start: number; end: number } | null; scopeKey: string; sync: boolean; n0: number }
+export interface BlockView { win: number; level: number; W: number; mode: string; tree?: boolean; blocks: { rank: number; color: string; ref_contig: number; x: number; span: number; label: string; members: number[]; a0?: number; a1?: number }[]; scope: { contig: number; start: number; end: number } | null; scopeKey: string; sync: boolean; n0: number;
+  xRange?: [number, number] | null; atomsIn?: [number, number] | null }   // 木・ブロックより下の段: 窓の合意座標の範囲と、それに重なる原子の番号の範囲（グラフの塗り）
 export interface BlockMsaCallbacks { onSelectBlock?: (b: BlockRef | null) => void; onHoverBlock?: (b: BlockRef | null) => void; onDrill?: (req: BlockDrillRequest) => Promise<BlockDrillResult>; onRange?: (x0: number, x1: number, label: string, depth: number, parent: number, pblock: number) => Promise<any>; onSites?: (q: { c0?: number; c1?: number; x0?: number; x1?: number }) => Promise<any>; onTokRanges?: (c0: number, c1: number) => Promise<any>; onBaseFetch?: (ranges: [string, number, number][], label: string, maxLeaves?: number) => Promise<any>; onLocate?: (names: string[]) => Promise<any>; onView?: (v: BlockView | null) => void; onSelectHap?: (groupKey: string, hap: string) => void; onBaseMsa?: (req: BlockDrillRequest) => void }
 // MSA の行（ハプロタイプ名。例 'HG00673#1', 'GCF_013459175.1#1', 'grch38#chrY'）を、グラフのパス群の鍵
 // （sample 'HG00673' / haplotype 'HG00673#1' / ecoli では haplotype 'GCF_013459175.1', sample 'GCF_013459175'）に合わせる
@@ -505,13 +506,17 @@ function drawAll(){ const nrows = buildRows().length; const tgt = targetRH(nrows
   _rhAnim = requestAnimationFrame(step); }
 // 窓・段（＝色の割り当て）が変わったときだけ、見えているブロックと色を App へ知らせる（グラフのノードをブロック色で塗る）
 let _lastViewKey = '';
+// 合意座標の範囲 [a, b] に重なる原子の番号の範囲（原子は合意座標順）。無ければ null
+function atomsOverlapping(xr){ if (!xr || !DATA.meta.atoms) return null; const A = DATA.meta.atoms; let lo = -1, hi = -1; for (let i = 0; i < A.length; i++){ const x0 = A[i][0], x1 = x0 + Math.max(1, A[i][1]); if (x1 > xr[0] && x0 < xr[1]){ if (lo < 0) lo = i; hi = i; } } return lo < 0 ? null : [lo, hi]; }
 function emitView(){ if (!(cb && cb.onView)) return; const L = level(); const key = st.win+':'+st.li+':'+LY.vis.join(',')+':'+(st.sync?1:0);
   if (key === _lastViewKey) return; _lastViewKey = key;
   if (isBase()){ const M = L.base; const rbs = (M.cols || []).map(c => c.rb).filter(v => v != null); const refc = L.refc != null ? L.refc : 0; const x0 = rbs.length ? Math.min(...rbs) : 0, x1 = rbs.length ? Math.max(...rbs) + 1 : 1;
-    cb.onView({ win: st.win, level: st.li, W: 0, mode: 'base', tree: TREE, scope: rbs.length ? { contig: refc, start: x0, end: x1 } : null, scopeKey: st.win + '|base', sync: st.sync, n0: 0,
-      blocks: rbs.length ? [{ rank: 0, color: 'rgb(13,148,136)', ref_contig: refc, x: x0, span: Math.max(1, x1 - x0), label: win().label, members: [] }] : [] }); return; }
+    const xr = TREE ? (currentRanges()[0] || null) : null;   // 木: 窓の合意座標の範囲（親のアレル行列／ブロックから）→ グラフの塗り
+    cb.onView({ win: st.win, level: st.li, W: 0, mode: 'base', tree: TREE, scope: rbs.length ? { contig: refc, start: x0, end: x1 } : null, scopeKey: st.win + '|base', sync: st.sync, n0: 0, xRange: xr, atomsIn: atomsOverlapping(xr),
+      blocks: rbs.length ? [{ rank: 0, color: 'rgb(13,148,136)', ref_contig: refc, x: x0, span: Math.max(1, x1 - x0), label: win().label, members: [] }] : [{ rank: 0, color: 'rgb(13,148,136)', ref_contig: refc, x: 0, span: 1, label: win().label, members: [] }] }); return; }
   if (isSites()){ const S = L.sites; const f = S.sites[0], l = S.sites[S.nsites-1]; const x0 = f.x, x1 = l.x + Math.max(1, l.bp); const refc = L.refc!=null ? L.refc : 0;
-    cb.onView({ win: st.win, level: st.li, W: 0, mode: 'sites', tree: TREE, scope: { contig: refc, start: x0, end: x1 }, scopeKey: st.win + '|sites', sync: st.sync, n0: 0,
+    const xr = TREE ? [x0, x1] : null;
+    cb.onView({ win: st.win, level: st.li, W: 0, mode: 'sites', tree: TREE, scope: { contig: refc, start: x0, end: x1 }, scopeKey: st.win + '|sites', sync: st.sync, n0: 0, xRange: xr, atomsIn: atomsOverlapping(xr),
       blocks: [{ rank: 0, color: L.pcolor || 'rgb(13,148,136)', ref_contig: refc, x: x0, span: Math.max(1, x1 - x0), label: win().label, members: [] }] }); return; }
   // 範囲 = 見えているブロックの参照区間の合併（最多のコンティグ）。窓・絞り込みが変わったときだけ scopeKey が変わる
   const byC = new Map(); for (const rank of LY.vis){ const B = L.blocks[rank]; const c = (B.ref_contig!=null ? B.ref_contig : 0); const g = byC.get(c) || {n:0, lo:Infinity, hi:-Infinity}; g.n++; const lo_ = (B.rx0 != null ? B.rx0 : B.x), hi_ = (B.rx1 != null ? B.rx1 : B.x + B.span); g.lo = Math.min(g.lo, lo_); g.hi = Math.max(g.hi, hi_); byC.set(c, g); }
