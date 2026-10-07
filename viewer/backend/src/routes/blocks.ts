@@ -310,7 +310,7 @@ blocksRouter.get('/blocks/bbox', (req, res) => {
 //   葉の層: 列範囲 [c0,c1]（colXc）→ col2orig の名前。上の層: 範囲に重なる原子 → supermap（多数派の場所、frac ≥ 0.5）。
 //   辺: 端点が集合に入る辺を source / target の索引で引く（PK (layer,source,target) と idx_edges_ts）。片端が集合の外の辺は
 //   その端点ノード（outer）も返す（viewer は隠して、辺を橙の切れ端にする）。座標は返さず src_sign/tgt_sign（viewer が復元）。
-const SUBGRAPH_MAX = 20000
+const SUBGRAPH_MAX = 120000   // 原子 1 個の窓は葉が 9 万（原子 286: 列 82k + 他所から場所を持つ多重）になりうる。超えたら truncated（viewer が警告）
 // 窓 → ノード名の集合。優先順: a0,a1（原子の集合。葉は atomnodes、上は atomsuper）→ c0,c1（原子の内側の列範囲。パスのトークン範囲の和）
 // → x0,x1（合意座標。重なる原子の集合に直す＝旧 API 互換）。how にどの経路で解決したかを返す
 function resolveNames(syn: ReturnType<typeof loadSynteny> & object, layer: number, q: Record<string, string>, max: number): { names: string[]; truncated: boolean; c0: number; c1: number; how: string } | { error: string } {
