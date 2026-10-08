@@ -172,7 +172,8 @@ function computeLayout(){
     // （drawGrid）。同じブロックを同じ行で複数回通る（再訪）ときは列を等分する
     const cnt0 = new Map();
     for (const ct of r.contigs){ if (bundled.has(ct)) continue; for (const {o, slot} of ct.items){ if (o.kind<4 && slot.lane===0) cnt0.set(o.rank, (cnt0.get(o.rank)||0)+1); } }
-    let ownX = 4; const sOwn = W / Math.max(1, ...rows.map(rw=>rw.contigs.reduce((a,ct)=>a+ct.c.bp,0)));
+    // 各行の並びの尺度: 行が**この窓で描く bp**（インスタンスの bp の和）で決める。ct.c.bp（コンティグ全長）だと子窓で 1/N に縮む（10-08 再発）
+    let ownX = 4; const sOwn = W / Math.max(1, ...rows.map(rw=>rw.contigs.reduce((a,ct)=>a+((ct.c.inst && ct.c.inst.length) ? ct.c.inst.reduce((b,it)=>b+(it[2]||0),0) : ct.c.bp),0)));
     for (const ct of r.contigs){
       if (bundled.has(ct)) continue; const placed=[];
       for (const {o, slot} of ct.items){
@@ -524,7 +525,8 @@ function geneColor(g){ return g[6] ? GENE_COL.other : (g[4] === 'cds' ? (GENE_CO
 // 行 r の項目 p（インスタンス）に重なる遺伝子を描く。遺伝子が画素より多ければ灰の帯（密度）
 function drawGeneLane(g, r, p, y){ const w = win(); const row = w._genes && w._genes.get(ctPath(p.ct)); if (!row) return; const it = p.o.it; const pos = it[6], len = Math.max(1, it[2]); const ly = y + RH - 4, lh = 4;
   const fx = bp => xBp(p, bp);
-  if (row.density){ const bin = row.density[0][0]; g.fillStyle = TH.ink; for (let i = 1; i < row.density.length; i++){ const b0 = row.density[i][0], n = row.density[i][1]; if (b0 + bin <= pos + 1 || b0 > pos + len) continue; const x0 = fx(Math.max(b0, pos + 1)), x1 = fx(Math.min(b0 + bin, pos + len)); g.globalAlpha = Math.min(.8, .2 + n / (bin / 1000) * .12); g.fillRect(Math.min(x0, x1), ly, Math.max(1, Math.abs(x1 - x0)), lh); } g.globalAlpha = 1; return; }
+  if (row.density){ const bin = row.density[0][0]; g.fillStyle = TH.ink; let i0 = 1; { let lo = 1, hi = row.density.length; while (lo < hi){ const mid = (lo + hi) >> 1; if (row.density[mid][0] + bin <= pos + 1) lo = mid + 1; else hi = mid; } i0 = lo; }
+    for (let i = i0; i < row.density.length; i++){ const b0 = row.density[i][0], n = row.density[i][1]; if (b0 > pos + len) break; const x0 = fx(Math.max(b0, pos + 1)), x1 = fx(Math.min(b0 + bin, pos + len)); g.globalAlpha = Math.min(.8, .2 + n / (bin / 1000) * .12); g.fillRect(Math.min(x0, x1), ly, Math.max(1, Math.abs(x1 - x0)), lh); } g.globalAlpha = 1; return; }
   const gs = row.genes; if (!gs || !gs.length) return; const st_ = row._starts; let i = 0; { let lo = 0, hi = st_.length; while (lo < hi){ const m = (lo + hi) >> 1; if (st_[m] < pos + 1 - 20000) lo = m + 1; else hi = m; } i = lo; }
   let n = 0; const first = i; for (let k = i; k < gs.length && gs[k][1] <= pos + len; k++){ if (gs[k][2] >= pos + 1) n++; }
   if (n > p.w){ g.fillStyle = TH.ink; g.globalAlpha = .4; g.fillRect(p.x, ly, p.w, lh); g.globalAlpha = 1; return; }
@@ -671,7 +673,16 @@ function drawAnchorLinks(g){ const anc = anchorsOf(win()); if (!st.anc || !anc |
       g.strokeStyle = hue(k); g.globalAlpha = emph!=null ? .12 : .3; g.beginPath(); g.moveTo(xa, yB(i, A.ys[k])); g.lineTo(xb, yT(i+1, B.ys[k])); g.stroke(); n++; } }
   g.globalAlpha = 1; return n; }
 function drawLinks(g){ drawAnchorLinks(g); }
-function drawGrid(){ drawGridBase(); if (!isSites() && !isBase() && genesOn()){ const g = cv.grid.getContext('2d'); LY.rows.forEach((r, ri) => { const y = ri*RH; if (st.lane) for (const p of r.items) drawGeneLane(g, r, p, y); if (st.jmark) drawJuncMarks(g, r, y); else r.jmarks = []; }); } if (isSites()) drawSitesGrid(); if (isBase()) drawBaseGrid(); drawBusy(); }
+// 遺伝子レーンと三角はホバーのたびに描き直すと重い（根: 50 行 × 39 項目 × 2,000 ビン）。配置が変わらない間は裏キャンバスに 1 回描いて貼る
+let _laneCache = null;   // { key, canvas }
+function laneKey(){ const w = win(); return [st.win, st.li, st.mode, st.filter ? [...st.filter].join('.') : '', Math.round(LY.fullW || 0), RH, st.lane ? 1 : 0, st.jmark ? 1 : 0, w._genes ? 1 : 0, cv.grid.clientWidth, cv.grid.clientHeight].join('|'); }
+function drawLanesCached(){ const key = laneKey(); const g = cv.grid.getContext('2d');
+  if (!_laneCache || _laneCache.key !== key){ const c = document.createElement('canvas'); c.width = cv.grid.width; c.height = cv.grid.height; const gg = c.getContext('2d'); const dpr = cv.grid.width / Math.max(1, cv.grid.clientWidth); gg.scale(dpr, dpr);
+    LY.rows.forEach((r, ri) => { const y = ri*RH; if (st.lane) for (const p of r.items) drawGeneLane(gg, r, p, y); if (st.jmark) drawJuncMarks(gg, r, y); else r.jmarks = []; });
+    _laneCache = { key, canvas: c, jmarks: LY.rows.map(r => r.jmarks || []) }; }
+  else LY.rows.forEach((r, ri) => { r.jmarks = _laneCache.jmarks[ri] || []; });   // 配置オブジェクトが作り直されていてもホバー用の位置を戻す
+  g.drawImage(_laneCache.canvas, 0, 0, cv.grid.clientWidth, cv.grid.clientHeight); }
+function drawGrid(){ drawGridBase(); if (!isSites() && !isBase() && genesOn()) drawLanesCached(); if (isSites()) drawSitesGrid(); if (isBase()) drawBaseGrid(); drawBusy(); }
 // 計算中の帯は、どの段の描画よりも後に、画面に見えている範囲（横スクロール位置）に重ねる
 function drawBusy(){ if (!st.busy) return; const g = cv.grid.getContext('2d'); const W = cv.grid.clientWidth, H = cv.grid.clientHeight; const sx = $('body').scrollLeft || 0, vw = $('gridwrap').clientWidth || W;
   g.fillStyle = 'rgba(255,255,255,.55)'; g.fillRect(0, 0, W, H); g.fillStyle = TH.sel; g.fillRect(sx, 0, Math.min(vw, W - sx), 26); g.fillStyle = '#fff'; g.font = '600 12px "IBM Plex Sans", sans-serif'; g.textAlign = 'left'; g.textBaseline = 'middle'; g.fillText('計算中: ' + st.busy, sx + 10, 13); g.textBaseline = 'alphabetic'; }
