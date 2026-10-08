@@ -534,8 +534,11 @@ function drawJuncMarks(g, r, y){ const w = win(); r.jmarks = []; if (!w._genes) 
   // 接合区間 [a2, b2] は「インスタンス i の終わり ≤ a2」「b2 ≤ インスタンス j の始まり」なので、通常は項目の隙間に落ちる（根の併合ブロックの中では項目の内側）。
   // 項目の内側ならその位置、隙間なら i の終端（画面上の端。無ければ j の始端）に置く
   const byPath = new Map(); for (const p of r.items){ const a = byPath.get(ctPath(p.ct)) || []; a.push(p); byPath.set(ctPath(p.ct), a); }
+  // 混雑の抑制: 弱い分類（近接・丸ごと・遺伝子なし）は、その行の接合が画面幅 10 px あたり 1 件以下のときだけ描く。強い分類（分断・島の挿入点・端）は常に
+  let nj = 0; for (const [path] of byPath){ const row = w._genes.get(path); if (row && row.juncs) nj += row.juncs.length; } const sparse = nj <= (cv.grid.clientWidth || 1200) / 10;
   for (const [path, items] of byPath){ const row = w._genes.get(path); if (!row || !row.juncs) continue; items.sort((u, v) => u.o.it[6] - v.o.it[6]);
     for (const j of row.juncs){ const a2 = j[1], b2 = j[2]; const cls = j[4]; if (j[3] === 'abs' && !(cls === 'isl' || cls === 'end')) continue;   // 島の有無は遺伝子に効くときだけ
+      if (!sparse && !(cls === 'split' || cls === 'isl' || cls === 'end')) continue;
       let x = null; let pm = null;
       for (const p of items){ const pos = p.o.it[6], len = Math.max(1, p.o.it[2]); if (a2 > pos && a2 < pos + len){ x = xBp(p, a2); pm = p; break; } }
       if (x == null){ let left = null, right = null; for (const p of items){ const pos = p.o.it[6], len = Math.max(1, p.o.it[2]); if (pos + len <= a2 && (!left || pos > left.o.it[6])) left = p; if (pos >= b2 && (!right || pos < right.o.it[6])) right = p; }
