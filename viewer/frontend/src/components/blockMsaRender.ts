@@ -518,28 +518,38 @@ function ensureGenes(w){ if (!genesOn() || !w || w.mode === 'sites' || w.mode ==
   const ranges = []; for (const hp of L0.haps) for (const ct of hp.contigs){ if (!ct.inst || !ct.inst.length) continue; let lo = Infinity, hi = -Infinity; for (const it of ct.inst){ lo = Math.min(lo, it[6]); hi = Math.max(hi, it[6] + it[2]); } if (hi > lo) ranges.push([ct.path, lo + 1, hi]); }
   if (!ranges.length) return; w._genesLoading = true;
   cb.onGenes(ranges).then(r => { w._genesLoading = false; const m = new Map(); if (r && r.rows) for (const row of r.rows){ if (row.genes) row._starts = row.genes.map(g => g[1]); m.set(row.path, row); } w._genes = m; if (win() === w) drawGrid(); }).catch(() => { w._genesLoading = false; }); }
+function ctPath(ct){ return ct ? (ct.path || (ct.c && ct.c.path) || '') : ''; }   // 配置用のコンティグ（c = 元の contig オブジェクト）
+function xBp(p, bp){ const it = p.o.it; const f = Math.max(0, Math.min(1, (bp - it[6]) / Math.max(1, it[2]))); return p.o.dir === 0 ? p.x + (1 - f) * p.w : p.x + f * p.w; }
 function geneColor(g){ return g[6] ? GENE_COL.other : (g[4] === 'cds' ? (GENE_COL[g[3]] || GENE_COL.other) : GENE_COL.other); }
 // 行 r の項目 p（インスタンス）に重なる遺伝子を描く。遺伝子が画素より多ければ灰の帯（密度）
-function drawGeneLane(g, r, p, y){ const w = win(); const row = w._genes && w._genes.get(p.ct.path); if (!row) return; const it = p.o.it; const pos = it[6], len = Math.max(1, it[2]); const ly = y + RH - 7, lh = 5;
-  const fx = bp => xInInstance(p, (bp - pos) / len);
-  if (row.density){ const bin = row.density[0][0]; g.fillStyle = TH.muted; for (let i = 1; i < row.density.length; i++){ const b0 = row.density[i][0], n = row.density[i][1]; if (b0 + bin <= pos + 1 || b0 > pos + len) continue; const x0 = fx(Math.max(b0, pos + 1)), x1 = fx(Math.min(b0 + bin, pos + len)); g.globalAlpha = Math.min(.6, .1 + n / (bin / 1000) * .08); g.fillRect(Math.min(x0, x1), ly, Math.max(1, Math.abs(x1 - x0)), lh); } g.globalAlpha = 1; return; }
+function drawGeneLane(g, r, p, y){ const w = win(); const row = w._genes && w._genes.get(ctPath(p.ct)); if (!row) return; const it = p.o.it; const pos = it[6], len = Math.max(1, it[2]); const ly = y + RH - 4, lh = 4;
+  const fx = bp => xBp(p, bp);
+  if (row.density){ const bin = row.density[0][0]; g.fillStyle = TH.ink; for (let i = 1; i < row.density.length; i++){ const b0 = row.density[i][0], n = row.density[i][1]; if (b0 + bin <= pos + 1 || b0 > pos + len) continue; const x0 = fx(Math.max(b0, pos + 1)), x1 = fx(Math.min(b0 + bin, pos + len)); g.globalAlpha = Math.min(.8, .2 + n / (bin / 1000) * .12); g.fillRect(Math.min(x0, x1), ly, Math.max(1, Math.abs(x1 - x0)), lh); } g.globalAlpha = 1; return; }
   const gs = row.genes; if (!gs || !gs.length) return; const st_ = row._starts; let i = 0; { let lo = 0, hi = st_.length; while (lo < hi){ const m = (lo + hi) >> 1; if (st_[m] < pos + 1 - 20000) lo = m + 1; else hi = m; } i = lo; }
   let n = 0; const first = i; for (let k = i; k < gs.length && gs[k][1] <= pos + len; k++){ if (gs[k][2] >= pos + 1) n++; }
-  if (n > p.w){ g.fillStyle = TH.muted; g.globalAlpha = .35; g.fillRect(p.x, ly, p.w, lh); g.globalAlpha = 1; return; }
+  if (n > p.w){ g.fillStyle = TH.ink; g.globalAlpha = .4; g.fillRect(p.x, ly, p.w, lh); g.globalAlpha = 1; return; }
   for (let k = first; k < gs.length && gs[k][1] <= pos + len; k++){ const gg = gs[k]; if (gg[2] < pos + 1) continue; const x0 = fx(Math.max(gg[1] - 1, pos)), x1 = fx(Math.min(gg[2], pos + len)); g.fillStyle = geneColor(gg); g.fillRect(Math.min(x0, x1), ly, Math.max(1, Math.abs(x1 - x0)), lh); } }
 // 行 r の破断点の印（接合区間の始まり a2 の位置の項目に三角）。r.jmarks にホバー用の位置を残す
-function drawJuncMarks(g, r, y){ const w = win(); r.jmarks = []; if (!w._genes) return; const seen = new Set();
-  for (const p of r.items){ const row = w._genes.get(p.ct.path); if (!row || !row.juncs) continue; const it = p.o.it; const pos = it[6], len = Math.max(1, it[2]);
-    for (const j of row.juncs){ const a2 = j[1]; if (a2 <= pos || a2 > pos + len || seen.has(j[0])) continue; seen.add(j[0]); const cls = j[4]; if (j[3] === 'abs' && !(cls === 'isl' || cls === 'end')) continue;   // 島の有無は遺伝子に効くときだけ
-      const x = xInInstance(p, (a2 - pos) / len); const col = JCLS_COL[cls] || JCLS_COL['']; g.fillStyle = col; g.beginPath(); g.moveTo(x - 4, y + 1); g.lineTo(x + 4, y + 1); g.lineTo(x, y + 7); g.closePath(); g.fill(); r.jmarks.push({ x, j, p }); } } }
-function geneAt(r, px, py){ const w = win(); if (!w._genes) return null; for (const p of r.items){ if (px < p.x || px > p.x + p.w) continue; const row = w._genes.get(p.ct.path); if (!row || !row.genes) return null; const it = p.o.it; const pos = it[6], len = Math.max(1, it[2]);
-    const inv = p.o.dir === 0; let f = (px - p.x) / Math.max(1, p.w); if (p.col) f = (px - p.col.x) / Math.max(1, p.col.w); if (p.ext && p.ext[1] > p.ext[0] && !p.col){ let e0 = p.ext[0], e1 = p.ext[1]; if (inv){ const t = e0; e0 = 255 - e1; e1 = 255 - t; } f = (e0 + f * (e1 - e0)) / 255; } if (inv) f = 1 - f; const bp = pos + f * len;
+function drawJuncMarks(g, r, y){ const w = win(); r.jmarks = []; if (!w._genes) return;
+  // 接合区間 [a2, b2] は「インスタンス i の終わり ≤ a2」「b2 ≤ インスタンス j の始まり」なので、通常は項目の隙間に落ちる（根の併合ブロックの中では項目の内側）。
+  // 項目の内側ならその位置、隙間なら i の終端（画面上の端。無ければ j の始端）に置く
+  const byPath = new Map(); for (const p of r.items){ const a = byPath.get(ctPath(p.ct)) || []; a.push(p); byPath.set(ctPath(p.ct), a); }
+  for (const [path, items] of byPath){ const row = w._genes.get(path); if (!row || !row.juncs) continue; items.sort((u, v) => u.o.it[6] - v.o.it[6]);
+    for (const j of row.juncs){ const a2 = j[1], b2 = j[2]; const cls = j[4]; if (j[3] === 'abs' && !(cls === 'isl' || cls === 'end')) continue;   // 島の有無は遺伝子に効くときだけ
+      let x = null; let pm = null;
+      for (const p of items){ const pos = p.o.it[6], len = Math.max(1, p.o.it[2]); if (a2 > pos && a2 < pos + len){ x = xBp(p, a2); pm = p; break; } }
+      if (x == null){ let left = null, right = null; for (const p of items){ const pos = p.o.it[6], len = Math.max(1, p.o.it[2]); if (pos + len <= a2 && (!left || pos > left.o.it[6])) left = p; if (pos >= b2 && (!right || pos < right.o.it[6])) right = p; }
+        if (left){ x = left.o.dir === 0 ? left.x : left.x + left.w; pm = left; } else if (right){ x = right.o.dir === 0 ? right.x + right.w : right.x; pm = right; } }
+      if (x == null) continue;
+      const col = JCLS_COL[cls] || JCLS_COL['']; g.fillStyle = col; g.beginPath(); g.moveTo(x - 4, y + 1); g.lineTo(x + 4, y + 1); g.lineTo(x, y + 7); g.closePath(); g.fill(); if (cls === 'split' || cls === 'isl'){ g.strokeStyle = TH.ink; g.lineWidth = .8; g.stroke(); } r.jmarks.push({ x, j, p: pm }); } } }
+function geneAt(r, px, py){ const w = win(); if (!w._genes) return null; for (const p of r.items){ if (px < p.x || px > p.x + p.w) continue; const row = w._genes.get(ctPath(p.ct)); if (!row || !row.genes) return null; const it = p.o.it; const pos = it[6], len = Math.max(1, it[2]);
+    let f = (px - p.x) / Math.max(1, p.w); if (p.o.dir === 0) f = 1 - f; const bp = pos + f * len;
     let best = null; for (const gg of row.genes){ if (gg[1] - 1 <= bp + 2 && gg[2] >= bp - 2){ best = gg; break; } if (gg[1] > bp + 2) break; } return best ? { g: best, p, row } : null; } return null; }
 function geneInfo(hit){ const g = hit.g, row = hit.row; const jc = (row.juncs || []).filter(j => j[5] && j[5].includes(g[0])); const JN = { split: '分断', isl: '他株の島の挿入点がこの遺伝子の中', end: '遺伝子の端が接合区間内', inside: '接合区間に丸ごと', near: '近接' };
-  return `<p><span class="h">${esc(g[5] || '(無名)')}</span> <span class="k">${esc(g[4])}${g[6] ? '・擬似' : ''} ${g[3]} 鎖 · ${g[1].toLocaleString()}–${g[2].toLocaleString()}（${(g[2] - g[1] + 1).toLocaleString()} bp）· ${esc(hit.p.ct.path)}</span>` + (jc.length ? `<br><span class="k">破断点との関係:</span> ${jc.map(j => `${esc(j[3])} ${JN[j[4]] || j[4]}（接合 ${j[1].toLocaleString()}–${j[2].toLocaleString()}）`).join('、')}` : '') + `</p>`; }
+  return `<p><span class="h">${esc(g[5] || '(無名)')}</span> <span class="k">${esc(g[4])}${g[6] ? '・擬似' : ''} ${g[3]} 鎖 · ${g[1].toLocaleString()}–${g[2].toLocaleString()}（${(g[2] - g[1] + 1).toLocaleString()} bp）· ${esc(hit.ctPath(p.ct))}</span>` + (jc.length ? `<br><span class="k">破断点との関係:</span> ${jc.map(j => `${esc(j[3])} ${JN[j[4]] || j[4]}（接合 ${j[1].toLocaleString()}–${j[2].toLocaleString()}）`).join('、')}` : '') + `</p>`; }
 function juncInfo(m){ const j = m.j; const JN = { split: '分断', isl: '他株の島の挿入点が遺伝子内', end: '遺伝子の端が接合区間内', inside: '遺伝子が接合区間に丸ごと', near: '近接のみ', '': '遺伝子なし' }; const TN = { inv: '逆位', trans: '転座', del: '欠失（原子を飛ばす）', ins: '挿入', abs: '島の有無' };
-  const row = win()._genes.get(m.p.ct.path); const names = (j[5] || []).map(gid => { const gg = row && row.genes ? row.genes.find(x => x[0] === gid) : null; return gg ? gg[5] : ('#' + gid); });
-  return `<p><span class="h">破断点 ${TN[j[3]] || j[3]}</span> <span class="k">接合区間 ${j[1].toLocaleString()}–${j[2].toLocaleString()}（${Math.max(0, j[2] - j[1]).toLocaleString()} bp）· ${esc(m.p.ct.path)}</span><br><span class="k">${JN[j[4]] || j[4]}${names.length ? ': ' + esc(names.join(', ')) : ''}${j[6] ? `（関係する遺伝子 ${j[6]}）` : ''}</span></p>`; }
+  const row = win()._genes.get(m.ctPath(p.ct)); const names = (j[5] || []).map(gid => { const gg = row && row.genes ? row.genes.find(x => x[0] === gid) : null; return gg ? gg[5] : ('#' + gid); });
+  return `<p><span class="h">破断点 ${TN[j[3]] || j[3]}</span> <span class="k">接合区間 ${j[1].toLocaleString()}–${j[2].toLocaleString()}（${Math.max(0, j[2] - j[1]).toLocaleString()} bp）· ${esc(m.ctPath(p.ct))}</span><br><span class="k">${JN[j[4]] || j[4]}${names.length ? ': ' + esc(names.join(', ')) : ''}${j[6] ? `（関係する遺伝子 ${j[6]}）` : ''}</span></p>`; }
 function drawAllCore(){ _gdMax = null; computeLayout(); if (isSites()) sitesLayout(); if (isBase()) baseLayout(); layoutCanvases(); drawHeader(); drawGrid(); drawLabels(); drawTree(); drawChips(); drawLegend(); updateButtons(); drawMini(); emitView(); }
 function drawAll(){ const nrows = buildRows().length; const tgt = targetRH(nrows);
   if (tgt === RH){ if (_rhAnim){ cancelAnimationFrame(_rhAnim); _rhAnim = null; } drawAllCore(); return; }
@@ -869,7 +879,9 @@ function hit(x,y){ const ri = Math.floor(y/RH); if (ri<0||ri>=LY.rows.length) re
   return {ri}; }
 const grid = cv.grid;
 grid.addEventListener('mousemove', e=>{ const rect = grid.getBoundingClientRect(); if (isBase() || isSites()){ safeHover(()=>gridHoverSitesBase(e, rect)); return; }
-  if (genesOn()){ const px = e.clientX-rect.left, py = e.clientY-rect.top; const ri = Math.floor(py/RH); const r = LY.rows[ri]; const dy = py - ri*RH; if (r){ if (st.jmark && dy <= 9 && r.jmarks){ const m = r.jmarks.find(m => Math.abs(m.x - px) <= 5); if (m){ setHoverInfo(juncInfo(m)); } } if (st.lane && dy >= RH - 8){ const hg = geneAt(r, px, py); setHoverInfo(hg ? geneInfo(hg) : ''); } } } const h = hit(e.clientX-rect.left, e.clientY-rect.top); st.hover = h; st.hoverRank = h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null); drawGrid(); drawLabels(); if (!st.pinned) showItem(h);
+  if (genesOn()){ const px = e.clientX-rect.left, py = e.clientY-rect.top; const ri = Math.floor(py/RH); const r = LY.rows[ri]; const dy = py - ri*RH; if (r){
+    if (st.jmark && dy <= 9 && r.jmarks){ const m = r.jmarks.find(m => Math.abs(m.x - px) <= 5); if (m){ const html = juncInfo(m); setHoverInfo(html); if (!st.pinned) $('detailbody').innerHTML = html; return; } }
+    if (st.lane && dy >= RH - 6){ const hg = geneAt(r, px, py); const html = hg ? geneInfo(hg) : ''; setHoverInfo(html); if (hg && !st.pinned) $('detailbody').innerHTML = html; if (hg) return; } } } const h = hit(e.clientX-rect.left, e.clientY-rect.top); st.hover = h; st.hoverRank = h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null); drawGrid(); drawLabels(); if (!st.pinned) showItem(h);
   emitHover(h && h.p && h.p.o.kind<4 ? h.p.o.rank : (h && h.b ? h.b.rank : null)); });
 grid.addEventListener('mouseleave', ()=>{ st.hover=null; st.hoverRank=null; drawGrid(); drawLabels(); emitHover(null); if (isSites() || isBase()) setHoverInfo(''); });
 grid.addEventListener('dblclick', e=>{ const rect = grid.getBoundingClientRect(); const h = hit(e.clientX-rect.left, e.clientY-rect.top);
