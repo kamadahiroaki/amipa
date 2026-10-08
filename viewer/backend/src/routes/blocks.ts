@@ -392,7 +392,7 @@ blocksRouter.post('/blocks/genes', (req, res) => {
     const qGenes = d.prepare('SELECT gid, start, end, strand, type, name, pseudo FROM gene WHERE pid=? AND end>=? AND start<=? ORDER BY start')
     const qDens = d.prepare('SELECT ((start - ?) / ?) AS bin, COUNT(*) AS n FROM gene WHERE pid=? AND end>=? AND start<=? GROUP BY bin')
     const qJunc = ds.prepare('SELECT rowid AS jid, a2, b2, type FROM junc WHERE pid=? AND b2>=? AND a2<=? ORDER BY a2')
-    const qJG = d.prepare('SELECT gid, cls, left, right, mid, dist FROM junc_gene WHERE jid=?')
+    const qJG = d.prepare('SELECT gid, cls, left, right, mid, dist FROM junc_gene WHERE jid=?'); const qName = d.prepare('SELECT name FROM gene WHERE gid=?')
     const rows: any[] = []
     for (const [path, s, e] of ranges.slice(0, 500)) {
       const pid = pidOf.get(path); if (pid == null) { rows.push({ path, s, e, genes: null, density: null, juncs: [] }); continue }
@@ -404,7 +404,8 @@ blocksRouter.post('/blocks/genes', (req, res) => {
       for (const j of qJunc.all(pid, s, e) as any[]) {
         const jg = qJG.all(j.jid) as any[]; let best = ''; let bo = 0; const gids: number[] = []
         for (const r of jg) { const o = CLS_ORDER[r.cls] || 0; if (o > bo) { bo = o; best = r.cls } if (r.cls !== 'near' && r.cls !== 'inside') gids.push(r.gid) }
-        juncs.push([j.jid, j.a2, j.b2, j.type, best, gids.slice(0, 8), jg.length])
+        const names = gids.slice(0, 8).map(g => { const r = qName.get(g) as { name: string } | undefined; return r ? r.name : ('#' + g) })
+        juncs.push([j.jid, j.a2, j.b2, j.type, best, gids.slice(0, 8), jg.length, names])   // [7] = 遺伝子名（密度モードの行でも名前が出せる）
       }
       rows.push({ path, s, e, n, genes, density, juncs })
     }
