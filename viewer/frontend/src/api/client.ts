@@ -865,6 +865,14 @@ export async function fetchBlockNodemap(dbFile: string, layer: number, names: st
     return Array.isArray(j.ranks) ? { vals: j.ranks as number[], fracs: null, xs: null, xe: null, places: null, kinds: null } : null
   } catch { return null }
 }
+// 木: 窓の各行のコンティグ範囲の遺伝子（株ごとの GFF）と接合 × 遺伝子の分類（<db>.genes、annot/build_genes.py）
+export interface BlockGenesRow { path: string; s: number; e: number; n?: number; genes: [number, number, number, string, string, string, number][] | null; density: [number, number][] | null; juncs: [number, number, number, string, string, number[], number][] }
+export async function fetchBlockGenes(dbFile: string, ranges: [string, number, number][], maxGenes = 2000): Promise<{ rows: BlockGenesRow[]; error?: string } | null> {
+  try { const res = await fetch('/api/blocks/genes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges, maxGenes }) }); if (!res.ok) return null; return await res.json() } catch { return null }
+}
+export async function fetchBlockGene(dbFile: string, q: { gid?: number; name?: string }): Promise<any[]> {
+  try { const p = new URLSearchParams({ db: dbFile }); if (q.gid != null) p.set('gid', String(q.gid)); if (q.name) p.set('name', q.name); const res = await fetch(`/api/blocks/gene?${p}`); if (!res.ok) return []; const j = await res.json(); return j.genes || [] } catch { return [] }
+}
 // 木: 合意座標の範囲 → グラフを寄せる先（層と外接矩形）。参照座標に依らないので、参照に無い島の窓でも正しく寄る
 // 窓の指定（集合の意味）: atoms=原子の番号の範囲 / cols=原子の内側の列範囲 / x=合意座標（旧）
 export type BlockSel = { atoms: [number, number] } | { cols: [number, number] } | { x: [number, number] }

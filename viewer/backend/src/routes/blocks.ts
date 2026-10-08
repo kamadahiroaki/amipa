@@ -369,6 +369,63 @@ blocksRouter.get('/blocks/subgraph', (req, res) => {
   } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
+// ---- 遺伝子サイドカー <db>.genes（annot/build_genes.py）: 株ごとの遺伝子区間（コンティグ bp）と、接合 × 遺伝子の分類 ----
+//   POST /api/blocks/genes  body {db, ranges:[[path, s, e], ...], maxGenes?}
+//   → {rows:[{path, s, e, genes:[[gid,start,end,strand,type,name,pseudo],...] | null, density:[[bin0, n],...] | null, juncs:[[jid,a2,b2,type,cls,gids...]...]}]}
+//   範囲の遺伝子が maxGenes（既定 2,000）を超えるときは密度（bin あたりの件数）だけ返す（全体の窓で 25 万件を送らない）。
+//   接合は常に返す（株あたり 80 件程度）。cls は junc_gene の最も強いもの（split > isl > end > inside > near）。
+const CLS_ORDER: Record<string, number> = { split: 5, isl: 4, end: 3, inside: 2, near: 1 }
+function genesPath(db: string): string | null { const sp = syntenyPath(db); if (!sp) return null; const g = sp.replace(/\.synteny$/, '.genes'); return fs.existsSync(g) ? g : null }
+blocksRouter.post('/blocks/genes', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>
+  const db = typeof b.db === 'string' ? b.db : ''
+  const ranges = Array.isArray(b.ranges) ? (b.ranges as unknown[]).filter(r => Array.isArray(r) && r.length === 3 && typeof r[0] === 'string') as [string, number, number][] : []
+  if (!db) { res.status(400).json({ error: 'Missing db' }); return }
+  const gp = genesPath(db); const syn = loadSynteny(db)
+  if (!gp || !syn) { res.json({ rows: [], error: 'この DB には遺伝子サイドカー（.genes）がありません' }); return }
+  const maxGenes = Math.max(100, Math.min(20000, Number(b.maxGenes) || 2000))
+  const t0 = Date.now()
+  const d = new Database(gp, { readonly: true }); const ds = new Database(syn.file, { readonly: true })
+  try {
+    const pidOf = new Map(syn.paths.map(p => [p.path, p.pid]))
+    const qCount = d.prepare('SELECT COUNT(*) AS n FROM gene WHERE pid=? AND end>=? AND start<=?')
+    const qGenes = d.prepare('SELECT gid, start, end, strand, type, name, pseudo FROM gene WHERE pid=? AND end>=? AND start<=? ORDER BY start')
+    const qDens = d.prepare('SELECT ((start - ?) / ?) AS bin, COUNT(*) AS n FROM gene WHERE pid=? AND end>=? AND start<=? GROUP BY bin')
+    const qJunc = ds.prepare('SELECT rowid AS jid, a2, b2, type FROM junc WHERE pid=? AND b2>=? AND a2<=? ORDER BY a2')
+    const qJG = d.prepare('SELECT gid, cls, left, right, mid, dist FROM junc_gene WHERE jid=?')
+    const rows: any[] = []
+    for (const [path, s, e] of ranges.slice(0, 500)) {
+      const pid = pidOf.get(path); if (pid == null) { rows.push({ path, s, e, genes: null, density: null, juncs: [] }); continue }
+      const n = Number((qCount.get(pid, s, e) as { n: number }).n)
+      let genes: any[] | null = null, density: any[] | null = null
+      if (n <= maxGenes) genes = (qGenes.all(pid, s, e) as any[]).map(g => [g.gid, g.start, g.end, g.strand, g.type, g.name, g.pseudo])
+      else { const bin = Math.max(1000, Math.ceil((e - s) / 2000)); density = (qDens.all(s, bin, pid, s, e) as any[]).map(r => [s + Number(r.bin) * bin, r.n]); (density as any).bin = bin; density = [[bin, 0], ...density] }
+      const juncs: any[] = []
+      for (const j of qJunc.all(pid, s, e) as any[]) {
+        const jg = qJG.all(j.jid) as any[]; let best = ''; let bo = 0; const gids: number[] = []
+        for (const r of jg) { const o = CLS_ORDER[r.cls] || 0; if (o > bo) { bo = o; best = r.cls } if (r.cls !== 'near' && r.cls !== 'inside') gids.push(r.gid) }
+        juncs.push([j.jid, j.a2, j.b2, j.type, best, gids.slice(0, 8), jg.length])
+      }
+      rows.push({ path, s, e, n, genes, density, juncs })
+    }
+    res.json({ rows, maxGenes, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close(); ds.close() }
+})
+// 遺伝子の詳細（ホバー・検索）: GET /api/blocks/gene?db&gid  /  ?db&name=<名前>（前方一致、最大 50）
+blocksRouter.get('/blocks/gene', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const gp = genesPath(q.db); const syn = loadSynteny(q.db); if (!gp || !syn) { res.json({ error: 'この DB には遺伝子サイドカー（.genes）がありません' }); return }
+  const d = new Database(gp, { readonly: true })
+  try {
+    const pathOf = new Map(syn.paths.map(p => [p.pid, { path: p.path, hap: p.hap }]))
+    const sel = 'SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, t.s0, t.e0, a.a0, a.a1 FROM gene g LEFT JOIN gene_tok t ON t.gid=g.gid LEFT JOIN gene_atom a ON a.gid=g.gid'
+    const rows = q.gid != null ? d.prepare(sel + ' WHERE g.gid=?').all(Number(q.gid)) : (q.name ? d.prepare(sel + " WHERE g.name LIKE ? ORDER BY g.name, g.pid LIMIT 50").all(q.name + '%') : [])
+    const out = (rows as any[]).map(g => ({ ...g, ...(pathOf.get(g.pid) || {}), juncs: (d.prepare('SELECT jid, cls, left, right, mid, dist FROM junc_gene WHERE gid=?').all(g.gid) as any[]) }))
+    res.json({ genes: out })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
+
 const MAX_RANGES = 200000
 blocksRouter.post('/blocks/window', async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>

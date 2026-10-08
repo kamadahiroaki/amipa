@@ -133,6 +133,14 @@ if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
   hit "/blocks/bbox"            "blocks/bbox?db=$DB&x0=$SX0&x1=$SX1"
   hit "/blocks/subgraph (葉)"   "blocks/subgraph?db=$DB&layer=$BML&x0=$SX0&x1=$SX1"
   hit "/blocks/nodemap (POST)"  "blocks/nodemap" "" '{"db":"'"$DB"'","layer":'"$BML"',"names":["n1","n2"]}'
+  BG=$("$PY" -c 'import sys,json; j=json.load(sys.stdin); print("1" if j.get("meta",{}).get("genes") else "0")' <<<"$BLK" 2>/dev/null || echo 0)
+  if [ "$BG" = 1 ]; then
+    GP=$(get "blocks/range?db=$DB&x0=$BX0&x1=$BX1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); L=j["window"]["levels"][0]; c=L["haps"][0]["contigs"][0]; it=c["inst"][0]; print(json.dumps({"db": sys.argv[1], "ranges": [[c["path"], it[6], it[6]+it[2]]]}))' "$DB" 2>/dev/null)
+    [ -n "$GP" ] && hit "/blocks/genes (POST)" "blocks/genes" "" "$GP"
+    hit "/blocks/gene (name)"     "blocks/gene?db=$DB&name=dna" allow-empty
+  else
+    echo "  SKIP /blocks/genes（遺伝子サイドカー無し）"
+  fi
   if [ "$BD" = 1 ]; then
     TK=$(get "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); print(j.get("c0",""), j.get("c1",""))' 2>/dev/null)
     read -r TC0 TC1 <<<"$TK"
