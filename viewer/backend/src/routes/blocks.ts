@@ -9,6 +9,7 @@ import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
 import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes, nodesForAtoms, atomsOfNames, namesForAtomsExact, namesForCols } from '../synteny'
 import { tableCols, parseNodes } from '../nodeQuery'
+import { openDistill } from '../distill'
 import { edgeExtraSel } from '../edgeQuery'
 
 // 多解像度 MSA（共線ブロック）のサイドカーを配る。
@@ -412,6 +413,109 @@ blocksRouter.post('/blocks/genes', (req, res) => {
     res.json({ rows, maxGenes, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close(); ds.close() }
 })
+// ---- 列範囲（アレル行列・塩基の窓）の遺伝子: 遺伝子 → その株のトークン → 列。POST /api/blocks/genes_cols body {db, c0, c1, paths?}
+//   行ごとに [gid, name, strand, type, pseudo, start, end, pieces [[c0,c1],...], sn, so, en, eo, part]。
+//   pieces = 窓の列範囲に入る列の連なり（再編成で分かれていれば複数）。sn/so, en/eo = 遺伝子の開始・終了の (ノード名, ノード内オフセット)
+//   （塩基の段で塩基単位に置く）。part: 1=窓の外から始まる, 2=窓の外で終わる（ビット）
+blocksRouter.post('/blocks/genes_cols', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>
+  const db = typeof b.db === 'string' ? b.db : ''; const c0 = Number(b.c0), c1 = Number(b.c1)
+  if (!db || !Number.isInteger(c0) || !Number.isInteger(c1) || c1 < c0) { res.status(400).json({ error: 'db, c0 ≤ c1 が要ります' }); return }
+  const gp = genesPath(db); const syn = loadSynteny(db)
+  if (!gp || !syn) { res.json({ rows: [], error: 'この DB には遺伝子サイドカー（.genes）がありません' }); return }
+  if (!syn.dcol || !syn.distill || !syn.col2orig) { res.json({ rows: [], error: 'dcol / distill がありません' }); return }
+  const want = Array.isArray(b.paths) ? new Set((b.paths as unknown[]).filter(x => typeof x === 'string') as string[]) : null
+  const t0 = Date.now(); const dist = openDistill(syn.distill); const d = new Database(gp, { readonly: true })
+  try {
+    const qG = d.prepare('SELECT g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, t.s0, t.e0 FROM gene g JOIN gene_tok t ON t.gid=g.gid WHERE g.pid=? AND t.e0>? AND t.s0<? ORDER BY t.s0')
+    const atomsIn = syn.atoms.filter(a => a.c1 >= c0 && a.c0 <= c1); const aset = new Set(atomsIn.map(a => a.id))
+    const rows: any[] = []
+    for (const pr of syn.paths) {
+      if (want && !want.has(pr.path)) continue
+      const pi = dist.pidx.get(pr.path); if (pi == null) continue
+      const its = syn.inst[pr.pid].filter(it => aset.has(it.atom)).sort((a, b) => a.s0 - b.s0)
+      const runs: { s0: number; e0: number; pos: number }[] = []
+      for (const it of its) { const last = runs[runs.length - 1]; if (last && it.s0 <= last.e0) last.e0 = Math.max(last.e0, it.e0); else runs.push({ s0: it.s0, e0: it.e0, pos: it.pos }) }
+      const genes: any[] = []
+      for (const run of runs) {
+        const toks = dist.read(pi, run.s0, run.e0); const n = toks.length
+        const colA = new Int32Array(n); const cum = new Float64Array(n + 1); cum[0] = run.pos
+        for (let k = 0; k < n; k++) { const c = syn.dcol[toks[k]]; colA[k] = c; cum[k + 1] = cum[k] + (c >= 0 ? syn.colBp[c] : 0) }
+        const nameAt = (k: number) => { const c = colA[k]; const o = c >= 0 ? syn.col2orig![c] : -1; return o >= 0 ? 'n' + o : '' }
+        for (const g of qG.all(pr.pid, run.s0, run.e0) as any[]) {
+          const ks0 = Math.max(g.s0, run.s0), ke0 = Math.min(g.e0, run.e0); if (ke0 <= ks0) continue
+          const cols: number[] = []; for (let k = ks0 - run.s0; k < ke0 - run.s0; k++) { const c = colA[k]; if (c >= c0 && c <= c1) cols.push(c) }
+          if (!cols.length) continue
+          cols.sort((u, v) => u - v); const pieces: [number, number][] = []; for (const c of cols) { const last = pieces[pieces.length - 1]; if (last && c <= last[1] + 2) last[1] = c; else pieces.push([c, c]) }
+          // 開始・終了の (ノード, オフセット)。遺伝子が走査範囲の中で始まる／終わるときだけ正確、外なら端のトークンで代用（part に印）
+          let part = 0; let sk = g.s0, ek = g.e0 - 1
+          if (sk < run.s0) { sk = run.s0; part |= 1 } if (ek >= run.e0) { ek = run.e0 - 1; part |= 2 }
+          const so = Math.max(0, (g.start - 1) - cum[sk - run.s0]), eo = Math.max(0, g.end - cum[ek - run.s0] - 1)
+          genes.push([g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, pieces, nameAt(sk - run.s0), Math.round(so), nameAt(ek - run.s0), Math.round(eo), part])
+        }
+      }
+      if (genes.length) rows.push({ path: pr.path, hap: pr.hap, genes })
+    }
+    res.json({ rows, c0, c1, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
+// ---- 接合（破断点）の詳細・一覧・塩基 ----
+//   GET /api/blocks/junction?db&jid    → 接合カード: 種類・区間・両側の原子と向き・中身・関係する遺伝子（重なり bp と分類）
+//   GET /api/blocks/junctions?db       → 全接合の要約（一覧用、DB ごとにキャッシュ）
+//   GET /api/blocks/junction_base?db&jid&k → 塩基 MSA に渡すトークン範囲: その株は接合区間 ± k トークン、他株は原子 i の同じ端 ± k
+const JCLS = ['split', 'isl', 'end', 'inside', 'near']
+function juncRow(syn: any, ds: any, jid: number): any | null { const j = ds.prepare('SELECT rowid AS jid, pid, a, b, a2, b2, wrap, type, ai, di, aj, dj, multi_bp, priv_bp, tier FROM junc WHERE rowid=?').get(jid); if (!j) return null; const pr = syn.paths[j.pid]; return { ...j, path: pr?.path, hap: pr?.hap, atom_i: syn.atoms[j.ai] ? { id: j.ai, x0: syn.atoms[j.ai].x0, span: syn.atoms[j.ai].span } : null, atom_j: syn.atoms[j.aj] ? { id: j.aj, x0: syn.atoms[j.aj].x0, span: syn.atoms[j.aj].span } : null } }
+blocksRouter.get('/blocks/junction', (req, res) => {
+  const q = req.query as Record<string, string>; const jid = Number(q.jid)
+  if (!q.db || !Number.isInteger(jid)) { res.status(400).json({ error: 'db, jid が要ります' }); return }
+  const syn = loadSynteny(q.db); const gp = genesPath(q.db); if (!syn) { res.status(404).json({ error: '木のサイドカーがありません' }); return }
+  const ds = new Database(syn.file, { readonly: true }); const d = gp ? new Database(gp, { readonly: true }) : null
+  try {
+    const j = juncRow(syn, ds, jid); if (!j) { res.json({ error: '接合がありません' }); return }
+    const rels = d ? (d.prepare('SELECT r.gid, r.cls, r.left, r.right, r.mid, r.dist, g.name, g.start, g.end, g.strand, g.type, g.pseudo, g.product FROM junc_gene r JOIN gene g ON g.gid=r.gid WHERE r.jid=? ORDER BY g.start').all(jid) as any[]) : []
+    res.json({ junction: j, genes: rels })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close(); if (d) d.close() }
+})
+const _juncListCache = new Map<string, { key: string; rows: any[] }>()
+blocksRouter.get('/blocks/junctions', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const syn = loadSynteny(q.db); const gp = genesPath(q.db); if (!syn) { res.status(404).json({ error: '木のサイドカーがありません' }); return }
+  const key = syn.file + '|' + syn.mtime + '|' + (gp ? fs.statSync(gp).mtimeMs : 0); const c = _juncListCache.get(q.db); if (c && c.key === key) { res.json({ rows: c.rows, cached: true }); return }
+  const t0 = Date.now(); const ds = new Database(syn.file, { readonly: true }); const d = gp ? new Database(gp, { readonly: true }) : null
+  try {
+    const qJG = d ? d.prepare('SELECT r.cls, g.name FROM junc_gene r JOIN gene g ON g.gid=r.gid WHERE r.jid=?') : null
+    const rows: any[] = []
+    for (const j of ds.prepare('SELECT rowid AS jid, pid, a2, b2, wrap, type, ai, di, aj, dj, multi_bp, priv_bp, tier FROM junc ORDER BY pid, a2').iterate() as Iterable<any>) {
+      let best = ''; let bo = 99; let nrel = 0; const names: string[] = []
+      if (qJG) for (const r of qJG.all(j.jid) as any[]) { nrel++; const o = JCLS.indexOf(r.cls); if (o >= 0 && o < bo) { bo = o; best = r.cls } if ((r.cls === 'split' || r.cls === 'isl' || r.cls === 'end') && names.length < 3) names.push(r.name) }
+      const pr = syn.paths[j.pid]
+      rows.push([j.jid, j.pid, pr?.hap ?? '', j.type, j.a2, j.b2, j.tier, best, nrel, names, j.ai, j.aj, j.di, j.dj])
+    }
+    _juncListCache.set(q.db, { key, rows }); res.json({ rows, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close(); if (d) d.close() }
+})
+blocksRouter.get('/blocks/junction_base', (req, res) => {
+  const q = req.query as Record<string, string>; const jid = Number(q.jid); const K = Math.max(10, Math.min(400, Number(q.k) || 60))
+  if (!q.db || !Number.isInteger(jid)) { res.status(400).json({ error: 'db, jid が要ります' }); return }
+  const syn = loadSynteny(q.db); if (!syn) { res.status(404).json({ error: '木のサイドカーがありません' }); return }
+  const ds = new Database(syn.file, { readonly: true })
+  try {
+    const j = juncRow(syn, ds, jid); if (!j) { res.json({ error: '接合がありません' }); return }
+    const ranges: [string, number, number][] = []
+    // この株: 原子 i のインスタンスの接合側の端から、原子 j のインスタンスの接合側の端まで（間の接合区間を含む）± K
+    const mine = syn.inst[j.pid]; const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
+    let bestPair: [any, any] | null = null; let bestGap = Infinity
+    for (const a of insI) for (const bb of insJ) { const gap = bb.s0 - a.e0; if (gap >= 0 && gap < bestGap) { bestGap = gap; bestPair = [a, bb] } }
+    const ntok = syn.paths[j.pid].ntok || 1e12
+    if (bestPair) ranges.push([j.path, Math.max(0, bestPair[0].e0 - K), Math.min(ntok, bestPair[1].s0 + K)])
+    else if (insI.length) { const a = insI[0]; const e = j.di ? a.e0 : a.s0; ranges.push([j.path, Math.max(0, e - K), e + K]) }
+    // 他の株: 原子 i のインスタンスの同じ端 ± K（その株の並びが続く先が見える）
+    for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const ins = syn.inst[pr.pid].filter(it => it.atom === j.ai); if (!ins.length) continue; const a = ins[0]; const e = (j.di === a.dir) ? (j.di ? a.e0 : a.s0) : (j.di ? a.s0 : a.e0); ranges.push([pr.path, Math.max(0, e - K), Math.min(pr.ntok || 1e12, e + K)]) }
+    res.json({ ranges, label: `接合 ${j.type} ${j.hap}`, k: K })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close() }
+})
+
 // 遺伝子の詳細（ホバー・検索）: GET /api/blocks/gene?db&gid  /  ?db&name=<名前>（前方一致、最大 50）
 blocksRouter.get('/blocks/gene', (req, res) => {
   const q = req.query as Record<string, string>

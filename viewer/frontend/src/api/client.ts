@@ -870,6 +870,19 @@ export interface BlockGenesRow { path: string; s: number; e: number; n?: number;
 export async function fetchBlockGenes(dbFile: string, ranges: [string, number, number][], maxGenes = 2000): Promise<{ rows: BlockGenesRow[]; error?: string } | null> {
   try { const res = await fetch('/api/blocks/genes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges, maxGenes }) }); if (!res.ok) return null; return await res.json() } catch { return null }
 }
+// 列範囲（アレル行列・塩基の窓）の遺伝子: 遺伝子 → トークン → 列。行ごとに [gid,name,strand,type,pseudo,start,end,pieces,sn,so,en,eo,part]
+export async function fetchBlockGenesCols(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
+  try { const res = await fetch('/api/blocks/genes_cols', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
+}
+export async function fetchBlockJunction(dbFile: string, jid: number): Promise<any | null> {
+  try { const res = await fetch(`/api/blocks/junction?db=${encodeURIComponent(dbFile)}&jid=${jid}`); if (!res.ok) return null; return await res.json() } catch { return null }
+}
+export async function fetchBlockJunctions(dbFile: string): Promise<{ rows: any[]; error?: string } | null> {
+  try { const res = await fetch(`/api/blocks/junctions?db=${encodeURIComponent(dbFile)}`); if (!res.ok) return null; return await res.json() } catch { return null }
+}
+export async function fetchBlockJunctionBase(dbFile: string, jid: number, k = 60): Promise<{ ranges: [string, number, number][]; label: string; error?: string } | null> {
+  try { const res = await fetch(`/api/blocks/junction_base?db=${encodeURIComponent(dbFile)}&jid=${jid}&k=${k}`); if (!res.ok) return null; return await res.json() } catch { return null }
+}
 export async function fetchBlockGene(dbFile: string, q: { gid?: number; name?: string }): Promise<any[]> {
   try { const p = new URLSearchParams({ db: dbFile }); if (q.gid != null) p.set('gid', String(q.gid)); if (q.name) p.set('name', q.name); const res = await fetch(`/api/blocks/gene?${p}`); if (!res.ok) return []; const j = await res.json(); return j.genes || [] } catch { return [] }
 }
