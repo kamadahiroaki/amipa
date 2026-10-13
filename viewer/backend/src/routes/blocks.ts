@@ -490,7 +490,7 @@ blocksRouter.get('/blocks/junctions', (req, res) => {
       let best = ''; let bo = 99; let nrel = 0; const names: string[] = []
       if (qJG) for (const r of qJG.all(j.jid) as any[]) { nrel++; const o = JCLS.indexOf(r.cls); if (o >= 0 && o < bo) { bo = o; best = r.cls } if ((r.cls === 'split' || r.cls === 'isl' || r.cls === 'end') && names.length < 3) names.push(r.name) }
       const pr = syn.paths[j.pid]
-      rows.push([j.jid, j.pid, pr?.hap ?? '', j.type, j.a2, j.b2, j.tier, best, nrel, names, j.ai, j.aj, j.di, j.dj])
+      rows.push([j.jid, j.pid, pr?.hap ?? '', j.type, j.a2, j.b2, j.tier, best, nrel, names, j.ai, j.aj, j.di, j.dj, j.wrap ? 1 : 0])
     }
     _juncListCache.set(q.db, { key, rows }); res.json({ rows, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close(); if (d) d.close() }
@@ -503,11 +503,25 @@ blocksRouter.get('/blocks/junction_base', (req, res) => {
   try {
     const j = juncRow(syn, ds, jid); if (!j) { res.json({ error: '接合がありません' }); return }
     const ranges: [string, number, number][] = []
+    const mine = syn.inst[j.pid]; const ntok = syn.paths[j.pid].ntok || 1e12
+    if (j.wrap) {
+      // 環状の継ぎ目（コンティグの起点）をまたぐ接合: この株は「原子 i の最後のインスタンスの端 − K … コンティグ末尾」と「先頭 … 原子 j の最初のインスタンスの端 + K」。
+      // 他株は、この株の継ぎ目に最も近い錨（順位）に最も近い錨 ± K（錨の記録は synteny.ts の ANC_REC と同じ 14 バイト: rank u32, tok u32, bp u32, ori u8, tier u8）
+      const ANC = 14
+      const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
+      const a = insI.reduce((b, it) => (!b || it.e0 > b.e0) ? it : b, null as any), bb = insJ.reduce((b, it) => (!b || it.s0 < b.s0) ? it : b, null as any)
+      if (a) ranges.push([j.path, Math.max(0, a.e0 - K), ntok]); if (bb) ranges.push([j.path, 0, Math.min(ntok, bb.s0 + K)])
+      let seamRank = -1, seamTok = -1
+      if (a && a.anc) for (let off = 0; off + ANC <= a.anc.length; off += ANC) { const tok = a.anc.readUInt32LE(off + 4); if (tok > seamTok) { seamTok = tok; seamRank = a.anc.readUInt32LE(off) } }
+      if (seamRank >= 0) for (const pr of syn.paths) { if (pr.pid === j.pid) continue; let bt = -1, bd = Infinity
+        for (const it of syn.inst[pr.pid]) { if (it.atom !== j.ai && it.atom !== j.aj) continue; const buf = it.anc; if (!buf) continue; for (let off = 0; off + ANC <= buf.length; off += ANC) { const dd = Math.abs(buf.readUInt32LE(off) - seamRank); if (dd < bd) { bd = dd; bt = buf.readUInt32LE(off + 4) } } }
+        if (bt >= 0) ranges.push([pr.path, Math.max(0, bt - K), Math.min(pr.ntok || 1e12, bt + K)]) }
+      res.json({ ranges, label: `継ぎ目 ${j.type} ${j.hap}`, k: K }); return
+    }
     // この株: 原子 i のインスタンスの接合側の端から、原子 j のインスタンスの接合側の端まで（間の接合区間を含む）± K
-    const mine = syn.inst[j.pid]; const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
+    const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
     let bestPair: [any, any] | null = null; let bestGap = Infinity
     for (const a of insI) for (const bb of insJ) { const gap = bb.s0 - a.e0; if (gap >= 0 && gap < bestGap) { bestGap = gap; bestPair = [a, bb] } }
-    const ntok = syn.paths[j.pid].ntok || 1e12
     if (bestPair) ranges.push([j.path, Math.max(0, bestPair[0].e0 - K), Math.min(ntok, bestPair[1].s0 + K)])
     else if (insI.length) { const a = insI[0]; const e = j.di ? a.e0 : a.s0; ranges.push([j.path, Math.max(0, e - K), e + K]) }
     // 他の株: 原子 i のインスタンスの同じ端 ± K（その株の並びが続く先が見える）
