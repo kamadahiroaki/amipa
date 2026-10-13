@@ -574,7 +574,9 @@ function sitesXOfCols(S, pc0, pc1){ const n = S.nsites; if (!n) return null; let
 function baseColIndex(M, node, off){ if (!M._nodeOff){ M._nodeOff = new Map(); (M.cols || []).forEach((c, i) => { for (const nm of (c.nodes || [])){ const key = nm + '|' + (c.off != null ? c.off : 0); if (!M._nodeOff.has(key)) M._nodeOff.set(key, i); } }); } let i = M._nodeOff.get(node + '|' + off); if (i == null){ for (let d = 1; d <= 3 && i == null; d++){ i = M._nodeOff.get(node + '|' + (off - d)); if (i == null) i = M._nodeOff.get(node + '|' + (off + d)); } } return i == null ? -1 : i; }
 function baseXOfCol(ci){ const items = LY.bitems, xs = LY.bxs; if (!items) return null; for (let k = 0; k < items.length; k++){ const it = items[k]; if (it.kind === 'col' ? it.ci === ci : (ci >= it.ci0 && ci <= it.ci1)) return [xs[k], xs[k+1]]; } return null; }
 function geneSpanX(w, g){ const L = w.levels[0];
-  if (w.mode === 'sites'){ const S = L.sites; const out = []; for (const pc of g[7]){ const r = sitesXOfCols(S, pc[0], pc[1]); if (r) out.push([r[0], r[1]]); } return out; }
+  if (w.mode === 'sites'){ const S = L.sites; const out = []; const big = g[7].reduce((a, pc) => Math.max(a, pc[1] - pc[0] + 1), 0);
+    for (const pc of g[7]){ if (big >= 20 && pc[1] - pc[0] + 1 < 3) continue;   // 主な片があるとき、1〜2 列の飛び（合意順序でずれた私有ノード等）は描かない
+      const r = sitesXOfCols(S, pc[0], pc[1]); if (r) out.push([r[0], r[1]]); } return out; }
   if (w.mode === 'base'){ const M = L.base; const i0 = baseColIndex(M, g[8], g[9]), i1 = baseColIndex(M, g[10], g[11]); if (i0 < 0 && i1 < 0) return []; const a = i0 >= 0 ? i0 : 0, b = i1 >= 0 ? i1 : (M.cols.length - 1); const xa = baseXOfCol(Math.min(a, b)), xb = baseXOfCol(Math.max(a, b)); if (!xa || !xb) return []; return [[xa[0], xb[1]]]; }
   return []; }
 function drawGeneLanesCols(g){ const w = win(); if (!st.lane || !w._gcols) return; const h = 3;
