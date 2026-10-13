@@ -180,6 +180,7 @@ export async function fetchLeafSeq(dbFile: string, name: string, full = false): 
 // 上部バー用の版情報。viewer=git rev、db=ビルド由来(built_at/emitter_rev/mtime)+機能フラグ。
 export interface VersionInfo {
   viewer: string
+  api_level?: number   // backend の API 段階（routes/databases.ts API_LEVEL）。無ければ 0 とみなす
   // 配信モード。readonly=true の配信では DB を書き換える経路（ノード編集の保存）が
   // サーバ側で塞がれている。画面側はこれを見て Save を無効表示にする。
   readonly?: boolean
@@ -191,6 +192,8 @@ export interface VersionInfo {
     rtree_built_at?: string | null; rad?: boolean
          features: { seq: boolean; inv: boolean; mult: boolean; contigcov: boolean } }
 }
+// この画面が要求する backend の API 段階。3 = 木の根（meta.tree/genes）・接合（junction/junctions/junction_base）・genes_cols
+export const API_LEVEL_REQUIRED = 3
 export async function fetchVersion(dbFile?: string): Promise<VersionInfo> {
   const p = new URLSearchParams()
   if (dbFile) p.set('db', dbFile)

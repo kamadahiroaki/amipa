@@ -7,6 +7,10 @@ import { tiledInfo, TILED_OFF } from '../tiled'
 
 export const databasesRouter = Router()
 
+// 画面が要求する backend の API 段階（frontend/src/api/client.ts の API_LEVEL_REQUIRED と合わせて上げる）。
+// 古い配信ジョブに新しい画面で繋いだときに、画面側が「backend が古い」と出せるようにする（木の根・接合・genes_cols を使う画面は 3）
+export const API_LEVEL = 3
+
 // viewer の版。起動時 1 回だけ解決してキャッシュ。
 // ★コンテナには .git も git も無いので、イメージのビルド時に埋めた値を先に見る。
 //   git を呼ぶのはリポジトリ直実行のときだけ（stderr も捨てる。無い環境で
@@ -29,6 +33,7 @@ databasesRouter.get('/version', (req, res) => {
   //   配信モード(readonly)と版の刻印も含めた上位集合を返す（配備スクリプトもこれを見る）。
   const out: any = {
     viewer: VIEWER_REV,
+    api_level: API_LEVEL,
     name: 'amipa-viewer',
     version: process.env.AMIPA_VERSION ?? process.env.GGB_VERSION ?? 'dev',
     commit: process.env.AMIPA_COMMIT ?? process.env.GGB_COMMIT ?? null,

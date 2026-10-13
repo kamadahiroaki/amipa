@@ -8,7 +8,7 @@ import BlockMsa from './components/BlockMsa'
 import type { BlockView } from './components/blockMsaRender'
 import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
-import { fetchBlockView, fetchBlockBbox, blockSelKey, type BlockSel, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
+import { API_LEVEL_REQUIRED, fetchBlockView, fetchBlockBbox, blockSelKey, type BlockSel, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -1089,7 +1089,8 @@ export default function App() {
           if (snap && typeof snap.db === 'string' && dbs.includes(snap.db)) { applySnapshot(snap); return }
         }
         const urlDb = new URLSearchParams(window.location.search).get('db')
-        const initial = (urlDb && dbs.includes(urlDb)) ? urlDb : (dbs[0] ?? null)
+        let lastDb: string | null = null; try { lastDb = localStorage.getItem('amipa_last_db') } catch { /* ignore */ }   // URL に db が無ければ前回のアトラス（一覧の先頭は巨大な DB のことがある）
+        const initial = (urlDb && dbs.includes(urlDb)) ? urlDb : (lastDb && dbs.includes(lastDb)) ? lastDb : (dbs[0] ?? null)
         setSelectedDb(initial)
       })
       .catch(e => setError(String(e)))
@@ -1104,6 +1105,7 @@ export default function App() {
       params.set('db', selectedDb)
       window.history.replaceState(null, '', '?' + params.toString())
     }
+    try { localStorage.setItem('amipa_last_db', selectedDb) } catch { /* ignore */ }
     setMaxLayer(null); setDbIncompatible(null); setDbLegacy(false); setRibbonHapcov(false); setRibbonContig(false)
     setHapIdx(null); setHapFilter(false)   // 絞り込み可否/状態は DB ごとに再判定
     setLodClamp(null)
@@ -1450,6 +1452,12 @@ export default function App() {
         </select>
 
         {/* 版表示: viewer(git rev) と 選択 DB のビルド由来 + 機能フラグ。staleness/機能有無の確認用。 */}
+        {versionInfo && (versionInfo.api_level ?? 0) < API_LEVEL_REQUIRED && (
+          <span style={{ fontSize: 11, color: '#fff', background: '#e03131', padding: '2px 8px', borderRadius: 4, whiteSpace: 'nowrap' }}
+            title={`この画面は backend の API 段階 ${API_LEVEL_REQUIRED} 以上を要求しますが、繋いでいる配信は ${versionInfo.api_level ?? 0} です。古い配信ジョブに繋いでいるか、backend を再起動していません（amipa-serve status で確認し restart）`}>
+            ⚠ backend が古い（API {versionInfo.api_level ?? 0} &lt; {API_LEVEL_REQUIRED}）: 配信ジョブを確認
+          </span>
+        )}
         {versionInfo && (
           <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#868e96', whiteSpace: 'nowrap',
             display: 'inline-flex', alignItems: 'center', gap: 8 }}
