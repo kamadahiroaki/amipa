@@ -138,6 +138,11 @@ if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
     GP=$(get "blocks/range?db=$DB&x0=$BX0&x1=$BX1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); L=j["window"]["levels"][0]; c=L["haps"][0]["contigs"][0]; it=c["inst"][0]; print(json.dumps({"db": sys.argv[1], "ranges": [[c["path"], it[6], it[6]+it[2]]]}))' "$DB" 2>/dev/null)
     [ -n "$GP" ] && hit "/blocks/genes (POST)" "blocks/genes" "" "$GP"
     hit "/blocks/gene (name)"     "blocks/gene?db=$DB&name=dna" allow-empty
+    GC=$("$PY" -c 'import sys,json; print(json.dumps({"db": sys.argv[1], "c0": int(sys.argv[2]), "c1": int(sys.argv[2]) + 3000}))' "$DB" "$(get "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" | "$PY" -c 'import sys,json; print(json.load(sys.stdin).get("c0", 0))')" 2>/dev/null)
+    [ -n "$GC" ] && hit "/blocks/genes_cols (POST)" "blocks/genes_cols" allow-empty "$GC"
+    hit "/blocks/junctions"       "blocks/junctions?db=$DB"
+    JID=$(get "blocks/junctions?db=$DB" | "$PY" -c 'import sys,json; r=json.load(sys.stdin).get("rows",[]); print(r[0][0] if r else "")' 2>/dev/null)
+    if [ -n "$JID" ]; then hit "/blocks/junction"        "blocks/junction?db=$DB&jid=$JID"; hit "/blocks/junction_base"   "blocks/junction_base?db=$DB&jid=$JID&k=40"; fi
   else
     echo "  SKIP /blocks/genes（遺伝子サイドカー無し）"
   fi
