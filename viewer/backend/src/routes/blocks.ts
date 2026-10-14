@@ -572,6 +572,43 @@ function trimToShared(syn: any, ranges: [string, number, number][], focusPath: s
     const a = Math.max(s0, s0 + lo - margin), b = Math.min(e0, s0 + hi + 1 + margin); out.push([path, a, b]); shared[path] = n / Math.max(1, b - a) }
   return { ranges: out, shared }
 }
+// 接合の窓: 各株の範囲（塩基 MSA 用）・接合の株と共有する割合・各株の接合位置（トークン）。junction_base と junction_genes が使う
+function junctionWindows(syn: any, j: any, K: number): { ranges: [string, number, number][]; shared: Record<string, number>; anchors: Record<string, number>; label: string; seam: { endTok: number } | null } {
+  const ranges: [string, number, number][] = []; const anchors: Record<string, number> = {}
+  const mine = syn.inst[j.pid]; const ntok = syn.paths[j.pid].ntok || 1e12
+  if (j.wrap) {
+    // 環状の継ぎ目（コンティグの起点）をまたぐ接合: この株は「原子 i の最後のインスタンスの端 − K … コンティグ末尾」と「先頭 … 原子 j の最初のインスタンスの端 + K」。
+    // 他株は、この株の継ぎ目に最も近い錨（順位）に最も近い錨 ± K（錨の記録は synteny.ts の ANC_REC と同じ 14 バイト: rank u32, tok u32, bp u32, ori u8, tier u8）
+    const insI = mine.filter((it: any) => it.atom === j.ai), insJ = mine.filter((it: any) => it.atom === j.aj)
+    const a = insI.reduce((b: any, it: any) => (!b || it.e0 > b.e0) ? it : b, null as any), bb = insJ.reduce((b: any, it: any) => (!b || it.s0 < b.s0) ? it : b, null as any)
+    if (a) ranges.push([j.path, Math.max(0, a.e0 - K), ntok]); if (bb) ranges.push([j.path, 0, Math.min(ntok, bb.s0 + K)])
+    anchors[j.path] = a ? a.e0 : 0
+    let seamRank = -1, seamTok = -1
+    if (a && a.anc) for (let off = 0; off + ANC <= a.anc.length; off += ANC) { const tok = a.anc.readUInt32LE(off + 4); if (tok > seamTok) { seamTok = tok; seamRank = a.anc.readUInt32LE(off) } }
+    if (seamRank >= 0) for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const insts = syn.inst[pr.pid]
+      let bt = nearestTokByRank(insts, seamRank, (it: any) => it.atom === j.ai || it.atom === j.aj); if (bt < 0) bt = nearestTokByRank(insts, seamRank)   // 原子 i/j を持たない株も、順序で最も近い錨で並べる
+      if (bt >= 0) { ranges.push([pr.path, Math.max(0, bt - K), Math.min(pr.ntok || 1e12, bt + K)]); anchors[pr.path] = bt } }
+    const tw = trimToShared(syn, ranges, j.path, 15); return { ranges: tw.ranges, shared: tw.shared, anchors, label: `継ぎ目 ${j.type} ${j.hap}`, seam: { endTok: a ? a.e0 : ntok } }
+  }
+  // この株: 原子 i のインスタンスの接合側の端から、原子 j のインスタンスの接合側の端まで（間の接合区間を含む）± K
+  const insI = mine.filter((it: any) => it.atom === j.ai), insJ = mine.filter((it: any) => it.atom === j.aj)
+  let bestPair: [any, any] | null = null; let bestGap = Infinity
+  for (const a of insI) for (const bb of insJ) { const gap = bb.s0 - a.e0; if (gap >= 0 && gap < bestGap) { bestGap = gap; bestPair = [a, bb] } }
+  let eMine = -1, refInst: any = null   // この株の接合側の端（トークン）と、その端を持つインスタンス
+  if (bestPair) { ranges.push([j.path, Math.max(0, bestPair[0].e0 - K), Math.min(ntok, bestPair[1].s0 + K)]); eMine = bestPair[0].e0; refInst = bestPair[0] }
+  else if (insI.length) { const a = insI[0]; const e = a.e0; ranges.push([j.path, Math.max(0, e - K), e + K]); eMine = e; refInst = a }   /* トークン順では原子 i の接合側は常に e0（i を e0 で出て j に s0 で入る） */
+  if (eMine >= 0) anchors[j.path] = eMine
+  const refRank = refInst ? rankNearestTok(refInst, eMine) : -1
+  // 他の株: 原子 i のインスタンスの同じ端 ± K（その株の並びが続く先が見える）。原子 i を持たない株は原子 j の同じ端、どちらも無い株は
+  // 合意順序でこの株の接合に最も近い錨 ± K（島を持たない株も、島が無い側の文脈として並ぶ。以前は原子 i を持つ株しか出なかった）
+  for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const insts = syn.inst[pr.pid]; let e = -1
+    const ins = insts.filter((it: any) => it.atom === j.ai)
+    if (ins.length) { const a = ins[0]; e = (a.dir === j.di) ? a.e0 : a.s0 }   /* 合意座標で同じ端: 接合の株は i を e0 で出る（di=1 なら右端、0 なら左端）。向きが同じ株は e0、逆の株は s0。以前は di=0 のとき逆の端を取っていた（README 改訂 102） */
+    else { const insj = insts.filter((it: any) => it.atom === j.aj); if (insj.length) { const a = insj[0]; e = (a.dir === j.dj) ? a.s0 : a.e0 } else if (refRank >= 0) e = nearestTokByRank(insts, refRank) }   /* 原子 j は s0 で入る: 向きが同じ株は s0、逆は e0 */
+    if (e >= 0) { ranges.push([pr.path, Math.max(0, e - K), Math.min(pr.ntok || 1e12, e + K)]); anchors[pr.path] = e } }
+  const tw = trimToShared(syn, ranges, j.path, 15)
+  return { ranges: tw.ranges, shared: tw.shared, anchors, label: `接合 ${j.type} ${j.hap}`, seam: null }
+}
 blocksRouter.get('/blocks/junction_base', (req, res) => {
   const q = req.query as Record<string, string>; const jid = Number(q.jid); const K = Math.max(10, Math.min(400, Number(q.k) || 60))
   if (!q.db || !Number.isInteger(jid)) { res.status(400).json({ error: 'db, jid が要ります' }); return }
@@ -579,42 +616,66 @@ blocksRouter.get('/blocks/junction_base', (req, res) => {
   const ds = new Database(syn.file, { readonly: true })
   try {
     const j = juncRow(syn, ds, jid); if (!j) { res.json({ error: '接合がありません' }); return }
-    const ranges: [string, number, number][] = []
-    const mine = syn.inst[j.pid]; const ntok = syn.paths[j.pid].ntok || 1e12
     const xr = (j.atom_i && j.atom_j) ? [Math.min(j.atom_i.x0, j.atom_j.x0), Math.max(j.atom_i.x0 + j.atom_i.span, j.atom_j.x0 + j.atom_j.span)] : null   // 両側の原子の合意座標の張り（ミニマップの帯）
-    if (j.wrap) {
-      // 環状の継ぎ目（コンティグの起点）をまたぐ接合: この株は「原子 i の最後のインスタンスの端 − K … コンティグ末尾」と「先頭 … 原子 j の最初のインスタンスの端 + K」。
-      // 他株は、この株の継ぎ目に最も近い錨（順位）に最も近い錨 ± K（錨の記録は synteny.ts の ANC_REC と同じ 14 バイト: rank u32, tok u32, bp u32, ori u8, tier u8）
-      const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
-      const a = insI.reduce((b, it) => (!b || it.e0 > b.e0) ? it : b, null as any), bb = insJ.reduce((b, it) => (!b || it.s0 < b.s0) ? it : b, null as any)
-      if (a) ranges.push([j.path, Math.max(0, a.e0 - K), ntok]); if (bb) ranges.push([j.path, 0, Math.min(ntok, bb.s0 + K)])
-      let seamRank = -1, seamTok = -1
-      if (a && a.anc) for (let off = 0; off + ANC <= a.anc.length; off += ANC) { const tok = a.anc.readUInt32LE(off + 4); if (tok > seamTok) { seamTok = tok; seamRank = a.anc.readUInt32LE(off) } }
-      if (seamRank >= 0) for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const insts = syn.inst[pr.pid]
-        let bt = nearestTokByRank(insts, seamRank, it => it.atom === j.ai || it.atom === j.aj); if (bt < 0) bt = nearestTokByRank(insts, seamRank)   // 原子 i/j を持たない株も、順序で最も近い錨で並べる
-        if (bt >= 0) ranges.push([pr.path, Math.max(0, bt - K), Math.min(pr.ntok || 1e12, bt + K)]) }
-      const tw = trimToShared(syn, ranges, j.path, 15); res.json({ ranges: tw.ranges, shared: tw.shared, label: `継ぎ目 ${j.type} ${j.hap}`, k: K, hap: j.hap, jid, xr }); return
-    }
-    // この株: 原子 i のインスタンスの接合側の端から、原子 j のインスタンスの接合側の端まで（間の接合区間を含む）± K
-    const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
-    let bestPair: [any, any] | null = null; let bestGap = Infinity
-    for (const a of insI) for (const bb of insJ) { const gap = bb.s0 - a.e0; if (gap >= 0 && gap < bestGap) { bestGap = gap; bestPair = [a, bb] } }
-    let eMine = -1, refInst: any = null   // この株の接合側の端（トークン）と、その端を持つインスタンス
-    if (bestPair) { ranges.push([j.path, Math.max(0, bestPair[0].e0 - K), Math.min(ntok, bestPair[1].s0 + K)]); eMine = bestPair[0].e0; refInst = bestPair[0] }
-    else if (insI.length) { const a = insI[0]; const e = a.e0; ranges.push([j.path, Math.max(0, e - K), e + K]); eMine = e; refInst = a }   /* トークン順では原子 i の接合側は常に e0（i を e0 で出て j に s0 で入る） */
-    const refRank = refInst ? rankNearestTok(refInst, eMine) : -1
-    // 他の株: 原子 i のインスタンスの同じ端 ± K（その株の並びが続く先が見える）。原子 i を持たない株は原子 j の同じ端、どちらも無い株は
-    // 合意順序でこの株の接合に最も近い錨 ± K（島を持たない株も、島が無い側の文脈として並ぶ。以前は原子 i を持つ株しか出なかった）
-    for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const insts = syn.inst[pr.pid]; let e = -1
-      const ins = insts.filter(it => it.atom === j.ai)
-      if (ins.length) { const a = ins[0]; e = (a.dir === j.di) ? a.e0 : a.s0 }   /* 合意座標で同じ端: 接合の株は i を e0 で出る（di=1 なら右端、0 なら左端）。向きが同じ株は e0、逆の株は s0。以前は di=0 のとき逆の端を取っていた（README 改訂 102） */
-      else { const insj = insts.filter(it => it.atom === j.aj); if (insj.length) { const a = insj[0]; e = (a.dir === j.dj) ? a.s0 : a.e0 } else if (refRank >= 0) e = nearestTokByRank(insts, refRank) }   /* 原子 j は s0 で入る: 向きが同じ株は s0、逆は e0 */
-      if (e >= 0) ranges.push([pr.path, Math.max(0, e - K), Math.min(pr.ntok || 1e12, e + K)]) }
-    const tw = trimToShared(syn, ranges, j.path, 15)
-    res.json({ ranges: tw.ranges, shared: tw.shared, label: `接合 ${j.type} ${j.hap}`, k: K, hap: j.hap, jid, xr })
+    const w = junctionWindows(syn, j, K)
+    res.json({ ranges: w.ranges, shared: w.shared, label: w.label, k: K, hap: j.hap, jid, xr })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close() }
 })
-
+// 接合の遺伝子近傍の比較: GET /api/blocks/junction_genes?db&jid&n
+//   行＝株（接合の株が先頭、以下は塩基の窓と同じ共有の多い順）、各行は接合位置（junctionWindows の anchors）の前後 n 遺伝子（gene_tok の順）。
+//   オルソログ群＝同じノード（＝同じ合意列）を共有する遺伝子を union-find（グラフで同じ場所にある遺伝子。名前は使わない）。共有ノードの bp が
+//   短い方の遺伝子の 30% 以上なら結ぶ（境界をまたぐ 1 ノードの共有では結ばない）。同じ株の遺伝子どうしは直接結ばない。200 遺伝子超が乗る列（反復）は無視。
+//   以前は列を 16 列の箱で丸めて重ねていたが、緩和で置かれた私有ノードの列は隣の遺伝子と入り交じるので別の遺伝子が束になった（#1335 で rzpD と bor が同群）。
+//   行の向き: 接合の株と共有する群の並びの相関が負なら反転し鎖の記号も裏返す（flipped。アセンブリの向きの違いを吸収）
+blocksRouter.get('/blocks/junction_genes', (req, res) => {
+  const q = req.query as Record<string, string>; const jid = Number(q.jid); const N = Math.max(2, Math.min(20, Number(q.n) || 6))
+  if (!q.db || !Number.isInteger(jid)) { res.status(400).json({ error: 'db, jid が要ります' }); return }
+  const syn = loadSynteny(q.db); const gp = genesPath(q.db); if (!syn) { res.status(404).json({ error: '木のサイドカーがありません' }); return }
+  if (!gp) { res.json({ error: 'この DB には遺伝子サイドカー（.genes）がありません' }); return }
+  if (!syn.dcol || !syn.distill) { res.json({ error: 'dcol / distill がありません' }); return }
+  const t0 = Date.now(); const ds = new Database(syn.file, { readonly: true }); const d = new Database(gp, { readonly: true })
+  try {
+    const j = juncRow(syn, ds, jid); if (!j) { res.json({ error: '接合がありません' }); return }
+    const w = junctionWindows(syn, j, 60); const dist = openDistill(syn.distill)
+    const SEL = 'SELECT g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, g.product, t.s0, t.e0 FROM gene g JOIN gene_tok t ON t.gid=g.gid WHERE g.pid=? AND '
+    const qL = d.prepare(SEL + 't.s0<=? ORDER BY t.s0 DESC LIMIT ?'), qR = d.prepare(SEL + 't.s0>? ORDER BY t.s0 LIMIT ?')
+    const pathOf = new Map(syn.paths.map(p => [p.path, p]))
+    type G = { gid: number; name: string; strand: string; type: string; pseudo: number; start: number; end: number; product: string; s0: number; e0: number; row: number; cols: number[]; bp: number; grp: number }
+    const rows: { path: string; hap: string; shared: number; anchor: number; genes: G[]; anchorIdx: number; straddle: number; flipped: boolean }[] = []
+    for (const [path, anchor] of Object.entries(w.anchors)) { const pr = pathOf.get(path); if (!pr) continue
+      let left: any[], right: any[]
+      if (w.seam && path === j.path) { left = qL.all(pr.pid, w.seam.endTok, N + 1); right = qR.all(pr.pid, -1, N) }   // 継ぎ目: 末尾側 N+1 と先頭側 N
+      else { left = qL.all(pr.pid, anchor, N + 1); right = qR.all(pr.pid, anchor, N) }
+      const genes = [...left.reverse(), ...right] as G[]; const aTok = (w.seam && path === j.path) ? w.seam.endTok : anchor
+      let straddle = genes.findIndex(g => g.s0 <= aTok && aTok < g.e0)   // 接合位置を内側に含む遺伝子（線の上に置く）
+      if (path === j.path && !w.seam) { const k = genes.findIndex(g => g.start <= j.a2 && j.a2 <= g.end); if (k >= 0) straddle = k }   // 接合の株はカードの「分断」と同じ基準（絞った接合区間の左端 a2 を含む遺伝子）
+      rows.push({ path, hap: pr.hap, shared: w.shared[path] ?? 0, anchor, genes, anchorIdx: left.length, straddle, flipped: false }) }
+    const all: G[] = []; rows.forEach((r, ri) => r.genes.forEach(g => { g.row = ri; g.grp = -1; all.push(g) }))
+    for (const g of all) { const pr = pathOf.get(rows[g.row].path)!; const pi = dist.pidx.get(pr.path); const cs = new Set<number>(); let bp = 0; if (pi != null) { const toks = dist.read(pi, g.s0, g.e0); for (let k = 0; k < toks.length; k++) { const c = syn.dcol[toks[k]]; if (c >= 0 && !cs.has(c)) { cs.add(c); bp += syn.colBp[c] } } } g.cols = [...cs]; g.bp = bp }
+    const inv = new Map<number, number[]>(); all.forEach((g, gi) => { for (const c of g.cols) { let a = inv.get(c); if (!a) { a = []; inv.set(c, a) } a.push(gi) } })
+    const parent = all.map((_, i) => i); const find = (x: number): number => parent[x] === x ? x : (parent[x] = find(parent[x])); const union = (a: number, b: number) => { a = find(a); b = find(b); if (a !== b) parent[b] = a }
+    const co = new Map<string, number>()
+    for (const [c, list] of inv) { if (list.length > 200) continue; const w2 = syn.colBp[c]; for (let i = 0; i < list.length; i++) for (let k = i + 1; k < list.length; k++) { if (all[list[i]].row === all[list[k]].row) continue; const key = list[i] < list[k] ? list[i] + ':' + list[k] : list[k] + ':' + list[i]; co.set(key, (co.get(key) || 0) + w2) } }
+    for (const [key, sbp] of co) { const [a, b] = key.split(':').map(Number); const m = Math.min(all[a].bp, all[b].bp); if (m > 0 && sbp >= 0.3 * m) union(a, b) }
+    // 群番号: 接合の株の行での出現順に 0..、それ以外は後ろ
+    const root2grp = new Map<number, number>(); let next = 0; const assign = (gi: number) => { const r = find(gi); if (!root2grp.has(r)) root2grp.set(r, next++); return root2grp.get(r)! }
+    const focusRow = rows.findIndex(r => r.path === j.path); if (focusRow >= 0) rows[focusRow].genes.forEach(g => assign(all.indexOf(g)))
+    all.forEach((g, gi) => { g.grp = assign(gi) })
+    const grpRows = new Map<number, Set<number>>(), grpNames = new Map<number, Map<string, number>>()
+    for (const g of all) { let rs = grpRows.get(g.grp); if (!rs) { rs = new Set(); grpRows.set(g.grp, rs) } rs.add(g.row); const nm = g.name || ''; let m = grpNames.get(g.grp); if (!m) { m = new Map(); grpNames.set(g.grp, m) } m.set(nm, (m.get(nm) || 0) + (/_RS\d+$/.test(nm) || !nm ? 1 : 10)) }
+    const groups = [...grpRows.keys()].sort((a, b) => a - b).map(k => { const m = grpNames.get(k)!; const name = [...m.entries()].sort((u, v) => v[1] - u[1])[0]?.[0] || ''; return { id: k, name, nrows: grpRows.get(k)!.size, inFocus: focusRow >= 0 && grpRows.get(k)!.has(focusRow) } })
+    // 他株の線の位置: 接合の株の線上の遺伝子と同じ群の遺伝子があればそれに合わせる（無ければトークンの位置のまま）
+    if (focusRow >= 0 && rows[focusRow].straddle >= 0) { const G = rows[focusRow].genes[rows[focusRow].straddle].grp
+      rows.forEach((r, ri) => { if (ri === focusRow) return; let best = -1, bd = Infinity; r.genes.forEach((g, i) => { if (g.grp === G) { const dd = Math.abs(i - (r.straddle >= 0 ? r.straddle : r.anchorIdx)); if (dd < bd) { bd = dd; best = i } } }); if (best >= 0) r.straddle = best }) }
+    // 向き: 接合の株と共有する群の並びの相関が負なら反転
+    if (focusRow >= 0) { const fpos = new Map<number, number>(); rows[focusRow].genes.forEach((g, i) => { if (!fpos.has(g.grp)) fpos.set(g.grp, i) })
+      rows.forEach((r, ri) => { if (ri === focusRow) return; const xs: number[] = [], ys: number[] = []; r.genes.forEach((g, i) => { const p = fpos.get(g.grp); if (p != null) { xs.push(i); ys.push(p) } })
+        if (xs.length >= 2) { const mx = xs.reduce((a, b) => a + b, 0) / xs.length, my = ys.reduce((a, b) => a + b, 0) / ys.length; let sxy = 0; for (let i = 0; i < xs.length; i++) sxy += (xs[i] - mx) * (ys[i] - my)
+          if (sxy < 0) { r.genes.reverse(); r.anchorIdx = r.genes.length - r.anchorIdx; if (r.straddle >= 0) r.straddle = r.genes.length - 1 - r.straddle; r.flipped = true; for (const g of r.genes) g.strand = g.strand === '+' ? '-' : g.strand === '-' ? '+' : g.strand } } }) }
+    rows.sort((a, b) => (a.path === j.path ? -1 : b.path === j.path ? 1 : b.shared - a.shared))
+    res.json({ jid, hap: j.hap, focus: j.path, type: j.type, n: N, rows: rows.map(r => ({ path: r.path, hap: r.hap, shared: r.shared, flipped: r.flipped, anchorIdx: r.anchorIdx, straddle: r.straddle, genes: r.genes.map(g => [g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, g.grp, g.product || '']) })), groups, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close(); d.close() }
+})
 // 遺伝子の詳細（ホバー・検索）: GET /api/blocks/gene?db&gid  /  ?db&name=<名前>（前方一致、最大 50）
 blocksRouter.get('/blocks/gene', (req, res) => {
   const q = req.query as Record<string, string>

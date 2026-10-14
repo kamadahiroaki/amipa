@@ -147,6 +147,7 @@ if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
     hit "/blocks/junctions"       "blocks/junctions?db=$DB"
     JID=$(get "blocks/junctions?db=$DB" | "$PY" -c 'import sys,json; r=json.load(sys.stdin).get("rows",[]); print(r[0][0] if r else "")' 2>/dev/null)
     if [ -n "$JID" ]; then hit "/blocks/junction"        "blocks/junction?db=$DB&jid=$JID"; hit "/blocks/junction_base"   "blocks/junction_base?db=$DB&jid=$JID&k=40"; fi
+    [ -n "$JID" ] && hit "/blocks/junction_genes"  "blocks/junction_genes?db=$DB&jid=$JID&n=4"
     if [ -n "$JID" ]; then   # 接合の塩基の窓の遺伝子（トークン範囲）
       GT=$(get "blocks/junction_base?db=$DB&jid=$JID&k=40" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); r=j.get("ranges",[])[:10]; print(json.dumps({"db": sys.argv[1], "ranges": r}) if r else "")' "$DB" 2>/dev/null)
       [ -n "$GT" ] && hit "/blocks/genes_tok (POST)" "blocks/genes_tok" allow-empty "$GT"

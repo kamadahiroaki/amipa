@@ -887,6 +887,10 @@ export async function fetchBlockJunction(dbFile: string, jid: number): Promise<a
 export async function fetchBlockJunctions(dbFile: string): Promise<{ rows: any[]; error?: string } | null> {
   try { const res = await fetch(`/api/blocks/junctions?db=${encodeURIComponent(dbFile)}`); if (!res.ok) return null; return await res.json() } catch { return null }
 }
+// 接合の遺伝子近傍の比較（行＝株、接合位置の前後 n 遺伝子、オルソログ群の色）
+export async function fetchBlockJunctionGenes(dbFile: string, jid: number, n = 6): Promise<any | null> {
+  try { const res = await fetch(`/api/blocks/junction_genes?db=${encodeURIComponent(dbFile)}&jid=${jid}&n=${n}`); if (!res.ok) return null; return await res.json() } catch { return null }
+}
 export async function fetchBlockJunctionBase(dbFile: string, jid: number, k = 60): Promise<{ ranges: [string, number, number][]; label: string; error?: string } | null> {
   try { const res = await fetch(`/api/blocks/junction_base?db=${encodeURIComponent(dbFile)}&jid=${jid}&k=${k}`); if (!res.ok) return null; return await res.json() } catch { return null }
 }

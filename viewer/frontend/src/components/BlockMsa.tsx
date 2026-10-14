@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, warmBlocks, BlockDrillRequest } from '../api/client'
+import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
 import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView, GeneLite } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
@@ -50,6 +50,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onJunction: jid => fetchBlockJunction(db, jid),          // 接合カード
         onJunctions: () => fetchBlockJunctions(db),             // 接合一覧
         onJunctionBase: (jid, k) => fetchBlockJunctionBase(db, jid, k),   // 接合の塩基（トークン範囲）
+        onJunctionGenes: (jid, n) => fetchBlockJunctionGenes(db, jid, n),   // 接合の遺伝子近傍の比較
         onBaseFetch: (ranges, label, maxLeaves) => fetchBubbleMsaRanges(db, ranges, label, 0, 0, maxLeaves),   // 木: 塩基レベル MSA をパネル内に出す（畳まずに受けて画面側で畳む）。maxLeaves=変異の少ない区間で葉の上限を上げる
         onLocate: names => fetchBlockLocate(db, names),      // 木: グラフのノード → 葉（原子）の場所
         onView: v => cbRef.current.onView?.(v),
