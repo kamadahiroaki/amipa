@@ -133,6 +133,10 @@ if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
   hit "/blocks/bbox"            "blocks/bbox?db=$DB&x0=$SX0&x1=$SX1"
   hit "/blocks/subgraph (葉)"   "blocks/subgraph?db=$DB&layer=$BML&x0=$SX0&x1=$SX1"
   hit "/blocks/nodemap (POST)"  "blocks/nodemap" "" '{"db":"'"$DB"'","layer":'"$BML"',"names":["n1","n2"]}'
+  # 葉の名前の集合（塩基の窓・接合の塩基）で寄せる／絞る: POST 版の bbox と subgraph（names→atoms は上の層）
+  NB=$(get "blocks/subgraph?db=$DB&layer=$BML&a0=1&a1=1&names=1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); n=j.get("names",[])[:200]; print(json.dumps({"db": sys.argv[1], "names": n, "layer": int(sys.argv[2]), "target": 800}) if n else "")' "$DB" "$BML" 2>/dev/null)
+  [ -n "$NB" ] && hit "/blocks/bbox (POST names)"     "blocks/bbox" "" "$NB"
+  [ -n "$NB" ] && hit "/blocks/subgraph (POST names)" "blocks/subgraph" "" "$NB"
   BG=$("$PY" -c 'import sys,json; j=json.load(sys.stdin); print("1" if j.get("meta",{}).get("genes") else "0")' <<<"$BLK" 2>/dev/null || echo 0)
   if [ "$BG" = 1 ]; then
     GP=$(get "blocks/range?db=$DB&x0=$BX0&x1=$BX1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); L=j["window"]["levels"][0]; c=L["haps"][0]["contigs"][0]; it=c["inst"][0]; print(json.dumps({"db": sys.argv[1], "ranges": [[c["path"], it[6], it[6]+it[2]]]}))' "$DB" 2>/dev/null)
@@ -143,6 +147,10 @@ if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
     hit "/blocks/junctions"       "blocks/junctions?db=$DB"
     JID=$(get "blocks/junctions?db=$DB" | "$PY" -c 'import sys,json; r=json.load(sys.stdin).get("rows",[]); print(r[0][0] if r else "")' 2>/dev/null)
     if [ -n "$JID" ]; then hit "/blocks/junction"        "blocks/junction?db=$DB&jid=$JID"; hit "/blocks/junction_base"   "blocks/junction_base?db=$DB&jid=$JID&k=40"; fi
+    if [ -n "$JID" ]; then   # 接合の塩基の窓の遺伝子（トークン範囲）
+      GT=$(get "blocks/junction_base?db=$DB&jid=$JID&k=40" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); r=j.get("ranges",[])[:10]; print(json.dumps({"db": sys.argv[1], "ranges": r}) if r else "")' "$DB" 2>/dev/null)
+      [ -n "$GT" ] && hit "/blocks/genes_tok (POST)" "blocks/genes_tok" allow-empty "$GT"
+    fi
   else
     echo "  SKIP /blocks/genes（遺伝子サイドカー無し）"
   fi

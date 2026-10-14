@@ -874,6 +874,10 @@ export async function fetchBlockGenes(dbFile: string, ranges: [string, number, n
   try { const res = await fetch('/api/blocks/genes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges, maxGenes }) }); if (!res.ok) return null; return await res.json() } catch { return null }
 }
 // 列範囲（アレル行列・塩基の窓）の遺伝子: 遺伝子 → トークン → 列。行ごとに [gid,name,strand,type,pseudo,start,end,pieces,sn,so,en,eo,part]
+// トークン範囲で開いた塩基の窓（接合の塩基など）の遺伝子: 行ごとに genes_cols と同じ形
+export async function fetchBlockGenesTok(dbFile: string, ranges: [string, number, number][]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
+  try { const res = await fetch('/api/blocks/genes_tok', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges }) }); if (!res.ok) return null; return await res.json() } catch { return null }
+}
 export async function fetchBlockGenesCols(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
   try { const res = await fetch('/api/blocks/genes_cols', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
 }
@@ -891,10 +895,11 @@ export async function fetchBlockGene(dbFile: string, q: { gid?: number; name?: s
 }
 // 木: 合意座標の範囲 → グラフを寄せる先（層と外接矩形）。参照座標に依らないので、参照に無い島の窓でも正しく寄る
 // 窓の指定（集合の意味）: atoms=原子の番号の範囲 / cols=原子の内側の列範囲 / x=合意座標（旧）
-export type BlockSel = { atoms: [number, number] } | { cols: [number, number] } | { x: [number, number] }
-export function blockSelParams(sel: BlockSel): Record<string, string> { return 'atoms' in sel ? { a0: String(sel.atoms[0]), a1: String(sel.atoms[1]) } : 'cols' in sel ? { c0: String(Math.floor(sel.cols[0])), c1: String(Math.ceil(sel.cols[1])) } : { x0: String(Math.floor(sel.x[0])), x1: String(Math.ceil(sel.x[1])) } }
-export function blockSelKey(sel: BlockSel): string { const p = blockSelParams(sel); return Object.entries(p).map(([k, v]) => k + v).join('|') }
+export type BlockSel = { atoms: [number, number] } | { cols: [number, number] } | { x: [number, number] } | { names: string[] }   // names = 葉の名前の集合（塩基の窓など。POST で送る）
+export function blockSelParams(sel: BlockSel): Record<string, string> { return 'names' in sel ? {} : 'atoms' in sel ? { a0: String(sel.atoms[0]), a1: String(sel.atoms[1]) } : 'cols' in sel ? { c0: String(Math.floor(sel.cols[0])), c1: String(Math.ceil(sel.cols[1])) } : { x0: String(Math.floor(sel.x[0])), x1: String(Math.ceil(sel.x[1])) } }
+export function blockSelKey(sel: BlockSel): string { if ('names' in sel) { const n = sel.names; return `n${n.length}:${n[0] || ''}:${n[n.length >> 1] || ''}:${n[n.length - 1] || ''}` } const p = blockSelParams(sel); return Object.entries(p).map(([k, v]) => k + v).join('|') }
 export async function fetchBlockBbox(dbFile: string, sel: BlockSel, target = 800): Promise<BlockViewFit | null> {
+  if ('names' in sel) { try { const r = await fetch('/api/blocks/bbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, names: sel.names, target }) }); if (!r.ok) return null; return await r.json() } catch { return null } }
   try { const p = new URLSearchParams({ db: dbFile, ...blockSelParams(sel), target: String(target) }); const r = await fetch(`/api/blocks/bbox?${p}`); if (!r.ok) return null; return await r.json() } catch { return null }
 }
 // 木: 範囲駆動の部分グラフ（Blocks の窓の範囲だけ）。空間問い合わせをせず名前で引くので、密な中央でも窓の広さぶんの時間で返る。
@@ -902,10 +907,12 @@ export async function fetchBlockBbox(dbFile: string, sel: BlockSel, target = 800
 export interface BlockSubgraph { nodes: NodeData[]; outer: NodeData[]; edges: EdgeData[]; c0: number; c1: number; n: number; truncated: boolean; ms: number; error?: string }
 // 窓のノード名だけ（アレル行列の窓の塗り分け用。絞りモードでなくても使う）
 export async function fetchBlockNames(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal): Promise<{ names: string[]; truncated: boolean } | null> {
+  if ('names' in sel) { if (layer < 0) return null; try { const res = await fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names, namesOnly: true }), signal }); const j = await res.json(); if (!res.ok || j.error) return null; return { names: j.names || [], truncated: !!j.truncated } } catch { return null } }
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel), names: '1' })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok || j.error) return null; return { names: j.names || [], truncated: !!j.truncated } } catch { return null }
 }
 export async function fetchBlockSubgraph(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal): Promise<BlockSubgraph | { error: string }> {
+  if ('names' in sel) { try { const res = await fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names }), signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } } }
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel) })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }

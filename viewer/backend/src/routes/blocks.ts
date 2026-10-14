@@ -268,8 +268,9 @@ blocksRouter.post('/blocks/nodemap', async (req, res) => {
 //   GET /api/blocks/bbox?db&x0&x1[&target]
 //   層: 範囲に属するノードが target（既定 800）以下になる最も細かい層（/blocks/view と同じ考え）。葉は列数、上は supermap の件数。
 //   矩形: その層の範囲のノード座標の min/max（葉は列を等間隔に最大 4,000 本標本化）。参照に無い島でも正しく寄る。
-blocksRouter.get('/blocks/bbox', (req, res) => {
-  const q = req.query as Record<string, string>
+blocksRouter.get('/blocks/bbox', (req, res) => { runBbox(res, req.query as Record<string, string>) })
+blocksRouter.post('/blocks/bbox', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; const q: Record<string, string> = { db: String(b.db ?? ''), target: String(b.target ?? '') }; runBbox(res, q, Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []) })
+function runBbox(res: any, q: Record<string, string>, namesList?: string[]) {
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const syn = loadSynteny(q.db)
   if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
@@ -277,7 +278,7 @@ blocksRouter.get('/blocks/bbox', (req, res) => {
   const t0 = Date.now()
   try {
     // 葉の集合（a0,a1 / c0,c1 / x0,x1 のどれでも。集合の意味で解決）
-    const rsel = resolveNames(syn, syn.maxlayer, q, 200000); if ('error' in rsel) { res.status(400).json({ error: rsel.error }); return }
+    const rsel = resolveNames(syn, syn.maxlayer, q, 200000, namesList); if ('error' in rsel) { res.status(400).json({ error: rsel.error }); return }
     const all = rsel.names; const c0 = rsel.c0, c1 = rsel.c1
     const atoms = (q.a0 != null && q.a1 != null) ? syn.atoms.slice(Number(q.a0), Number(q.a1) + 1) : syn.atoms.filter(a => a.c1 >= c0 && a.c0 <= c1); const a0 = atoms.length ? atoms[0].id : -1, a1 = atoms.length ? atoms[atoms.length - 1].id : -1
     const d = getDb(q.db)
@@ -303,7 +304,7 @@ blocksRouter.get('/blocks/bbox', (req, res) => {
     if (!n) { res.json({ layer, count: 0, counts, c0, c1, ms: Date.now() - t0 }); return }
     res.json({ layer, count: n, counts, c0, c1, minx, miny, maxx, maxy, cx: sx / n, cy: sy / n, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) }
-})
+}
 
 // ---- 範囲駆動の部分グラフ（Blocks の窓の範囲だけをグラフに出す「絞りモード」の取得経路）----
 //   GET /api/blocks/subgraph?db&layer&x0&x1[&max]
@@ -314,8 +315,18 @@ blocksRouter.get('/blocks/bbox', (req, res) => {
 const SUBGRAPH_MAX = 120000   // 原子 1 個の窓は葉が 9 万（原子 286: 列 82k + 他所から場所を持つ多重）になりうる。超えたら truncated（viewer が警告）
 // 窓 → ノード名の集合。優先順: a0,a1（原子の集合。葉は atomnodes、上は atomsuper）→ c0,c1（原子の内側の列範囲。パスのトークン範囲の和）
 // → x0,x1（合意座標。重なる原子の集合に直す＝旧 API 互換）。how にどの経路で解決したかを返す
-function resolveNames(syn: ReturnType<typeof loadSynteny> & object, layer: number, q: Record<string, string>, max: number): { names: string[]; truncated: boolean; c0: number; c1: number; how: string } | { error: string } {
+function resolveNames(syn: ReturnType<typeof loadSynteny> & object, layer: number, q: Record<string, string>, max: number, namesList?: string[]): { names: string[]; truncated: boolean; c0: number; c1: number; how: string } | { error: string } {
   const S = syn as any
+  if (namesList) {   // 葉の名前の集合（塩基の窓など、列範囲で表せない集合。POST で受ける）
+    const list = namesList.filter(n => typeof n === 'string')
+    if (layer >= S.maxlayer || !S.hasSupermap) return { names: list.slice(0, max), truncated: list.length > max, c0: -1, c1: -1, how: 'names' }
+    // 上の層: 葉の名前 → 原子（多重でない場所）→ 原子ごとの上の層のノードの和
+    const r = atomsOfNames(S, S.maxlayer, list); const atoms = new Set<number>()
+    for (let i = 0; i < r.places.length; i++) { if (r.kinds[i] <= 3) for (const a of r.places[i]) if (a >= 0 && a < S.nat) atoms.add(a) }
+    const out: string[] = []; const seen = new Set<string>(); let truncated = false
+    for (const a of [...atoms].sort((u, v) => u - v)) { const rr = namesForAtomsExact(S, layer, a, a, max); for (const nm of rr.names) { if (seen.has(nm)) continue; if (out.length >= max) { truncated = true; break } seen.add(nm); out.push(nm) } if (truncated) break }
+    return { names: out, truncated, c0: -1, c1: -1, how: 'names→atoms' }
+  }
   if (q.a0 != null && q.a1 != null) {
     const a0 = Number(q.a0), a1 = Number(q.a1); if (!Number.isInteger(a0) || !Number.isInteger(a1) || a1 < a0) return { error: 'a0 ≤ a1 の整数が要ります' }
     const r = namesForAtomsExact(S, layer, a0, a1, max)
@@ -332,8 +343,10 @@ function resolveNames(syn: ReturnType<typeof loadSynteny> & object, layer: numbe
   const atoms = S.atoms.filter((a: any) => a.x0 < x1 && a.x0 + a.span > x0); if (!atoms.length) return { names: [], truncated: false, c0: -1, c1: -1, how: 'x-empty' }
   const r = namesForAtomsExact(S, layer, atoms[0].id, atoms[atoms.length - 1].id, max); return { names: r.names, truncated: r.truncated, c0: atoms[0].c0, c1: atoms[atoms.length - 1].c1, how: 'x→atoms' }
 }
-blocksRouter.get('/blocks/subgraph', (req, res) => {
-  const q = req.query as Record<string, string>
+blocksRouter.get('/blocks/subgraph', (req, res) => { runSubgraph(res, req.query as Record<string, string>) })
+// POST 版: 葉の名前の集合で指定（塩基の窓など、列範囲で表せない集合）。body {db, layer, names:[...], max?, namesOnly?}
+blocksRouter.post('/blocks/subgraph', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; const q: Record<string, string> = { db: String(b.db ?? ''), layer: String(b.layer ?? 0), max: String(b.max ?? ''), names: b.namesOnly ? '1' : '' }; runSubgraph(res, q, Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []) })
+function runSubgraph(res: any, q: Record<string, string>, namesList?: string[]) {
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const syn = loadSynteny(q.db)
   if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
@@ -342,7 +355,7 @@ blocksRouter.get('/blocks/subgraph', (req, res) => {
   const t0 = Date.now()
   try {
     // 1) 範囲のノード名（集合の意味）: a0,a1=原子の集合 / c0,c1=原子の内側の列範囲（パスのトークン範囲の和）/ x0,x1=合意座標（旧: 重なる原子に直す）
-    const sel = resolveNames(syn, layer, q, max); if ('error' in sel) { res.json({ error: sel.error }); return }
+    const sel = resolveNames(syn, layer, q, max, namesList); if ('error' in sel) { res.json({ error: sel.error }); return }
     const { names, truncated, c0, c1, how } = sel
     if (q.names === '1') { res.json({ names, c0, c1, n: names.length, truncated, how, ms: Date.now() - t0 }); return }   // 名前だけ（塗り分け用）
     if (!names.length) { res.json({ nodes: [], outer: [], edges: [], c0, c1, n: 0, truncated, how, ms: Date.now() - t0 }); return }
@@ -368,7 +381,7 @@ blocksRouter.get('/blocks/subgraph', (req, res) => {
     const outer = fetchNodes([...outerNames].slice(0, max))
     res.json({ nodes, outer, edges, c0, c1, n: names.length, truncated, how, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) }
-})
+}
 
 // ---- 遺伝子サイドカー <db>.genes（annot/build_genes.py）: 株ごとの遺伝子区間（コンティグ bp）と、接合 × 遺伝子の分類 ----
 //   POST /api/blocks/genes  body {db, ranges:[[path, s, e], ...], maxGenes?}
@@ -459,6 +472,45 @@ blocksRouter.post('/blocks/genes_cols', (req, res) => {
     res.json({ rows, c0, c1, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
 })
+// 塩基の窓をトークン範囲で開いたとき（接合の塩基など、列範囲で表せない窓）の遺伝子。POST /api/blocks/genes_tok body {db, ranges:[[path, s0, e0], ...]}
+//   行ごとに genes_cols と同じ形（pieces は空。塩基の窓は開始・終了の (ノード, オフセット) で置く）。範囲の外で始まる／終わる遺伝子は端のトークンで代用し part に印
+blocksRouter.post('/blocks/genes_tok', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>
+  const db = typeof b.db === 'string' ? b.db : ''
+  const ranges = Array.isArray(b.ranges) ? (b.ranges as unknown[]).filter(r => Array.isArray(r) && r.length === 3 && typeof r[0] === 'string') as [string, number, number][] : []
+  if (!db || !ranges.length) { res.status(400).json({ error: 'db, ranges が要ります' }); return }
+  const gp = genesPath(db); const syn = loadSynteny(db)
+  if (!gp || !syn) { res.json({ rows: [], error: 'この DB には遺伝子サイドカー（.genes）がありません' }); return }
+  if (!syn.dcol || !syn.distill || !syn.col2orig) { res.json({ rows: [], error: 'dcol / distill がありません' }); return }
+  const t0 = Date.now(); const dist = openDistill(syn.distill); const d = new Database(gp, { readonly: true })
+  try {
+    const qG = d.prepare('SELECT g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, t.s0, t.e0 FROM gene g JOIN gene_tok t ON t.gid=g.gid WHERE g.pid=? AND t.e0>? AND t.s0<? ORDER BY t.s0')
+    const pathOf = new Map(syn.paths.map(p => [p.path, p]))
+    const byHap = new Map<string, { path: string; hap: string; genes: any[] }>()
+    for (const [path, rs0, re0] of ranges.slice(0, 500)) {
+      const pr = pathOf.get(path); if (!pr) continue; const pi = dist.pidx.get(pr.path); if (pi == null) continue
+      const s0 = Math.max(0, Math.floor(rs0)), e0 = Math.max(s0 + 1, Math.floor(re0))
+      // コンティグ bp の原点: s0 を含む（または直前の）インスタンスの先頭から読む（インスタンスの隙間のトークンにも bp を付ける）
+      let base: any = null; for (const it of syn.inst[pr.pid]) if (it.s0 <= s0 && (!base || it.s0 > base.s0)) base = it
+      const from = base && (s0 - base.s0) <= 200000 ? base.s0 : s0; const pos0 = base && from === base.s0 ? base.pos : 0
+      const toks = dist.read(pi, from, e0); const n = toks.length
+      const colA = new Int32Array(n); const cum = new Float64Array(n + 1); cum[0] = pos0
+      for (let k = 0; k < n; k++) { const c = syn.dcol[toks[k]]; colA[k] = c; cum[k + 1] = cum[k] + (c >= 0 ? syn.colBp[c] : 0) }
+      const nameAt = (k: number) => { const c = colA[k]; const o = c >= 0 ? syn.col2orig![c] : -1; return o >= 0 ? 'n' + o : '' }
+      const bpAt = (k: number) => { const c = colA[k]; return c >= 0 ? syn.colBp[c] : 1 }
+      let row = byHap.get(pr.hap); if (!row) { row = { path: pr.path, hap: pr.hap, genes: [] }; byHap.set(pr.hap, row) }
+      const seen = new Set(row.genes.map((g: any) => g[0]))
+      for (const g of qG.all(pr.pid, s0, e0) as any[]) {
+        if (seen.has(g.gid)) continue
+        let part = 0; let sk = g.s0, ek = g.e0 - 1
+        if (sk < s0) { sk = s0; part |= 1 } if (ek >= e0) { ek = e0 - 1; part |= 2 }
+        const so = Math.min(bpAt(sk - from) - 1, Math.max(0, (g.start - 1) - cum[sk - from])), eo = Math.min(bpAt(ek - from) - 1, Math.max(0, g.end - cum[ek - from] - 1))
+        row.genes.push([g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, [], nameAt(sk - from), Math.round(so), nameAt(ek - from), Math.round(eo), part]); seen.add(g.gid)
+      }
+    }
+    res.json({ rows: [...byHap.values()].filter(r => r.genes.length), ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
 // ---- 接合（破断点）の詳細・一覧・塩基 ----
 //   GET /api/blocks/junction?db&jid    → 接合カード: 種類・区間・両側の原子と向き・中身・関係する遺伝子（重なり bp と分類）
 //   GET /api/blocks/junctions?db       → 全接合の要約（一覧用、DB ごとにキャッシュ）
@@ -497,6 +549,12 @@ blocksRouter.get('/blocks/junctions', (req, res) => {
     _juncListCache.set(q.db, { key, rows }); res.json({ rows, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close(); if (d) d.close() }
 })
+// 錨の記録（inst.anc）は synteny.ts の ANC_REC と同じ 14 バイト: rank u32, tok u32, bp u32, ori u8, tier u8
+const ANC = 14
+// 錨の順位 rank に最も近い錨を持つインスタンスのトークン（pred で原子を絞れる）。無ければ -1
+function nearestTokByRank(insts: any[], rank: number, pred?: (it: any) => boolean): number { let bt = -1, bd = Infinity; for (const it of insts) { if (pred && !pred(it)) continue; const buf = it.anc; if (!buf) continue; for (let off = 0; off + ANC <= buf.length; off += ANC) { const dd = Math.abs(buf.readUInt32LE(off) - rank); if (dd < bd) { bd = dd; bt = buf.readUInt32LE(off + 4) } } } return bt }
+// インスタンスの中でトークン tok に最も近い錨の順位。無ければ -1
+function rankNearestTok(it: any, tok: number): number { let br = -1, bd = Infinity; const buf = it && it.anc; if (!buf) return -1; for (let off = 0; off + ANC <= buf.length; off += ANC) { const dd = Math.abs(buf.readUInt32LE(off + 4) - tok); if (dd < bd) { bd = dd; br = buf.readUInt32LE(off) } } return br }
 blocksRouter.get('/blocks/junction_base', (req, res) => {
   const q = req.query as Record<string, string>; const jid = Number(q.jid); const K = Math.max(10, Math.min(400, Number(q.k) || 60))
   if (!q.db || !Number.isInteger(jid)) { res.status(400).json({ error: 'db, jid が要ります' }); return }
@@ -506,29 +564,36 @@ blocksRouter.get('/blocks/junction_base', (req, res) => {
     const j = juncRow(syn, ds, jid); if (!j) { res.json({ error: '接合がありません' }); return }
     const ranges: [string, number, number][] = []
     const mine = syn.inst[j.pid]; const ntok = syn.paths[j.pid].ntok || 1e12
+    const xr = (j.atom_i && j.atom_j) ? [Math.min(j.atom_i.x0, j.atom_j.x0), Math.max(j.atom_i.x0 + j.atom_i.span, j.atom_j.x0 + j.atom_j.span)] : null   // 両側の原子の合意座標の張り（ミニマップの帯）
     if (j.wrap) {
       // 環状の継ぎ目（コンティグの起点）をまたぐ接合: この株は「原子 i の最後のインスタンスの端 − K … コンティグ末尾」と「先頭 … 原子 j の最初のインスタンスの端 + K」。
       // 他株は、この株の継ぎ目に最も近い錨（順位）に最も近い錨 ± K（錨の記録は synteny.ts の ANC_REC と同じ 14 バイト: rank u32, tok u32, bp u32, ori u8, tier u8）
-      const ANC = 14
       const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
       const a = insI.reduce((b, it) => (!b || it.e0 > b.e0) ? it : b, null as any), bb = insJ.reduce((b, it) => (!b || it.s0 < b.s0) ? it : b, null as any)
       if (a) ranges.push([j.path, Math.max(0, a.e0 - K), ntok]); if (bb) ranges.push([j.path, 0, Math.min(ntok, bb.s0 + K)])
       let seamRank = -1, seamTok = -1
       if (a && a.anc) for (let off = 0; off + ANC <= a.anc.length; off += ANC) { const tok = a.anc.readUInt32LE(off + 4); if (tok > seamTok) { seamTok = tok; seamRank = a.anc.readUInt32LE(off) } }
-      if (seamRank >= 0) for (const pr of syn.paths) { if (pr.pid === j.pid) continue; let bt = -1, bd = Infinity
-        for (const it of syn.inst[pr.pid]) { if (it.atom !== j.ai && it.atom !== j.aj) continue; const buf = it.anc; if (!buf) continue; for (let off = 0; off + ANC <= buf.length; off += ANC) { const dd = Math.abs(buf.readUInt32LE(off) - seamRank); if (dd < bd) { bd = dd; bt = buf.readUInt32LE(off + 4) } } }
+      if (seamRank >= 0) for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const insts = syn.inst[pr.pid]
+        let bt = nearestTokByRank(insts, seamRank, it => it.atom === j.ai || it.atom === j.aj); if (bt < 0) bt = nearestTokByRank(insts, seamRank)   // 原子 i/j を持たない株も、順序で最も近い錨で並べる
         if (bt >= 0) ranges.push([pr.path, Math.max(0, bt - K), Math.min(pr.ntok || 1e12, bt + K)]) }
-      res.json({ ranges, label: `継ぎ目 ${j.type} ${j.hap}`, k: K }); return
+      res.json({ ranges, label: `継ぎ目 ${j.type} ${j.hap}`, k: K, hap: j.hap, jid, xr }); return
     }
     // この株: 原子 i のインスタンスの接合側の端から、原子 j のインスタンスの接合側の端まで（間の接合区間を含む）± K
     const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
     let bestPair: [any, any] | null = null; let bestGap = Infinity
     for (const a of insI) for (const bb of insJ) { const gap = bb.s0 - a.e0; if (gap >= 0 && gap < bestGap) { bestGap = gap; bestPair = [a, bb] } }
-    if (bestPair) ranges.push([j.path, Math.max(0, bestPair[0].e0 - K), Math.min(ntok, bestPair[1].s0 + K)])
-    else if (insI.length) { const a = insI[0]; const e = j.di ? a.e0 : a.s0; ranges.push([j.path, Math.max(0, e - K), e + K]) }
-    // 他の株: 原子 i のインスタンスの同じ端 ± K（その株の並びが続く先が見える）
-    for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const ins = syn.inst[pr.pid].filter(it => it.atom === j.ai); if (!ins.length) continue; const a = ins[0]; const e = (j.di === a.dir) ? (j.di ? a.e0 : a.s0) : (j.di ? a.s0 : a.e0); ranges.push([pr.path, Math.max(0, e - K), Math.min(pr.ntok || 1e12, e + K)]) }
-    res.json({ ranges, label: `接合 ${j.type} ${j.hap}`, k: K })
+    let eMine = -1, refInst: any = null   // この株の接合側の端（トークン）と、その端を持つインスタンス
+    if (bestPair) { ranges.push([j.path, Math.max(0, bestPair[0].e0 - K), Math.min(ntok, bestPair[1].s0 + K)]); eMine = bestPair[0].e0; refInst = bestPair[0] }
+    else if (insI.length) { const a = insI[0]; const e = j.di ? a.e0 : a.s0; ranges.push([j.path, Math.max(0, e - K), e + K]); eMine = e; refInst = a }
+    const refRank = refInst ? rankNearestTok(refInst, eMine) : -1
+    // 他の株: 原子 i のインスタンスの同じ端 ± K（その株の並びが続く先が見える）。原子 i を持たない株は原子 j の同じ端、どちらも無い株は
+    // 合意順序でこの株の接合に最も近い錨 ± K（島を持たない株も、島が無い側の文脈として並ぶ。以前は原子 i を持つ株しか出なかった）
+    for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const insts = syn.inst[pr.pid]; let e = -1
+      const ins = insts.filter(it => it.atom === j.ai)
+      if (ins.length) { const a = ins[0]; e = (j.di === a.dir) ? (j.di ? a.e0 : a.s0) : (j.di ? a.s0 : a.e0) }
+      else { const insj = insts.filter(it => it.atom === j.aj); if (insj.length) { const a = insj[0]; e = (j.dj === a.dir) ? (j.dj ? a.s0 : a.e0) : (j.dj ? a.e0 : a.s0) } else if (refRank >= 0) e = nearestTokByRank(insts, refRank) }
+      if (e >= 0) ranges.push([pr.path, Math.max(0, e - K), Math.min(pr.ntok || 1e12, e + K)]) }
+    res.json({ ranges, label: `接合 ${j.type} ${j.hap}`, k: K, hap: j.hap, jid, xr })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close() }
 })
 
