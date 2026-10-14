@@ -43,6 +43,14 @@ app.use(express.json({ limit: '1mb' }))   // スナップショット保存用�
 // API レスポンスは全て動的（DB内容依存）で、frontend が独自にタイルキャッシュする。
 // ブラウザの HTTP キャッシュを無効化して、編集のDB反映後に古い応答が返らないようにする。
 app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next() })
+// 遅い要求のログ: 応答完了までが AMIPA_SLOWLOG_MS（既定 500）を超えた API 要求を 1 行で出す（原因の切り分け用。
+//   「一覧が遅い」が backend の処理か、転送か、別の重い要求の後ろに並んだのかを配信ログで見分ける）。0 で無効
+const SLOWLOG_MS = (() => { const v = Number(process.env.AMIPA_SLOWLOG_MS); return Number.isFinite(v) && v >= 0 ? v : 500 })()
+if (SLOWLOG_MS > 0) app.use('/api', (req, res, next) => {
+  const t0 = Date.now()
+  res.on('finish', () => { const dt = Date.now() - t0; if (dt >= SLOWLOG_MS) console.log(`[slow] ${dt}ms ${res.statusCode} ${req.method} ${req.originalUrl.slice(0, 140)} ${res.getHeader('content-length') ?? '-'}B`) })
+  next()
+})
 
 // 放棄されたリクエストを、DB に触る前に捨てる。
 //

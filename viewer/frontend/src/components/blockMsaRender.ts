@@ -605,7 +605,8 @@ function openJunction(jid){ if (!(cb && cb.onJunction)) return; $('detailbody').
 function gotoAtom(aid){ const A = DATA.meta.atoms && DATA.meta.atoms[aid]; if (!A) return; if (st.win !== 0 || st.li !== 0 || st.filter){ st.win = 0; st.li = 0; st.filter = null; st.filterPath = []; st.sel = null; st.origin = null; st.pinned = false; drawAll(); emitSel(); } drillRange(A[0], A[0] + Math.max(1, A[1])); }
 function openJunctionBase(jid){ if (!(cb && cb.onJunctionBase && cb.onBaseFetch)) return; st.busy = `接合 ${jid} の塩基のトークン範囲を求めています…`; drawGrid();
   cb.onJunctionBase(jid, 60).then(r => { st.busy = null; if (!r || r.error || !r.ranges || !r.ranges.length){ drawAll(); notice(`接合の塩基を出せませんでした: ${esc((r && r.error) || '範囲なし')}`); return; } openBase(r.ranges, r.label || ('接合 ' + jid), -1, null, null, 2000, null); }).catch(e => { st.busy = null; drawAll(); notice(`失敗: ${esc(String(e))}`); }); }
-function openJunctionList(){ if (!(cb && cb.onJunctions)) return; st.pinned = true; setDetailWide(true); $('detailbody').innerHTML = '<p class="k">接合の一覧を読んでいます…</p>';
+function openJunctionList(){ if (!(cb && cb.onJunctions)) return; st.pinned = true; setDetailWide(true); if (_juncList){ renderJunctionList(); return; }   // 一度読んだ一覧はセッション中そのまま使う（サイドカーは変わらない）
+  $('detailbody').innerHTML = '<p class="k">接合の一覧を読んでいます…</p>';
   const go = rows => { _juncList = rows; renderJunctionList(); };
   if (_juncList) go(_juncList); else cb.onJunctions().then(r => { if (!r || r.error || !r.rows){ setDetail(`<p class="k">一覧を読めませんでした: ${esc((r && r.error) || '応答なし')}</p>`); return; } go(r.rows); }).catch(e => setDetail(`<p class="k">失敗: ${esc(String(e))}</p>`)); }
 const JL = { type: '', cls: '', win: true, sort: 'hap' };

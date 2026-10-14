@@ -484,11 +484,13 @@ blocksRouter.get('/blocks/junctions', (req, res) => {
   const key = syn.file + '|' + syn.mtime + '|' + (gp ? fs.statSync(gp).mtimeMs : 0); const c = _juncListCache.get(q.db); if (c && c.key === key) { res.json({ rows: c.rows, cached: true }); return }
   const t0 = Date.now(); const ds = new Database(syn.file, { readonly: true }); const d = gp ? new Database(gp, { readonly: true }) : null
   try {
-    const qJG = d ? d.prepare('SELECT r.cls, g.name FROM junc_gene r JOIN gene g ON g.gid=r.gid WHERE r.jid=?') : null
+    // 接合×遺伝子は 1 回の走査でまとめる（接合ごとに引くと junc_gene の全走査 × 4,345 回になり、索引が無い旧サイドカーで 4 秒かかった）
+    const rel = new Map<number, { cls: string; name: string }[]>()
+    if (d) for (const r of d.prepare('SELECT r.jid, r.cls, g.name FROM junc_gene r JOIN gene g ON g.gid=r.gid').iterate() as Iterable<any>) { let a = rel.get(r.jid); if (!a) { a = []; rel.set(r.jid, a) } a.push({ cls: r.cls, name: r.name }) }
     const rows: any[] = []
     for (const j of ds.prepare('SELECT rowid AS jid, pid, a2, b2, wrap, type, ai, di, aj, dj, multi_bp, priv_bp, tier FROM junc ORDER BY pid, a2').iterate() as Iterable<any>) {
       let best = ''; let bo = 99; let nrel = 0; const names: string[] = []
-      if (qJG) for (const r of qJG.all(j.jid) as any[]) { nrel++; const o = JCLS.indexOf(r.cls); if (o >= 0 && o < bo) { bo = o; best = r.cls } if ((r.cls === 'split' || r.cls === 'isl' || r.cls === 'end') && names.length < 3) names.push(r.name) }
+      for (const r of rel.get(j.jid) || []) { nrel++; const o = JCLS.indexOf(r.cls); if (o >= 0 && o < bo) { bo = o; best = r.cls } if ((r.cls === 'split' || r.cls === 'isl' || r.cls === 'end') && names.length < 3) names.push(r.name) }
       const pr = syn.paths[j.pid]
       rows.push([j.jid, j.pid, pr?.hap ?? '', j.type, j.a2, j.b2, j.tier, best, nrel, names, j.ai, j.aj, j.di, j.dj, j.wrap ? 1 : 0])
     }
