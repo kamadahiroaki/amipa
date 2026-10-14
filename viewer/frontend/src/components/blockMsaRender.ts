@@ -363,13 +363,16 @@ function baseLayout(){ const M = baseOf(); const W = $('gridwrap').clientWidth -
   const groups = []; cols.forEach((c, i) => { const last = groups[groups.length - 1]; if (last && last.g === c.g){ last.to = i; } else groups.push({ g: c.g, from: i, to: i, nodes: c.nodes, rb: c.rb }); });
   for (const gr of groups){ const ell = cols.slice(gr.from, gr.to + 1).find(c => c.kind === 'ell'); gr.bp = ell ? (ell.bp || (gr.to - gr.from + 1)) : (gr.to - gr.from + 1); gr.variant = cols.slice(gr.from, gr.to + 1).some(c => c.variant); }   // サーバが畳んだ群は ell.bp がノード全長
   // 表示項目: 全列が最小幅で入るなら畳まない。入らなければ長い群の中央を畳む（サーバが畳んだ ell 列はそのまま 1 項目）
-  const fitAll = cols.length * BASE_MINCW <= W; const items = [];
+  // 群（ノード）は「塩基を全部出す」か「群ごと 1 つの区画（行はアレルの色、塩基は出さない）」のどちらか。以前は長い群の中央だけを畳んで
+  // 両端の塩基を出していたが、同じノードの中は株間で同じ配列なので両端の色に意味が無く、変異サイトに見えて紛らわしかった（2026-10-14）。
+  // 区画の幅は長さの対数（100 bp 以下 28 px 〜 10 kb 以上 56 px）。サーバが畳んだ ell 列を含む群も区画
+  const fitAll = cols.length * BASE_MINCW <= W; const items = []; const blkW = n => Math.max(28, Math.min(64, Math.round(28 + 14 * Math.log10(Math.max(1, n) / 100))));
   for (const gr of groups){ const n = gr.to - gr.from + 1; const hasEll = cols.slice(gr.from, gr.to + 1).some(c => c.kind === 'ell');
-    if (fitAll || hasEll || n <= BASE_CAPc){ for (let i = gr.from; i <= gr.to; i++) items.push(cols[i].kind === 'ell' ? { kind: 'ell', ci0: i, ci1: i, n: cols[i].bp || 0, g: gr.g } : { kind: 'col', ci: i, g: gr.g }); }
-    else { for (let i = gr.from; i < gr.from + BASE_HEADc; i++) items.push({ kind: 'col', ci: i, g: gr.g }); items.push({ kind: 'ell', ci0: gr.from + BASE_HEADc, ci1: gr.to - BASE_TAILc, n: n - BASE_HEADc - BASE_TAILc, g: gr.g }); for (let i = gr.to - BASE_TAILc + 1; i <= gr.to; i++) items.push({ kind: 'col', ci: i, g: gr.g }); } }
-  const nEll = items.filter(it => it.kind === 'ell').length; const nCol = items.length - nEll;
-  const cw = Math.max(2, Math.min(14, Math.floor((W - nEll * 28) / Math.max(1, nCol)))); const ew = Math.max(cw * 3, 28);
-  const xs = new Float64Array(items.length + 1); let x = SITES_X0; items.forEach((it, k) => { xs[k] = x; x += (it.kind === 'ell' ? ew : cw); }); xs[items.length] = x;
+    if (!hasEll && (fitAll || n <= BASE_CAPc)){ for (let i = gr.from; i <= gr.to; i++) items.push({ kind: 'col', ci: i, g: gr.g }); }
+    else items.push({ kind: 'blk', ci0: gr.from, ci1: gr.to, n: gr.bp, g: gr.g, w: blkW(gr.bp) }); }
+  const blkSum = items.reduce((a, it) => a + (it.kind === 'blk' ? it.w : 0), 0); const nCol = items.filter(it => it.kind === 'col').length;
+  const cw = Math.max(2, Math.min(14, Math.floor((W - blkSum) / Math.max(1, nCol))));
+  const xs = new Float64Array(items.length + 1); let x = SITES_X0; items.forEach((it, k) => { xs[k] = x; x += (it.kind === 'blk' ? it.w : cw); }); xs[items.length] = x;
   const gx = new Map(); items.forEach((it, k) => { const e = gx.get(it.g) || { x0: xs[k], x1: xs[k+1] }; e.x1 = xs[k+1]; gx.set(it.g, e); }); for (const gr of groups){ const e = gx.get(gr.g); gr.x0 = e ? e.x0 : 0; gr.x1 = e ? e.x1 : 0; }
   LY.bcw = cw; LY.bxs = xs; LY.bitems = items; LY.bgroups = groups; LY.bfold = !fitAll; LY.fullW = x + 4; LY.cols = []; LY.vis = []; LY.blockX = new Map();
   if (!M._rowOf){ M._rowOf = new Map(); (M.rows || []).forEach((r, i) => M._rowOf.set(r.label, i)); const ri_ = (M.rows || []).findIndex(r => r.isref); M._refRow = ri_ >= 0 ? ri_ : ((M.rows || []).length ? 0 : null);
@@ -381,12 +384,20 @@ function baseCmpSeq(M){ if (st.baseCmp === 'major'){ if (!M._major){ const n = (
     return { seq: M._major, label: '多数派（列ごとの最頻の塩基）', isRow: null }; }
   const rr = M._refRow != null ? M.rows[M._refRow] : null; return rr ? { seq: rr.seq, label: (rr.isref ? '参照パス ' : '先頭の行 ') + rr.label, isRow: M._refRow } : { seq: null, label: '', isRow: null }; }
 function baseFontPx(cw, h){ return Math.max(0, Math.min(13, h - 2, Math.floor(cw / 0.62))); }
+// 区画（畳んだ群）の中でのこの行のアレル番号: 群の中の隙間を除いた配列が同じ行は同じアレル。番号は多い順（0 = 多数派）。持たない行は -1
+function baseBlkAllele(M, it, mi){ if (!M._blk) M._blk = new Map(); let e = M._blk.get(it.ci0); if (!e){ const cnt = new Map(); const keys = []; for (const r of M.rows){ const k = r.seq.slice(it.ci0, it.ci1 + 1).replace(/-/g, ''); keys.push(k); if (k) cnt.set(k, (cnt.get(k) || 0) + 1); }
+    const order = [...cnt.entries()].sort((u, v) => v[1] - u[1] || (u[0] < v[0] ? -1 : 1)).map(([k]) => k); const idx = new Map(order.map((k, i) => [k, i])); e = { per: keys.map(k => (k ? idx.get(k) : -1)), n: order.length, counts: order.map(k => cnt.get(k)), lens: order.map(k => k.length) }; M._blk.set(it.ci0, e); } return mi != null && mi < e.per.length ? e.per[mi] : -1; }
+// 比較の基準のアレル: 参照行ならその行のアレル、多数派なら 0（最も多いアレル）
+function baseBlkCmp(M, it){ const ri = st.baseCmp === 'major' ? null : M._refRow; return ri != null ? baseBlkAllele(M, it, ri) : 0; }
+function fmtBpShort(n){ return n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n); }
 function drawBaseGrid(){ const M = baseOf(); if (!M || !LY.bxs) return; const g = cv.grid.getContext('2d'); const cols = M.cols || []; const xs = LY.bxs; const items = LY.bitems; const cw = LY.bcw; const hcell = RH - 2; const fpx = baseFontPx(cw, hcell); const letters = cw >= 5 && fpx >= 8; g.font = `bold ${fpx}px "IBM Plex Mono"`; g.textAlign = 'center'; g.textBaseline = 'middle';
   const cmp = baseCmpSeq(M); const cmpSeq = cmp.seq;
   LY.rows.forEach((r, ri) => { const mi = M._rowOf.get(r.hap); if (mi == null) return; const row = M.rows[mi]; const y = ri*RH + 1, h = hcell; const inv = M._inv[mi];
     for (let k = 0; k < items.length; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 8 ? 1 : 0);
-      if (it.kind === 'ell'){ let has = false; for (let i = it.ci0; i <= it.ci1; i++){ const ch = row.seq[i]; if (ch && ch !== '-') { has = true; break; } } if (!has) continue;
-        g.fillStyle = TH.line; g.fillRect(x, y + 2, w, h - 4); continue; }   // 畳んだ区間（数は見出しの ⋯N に出す。行ごとには書かない）
+      if (it.kind === 'blk'){ const a = baseBlkAllele(M, it, mi); if (a < 0) continue;   // この行はこの群を持たない
+        const same = st.baseDiff && baseBlkCmp(M, it) === a;   // 基準（参照行か多数派）と同じアレル → 省く（塩基の · と同じ扱い）
+        g.fillStyle = same ? TH.line2 : SITES_COLORS[Math.min(a, SITES_COLORS.length - 1)]; g.fillRect(x, y + 1, w, h - 2);
+        if (inv){ for (let i = it.ci0; i <= it.ci1; i++) if (inv.has(i)){ g.fillStyle = TH.inv; g.fillRect(x, y, w, 2); break; } } continue; }
       const ch = row.seq[it.ci]; if (ch === '-' || ch === undefined) continue;
       if (ch === '~'){ g.fillStyle = TH.line; g.fillRect(x, y + 2, w, h - 4); continue; }
       if (st.baseDiff && cmpSeq && cmpSeq[it.ci] === ch){ g.fillStyle = TH.line2; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = TH.muted; g.fillText('·', x + w/2, y + h/2 + 1); } continue; }   // 基準と一致 → 省く（基準の配列は列見出しの下段）
@@ -411,7 +422,8 @@ function drawBaseHeader(){ const M = baseOf(); if (!M || !LY.bxs) return; const 
   // 参照の配列（参照行が無ければ先頭の行）
   if (refRow){ const y = 18, h = Hh - 6 - 18; const fpx = baseFontPx(cw, h); gh.font = `bold ${fpx}px "IBM Plex Mono"`; gh.textAlign = 'center'; gh.textBaseline = 'middle';
     for (let k = 0; k < items.length; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 8 ? 1 : 0);
-      if (it.kind === 'ell'){ gh.fillStyle = TH.line; gh.fillRect(x, y + 1, w, h - 2); if (w >= 20){ gh.fillStyle = TH.ink; gh.fillText('⋯' + (it.n || ''), x + w/2, y + h/2); } continue; }
+      if (it.kind === 'blk'){ const a = baseBlkCmp(M, it); gh.fillStyle = a >= 0 ? SITES_COLORS[Math.min(a, SITES_COLORS.length - 1)] : TH.gap; gh.fillRect(x, y + 1, w, h - 2);
+        if (w >= 26){ gh.fillStyle = a >= 0 ? '#fff' : TH.muted; gh.font = `bold ${Math.min(fpx, 10)}px "IBM Plex Mono"`; gh.fillText(fmtBpShort(it.n), x + w/2, y + h/2 + 1); gh.font = `bold ${fpx}px "IBM Plex Mono"`; } continue; }
       const ch = refRow.seq[it.ci]; if (!ch || ch === '-'){ gh.fillStyle = TH.gap; gh.fillRect(x, y + 1, w, h - 2); continue; }
       if (ch === '~'){ gh.fillStyle = TH.line; gh.fillRect(x, y + 1, w, h - 2); continue; }
       const col = baseCellColor(ch); gh.fillStyle = col[1]; gh.fillRect(x, y, w, h); if (cw >= 5 && fpx >= 8){ gh.fillStyle = col[0]; gh.fillText(ch, x + w/2, y + h/2 + 1); } }
@@ -422,7 +434,9 @@ function baseGroupAt(px){ if (!LY.bgroups) return null; for (let k = 0; k < LY.b
 function baseItemAt(px){ const xs = LY.bxs; if (!xs) return null; for (let i = 0; i + 1 < xs.length; i++) if (px >= xs[i] && px < xs[i+1]) return i; return null; }
 function baseColAt(px){ const k = baseItemAt(px); if (k == null) return null; const it = LY.bitems[k]; return it.kind === 'col' ? it.ci : it.ci0; }
 function baseGroupInfo(k, ri, ci){ const M = baseOf(); const gr = LY.bgroups[k]; const r = ri != null ? LY.rows[ri] : null; const mi = r ? M._rowOf.get(r.hap) : null; const row = mi != null ? M.rows[mi] : null; const col = ci != null ? M.cols[ci] : null;
-  return `<p><span class="h">ノード ${esc(gr.nodes.join(' | '))}</span>${gr.nodes.length > 1 ? `<br><span class="k">同じサイトの排他アレル ${gr.nodes.length} 個を 1 列に重ねた群（帯の上の青緑線）</span>` : ''}<br><span class="k">ノードの長さ ${gr.bp.toLocaleString()} bp${gr.rb ? ` · 参照 ${fmtbp(gr.rb)}` : ''}${gr.variant ? ' · 行間で塩基が違う' : ''}</span>` +
+  const bit = LY.bitems ? LY.bitems.find(it => it.kind === 'blk' && it.g === gr.g) : null; let blk = '';
+  if (bit){ baseBlkAllele(M, bit, 0); const e = M._blk.get(bit.ci0); const a = mi != null ? baseBlkAllele(M, bit, mi) : -1; blk = `<br><span class="k">塩基は畳んで 1 区画で表示（列見出しをドラッグして狭めると塩基が出る）。アレル ${e.n} 種: ${e.lens.slice(0, 4).map((L, i) => `#${i + 1} ${L.toLocaleString()} bp × ${e.counts[i]} 行`).join('、')}${e.n > 4 ? '…' : ''}${a >= 0 ? `。この行はアレル #${a + 1}` : ''}</span>`; }
+  return `<p><span class="h">ノード ${esc(gr.nodes.join(' | '))}</span>${gr.nodes.length > 1 ? `<br><span class="k">同じサイトの排他アレル ${gr.nodes.length} 個を 1 列に重ねた群（帯の上の青緑線）</span>` : ''}<br><span class="k">ノードの長さ ${gr.bp.toLocaleString()} bp${gr.rb ? ` · 参照 ${fmtbp(gr.rb)}` : ''}${gr.variant ? ' · 行間で塩基が違う' : ''}</span>${blk}` +
     (row ? `<br><span class="k">${esc(row.label)}（${row.strand} 鎖）:</span> ${col ? (row.seq[ci] === '-' ? '欠失（gap）' : row.seq[ci] === '~' ? '畳んだ部分' : `塩基 ${esc(row.seq[ci])}${col.off != null ? '（ノード内 ' + (col.off + 1) + ' 塩基目）' : ''}`) : ''}${(M._inv[mi] && ci != null && M._inv[mi].has(ci)) ? ' · 周りと逆向きに通過（逆相補で表示）' : ''}` : '') + `</p>`; }
 function baseRef(k){ const M = baseOf(); if (!M || k == null || !LY.bgroups || !LY.bgroups[k]) return null; const gr = LY.bgroups[k]; const L = level();
   return { win: st.win, level: st.li, W: 0, rank: k, name: gr.nodes[0], ref_contig: (L.refc != null ? L.refc : 0), x: gr.rb || 0, span: Math.max(1, gr.bp), tbp: gr.bp, nhap: 0, label: gr.nodes.join('|'), names: gr.nodes, base: true }; }
@@ -445,7 +459,7 @@ function openBase(ranges, label, pblock, c0, c1, maxLeaves, xr, opts){ if (!rang
     const nw = baseWindow(M, label, pw, pblock != null ? pblock : -1, c0, c1, order0); nw.range = xr || null; nw.ranges = ranges; nw.shared = (opts && opts.shared) || null; if (opts){ nw.focusHap = opts.hap || null; nw.byRanges = !!opts.byRanges; }   /* byRanges: 列範囲で表せない窓（接合の塩基）。遺伝子はトークン範囲で引き、グラフは葉の名前の集合で絞る */ nw.id = WINS.length; nw.plevel = st.li; WINS.push(nw); if (!w.children) w.children = {}; w.children[key] = nw.id;
     enterWindow(nw.id); const ng = LY.bgroups ? LY.bgroups.length : 0;
     let shareNote = ''; if (opts && opts.shared){ const fs = Object.entries(opts.shared).filter(([hp]) => hp !== opts.path).map(([, f]) => f); const full = fs.filter(f => f >= 0.9).length, part = fs.filter(f => f >= 0.1 && f < 0.9).length, none = fs.filter(f => f < 0.1).length; shareNote = `<p><span class="h">接合の株とノードを共有する株</span> <span class="k">ほぼ全部 ${full} · 一部 ${part} · ほぼ無し ${none}（行は共有の多い順。他株の範囲は共有する部分 ± 15 トークンに詰めてある。共有が無い株の塩基は別の配列＝相同でない、または pggb の同一性の閾値未満で別ノードのまま）</span></p>`; }
-    $('detailbody').innerHTML = shareNote + `<p class="k">塩基の段: 列 ${M.cols.length}（ノード ${ng} 個）・行 ${M.rows.length}。列見出しの上段＝ノード（群）の帯: 名前と大きさ（bp。「n123[2] 1 bp」の [2] は同じサイトの排他アレル 2 個を 1 列に重ねたもの、緑の縦線はその群の左端）。下段＝比較の基準の配列（参照パスの行、または多数派）。「一致を省く」は基準と同じ塩基を · にする（基準が参照パスなら参照の行も · になる。配列は下段にある）。底の線＝参照座標の錨（青）・行間で塩基が違う（橙）。長いノードは画面に入らないときだけ中央を畳む（⋯N）。列見出しをドラッグで列の範囲に絞る。セルの上の紫線＝周りと逆向きに通ったノード（逆相補で表示）。</p>`;
+    $('detailbody').innerHTML = shareNote + `<p class="k">塩基の段: 列 ${M.cols.length}（ノード ${ng} 個）・行 ${M.rows.length}。列見出しの上段＝ノード（群）の帯: 名前と大きさ（bp。「n123[2] 1 bp」の [2] は同じサイトの排他アレル 2 個を 1 列に重ねたもの、緑の縦線はその群の左端）。下段＝比較の基準の配列（参照パスの行、または多数派）。「一致を省く」は基準と同じ塩基を · にする（基準が参照パスなら参照の行も · になる。配列は下段にある）。底の線＝参照座標の錨（青）・行間で塩基が違う（橙）。画面に入らないノードは塩基を出さず 1 つの区画にし、行はアレルの色（アレル行列と同じ配色、多数派が薄い色）で塗る。列見出しをドラッグして狭めると塩基が出る。列見出しをドラッグで列の範囲に絞る。セルの上の紫線＝周りと逆向きに通ったノード（逆相補で表示）。</p>`;
   }).catch(e => { st.drilling = false; st.busy = null; drawAll(); $('detailbody').innerHTML = `<p class="k">失敗: ${esc(String(e))}</p>`; }); }
 
 // 塩基の段の範囲選択: ドラッグした列の範囲に絞った入れ子の窓（cols/rows を切り出すだけ。再計算なし）
