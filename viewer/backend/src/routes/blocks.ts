@@ -555,6 +555,23 @@ const ANC = 14
 function nearestTokByRank(insts: any[], rank: number, pred?: (it: any) => boolean): number { let bt = -1, bd = Infinity; for (const it of insts) { if (pred && !pred(it)) continue; const buf = it.anc; if (!buf) continue; for (let off = 0; off + ANC <= buf.length; off += ANC) { const dd = Math.abs(buf.readUInt32LE(off) - rank); if (dd < bd) { bd = dd; bt = buf.readUInt32LE(off + 4) } } } return bt }
 // インスタンスの中でトークン tok に最も近い錨の順位。無ければ -1
 function rankNearestTok(it: any, tok: number): number { let br = -1, bd = Infinity; const buf = it && it.anc; if (!buf) return -1; for (let off = 0; off + ANC <= buf.length; off += ANC) { const dd = Math.abs(buf.readUInt32LE(off + 4) - tok); if (dd < bd) { bd = dd; br = buf.readUInt32LE(off) } } return br }
+// 接合の塩基の窓: 他株の範囲を「接合の株と列（ノード）を共有する部分 ± margin」に詰め、共有の割合を返す。
+//   島やプロファージでは株ごとの配列が続くので、固定の ± K だと私有ノードの列が数万になり MSA がほぼ欠失になる（README 改訂 102）。
+//   共有が無い株は錨の周り ± margin だけ（文脈として残す）。shared = 詰めた範囲のトークンのうち接合の株と列を共有する割合
+function trimToShared(syn: any, ranges: [string, number, number][], focusPath: string, margin: number): { ranges: [string, number, number][]; shared: Record<string, number> } {
+  const shared: Record<string, number> = {}; if (!syn.dcol || !syn.distill) return { ranges, shared }
+  const dist = openDistill(syn.distill); const F = new Set<number>()
+  for (const [path, s0, e0] of ranges) { if (path !== focusPath) continue; const pi = dist.pidx.get(path); if (pi == null) continue; for (const t of dist.read(pi, s0, e0)) { const c = syn.dcol[t]; if (c >= 0) F.add(c) } }
+  if (!F.size) return { ranges, shared }
+  const out: [string, number, number][] = []
+  for (const r of ranges) { const [path, s0, e0] = r; if (path === focusPath) { out.push(r); shared[path] = 1; continue }
+    const pi = dist.pidx.get(path); if (pi == null) { out.push(r); continue }
+    const toks = dist.read(pi, s0, e0); let lo = -1, hi = -1, n = 0
+    for (let k = 0; k < toks.length; k++) { const c = syn.dcol[toks[k]]; if (c >= 0 && F.has(c)) { n++; if (lo < 0) lo = k; hi = k } }
+    if (lo < 0) { const mid = (s0 + e0) >> 1; out.push([path, Math.max(s0, mid - margin), Math.min(e0, mid + margin)]); shared[path] = 0; continue }
+    const a = Math.max(s0, s0 + lo - margin), b = Math.min(e0, s0 + hi + 1 + margin); out.push([path, a, b]); shared[path] = n / Math.max(1, b - a) }
+  return { ranges: out, shared }
+}
 blocksRouter.get('/blocks/junction_base', (req, res) => {
   const q = req.query as Record<string, string>; const jid = Number(q.jid); const K = Math.max(10, Math.min(400, Number(q.k) || 60))
   if (!q.db || !Number.isInteger(jid)) { res.status(400).json({ error: 'db, jid が要ります' }); return }
@@ -576,7 +593,7 @@ blocksRouter.get('/blocks/junction_base', (req, res) => {
       if (seamRank >= 0) for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const insts = syn.inst[pr.pid]
         let bt = nearestTokByRank(insts, seamRank, it => it.atom === j.ai || it.atom === j.aj); if (bt < 0) bt = nearestTokByRank(insts, seamRank)   // 原子 i/j を持たない株も、順序で最も近い錨で並べる
         if (bt >= 0) ranges.push([pr.path, Math.max(0, bt - K), Math.min(pr.ntok || 1e12, bt + K)]) }
-      res.json({ ranges, label: `継ぎ目 ${j.type} ${j.hap}`, k: K, hap: j.hap, jid, xr }); return
+      const tw = trimToShared(syn, ranges, j.path, 15); res.json({ ranges: tw.ranges, shared: tw.shared, label: `継ぎ目 ${j.type} ${j.hap}`, k: K, hap: j.hap, jid, xr }); return
     }
     // この株: 原子 i のインスタンスの接合側の端から、原子 j のインスタンスの接合側の端まで（間の接合区間を含む）± K
     const insI = mine.filter(it => it.atom === j.ai), insJ = mine.filter(it => it.atom === j.aj)
@@ -584,16 +601,17 @@ blocksRouter.get('/blocks/junction_base', (req, res) => {
     for (const a of insI) for (const bb of insJ) { const gap = bb.s0 - a.e0; if (gap >= 0 && gap < bestGap) { bestGap = gap; bestPair = [a, bb] } }
     let eMine = -1, refInst: any = null   // この株の接合側の端（トークン）と、その端を持つインスタンス
     if (bestPair) { ranges.push([j.path, Math.max(0, bestPair[0].e0 - K), Math.min(ntok, bestPair[1].s0 + K)]); eMine = bestPair[0].e0; refInst = bestPair[0] }
-    else if (insI.length) { const a = insI[0]; const e = j.di ? a.e0 : a.s0; ranges.push([j.path, Math.max(0, e - K), e + K]); eMine = e; refInst = a }
+    else if (insI.length) { const a = insI[0]; const e = a.e0; ranges.push([j.path, Math.max(0, e - K), e + K]); eMine = e; refInst = a }   /* トークン順では原子 i の接合側は常に e0（i を e0 で出て j に s0 で入る） */
     const refRank = refInst ? rankNearestTok(refInst, eMine) : -1
     // 他の株: 原子 i のインスタンスの同じ端 ± K（その株の並びが続く先が見える）。原子 i を持たない株は原子 j の同じ端、どちらも無い株は
     // 合意順序でこの株の接合に最も近い錨 ± K（島を持たない株も、島が無い側の文脈として並ぶ。以前は原子 i を持つ株しか出なかった）
     for (const pr of syn.paths) { if (pr.pid === j.pid) continue; const insts = syn.inst[pr.pid]; let e = -1
       const ins = insts.filter(it => it.atom === j.ai)
-      if (ins.length) { const a = ins[0]; e = (j.di === a.dir) ? (j.di ? a.e0 : a.s0) : (j.di ? a.s0 : a.e0) }
-      else { const insj = insts.filter(it => it.atom === j.aj); if (insj.length) { const a = insj[0]; e = (j.dj === a.dir) ? (j.dj ? a.s0 : a.e0) : (j.dj ? a.e0 : a.s0) } else if (refRank >= 0) e = nearestTokByRank(insts, refRank) }
+      if (ins.length) { const a = ins[0]; e = (a.dir === j.di) ? a.e0 : a.s0 }   /* 合意座標で同じ端: 接合の株は i を e0 で出る（di=1 なら右端、0 なら左端）。向きが同じ株は e0、逆の株は s0。以前は di=0 のとき逆の端を取っていた（README 改訂 102） */
+      else { const insj = insts.filter(it => it.atom === j.aj); if (insj.length) { const a = insj[0]; e = (a.dir === j.dj) ? a.s0 : a.e0 } else if (refRank >= 0) e = nearestTokByRank(insts, refRank) }   /* 原子 j は s0 で入る: 向きが同じ株は s0、逆は e0 */
       if (e >= 0) ranges.push([pr.path, Math.max(0, e - K), Math.min(pr.ntok || 1e12, e + K)]) }
-    res.json({ ranges, label: `接合 ${j.type} ${j.hap}`, k: K, hap: j.hap, jid, xr })
+    const tw = trimToShared(syn, ranges, j.path, 15)
+    res.json({ ranges: tw.ranges, shared: tw.shared, label: `接合 ${j.type} ${j.hap}`, k: K, hap: j.hap, jid, xr })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { ds.close() }
 })
 
