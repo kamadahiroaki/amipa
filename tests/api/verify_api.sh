@@ -174,6 +174,9 @@ if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
       hit "/blocks/tokranges"     "blocks/tokranges?db=$DB&c0=$TC0&c1=$TC1"
       BMB=$(get "blocks/tokranges?db=$DB&c0=$TC0&c1=$TC1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); print(json.dumps({"db": sys.argv[1], "ranges": j.get("ranges") or [], "flank": 0, "cap": 0, "maxLeaves": 2000}))' "$DB" 2>/dev/null)
       [ -n "$BMB" ] && hit "/bubble_msa/ranges (POST)" "bubble_msa/ranges" "" "$BMB"
+      # 1,200 列（画面が塩基へ降りる上限。葉の上限 12,000 を渡す。2026-10-15 から 1 遺伝子分〜を一度に計算する）
+      BMB2=$(get "blocks/tokranges?db=$DB&c0=$TC0&c1=$((TC0+1199))" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); print(json.dumps({"db": sys.argv[1], "ranges": j.get("ranges") or [], "flank": 0, "cap": 0, "maxLeaves": 12000}) if j.get("ranges") else "")' "$DB" 2>/dev/null)
+      [ -n "$BMB2" ] && hit "/bubble_msa/ranges (POST, 1,200 列)" "bubble_msa/ranges" "" "$BMB2"
     else
       FAIL=$((FAIL+1)); FAILED+=("/blocks/sites c0/c1"); echo "  NG   /blocks/sites c0/c1               応答に c0/c1 が無い"
     fi

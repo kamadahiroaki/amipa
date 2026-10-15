@@ -14,6 +14,7 @@ import { renderRouter } from './routes/render'
 import { blocksRouter } from './routes/blocks'
 import { initWorkerPool } from './workerPool'
 import { prewarmAtStartup } from './prewarm'
+import { warmRunners } from './pyRunner'
 import { getDbDir } from './db'
 
 const app = express()
@@ -172,4 +173,5 @@ app.listen(PORT, () => {
   // 起動時プリウォーム（AMIPA_PREWARM に DB 名をカンマ区切り）。この時点では利用者がいないので
   // 絞らずフル速度で読む。DB 切り替え時の自動プリウォームは /stats 側で開始し進捗を返す。
   prewarmAtStartup()
+  warmRunners()   // 常駐 python 実行器（bubble_msa）を立ち上げて import numpy を済ませる（計算ノードでは Lustre から 6〜43 秒）
 })

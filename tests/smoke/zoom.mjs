@@ -62,6 +62,12 @@ await back(); await show('back')
 await back(); await show('back to root')
 // S5: 全体から直接 原子 62 の内側
 handle._drillRange(1232000, 1240000); await show('S5 root → inside atom 62')
+// S8: 塩基の段の横スクロール（README 改訂 113）: 原子 62 の内側 8 kb は 7 px/塩基で画面幅 1200 px を桁で超える（600 bp の S6 は 146 列 = 1,176 px で画面に入るので動かない） → Shift+ホイール／格子のドラッグで bsx が動き、当たり判定もずれた分を拾う
+{ const s0 = handle._state(); const gw = $('gridwrap'); gw.dispatchEvent(new W.WheelEvent('wheel', { deltaY: 300, shiftKey: true, bubbles: true, cancelable: true })); const s1 = handle._state()
+  const grid = $('grid'); grid.dispatchEvent(new W.MouseEvent('mousedown', { button: 0, clientX: 600, clientY: 20, bubbles: true })); W.dispatchEvent(new W.MouseEvent('mousemove', { clientX: 400, clientY: 20 })); W.dispatchEvent(new W.MouseEvent('mouseup', { clientX: 400, clientY: 20 })); const s2 = handle._state()
+  grid.dispatchEvent(new W.MouseEvent('mousemove', { clientX: 100, clientY: 20, bubbles: true })); const tip = ($('hoverbody').textContent || '').replace(/\s+/g, ' ').slice(0, 50)
+  const ok = s0.mode === 'base' && s0.bfullW > 1200 && s1.bsx === 300 && s2.bsx === 500 && /ノード/.test(tip); if (!ok) errors.push('S8 base scroll: ' + JSON.stringify({ s0, s1: s1.bsx, s2: s2.bsx, tip }))
+  console.log(`[S8 base scroll] bfullW=${s0.bfullW} cw=${s0.bcw} | shift+wheel 300 → bsx ${s1.bsx} | drag −200 px → bsx ${s2.bsx} | hover x=100: ${tip} | ${ok ? 'OK' : 'NG'}`) }
 await back(); await show('back')
 // S6: 全体から狭い範囲 1,230,000–1,230,600（塩基へ）
 handle._drillRange(1230000, 1230600); await show('S6 root → 600 bp')

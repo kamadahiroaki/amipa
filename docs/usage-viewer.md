@@ -23,6 +23,8 @@ docker run --rm -p 3001:3001 -v /path/to/graph.amipa:/data:ro ghcr.io/kamadahiro
 | `AMIPA_CACHE_MB` | 64 / 512 | 接続ごとのページキャッシュ。小メモリの機械では下げる |
 | `AMIPA_DB_WORKERS` | CPU 依存 | 読み取りワーカー数 |
 | `AMIPA_MAX_ROWS` / `AMIPA_FETCH_MS` | — | 1 リクエストの上限（重い表示要求で全体が詰まるのを防ぐ） |
+| `AMIPA_PY_RUNNERS` | 2 | 塩基レベル MSA を計算する常駐 Python の本数。起動時に立ち上げて numpy の読み込みを済ませておく（ネットワーク FS 上の Python では読み込みだけで数十秒かかることがある） |
+| `AMIPA_MSA_TIMEOUT_MS` | 30000 | 塩基レベル MSA 1 回の制限時間 |
 
 死活確認は `GET /healthz`、版の確認は `GET /api/version`。
 
