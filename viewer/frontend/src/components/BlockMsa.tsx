@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockOrth, fetchBlockOrthRows, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
+import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockOrth, fetchBlockOrthRows, fetchBlockOrthGroup, fetchBlockOrthFind, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
 import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView, GeneLite } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
@@ -48,7 +48,9 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onGenesCols: (c0, c1, paths) => fetchBlockGenesCols(db, c0, c1, paths),
         onGenesTok: ranges => fetchBlockGenesTok(db, ranges),             // 木: トークン範囲で開いた塩基の窓（接合の塩基）の遺伝子
         onOrth: (c0, c1, max) => fetchBlockOrth(db, c0, c1, max),           // 見出しの遺伝子トラック（オルソログ群）
-        onOrthRows: (c0, c1, paths) => fetchBlockOrthRows(db, c0, c1, paths),   // 行の差分（持つ／擬似／逆向き／余分）   // 木: 列範囲（アレル行列・塩基）の遺伝子（列の区間と塩基の端）
+        onOrthRows: (c0, c1, paths) => fetchBlockOrthRows(db, c0, c1, paths),   // 行の差分（持つ／擬似／逆向き／余分）
+        onOrthGroup: og => fetchBlockOrthGroup(db, og),                      // 群の運命の表
+        onOrthFind: (q, limit) => fetchBlockOrthFind(db, q, limit),          // 遺伝子名の検索   // 木: 列範囲（アレル行列・塩基）の遺伝子（列の区間と塩基の端）
         onJunction: jid => fetchBlockJunction(db, jid),          // 接合カード
         onJunctions: () => fetchBlockJunctions(db),             // 接合一覧
         onJunctionBase: (jid, k) => fetchBlockJunctionBase(db, jid, k),   // 接合の塩基（トークン範囲）

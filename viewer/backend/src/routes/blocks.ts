@@ -558,6 +558,34 @@ blocksRouter.post('/blocks/orth_rows', (req, res) => {
     res.json({ rows, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
 })
+//   GET /api/blocks/orth_group?db&og → 群の要約と構成（株ごとの遺伝子: 名前・座標・鎖・擬似・合意に対する向き・長さ）と、持たない株
+blocksRouter.get('/blocks/orth_group', (req, res) => {
+  const q = req.query as Record<string, string>; const og = Number(q.og)
+  if (!q.db || !Number.isInteger(og)) { res.status(400).json({ error: 'db, og が要ります' }); return }
+  const gp = genesPath(q.db); const syn = loadSynteny(q.db); if (!gp || !syn) { res.json({ error: 'この DB には遺伝子サイドカーがありません' }); return }
+  const d = new Database(gp, { readonly: true })
+  try {
+    if (!hasOrth(d)) { res.json({ error: 'オルソログ群がありません' }); return }
+    const g = d.prepare('SELECT * FROM orthogroup WHERE og=?').get(og) as any; if (!g) { res.json({ error: '群がありません' }); return }
+    const hapOf = new Map(syn.paths.map(p => [p.pid, p.hap])); const pathOf = new Map(syn.paths.map(p => [p.pid, p.path]))
+    const members = (d.prepare('SELECT o.gid, o.cdir, o.cmin, o.cmax, ge.pid, ge.name, ge.start, ge.end, ge.strand, ge.type, ge.pseudo, ge.product, ge.locus FROM gene_orth o JOIN gene ge ON ge.gid=o.gid WHERE o.og=? ORDER BY ge.pid, ge.start').all(og) as any[])
+      .map(m => ({ gid: m.gid, pid: m.pid, hap: hapOf.get(m.pid) || '', path: pathOf.get(m.pid) || '', name: m.name, locus: m.locus, start: m.start, end: m.end, len: m.end - m.start + 1, strand: m.strand, cdir: m.cdir, type: m.type, pseudo: m.pseudo, product: m.product || '', cmin: m.cmin, cmax: m.cmax }))
+    const have = new Set(members.map(m => m.hap)); const absent = syn.paths.map(p => p.hap).filter(h => !have.has(h)).filter((h, i, a) => a.indexOf(h) === i)
+    res.json({ group: g, members, absent, H: syn.H })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
+//   GET /api/blocks/orth_find?db&q&limit → 名前の前方一致（大文字小文字を無視）か産物の部分一致で群を探す。株数の多い順
+blocksRouter.get('/blocks/orth_find', (req, res) => {
+  const q = req.query as Record<string, string>; const text = (q.q || '').trim(); const limit = Math.max(1, Math.min(200, Number(q.limit) || 30))
+  if (!q.db || !text) { res.status(400).json({ error: 'db, q が要ります' }); return }
+  const gp = genesPath(q.db); if (!gp) { res.json({ groups: [], error: 'この DB には遺伝子サイドカーがありません' }); return }
+  const d = new Database(gp, { readonly: true })
+  try {
+    if (!hasOrth(d)) { res.json({ groups: [], error: 'オルソログ群がありません' }); return }
+    const rows = d.prepare("SELECT og, name, product, nhap, n, c0, c1, x0, x1, plus, multi, cds, npseudo, n0, n1 FROM orthogroup WHERE c0>=0 AND (LOWER(name) LIKE LOWER(?) || '%' OR LOWER(product) LIKE '%' || LOWER(?) || '%') ORDER BY (LOWER(name) LIKE LOWER(?) || '%') DESC, nhap DESC, name LIMIT ?").all(text, text, text, limit) as any[]
+    res.json({ groups: rows.map(r => [r.og, r.name, r.c0, r.c1, r.x0, r.x1, r.nhap, r.n, r.multi, r.cds, r.npseudo, r.plus, r.product || '', r.n0 || '', r.n1 || '']), q: text })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
 // ---- 接合（破断点）の詳細・一覧・塩基 ----
 //   GET /api/blocks/junction?db&jid    → 接合カード: 種類・区間・両側の原子と向き・中身・関係する遺伝子（重なり bp と分類）
 //   GET /api/blocks/junctions?db       → 全接合の要約（一覧用、DB ごとにキャッシュ）

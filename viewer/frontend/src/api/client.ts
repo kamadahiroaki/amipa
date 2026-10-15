@@ -886,6 +886,12 @@ export async function fetchBlockOrth(dbFile: string, c0: number, c1: number, max
 export async function fetchBlockOrthRows(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<any | null> {
   try { const res = await fetch('/api/blocks/orth_rows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
 }
+export async function fetchBlockOrthGroup(dbFile: string, og: number): Promise<any | null> {
+  try { const res = await fetch(`/api/blocks/orth_group?db=${encodeURIComponent(dbFile)}&og=${og}`); if (!res.ok) return null; return await res.json() } catch { return null }
+}
+export async function fetchBlockOrthFind(dbFile: string, q: string, limit = 30): Promise<any | null> {
+  try { const res = await fetch(`/api/blocks/orth_find?db=${encodeURIComponent(dbFile)}&q=${encodeURIComponent(q)}&limit=${limit}`); if (!res.ok) return null; return await res.json() } catch { return null }
+}
 export async function fetchBlockGenesCols(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
   try { const res = await fetch('/api/blocks/genes_cols', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
 }

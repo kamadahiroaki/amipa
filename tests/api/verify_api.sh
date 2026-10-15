@@ -147,7 +147,15 @@ if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
     hit "/blocks/junctions"       "blocks/junctions?db=$DB"
     JID=$(get "blocks/junctions?db=$DB" | "$PY" -c 'import sys,json; r=json.load(sys.stdin).get("rows",[]); print(r[0][0] if r else "")' 2>/dev/null)
     if [ -n "$JID" ]; then hit "/blocks/junction"        "blocks/junction?db=$DB&jid=$JID"; hit "/blocks/junction_base"   "blocks/junction_base?db=$DB&jid=$JID&k=40"; fi
+    SC0=$(get "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" | "$PY" -c 'import sys,json; print(json.load(sys.stdin).get("c0", 0))' 2>/dev/null); SC0=${SC0:-0}
     [ -n "$JID" ] && hit "/blocks/junction_genes"  "blocks/junction_genes?db=$DB&jid=$JID&n=4"
+    # オルソログ群（見出しの遺伝子トラック）: 列範囲の群・行の差分・運命の表・名前検索
+    hit "/blocks/orth (density)"   "blocks/orth?db=$DB&c0=0&c1=$((SX1+1000000))&max=300" allow-empty
+    hit "/blocks/orth"             "blocks/orth?db=$DB&c0=$SC0&c1=$((SC0+15000))" allow-empty
+    hit "/blocks/orth_rows (POST)" "blocks/orth_rows" allow-empty '{"db":"'"$DB"'","c0":'"$SC0"',"c1":'"$((SC0+15000))"'}'
+    OG=$(get "blocks/orth?db=$DB&c0=$SC0&c1=$((SC0+15000))" | "$PY" -c 'import sys,json; g=json.load(sys.stdin).get("groups") or []; print(g[0][0] if g else "")' 2>/dev/null)
+    [ -n "$OG" ] && hit "/blocks/orth_group"       "blocks/orth_group?db=$DB&og=$OG"
+    hit "/blocks/orth_find"        "blocks/orth_find?db=$DB&q=dna" allow-empty
     if [ -n "$JID" ]; then   # 接合の塩基の窓の遺伝子（トークン範囲）
       GT=$(get "blocks/junction_base?db=$DB&jid=$JID&k=40" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); r=j.get("ranges",[])[:10]; print(json.dumps({"db": sys.argv[1], "ranges": r}) if r else "")' "$DB" 2>/dev/null)
       [ -n "$GT" ] && hit "/blocks/genes_tok (POST)" "blocks/genes_tok" allow-empty "$GT"
