@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
+import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockOrth, fetchBlockOrthRows, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
 import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView, GeneLite } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
@@ -46,7 +46,9 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onTokRanges: (c0, c1) => fetchBlockTokRanges(db, c0, c1),   // 木: 列の範囲 → 各行のトークン範囲（塩基へ）
         onGenes: ranges => fetchBlockGenes(db, ranges),          // 木: 各行のコンティグ範囲の遺伝子と接合×遺伝子（.genes サイドカー）
         onGenesCols: (c0, c1, paths) => fetchBlockGenesCols(db, c0, c1, paths),
-        onGenesTok: ranges => fetchBlockGenesTok(db, ranges),             // 木: トークン範囲で開いた塩基の窓（接合の塩基）の遺伝子   // 木: 列範囲（アレル行列・塩基）の遺伝子（列の区間と塩基の端）
+        onGenesTok: ranges => fetchBlockGenesTok(db, ranges),             // 木: トークン範囲で開いた塩基の窓（接合の塩基）の遺伝子
+        onOrth: (c0, c1, max) => fetchBlockOrth(db, c0, c1, max),           // 見出しの遺伝子トラック（オルソログ群）
+        onOrthRows: (c0, c1, paths) => fetchBlockOrthRows(db, c0, c1, paths),   // 行の差分（持つ／擬似／逆向き／余分）   // 木: 列範囲（アレル行列・塩基）の遺伝子（列の区間と塩基の端）
         onJunction: jid => fetchBlockJunction(db, jid),          // 接合カード
         onJunctions: () => fetchBlockJunctions(db),             // 接合一覧
         onJunctionBase: (jid, k) => fetchBlockJunctionBase(db, jid, k),   // 接合の塩基（トークン範囲）

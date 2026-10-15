@@ -878,6 +878,14 @@ export async function fetchBlockGenes(dbFile: string, ranges: [string, number, n
 export async function fetchBlockGenesTok(dbFile: string, ranges: [string, number, number][]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
   try { const res = await fetch('/api/blocks/genes_tok', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges }) }); if (!res.ok) return null; return await res.json() } catch { return null }
 }
+// オルソログ群（見出しの遺伝子トラック）: 列範囲の群、または密度
+export async function fetchBlockOrth(dbFile: string, c0: number, c1: number, max = 3000): Promise<any | null> {
+  try { const res = await fetch(`/api/blocks/orth?db=${encodeURIComponent(dbFile)}&c0=${Math.floor(c0)}&c1=${Math.ceil(c1)}&max=${max}`); if (!res.ok) return null; return await res.json() } catch { return null }
+}
+// 行ごとの差分（持つ群・擬似・逆向き・余分な遺伝子）
+export async function fetchBlockOrthRows(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<any | null> {
+  try { const res = await fetch('/api/blocks/orth_rows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
+}
 export async function fetchBlockGenesCols(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
   try { const res = await fetch('/api/blocks/genes_cols', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
 }

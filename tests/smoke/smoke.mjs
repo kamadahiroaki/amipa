@@ -46,6 +46,7 @@ try {
     onGenesTok: ranges => api.fetchBlockGenesTok(DB, ranges),
     onJunction: jid => api.fetchBlockJunction(DB, jid), onJunctions: () => api.fetchBlockJunctions(DB), onJunctionBase: (jid, k) => api.fetchBlockJunctionBase(DB, jid, k),
     onJunctionGenes: (jid, n) => api.fetchBlockJunctionGenes(DB, jid, n),
+    onOrth: (c0, c1, max) => api.fetchBlockOrth(DB, c0, c1, max), onOrthRows: (c0, c1, paths) => api.fetchBlockOrthRows(DB, c0, c1, paths),
     onBaseFetch: (ranges, label, maxLeaves) => api.fetchBubbleMsaRanges(DB, ranges, label, 0, 0, maxLeaves),
     onLocate: names => api.fetchBlockLocate(DB, names),
     onView: v => views.push(v), onSelectHap: () => {}, onBaseMsa: () => {},
@@ -54,6 +55,16 @@ try {
 const $ = id => root.querySelector('#bk_' + id)
 const state = tag => console.log(`[${tag}]`, 'junclist.disabled', $('junclist')?.disabled, '| wide', root.classList.contains('detailwide'), '| crumbs', root.querySelector('#bk_crumbs')?.textContent?.trim().slice(0, 40), '| errors', errors.length)
 await sleep(1500); state('after mount')
+// 見出しの遺伝子トラック: 全体では密度、原子 1 個に降りると矢印
+const gt = () => ({ cls: root.classList.contains('gtrack'), w: $('gtrack')?.clientWidth });
+await sleep(2500); console.log('[gene track] class', gt().cls, '| errors', errors.length)
+// 列見出しをダブルクリックして先頭のブロックの内側へ（アレル行列か塩基）→ トラックが矢印になり行の差分が描かれる
+try { const hdr = $('hdr'); const ly = handle._layout(); const c = (ly.cols || []).find(x => x.type === 'block'); if (c) { const ev = new W.MouseEvent('dblclick', { bubbles: true, clientX: c.x + 5, clientY: 20 }); hdr.dispatchEvent(ev); await sleep(8000); console.log('[after drill] mode', views.at(-1)?.mode, 'crumbs', root.querySelector('#bk_crumbs')?.textContent?.trim().slice(0, 50), 'gtrack class', gt().cls, 'errors', errors.length);
+    await sleep(4000); console.log('[after drill+4s] errors', errors.length, 'orth loaded', !!handle._layout() && root.classList.contains('gtrack'));
+    const gtr = $('gtrack'); if (gtr) { gtr.dispatchEvent(new W.MouseEvent('mousemove', { bubbles: true, clientX: 300, clientY: 10 })); console.log('  track hover tip:', ($('tip')?.textContent || '').slice(0, 120)); gtr.dispatchEvent(new W.MouseEvent('click', { bubbles: true, clientX: 300, clientY: 10 })); await sleep(300); console.log('  track click detail:', root.querySelector('#bk_detailbody')?.textContent?.trim().slice(0, 140)); }
+    // 外へ戻る
+    $('scopeout').click(); await sleep(1500); console.log('[back to root] crumbs', root.querySelector('#bk_crumbs')?.textContent?.trim().slice(0, 30), 'errors', errors.length) } } catch (e) { errors.push('drill: ' + e.stack) }
+try { const r = await api.fetchBlockOrth(DB, 240689, 255833); console.log('  orth atom94 groups', r?.groups?.length, 'H', r?.H); const rr = await api.fetchBlockOrthRows(DB, 240689, 255833); console.log('  orth_rows rows', rr?.rows?.length) } catch (e) { errors.push('orth api: ' + e.stack) }
 // 系統樹: 閾値で枝をまとめる（スライダ 40）→ 群を開く → 表示範囲の木 → 戻す
 const nrows = () => root.querySelectorAll('#bk_labwrap .lab').length; const ncl = () => root.querySelectorAll('#bk_tree .cl').length
 console.log('[tree] rows', nrows(), 'wedges', ncl(), 'cuttxt', $('cuttxt')?.textContent, 'treeinfo', $('treeinfo')?.textContent)

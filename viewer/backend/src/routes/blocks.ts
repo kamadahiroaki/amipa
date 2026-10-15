@@ -511,6 +511,53 @@ blocksRouter.post('/blocks/genes_tok', (req, res) => {
     res.json({ rows: [...byHap.values()].filter(r => r.genes.length), ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
 })
+// ---- オルソログ群（.genes の orthogroup / gene_orth、annot/orthogroups.py）: 見出しの遺伝子トラックと行の差分 ----
+//   GET  /api/blocks/orth?db&c0&c1&max   → 列範囲に重なる群 [og, name, c0, c1, x0, x1, nhap, n, multi, cds, npseudo, plus, product, n0, n1]。
+//                                          max を超える数なら密度（列のビンごとの群の数と core の数）だけ返す（広い窓）
+//   POST /api/blocks/orth_rows {db, c0, c1, ogs?, paths?} → 行ごとの差分: 各株が持つ群（コード: 1 持つ, +2 擬似, +4 合意と逆向き）と、
+//                                          群に属さない（1 株だけの）余分な遺伝子の列区間
+function hasOrth(d: any): boolean { try { return !!d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='orthogroup'").get() } catch { return false } }
+blocksRouter.get('/blocks/orth', (req, res) => {
+  const q = req.query as Record<string, string>; const c0 = Number(q.c0), c1 = Number(q.c1); const max = Math.max(200, Math.min(20000, Number(q.max) || 3000))
+  if (!q.db || !Number.isFinite(c0) || !Number.isFinite(c1)) { res.status(400).json({ error: 'db, c0, c1 が要ります' }); return }
+  const gp = genesPath(q.db); const syn = loadSynteny(q.db); if (!gp || !syn) { res.json({ groups: [], error: 'この DB には遺伝子サイドカーがありません' }); return }
+  const d = new Database(gp, { readonly: true })
+  try {
+    if (!hasOrth(d)) { res.json({ groups: [], error: 'オルソログ群がありません（annot/orthogroups.py を実行）' }); return }
+    const t0 = Date.now(); const H = syn.H
+    const n = Number((d.prepare('SELECT COUNT(*) AS n FROM orthogroup WHERE c1>=? AND c0<=? AND c0>=0').get(Math.floor(c0), Math.ceil(c1)) as any).n)
+    if (n > max) {   // 密度: 列を 400 のビンに
+      const nb = 400; const w = Math.max(1, (c1 - c0 + 1) / nb); const cnt = new Array(nb).fill(0), core = new Array(nb).fill(0)
+      for (const r of d.prepare('SELECT c0, nhap FROM orthogroup WHERE c1>=? AND c0<=? AND c0>=0').iterate(Math.floor(c0), Math.ceil(c1)) as Iterable<any>) { const b = Math.max(0, Math.min(nb - 1, Math.floor((r.c0 - c0) / w))); cnt[b]++; if (r.nhap >= 0.9 * H) core[b]++ }
+      res.json({ groups: null, n, density: { c0: Math.floor(c0), w, cnt, core }, H, ms: Date.now() - t0 }); return }
+    const groups = (d.prepare('SELECT og, name, c0, c1, x0, x1, nhap, n, multi, cds, npseudo, plus, product, n0, n1 FROM orthogroup WHERE c1>=? AND c0<=? AND c0>=0 ORDER BY c0').all(Math.floor(c0), Math.ceil(c1)) as any[]).map(r => [r.og, r.name, r.c0, r.c1, r.x0, r.x1, r.nhap, r.n, r.multi, r.cds, r.npseudo, r.plus, r.product || '', r.n0 || '', r.n1 || ''])
+    res.json({ groups, n, H, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
+blocksRouter.post('/blocks/orth_rows', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>; const db = typeof b.db === 'string' ? b.db : ''; const c0 = Number(b.c0), c1 = Number(b.c1)
+  if (!db || !Number.isFinite(c0) || !Number.isFinite(c1)) { res.status(400).json({ error: 'db, c0, c1 が要ります' }); return }
+  const gp = genesPath(db); const syn = loadSynteny(db); if (!gp || !syn) { res.json({ rows: [], error: 'この DB には遺伝子サイドカーがありません' }); return }
+  const want = Array.isArray(b.paths) ? new Set((b.paths as unknown[]).filter(x => typeof x === 'string') as string[]) : null
+  const d = new Database(gp, { readonly: true })
+  try {
+    if (!hasOrth(d)) { res.json({ rows: [], error: 'オルソログ群がありません' }); return }
+    const t0 = Date.now()
+    const ogRows = d.prepare('SELECT og, plus, n FROM orthogroup WHERE c1>=? AND c0<=? AND c0>=0 AND nhap>=2').all(Math.floor(c0), Math.ceil(c1)) as any[]
+    const majPlus = new Map<number, number>(ogRows.map(r => [r.og, r.plus * 2 >= r.n ? 1 : 0]))
+    const qG = d.prepare('SELECT o.og, o.cdir, o.cmin, o.cmax, g.pseudo, g.name, g.gid FROM gene_orth o JOIN gene g ON g.gid=o.gid WHERE g.pid=? AND o.cmax>=? AND o.cmin<=?')
+    const qNh = d.prepare('SELECT og, nhap FROM orthogroup WHERE c1>=? AND c0<=? AND c0>=0'); const nhOf = new Map<number, number>((qNh.all(Math.floor(c0), Math.ceil(c1)) as any[]).map(r => [r.og, r.nhap]))
+    const rows: any[] = []
+    for (const pr of syn.paths) { if (want && !want.has(pr.path)) continue
+      const st: number[][] = []; const extra: any[] = []
+      for (const g of qG.all(pr.pid, Math.floor(c0), Math.ceil(c1)) as any[]) {
+        if ((nhOf.get(g.og) ?? 1) < 2) { const nm0 = syn.col2orig && g.cmin >= 0 ? 'n' + syn.col2orig[g.cmin] : '', nm1 = syn.col2orig && g.cmax >= 0 ? 'n' + syn.col2orig[g.cmax] : ''; extra.push([g.cmin, g.cmax, g.name || '', g.pseudo ? 1 : 0, g.gid, nm0, nm1]); continue }
+        let code = 1; if (g.pseudo) code |= 2; const mp = majPlus.get(g.og); if (mp != null && g.cdir !== mp) code |= 4
+        st.push([g.og, code, g.cmin, g.cmax, g.gid]) }
+      rows.push({ path: pr.path, hap: pr.hap, st, extra }) }
+    res.json({ rows, ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
 // ---- 接合（破断点）の詳細・一覧・塩基 ----
 //   GET /api/blocks/junction?db&jid    → 接合カード: 種類・区間・両側の原子と向き・中身・関係する遺伝子（重なり bp と分類）
 //   GET /api/blocks/junctions?db       → 全接合の要約（一覧用、DB ごとにキャッシュ）
