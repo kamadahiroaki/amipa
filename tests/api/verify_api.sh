@@ -60,7 +60,11 @@ GID=$(get "path_groups?db=$DB" | "$PY" pick.py gid)          # 1 サンプル分
 GCSV=$(get "path_groups?db=$DB" | "$PY" pick.py gidcsv)      # /ribbon 用の gid CSV
 NAME=$(get "nodes?db=$DB&layer=$L&$R&nx=fast" | "$PY" pick.py node)
 # 配列/MSA は **葉**でないと成立しない（cluster ノードは node_sequence が 404）。最下層から取る。
-LEAF=$(get "nodes?db=$DB&layer=$ML&$R&nx=fast" | "$PY" pick.py node)
+RS=$("$PY" -c "
+x1,y1,x2,y2=map(float,'$X1 $Y1 $X2 $Y2'.split())
+cx,cy=(x1+x2)/2,(y1+y2)/2; w,h=(x2-x1)/80,(y2-y1)/80
+print(f'x1={cx-w}&x2={cx+w}&y1={cy-h}&y2={cy+h}')")   # 葉の層は中央の小さな矩形で（R だと ecoli50 で 317 MB になり、配信中の主スレッドを 9 秒塞ぐ）
+LEAF=$(get "nodes?db=$DB&layer=$ML&$RS&nx=fast" | "$PY" pick.py node)
 # ★/nodes_by_name は SQL に `AND n.layer_index = 1` が固定で入っている（用途が L1 限定）。
 #   他の層の名前を渡すと必ず空が返るので、L1 の名前で試す。
 N1=$(get "nodes?db=$DB&layer=1&x1=-1e9&x2=1e9&y1=-1e9&y2=1e9&nx=fast" | "$PY" pick.py node)
