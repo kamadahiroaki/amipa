@@ -1,0 +1,72 @@
+// ヘッドレスの煙試験: blockMsaRender を jsdom + canvas スタブで動かし、実データ（配信中の backend）で描画と操作を通して例外を拾う
+//   実行は run.sh（esbuild で束ねてから node）。AMIPA_BASE=http://host:port AMIPA_DB=ecoli50.db
+import { JSDOM, VirtualConsole } from 'jsdom'
+import fs from 'node:fs'
+const BASE = process.env.AMIPA_BASE || 'http://localhost:33001'; const DB = process.env.AMIPA_DB || 'ecoli50.db'
+const errors = []
+const vc = new VirtualConsole(); vc.on('jsdomError', e => errors.push('jsdomError: ' + (e && e.message))); vc.sendTo(console, { omitJSDOMErrors: true })
+const dom = new JSDOM('<!doctype html><html><head></head><body><div id="root"></div></body></html>', { url: 'http://localhost/', pretendToBeVisual: true, virtualConsole: vc })
+const W = dom.window
+for (const k of ['window', 'document', 'navigator', 'HTMLElement', 'HTMLCanvasElement', 'Element', 'Node', 'getComputedStyle', 'requestAnimationFrame', 'cancelAnimationFrame', 'localStorage', 'MouseEvent', 'KeyboardEvent', 'Event', 'CustomEvent', 'DOMParser']) { try { globalThis[k] = W[k] } catch {} }
+globalThis.devicePixelRatio = 1; W.devicePixelRatio = 1
+W.matchMedia = globalThis.matchMedia = () => ({ matches: false, addEventListener(){}, removeEventListener(){}, addListener(){}, removeListener(){} })
+W.ResizeObserver = globalThis.ResizeObserver = class { observe(){} unobserve(){} disconnect(){} }
+Object.defineProperty(W.navigator, 'clipboard', { value: { writeText: async () => {} }, configurable: true })
+// 要素の大きさ: jsdom は 0 なので、幅 1200 / 高さ 600 を返す
+Object.defineProperty(W.HTMLElement.prototype, 'clientWidth', { get(){ return 1200 }, configurable: true })
+Object.defineProperty(W.HTMLElement.prototype, 'clientHeight', { get(){ return 600 }, configurable: true })
+Object.defineProperty(W.HTMLElement.prototype, 'offsetWidth', { get(){ return 1200 }, configurable: true })
+Object.defineProperty(W.HTMLElement.prototype, 'offsetHeight', { get(){ return 600 }, configurable: true })
+W.Element.prototype.getBoundingClientRect = function(){ return { x: 0, y: 0, left: 0, top: 0, width: 1200, height: 600, right: 1200, bottom: 600 } }
+// canvas 2D のスタブ: すべてのメソッドは何もしない。measureText は文字数で幅を返す
+const mkCtx = () => new Proxy({ canvas: null, _props: {} }, { get(t, k){ if (k === 'measureText') return s => ({ width: String(s).length * 6, actualBoundingBoxAscent: 8, actualBoundingBoxDescent: 2 }); if (k === 'createLinearGradient' || k === 'createRadialGradient' || k === 'createPattern') return () => ({ addColorStop(){} }); if (k === 'getImageData') return (x, y, w, h) => ({ data: new Uint8ClampedArray(Math.max(1, w * h) * 4), width: w, height: h }); if (k === 'createImageData') return (w, h) => ({ data: new Uint8ClampedArray(Math.max(1, w * h) * 4), width: w, height: h }); if (k === 'getTransform') return () => ({ a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }); if (k === 'isPointInPath' || k === 'isPointInStroke') return () => false; if (k in t._props) return t._props[k]; if (typeof k === 'string' && /^[a-z]/.test(k) && !(k in t)) return () => {}; return t[k] }, set(t, k, v){ t._props[k] = v; return true } })
+W.HTMLCanvasElement.prototype.getContext = function(){ if (!this._ctx) { this._ctx = mkCtx() } return this._ctx }
+W.HTMLCanvasElement.prototype.toDataURL = () => 'data:,'
+const realFetch = globalThis.fetch
+globalThis.fetch = (u, o) => realFetch(typeof u === 'string' && u.startsWith('/') ? BASE + u : u, o)
+process.on('uncaughtException', e => { errors.push('uncaught: ' + (e && e.stack || e)) })
+process.on('unhandledRejection', e => { errors.push('unhandledRejection: ' + (e && e.stack || e)) })
+W.addEventListener('error', e => errors.push('window.error: ' + (e.error && e.error.stack || e.message)))
+const { mountBlockMsa, api } = await import('./bundle.mjs')
+const sleep = ms => new Promise(r => setTimeout(r, ms))
+const root = W.document.getElementById('root')
+
+const data = await api.fetchBlocks(DB)
+let views = []
+const handle = mountBlockMsa(root, data, {
+  onSelectBlock: () => {}, onHoverBlock: () => {}, onDrill: req => api.fetchBlockWindow(DB, req),
+  onRange: (x0, x1, label, depth, parent, pblock) => api.fetchBlockRange(DB, x0, x1, label, depth, parent, pblock),
+  onRangeAtoms: (a0, a1, label, depth, parent) => api.fetchBlockRangeAtoms(DB, a0, a1, label, depth, parent),
+  onSites: q => api.fetchBlockSites(DB, q), onTokRanges: (c0, c1) => api.fetchBlockTokRanges(DB, c0, c1),
+  onGenes: ranges => api.fetchBlockGenes(DB, ranges), onGenesCols: (c0, c1, paths) => api.fetchBlockGenesCols(DB, c0, c1, paths), onGenesTok: ranges => api.fetchBlockGenesTok(DB, ranges),
+  onOrth: (c0, c1, max) => api.fetchBlockOrth(DB, c0, c1, max), onOrthRows: (c0, c1, paths) => api.fetchBlockOrthRows(DB, c0, c1, paths),
+  onBaseFetch: (ranges, label, maxLeaves) => api.fetchBubbleMsaRanges(DB, ranges, label, 0, 0, maxLeaves), onLocate: names => api.fetchBlockLocate(DB, names),
+  onView: v => views.push(v), onSelectHap: () => {}, onBaseMsa: () => {},
+})
+const $ = id => root.querySelector('#bk_' + id)
+await sleep(1200)
+const show = async (tag, wait = 9000) => { const t = Date.now(); while (handle._state().drilling && Date.now() - t < wait) await sleep(200); await sleep(300); const s = handle._state(); console.log(`[${tag}] mode=${s.mode} win=${s.win} label=${s.label} drilling=${s.drilling} nwins=${s.nwins} | toast: ${(root.querySelector('#bk_toast')?.style.display !== 'none' ? root.querySelector('#bk_toast')?.textContent : '') || ''} | errors ${errors.length}`) }
+const back = async () => { $('scopeout').click(); await sleep(600) }
+await show('root')
+// S1: 全体で 1.23–1.25 Mb（原子 62+63 にまたがる）
+handle._drillRange(1230000, 1250000); await show('S1 root → 1.23-1.25Mb')
+// S2: その窓の中で同じ範囲をもう一度
+handle._drillRange(1230000, 1250000); await show('S2 same range again')
+await back(); await show('back')
+// S3: その窓の中で原子 62 の内側（1.232–1.240）
+handle._drillRange(1232000, 1240000); await show('S3 inside atom 62 (from 2-atom window)')
+await back(); await show('back')
+// S4: 境界をまたぐ 1.245–1.250（原子 62 末尾 + 63 先頭）
+handle._drillRange(1245000, 1250000); await show('S4 across boundary 62/63')
+await back(); await show('back')
+await back(); await show('back to root')
+// S5: 全体から直接 原子 62 の内側
+handle._drillRange(1232000, 1240000); await show('S5 root → inside atom 62')
+await back(); await show('back')
+// S6: 全体から狭い範囲 1,230,000–1,230,600（塩基へ）
+handle._drillRange(1230000, 1230600); await show('S6 root → 600 bp')
+await back(); await show('back')
+// S7: 全体から 1.23–1.25 の後、その中でさらに狭く（アレル行列→塩基）
+handle._drillRange(1230000, 1250000); await show('S7a 2-atom window'); handle._drillRange(1236000, 1237000); await show('S7b → 1 kb inside'); 
+console.log('ERRORS', errors.length); for (const e of errors.slice(0, 5)) console.log('  ' + String(e).split('\n').slice(0, 3).join('\n    '))
+process.exit(0)

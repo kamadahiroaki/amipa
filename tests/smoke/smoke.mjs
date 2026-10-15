@@ -39,6 +39,7 @@ try {
     onSelectBlock: () => {}, onHoverBlock: () => {},
     onDrill: req => api.fetchBlockWindow(DB, req),
     onRange: (x0, x1, label, depth, parent, pblock) => api.fetchBlockRange(DB, x0, x1, label, depth, parent, pblock),
+  onRangeAtoms: (a0, a1, label, depth, parent) => api.fetchBlockRangeAtoms(DB, a0, a1, label, depth, parent),
     onSites: q => api.fetchBlockSites(DB, q),
     onTokRanges: (c0, c1) => api.fetchBlockTokRanges(DB, c0, c1),
     onGenes: ranges => api.fetchBlockGenes(DB, ranges),

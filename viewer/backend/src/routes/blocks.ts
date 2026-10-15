@@ -71,20 +71,34 @@ blocksRouter.get('/blocks/sites', (req, res) => {
 
 // 合意列の範囲 → 各パスのトークン範囲（塩基 MSA へ渡す）。scripts/blocks/colrange_tokens.py（distill の p_tok と木の dcol だけ）
 //   GET /api/blocks/tokranges?db&c0&c1 → {ranges:[[path,s0,e0],…], ncols}
+// 列の範囲 [c0, c1] → 各パスのトークン範囲 [path, s0, e0)（塩基 MSA へ）。TS 実装（以前は python の colrange_tokens.py）。
+//   インスタンスに頼らず、範囲の原子の前後 1 原子ぶんのインスタンスが張る区間（無ければパス全体）のトークンを走査する。
+//   インスタンスの隙間にある私有の挿入（例: 列 109014 の 14 kb、README 改訂 111）も拾う。範囲の列を持たない株は、
+//   直前の列を持つトークンの位置に長さ 0 の範囲を返し absent に載せる（塩基の段で行として残し、gap で見せる）
 blocksRouter.get('/blocks/tokranges', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
-  const sp = syntenyPath(q.db); if (!sp) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
-  const dbPath = path.join(getDbDir(), path.basename(q.db)); const distill = distillFor(dbPath)
-  if (!distill) { res.json({ error: 'distill サイドカーがありません' }); return }
-  const c0 = Number(q.c0), c1 = Number(q.c1)
+  const syn = loadSynteny(q.db); if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
+  if (!syn.dcol || !syn.distill) { res.json({ error: 'dcol / distill がありません' }); return }
+  const c0 = Math.floor(Number(q.c0)), c1 = Math.ceil(Number(q.c1))
   if (!Number.isFinite(c0) || !Number.isFinite(c1) || c1 < c0) { res.status(400).json({ error: 'c0 ≤ c1 が要ります' }); return }
   const t0 = Date.now()
-  execFile(AMIPA_PYTHON, [amipaScript('blocks/colrange_tokens.py'), '--distill', distill, '--synteny', sp, '--c0', String(Math.floor(c0)), '--c1', String(Math.ceil(c1))],
-    { timeout: 60000, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) { res.json({ error: 'トークン範囲の計算に失敗: ' + (stderr ? String(stderr).slice(0, 300) : String(err)) }); return }
-      try { const j = JSON.parse(stdout); j.ms = Date.now() - t0; res.json(j) } catch (e) { res.json({ error: '出力を解釈できません: ' + String(e) }) }
-    })
+  try {
+    const dist = openDistill(syn.distill); const A = syn.atoms
+    const atomOf = (c: number) => { let lo = 0, hi = A.length - 1, r = -1; while (lo <= hi) { const m = (lo + hi) >> 1; if (A[m].c0 <= c) { r = m; lo = m + 1 } else hi = m - 1 } return r }
+    const aLo = Math.max(0, atomOf(c0) - 1), aHi = Math.min(A.length - 1, Math.max(atomOf(c1), atomOf(c0)) + 1)
+    const ranges: [string, number, number][] = []; const absent: string[] = []
+    for (const pr of syn.paths) { const pi = dist.pidx.get(pr.path); if (pi == null) continue; const ntok = pr.ntok || 0
+      let s = Infinity, e = -Infinity; for (const it of syn.inst[pr.pid]) { if (it.atom >= aLo && it.atom <= aHi) { s = Math.min(s, it.s0); e = Math.max(e, it.e0) } }
+      if (!(s < e)) { s = 0; e = ntok }
+      const toks = dist.read(pi, s, e); const n = toks.length; const idx: number[] = []; let lastBefore = -1
+      for (let k = 0; k < n; k++) { const c = syn.dcol[toks[k]]; if (c < 0) continue; if (c >= c0 && c <= c1) idx.push(k); else if (c < c0) lastBefore = k }
+      if (!idx.length) { const pos = s + (lastBefore >= 0 ? lastBefore + 1 : 0); ranges.push([pr.path, pos, pos]); absent.push(pr.path); continue }
+      // 飛び飛び（多重のノードや局所の再編成）なら最も密な連なりだけ（100 トークン超の飛びで切る）
+      let bs = 0, be = 1, cs = 0; for (let k = 1; k <= idx.length; k++) { if (k === idx.length || idx[k] - idx[k - 1] > 100) { if (k - cs > be - bs) { bs = cs; be = k } cs = k } }
+      ranges.push([pr.path, s + idx[bs], s + idx[be - 1] + 1]) }
+    res.json({ ranges, absent, ncols: c1 - c0 + 1, atoms: [aLo + 1, aHi - 1].filter(v => v >= 0), ms: Date.now() - t0 })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 // 原子の範囲 → その層のノード名（木の経路。参照座標を使わない）: GET /api/blocks/nodes2?db&layer&a0&a1
@@ -112,8 +126,11 @@ blocksRouter.get('/blocks/range', (req, res) => {
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const syn = loadSynteny(q.db)
   if (!syn) { res.status(404).json({ error: 'この DB には木のサイドカー（.synteny）がありません' }); return }
-  const x0 = Number(q.x0), x1 = Number(q.x1)
-  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) { res.status(400).json({ error: 'x0 < x1 が要ります' }); return }
+  let x0 = Number(q.x0), x1 = Number(q.x1)
+  if (q.a0 != null && q.a1 != null) {   // 原子の範囲で指定（木の範囲。画面の既定）: 原子は合意座標を隙間なく敷くので、端の原子の始点と終点をそのまま使う
+    const a0 = Number(q.a0), a1 = Number(q.a1); if (!Number.isInteger(a0) || !Number.isInteger(a1) || a0 < 0 || a1 < a0 || a1 >= syn.atoms.length) { res.status(400).json({ error: 'a0 ≤ a1 の原子番号が要ります' }); return }
+    x0 = syn.atoms[a0].x0; x1 = syn.atoms[a1].x0 + Math.max(1, syn.atoms[a1].span) }
+  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) { res.status(400).json({ error: 'x0 < x1 か a0 ≤ a1 が要ります' }); return }
   const t0 = Date.now()
   try {
     const w = buildWindow(syn, x0, x1, { label: q.label || `${x0}–${x1}`, depth: Number(q.depth || 1), parent: Number(q.parent ?? 0), pblock: Number(q.pblock ?? -1),

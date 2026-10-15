@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockOrth, fetchBlockOrthRows, fetchBlockOrthGroup, fetchBlockOrthFind, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
+import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockRangeAtoms, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockOrth, fetchBlockOrthRows, fetchBlockOrthGroup, fetchBlockOrthFind, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
 import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView, GeneLite } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
@@ -42,6 +42,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onHoverBlock: b => cbRef.current.onHoverBlock?.(b),
         onDrill: req => fetchBlockWindow(db, req),          // 旧サイドカー: 事前計算に無い窓を backend で逐次計算
         onRange: (x0, x1, label, depth, parent, pblock) => fetchBlockRange(db, x0, x1, label, depth, parent, pblock),   // 木: 範囲の窓
+        onRangeAtoms: (a0, a1, label, depth, parent) => fetchBlockRangeAtoms(db, a0, a1, label, depth, parent),   // 木: 原子の範囲の窓（画面の既定）
         onSites: q => fetchBlockSites(db, q),                // 木: 変異の段（アレル行列）
         onTokRanges: (c0, c1) => fetchBlockTokRanges(db, c0, c1),   // 木: 列の範囲 → 各行のトークン範囲（塩基へ）
         onGenes: ranges => fetchBlockGenes(db, ranges),          // 木: 各行のコンティグ範囲の遺伝子と接合×遺伝子（.genes サイドカー）

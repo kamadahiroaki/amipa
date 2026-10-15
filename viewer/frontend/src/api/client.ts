@@ -826,6 +826,11 @@ export async function fetchBlockTokRanges(dbFile: string, c0: number, c1: number
   try { const res = await fetch(`/api/blocks/tokranges?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }
 // 木の範囲問い合わせ（<db>.synteny がある DB）: 合意座標 [x0, x1] の窓を backend が木から作る（Python ワーカー不要）
+// 木の範囲（原子 a0..a1）で窓を作る（画面の既定。合意 bp は使わない）
+export async function fetchBlockRangeAtoms(dbFile: string, a0: number, a1: number, label: string, depth: number, parent: number): Promise<BlockDrillResult> {
+  const p = new URLSearchParams({ db: dbFile, a0: String(a0), a1: String(a1), label, depth: String(depth), parent: String(parent), pblock: '-1' })
+  try { const res = await fetch(`/api/blocks/range?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
+}
 export async function fetchBlockRange(dbFile: string, x0: number, x1: number, label: string, depth: number, parent: number, pblock: number, tier?: number): Promise<BlockDrillResult> {
   const p = new URLSearchParams({ db: dbFile, x0: String(Math.floor(x0)), x1: String(Math.ceil(x1)), label, depth: String(depth), parent: String(parent), pblock: String(pblock) })
   if (tier != null) p.set('tier', String(tier))

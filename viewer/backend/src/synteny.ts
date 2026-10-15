@@ -652,7 +652,7 @@ export function rootData(syn: Synteny): any {
     total_bp: syn.paths.reduce((s, p) => s + p.bp, 0), total_x: syn.total, tree: true, synteny: path.basename(syn.file), distill: !!syn.distill,   // distill: tokranges / 塩基 MSA が使えるか（試験の gating にも使う）
     genes: fs.existsSync(syn.file.replace(/\.synteny$/, '.genes')),   // 遺伝子サイドカー <db>.genes（annot/build_genes.py）があるか
     natoms: syn.atoms.length, nboundaries: syn.bnd.length, t_build: syn.meta.t_build, maxlayer: syn.maxlayer, supermap: syn.hasSupermap,
-    atoms: syn.atoms.map(a => [a.x0, a.span]),
+    atoms: syn.atoms.map(a => [a.x0, a.span, a.c0, a.c1]),   // [合意累積 bp の始点, 幅, 列の始点, 列の終点]（画面はドラッグを原子と列に直す）
   }
   return { meta, windows: [root], tree: syn.tree }
 }
