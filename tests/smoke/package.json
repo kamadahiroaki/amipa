@@ -1,0 +1,1 @@
+{ "name": "amipa-smoke", "private": true, "type": "module", "description": "ヘッドレス煙試験: Blocks の描画部（blockMsaRender）を jsdom + canvas スタブで実データ（配信中の backend）に対して動かし、例外を拾う", "devDependencies": { "jsdom": "^24.0.0" } }

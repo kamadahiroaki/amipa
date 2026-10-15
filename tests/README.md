@@ -42,3 +42,10 @@ WG には必ず `--fast` を付ける（素の `COUNT(*)` は 270 GB を cold ra
 
 サイト固有の投入手順（ジョブスケジューラの書式やノードの都合）はここに書かない。
 ここに置くのは、どの環境でも同じように走るものだけ。
+
+## smoke（ヘッドレスの画面の煙試験）
+
+`tests/smoke/run.sh <host:port> [db]` — Blocks の描画部（viewer/frontend/src/components/blockMsaRender.ts）を esbuild で束ね、jsdom ＋ canvas スタブの上で
+配信中の backend の実データに対して動かす。接合一覧 → カード → 遺伝子の並び → 塩基の窓 → 系統樹のまとめ（スライダ）／表示範囲の木 → 閉じる、
+を押して例外を数える（0 で終了コード 0）。描画の見た目は検査しないが、一行関数に `//` 注記を差し込んで後半を消したような
+「TypeScript は通るが実行で落ちる」誤りを拾う。初回は tests/smoke に jsdom を npm で入れる（node_modules は無視）。
