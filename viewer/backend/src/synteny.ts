@@ -337,7 +337,6 @@ function colSitesCore(d: InstanceType<typeof Database>, syn: Synteny, c0: number
   const coverSet = new Set(cover); const ncover = cover.length
   const nIn = (r: { haps: Buffer }) => { let n = 0; for (const h of cover) n += has(r.haps, h); return n }   // 被覆の中で列を持つ株の数（不変列 = 全員が持つ）
   const inv = rows.map(r => nIn(r) === ncover)
-  const refIdx = syn.paths.filter(p => p.isref).map(p => haps.indexOf(p.hap)).find(v => v >= 0)
   const sites: SitesResult['sites'] = []; const cellsArr: number[][] = []
   let i = 0
   while (i < rows.length) {
@@ -348,7 +347,7 @@ function colSitesCore(d: InstanceType<typeof Database>, syn: Synteny, c0: number
     for (let h = 0; h < H; h++) { if (!coverSet.has(h)) continue; const ks: number[] = []; for (let k = 0; k < run.length; k++) if (has(run[k].haps, h)) ks.push(k); key[h] = ks.join(',') }
     const cnt = new Map<string, number>(); for (let h = 0; h < H; h++) if (key[h] != null) cnt.set(key[h]!, (cnt.get(key[h]!) || 0) + 1)
     const order = [...cnt.keys()].sort((u, v) => (cnt.get(v)! - cnt.get(u)!) || (u < v ? -1 : 1))
-    if (refIdx != null && refIdx >= 0 && key[refIdx] != null) { const k = key[refIdx]!; order.splice(order.indexOf(k), 1); order.unshift(k) }
+    // アレル番号は多い順（0 = 多数派）。以前は参照株のアレルを 0 に繰り上げていて、参照株が外群の座位で多数派が「変異」に見えた（README 改訂 108）
     const idxOf = new Map(order.map((k, n) => [k, n]))
     const cells = new Array(H).fill(255); for (let h = 0; h < H; h++) if (key[h] != null) cells[h] = Math.min(253, idxOf.get(key[h]!)!)
     cellsArr.push(cells)
@@ -392,9 +391,8 @@ export function sitesForRange(syn: Synteny, q: { c0?: number; c1?: number; x0?: 
         key[h] = ks.join(',')
       }
       const cnt = new Map<string, number>(); for (let h = 0; h < H; h++) if (key[h] != null) cnt.set(key[h]!, (cnt.get(key[h]!) || 0) + 1)
-      const refIdx = syn.paths.filter(p => p.isref).map(p => haps.indexOf(p.hap)).find(v => v >= 0)
       const order = [...cnt.keys()].sort((u, v) => (cnt.get(v)! - cnt.get(u)!) || (u < v ? -1 : 1))
-      if (refIdx != null && refIdx >= 0 && key[refIdx] != null) { const k = key[refIdx]!; order.splice(order.indexOf(k), 1); order.unshift(k) }
+      // アレル番号は多い順（0 = 多数派）。以前は参照株のアレルを 0 に繰り上げていて、参照株が外群の座位で多数派が「変異」に見えた（README 改訂 108）
       const idxOf = new Map(order.map((k, n) => [k, n]))
       const cells = new Array(H).fill(255); for (let h = 0; h < H; h++) if (key[h] != null) cells[h] = Math.min(254, idxOf.get(key[h]!)!)
       cellsArr.push(cells)
@@ -483,8 +481,7 @@ export function sitesForRangeLoci(syn: Synteny, q: { c0?: number; c1?: number; x
   for (let l = 0; l < nl; l++) {
     const m = alleles[l]; if (m.size < 2) continue
     const order = [...m.entries()].sort((u, v) => (v[1].n - u[1].n) || (u[0] < v[0] ? -1 : 1))
-    const refKey = (m as any)._ref as string | undefined
-    if (refKey != null) { const i = order.findIndex(e => e[0] === refKey); if (i > 0) { const e = order.splice(i, 1)[0]; order.unshift(e) } }
+    // アレル番号は多い順（0 = 多数派）。参照株のアレルを 0 に繰り上げる処理は廃止（README 改訂 108: 参照株が外群だと多数派が「変異」に見えた）
     const remap = new Map(order.map((e, i) => [e[1].idx, i]))
     const row = new Array(H).fill(255); for (let h = 0; h < H; h++) { const v = cells[l * H + h]; row[h] = v >= 254 ? v : (remap.get(v) ?? 255) }
     cellsOut.push(row)
