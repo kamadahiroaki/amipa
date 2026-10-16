@@ -45,7 +45,7 @@ try {
     onGenes: ranges => api.fetchBlockGenes(DB, ranges),
     onGenesCols: (c0, c1, paths) => api.fetchBlockGenesCols(DB, c0, c1, paths),
     onGenesTok: ranges => api.fetchBlockGenesTok(DB, ranges),
-    onJunction: jid => api.fetchBlockJunction(DB, jid), onJunctions: () => api.fetchBlockJunctions(DB), onJunctionBase: (jid, k) => api.fetchBlockJunctionBase(DB, jid, k),
+    onJunction: jid => api.fetchBlockJunction(DB, jid), onFeature: q => api.fetchBlockFeature(DB, q), onJunctions: () => api.fetchBlockJunctions(DB), onJunctionBase: (jid, k) => api.fetchBlockJunctionBase(DB, jid, k),
     onJunctionGenes: (jid, n) => api.fetchBlockJunctionGenes(DB, jid, n),
     onOrth: (c0, c1, max) => api.fetchBlockOrth(DB, c0, c1, max), onOrthRows: (c0, c1, paths) => api.fetchBlockOrthRows(DB, c0, c1, paths),
     onOrthGroup: og => api.fetchBlockOrthGroup(DB, og), onOrthFind: (q, limit) => api.fetchBlockOrthFind(DB, q, limit),
@@ -67,6 +67,8 @@ try { const hdr = $('hdr'); const ly = handle._layout(); const c = (ly.cols || [
     // 遺伝子の運命の表 → 戻る → トラックをダブルクリックしてその遺伝子の窓を開く
     const fate = root.querySelector('#bk_detailbody button[data-act="ogfate"]'); if (fate) { fate.click(); await sleep(2500); console.log('  fate table rows', root.querySelectorAll('#bk_detailbody table tr').length - 1, '| head:', root.querySelector('#bk_detailbody')?.textContent?.trim().slice(0, 120)); }
     const gtr2 = $('gtrack'); if (gtr2) { gtr2.dispatchEvent(new W.MouseEvent('dblclick', { bubbles: true, clientX: 300, clientY: 10 })); await sleep(8000); console.log('[after gene dblclick] mode', views.at(-1)?.mode, 'crumbs', root.querySelector('#bk_crumbs')?.textContent?.trim().slice(0, 60), 'errors', errors.length); $('scopeout').click(); await sleep(1500); }
+    // GFF の 1 行の全項目（遺伝子をクリックしたときの詳細。.genes format 2）
+    try { handle._showFeature({ gid: 1 }); await sleep(2500); const d = root.querySelector('#bk_detailbody')?.textContent || ''; console.log('[feature gid=1]', /属性（第 9 列/.test(d) ? 'OK' : 'NG', d.replace(/\s+/g, ' ').slice(0, 110)); if (!/属性（第 9 列/.test(d)) errors.push('feature detail missing'); } catch (e) { errors.push('feature: ' + e.stack) }
     // 名前検索
     try { const inp = $('gfind'); inp.value = 'rlu'; inp.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await sleep(2500); console.log('[gfind rzp] detail:', root.querySelector('#bk_detailbody')?.textContent?.trim().slice(0, 120)); const sel = root.querySelector('#bk_detailbody [data-act="ogsel"]'); if (sel) { sel.click(); await sleep(8000); console.log('  after select: mode', views.at(-1)?.mode, 'crumbs', root.querySelector('#bk_crumbs')?.textContent?.trim().slice(0, 60), 'errors', errors.length); $('scopeout').click(); await sleep(1500); } } catch (e) { errors.push('gfind: ' + e.stack) }
     // 外へ戻る

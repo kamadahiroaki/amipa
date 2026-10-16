@@ -13,6 +13,8 @@ graph.amipa/
                      あると表示範囲の取得が速くなる（無ければ本体の空間索引で動く）。
                      エッジの行にはハプロタイプ幅とリード支持も写してあり、線の太さの表示で
                      本体や graph.db.reads を辺ごとに引かずに済む
+  graph.db.synteny   任意: 共線ブロック（木）の索引。Blocks パネルの階層・アレル行列・接合はこれを引く
+  graph.db.genes     任意: 遺伝子サイドカー。株ごとの GFF を欠けなく持つ（下記）
   reads/                     任意: リードの実体（seekable zstd の GAF）
   work/                      中間生成物とログ（部分的なやり直しに使う。配布時は削ってよい）
   state.json                 どの段まで終わったかの記録
@@ -31,6 +33,22 @@ graph.amipa/
   詰め直し、表示に使わないタグ（既定で塩基クオリティ `bq:Z`）を落としてある。
   何を落としたかは索引の `read_meta.dropped_tags` に記録される。
   `zstd -d` でそのまま伸長できる（末尾のシークテーブルは読み飛ばされる）。
+
+## 遺伝子サイドカー（graph.db.genes）
+
+株ごとの GFF3 をそのまま持ち、閲覧器が行ごとに遺伝子・CDS・エキソンを置くための表。
+入力の GFF は 1 行も落とさず、`GET /api/blocks/gff?db=&acc=` で入力どおりに書き出せる。
+
+| 表 | 内容 |
+|---|---|
+| `feature` | GFF の全データ行。9 列をそのまま（`attrs` は第 9 列の原文）、`id`・`parent`（最初の Parent の行）・`gid`（属する遺伝子）・`lineno` |
+| `feature_tok` | 各行のトークン範囲（グラフのパスにある seqid の行だけ） |
+| `gff_header` | `#` で始まる行（`##gff-version`、`##sequence-region` など） |
+| `gene` / `gene_tok` / `gene_atom` | 閲覧器が描く単位（gene・pseudogene・RNA など。CDS は gene に併合）とトークン範囲・原子 |
+| `junc_gene` | 再編成の接合と遺伝子の関係 |
+| `orthogroup` / `gene_orth` | ノード共有で束ねた遺伝子群と各遺伝子の所属 |
+
+`meta.format` が 2 以上なら `feature` 以下がある。1 のサイドカーでも遺伝子単位の表示は動く。
 
 ## 本体（多層 SQLite）に入っているもの
 

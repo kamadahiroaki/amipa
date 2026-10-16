@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockRangeAtoms, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockOrth, fetchBlockOrthRows, fetchBlockOrthGroup, fetchBlockOrthFind, fetchBlockJunction, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
+import { fetchBlocks, fetchBlockWindow, fetchBlockRange, fetchBlockRangeAtoms, fetchBlockSites, fetchBlockTokRanges, fetchBubbleMsaRanges, fetchBlockLocate, fetchBlockGenes, fetchBlockGenesCols, fetchBlockGenesTok, fetchBlockOrth, fetchBlockOrthRows, fetchBlockOrthGroup, fetchBlockOrthFind, fetchBlockJunction, fetchBlockFeature, fetchBlockJunctions, fetchBlockJunctionBase, fetchBlockJunctionGenes, warmBlocks, BlockDrillRequest } from '../api/client'
 import { mountBlockMsa, BlockMsaHandle, BlockRef, BlockView, GeneLite } from './blockMsaRender'
 
 // 多解像度 MSA（共線ブロック）パネル。中身は vanilla の blockMsaRender（試作の移植）。
@@ -53,6 +53,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onOrthGroup: og => fetchBlockOrthGroup(db, og),                      // 群の運命の表
         onOrthFind: (q, limit) => fetchBlockOrthFind(db, q, limit),          // 遺伝子名の検索   // 木: 列範囲（アレル行列・塩基）の遺伝子（列の区間と塩基の端）
         onJunction: jid => fetchBlockJunction(db, jid),          // 接合カード
+        onFeature: q => fetchBlockFeature(db, q),              // 遺伝子（GFF の行）の全項目: 9 列・属性・親・子（.genes format 2）
         onJunctions: () => fetchBlockJunctions(db),             // 接合一覧
         onJunctionBase: (jid, k) => fetchBlockJunctionBase(db, jid, k),   // 接合の塩基（トークン範囲）
         onJunctionGenes: (jid, n) => fetchBlockJunctionGenes(db, jid, n),   // 接合の遺伝子近傍の比較

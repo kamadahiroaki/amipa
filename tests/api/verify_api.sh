@@ -148,6 +148,16 @@ if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
     hit "/blocks/gene (name)"     "blocks/gene?db=$DB&name=dna" allow-empty
     GC=$("$PY" -c 'import sys,json; print(json.dumps({"db": sys.argv[1], "c0": int(sys.argv[2]), "c1": int(sys.argv[2]) + 3000}))' "$DB" "$(get "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" | "$PY" -c 'import sys,json; print(json.load(sys.stdin).get("c0", 0))')" 2>/dev/null)
     [ -n "$GC" ] && hit "/blocks/genes_cols (POST)" "blocks/genes_cols" allow-empty "$GC"
+    # GFF の 1 行の全項目と、1 株の GFF の書き出し（サイドカー format 2。2026-10-16）
+    FEAT=$(get "blocks/feature?db=$DB&gid=1")
+    if "$PY" -c 'import sys,json; j=json.load(sys.stdin); sys.exit(0 if j.get("feature") else 1)' <<<"$FEAT" 2>/dev/null; then
+      hit "/blocks/feature"          "blocks/feature?db=$DB&gid=1"
+      ACC=$("$PY" -c 'import sys,json; print(json.load(sys.stdin)["feature"]["acc"])' <<<"$FEAT")
+      GFF1=$(get "blocks/gff?db=$DB&acc=$ACC" | head -1)
+      if [ "$GFF1" = "##gff-version 3" ]; then PASS=$((PASS+1)); printf "  OK   %-30s %s\n" "/blocks/gff" "$ACC の 1 行目が ##gff-version 3"; else FAIL=$((FAIL+1)); FAILED+=("/blocks/gff"); echo "  NG   /blocks/gff                    1 行目: $GFF1"; fi
+    else
+      echo "  SKIP /blocks/feature, /blocks/gff（遺伝子サイドカーが format 1）"
+    fi
     hit "/blocks/junctions"       "blocks/junctions?db=$DB"
     JID=$(get "blocks/junctions?db=$DB" | "$PY" -c 'import sys,json; r=json.load(sys.stdin).get("rows",[]); print(r[0][0] if r else "")' 2>/dev/null)
     if [ -n "$JID" ]; then hit "/blocks/junction"        "blocks/junction?db=$DB&jid=$JID"; hit "/blocks/junction_base"   "blocks/junction_base?db=$DB&jid=$JID&k=40"; fi

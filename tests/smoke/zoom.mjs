@@ -40,7 +40,7 @@ const handle = mountBlockMsa(root, data, {
   onSites: q => api.fetchBlockSites(DB, q), onTokRanges: (c0, c1) => api.fetchBlockTokRanges(DB, c0, c1),
   onGenes: ranges => api.fetchBlockGenes(DB, ranges), onGenesCols: (c0, c1, paths) => api.fetchBlockGenesCols(DB, c0, c1, paths), onGenesTok: ranges => api.fetchBlockGenesTok(DB, ranges),
   onOrth: (c0, c1, max) => api.fetchBlockOrth(DB, c0, c1, max), onOrthRows: (c0, c1, paths) => api.fetchBlockOrthRows(DB, c0, c1, paths),
-  onBaseFetch: (ranges, label, maxLeaves) => api.fetchBubbleMsaRanges(DB, ranges, label, 0, 0, maxLeaves), onLocate: names => api.fetchBlockLocate(DB, names),
+  onBaseFetch: (ranges, label, maxLeaves) => api.fetchBubbleMsaRanges(DB, ranges, label, 0, 0, maxLeaves), onLocate: names => api.fetchBlockLocate(DB, names), onFeature: q => api.fetchBlockFeature(DB, q),
   onView: v => views.push(v), onSelectHap: () => {}, onBaseMsa: () => {},
 })
 const $ = id => root.querySelector('#bk_' + id)

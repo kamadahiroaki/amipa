@@ -900,6 +900,10 @@ export async function fetchBlockOrthFind(dbFile: string, q: string, limit = 30):
 export async function fetchBlockGenesCols(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
   try { const res = await fetch('/api/blocks/genes_cols', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
 }
+// GFF の 1 行を欠けなく（9 列・属性・親・子・その株の GFF の URL）。fid か gid で
+export async function fetchBlockFeature(dbFile: string, q: { fid?: number; gid?: number }): Promise<any | null> {
+  try { const res = await fetch(`/api/blocks/feature?db=${encodeURIComponent(dbFile)}&${q.fid != null ? 'fid=' + q.fid : 'gid=' + q.gid}`); if (!res.ok) return null; return await res.json() } catch { return null }
+}
 export async function fetchBlockJunction(dbFile: string, jid: number): Promise<any | null> {
   try { const res = await fetch(`/api/blocks/junction?db=${encodeURIComponent(dbFile)}&jid=${jid}`); if (!res.ok) return null; return await res.json() } catch { return null }
 }

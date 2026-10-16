@@ -8,6 +8,7 @@ import { execFile } from 'child_process'
 import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { BlocksWorker, getBlocksWorker, peekBlocksWorker, blocksWorkerStatus } from '../blocksWorker'
 import { loadSynteny, rootData, buildWindow, syntenyPath, sitesForRange, sitesForRangeLoci, locateNodes, nodesForAtoms, atomsOfNames, namesForAtomsExact, namesForCols } from '../synteny'
+import type { Synteny } from '../synteny'
 import { tableCols, parseNodes } from '../nodeQuery'
 import { openDistill } from '../distill'
 import { edgeExtraSel } from '../edgeQuery'
@@ -407,6 +408,56 @@ function runSubgraph(res: any, q: Record<string, string>, namesList?: string[]) 
 //   接合は常に返す（株あたり 80 件程度）。cls は junc_gene の最も強いもの（split > isl > end > inside > near）。
 const CLS_ORDER: Record<string, number> = { split: 5, isl: 4, end: 3, inside: 2, near: 1 }
 function genesPath(db: string): string | null { const sp = syntenyPath(db); if (!sp) return null; const g = sp.replace(/\.synteny$/, '.genes'); return fs.existsSync(g) ? g : null }
+function hasTable(d: Database.Database, name: string): boolean { try { return !!d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name) } catch { return false } }
+// GFF の 1 行を欠けなく返す（サイドカー format 2 の feature 表）。GET /api/blocks/feature?db&fid=|gid=
+//   → {feature: {fid, pid, path, acc, seqid, source, type, start, end, score, strand, phase, attrs:[[k,v],…], attrs_raw, id, parent, gid, lineno, line, tok:[s0,e0]},
+//      ancestors: [同じ形…（親→祖父の順）], children: [同じ形…（子・孫まで、start 順、最大 500）], gff: その株の GFF を書き出す URL}
+//   attrs の値は GFF3 の %XX を戻す。line = 9 列をタブで繋いだ元の行
+function featRecord(d: Database.Database, syn: Synteny, row: any): Record<string, unknown> {
+  const attrs: [string, string][] = []
+  for (const kv of String(row.attrs ?? '').split(';')) { const i = kv.indexOf('='); if (i < 0) { if (kv) attrs.push([kv, '']); continue } let v = kv.slice(i + 1); try { v = decodeURIComponent(v) } catch { /* 素のまま */ } attrs.push([kv.slice(0, i), v]) }
+  const tok = d.prepare('SELECT s0, e0 FROM feature_tok WHERE fid=?').get(row.fid) as { s0: number; e0: number } | undefined
+  const pr = row.pid != null ? syn.paths.find(p => p.pid === row.pid) : null
+  return { fid: row.fid, pid: row.pid, path: pr ? pr.path : null, acc: row.acc, seqid: row.seqid, source: row.source, type: row.type, start: row.start, end: row.end, score: row.score, strand: row.strand, phase: row.phase,
+    attrs, attrs_raw: row.attrs, id: row.id, parent: row.parent, gid: row.gid, lineno: row.lineno, tok: tok ? [tok.s0, tok.e0] : null,
+    line: [row.seqid, row.source, row.type, row.start, row.end, row.score, row.strand, row.phase, row.attrs].join('\t') }
+}
+blocksRouter.get('/blocks/feature', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const gp = genesPath(q.db); const syn = loadSynteny(q.db); if (!gp || !syn) { res.json({ error: 'この DB には遺伝子サイドカーがありません' }); return }
+  const d = new Database(gp, { readonly: true })
+  try {
+    if (!hasTable(d, 'feature')) { res.json({ error: 'この遺伝子サイドカーは GFF の行を持っていません（format 1）。build_genes.py で作り直すと出ます' }); return }
+    const SEL = 'SELECT fid, pid, acc, seqid, source, type, start, end, score, strand, phase, attrs, id, parent, gid, lineno FROM feature'
+    let row: any = null
+    if (q.fid) row = d.prepare(SEL + ' WHERE fid=?').get(Number(q.fid))
+    else if (q.gid) { const g = d.prepare('SELECT fid FROM gene WHERE gid=?').get(Number(q.gid)) as { fid: number } | undefined; if (g && g.fid != null) row = d.prepare(SEL + ' WHERE fid=?').get(g.fid) }
+    if (!row) { res.json({ error: '該当する行がありません' }); return }
+    const ancestors: any[] = []; let p = row.parent; for (let i = 0; i < 8 && p != null; i++) { const a = d.prepare(SEL + ' WHERE fid=?').get(p) as any; if (!a) break; ancestors.push(featRecord(d, syn, a)); p = a.parent }
+    const children: any[] = []; const qC = d.prepare(SEL + ' WHERE parent=? ORDER BY start')
+    const walk = (fid: number, depth: number) => { if (depth > 3 || children.length >= 500) return; for (const c of qC.all(fid) as any[]) { if (children.length >= 500) break; children.push({ ...featRecord(d, syn, c), depth }); walk(c.fid, depth + 1) } }
+    walk(row.fid, 1)
+    res.json({ feature: featRecord(d, syn, row), ancestors, children, gff: '/api/blocks/gff?db=' + encodeURIComponent(q.db) + '&acc=' + encodeURIComponent(row.acc) })
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
+// 1 株の GFF を入力のとおりに書き出す（gff_header ∪ feature を行番号順）。GET /api/blocks/gff?db&acc → text/plain（添付）
+blocksRouter.get('/blocks/gff', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db || !q.acc) { res.status(400).json({ error: 'db, acc が要ります' }); return }
+  const gp = genesPath(q.db); if (!gp) { res.status(404).json({ error: 'この DB には遺伝子サイドカーがありません' }); return }
+  const d = new Database(gp, { readonly: true })
+  try {
+    if (!hasTable(d, 'feature')) { res.status(404).json({ error: 'この遺伝子サイドカーは GFF の行を持っていません（format 1）' }); return }
+    const lines: [number, string][] = []
+    for (const r of d.prepare('SELECT lineno, line FROM gff_header WHERE acc=?').all(q.acc) as any[]) lines.push([r.lineno, r.line])
+    for (const r of d.prepare('SELECT lineno, seqid, source, type, start, end, score, strand, phase, attrs FROM feature WHERE acc=?').all(q.acc) as any[]) lines.push([r.lineno, [r.seqid, r.source, r.type, r.start, r.end, r.score, r.strand, r.phase, r.attrs].join('\t')])
+    if (!lines.length) { res.status(404).json({ error: 'その株の GFF がありません: ' + q.acc }); return }
+    lines.sort((a, b) => a[0] - b[0])
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="' + q.acc.replace(/[^A-Za-z0-9._-]/g, '_') + '.gff"')
+    res.send(lines.map(l => l[1]).join('\n') + '\n')
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
 blocksRouter.post('/blocks/genes', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>
   const db = typeof b.db === 'string' ? b.db : ''
@@ -444,9 +495,12 @@ blocksRouter.post('/blocks/genes', (req, res) => {
   } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close(); ds.close() }
 })
 // ---- 列範囲（アレル行列・塩基の窓）の遺伝子: 遺伝子 → その株のトークン → 列。POST /api/blocks/genes_cols body {db, c0, c1, paths?}
-//   行ごとに [gid, name, strand, type, pseudo, start, end, pieces [[c0,c1],...], sn, so, en, eo, part]。
+//   行ごとに [gid, name, strand, type, pseudo, start, end, pieces [[c0,c1],...], sn, so, en, eo, part, parts]。
 //   pieces = 窓の列範囲に入る列の連なり（再編成で分かれていれば複数）。sn/so, en/eo = 遺伝子の開始・終了の (ノード名, ノード内オフセット)
 //   （塩基の段で塩基単位に置く）。part: 1=窓の外から始まる, 2=窓の外で終わる（ビット）
+//   parts（2026-10-16、サイドカー format 2）: その遺伝子に属する GFF の子の行（CDS・exon・UTR・mRNA…）を同じ形で
+//   [fid, type, strand, phase, parent_fid, start, end, pieces, sn, so, en, eo, part]（[7]〜[12] は遺伝子と同じ位置なので画面の写像がそのまま使える）。
+//   旧サイドカー（feature 表なし）では []
 blocksRouter.post('/blocks/genes_cols', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>
   const db = typeof b.db === 'string' ? b.db : ''; const c0 = Number(b.c0), c1 = Number(b.c1)
@@ -458,6 +512,8 @@ blocksRouter.post('/blocks/genes_cols', (req, res) => {
   const t0 = Date.now(); const dist = openDistill(syn.distill); const d = new Database(gp, { readonly: true })
   try {
     const qG = d.prepare('SELECT g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, t.s0, t.e0 FROM gene g JOIN gene_tok t ON t.gid=g.gid WHERE g.pid=? AND t.e0>? AND t.s0<? ORDER BY t.s0')
+    const qP = hasTable(d, 'feature') ? d.prepare('SELECT f.fid, f.type, f.strand, f.phase, f.parent, f.start, f.end, t.s0, t.e0 FROM feature f JOIN feature_tok t ON t.fid=f.fid WHERE f.gid=? AND f.fid<>? ORDER BY f.start LIMIT 200') : null
+    const qGF = qP ? d.prepare('SELECT fid FROM gene WHERE gid=?') : null
     const atomsIn = syn.atoms.filter(a => a.c1 >= c0 && a.c0 <= c1); const aset = new Set(atomsIn.map(a => a.id))
     const rows: any[] = []
     for (const pr of syn.paths) {
@@ -472,16 +528,24 @@ blocksRouter.post('/blocks/genes_cols', (req, res) => {
         const colA = new Int32Array(n); const cum = new Float64Array(n + 1); cum[0] = run.pos
         for (let k = 0; k < n; k++) { const c = syn.dcol[toks[k]]; colA[k] = c; cum[k + 1] = cum[k] + (c >= 0 ? syn.colBp[c] : 0) }
         const nameAt = (k: number) => { const c = colA[k]; const o = c >= 0 ? syn.col2orig![c] : -1; return o >= 0 ? 'n' + o : '' }
-        for (const g of qG.all(pr.pid, run.s0, run.e0) as any[]) {
-          const ks0 = Math.max(g.s0, run.s0), ke0 = Math.min(g.e0, run.e0); if (ke0 <= ks0) continue
+        // トークン範囲 [fs0, fe0)・コンティグ bp [start, end] → 窓の列の連なりと、開始・終了の (ノード, オフセット)。
+        // 範囲が走査範囲の中で始まる／終わるときだけ正確、外なら端のトークンで代用（part に印）。窓の列に掛からなければ null
+        const mapRange = (fs0: number, fe0: number, start: number, end: number) => {
+          const ks0 = Math.max(fs0, run.s0), ke0 = Math.min(fe0, run.e0); if (ke0 <= ks0) return null
           const cols: number[] = []; for (let k = ks0 - run.s0; k < ke0 - run.s0; k++) { const c = colA[k]; if (c >= c0 && c <= c1) cols.push(c) }
-          if (!cols.length) continue
+          if (!cols.length) return null
           cols.sort((u, v) => u - v); const pieces: [number, number][] = []; for (const c of cols) { const last = pieces[pieces.length - 1]; if (last && c <= last[1] + 2) last[1] = c; else pieces.push([c, c]) }
-          // 開始・終了の (ノード, オフセット)。遺伝子が走査範囲の中で始まる／終わるときだけ正確、外なら端のトークンで代用（part に印）
-          let part = 0; let sk = g.s0, ek = g.e0 - 1
+          let part = 0; let sk = fs0, ek = fe0 - 1
           if (sk < run.s0) { sk = run.s0; part |= 1 } if (ek >= run.e0) { ek = run.e0 - 1; part |= 2 }
-          const so = Math.max(0, (g.start - 1) - cum[sk - run.s0]), eo = Math.max(0, g.end - cum[ek - run.s0] - 1)
-          genes.push([g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, pieces, nameAt(sk - run.s0), Math.round(so), nameAt(ek - run.s0), Math.round(eo), part])
+          const so = Math.max(0, (start - 1) - cum[sk - run.s0]), eo = Math.max(0, end - cum[ek - run.s0] - 1)
+          return [pieces, nameAt(sk - run.s0), Math.round(so), nameAt(ek - run.s0), Math.round(eo), part] as const
+        }
+        for (const g of qG.all(pr.pid, run.s0, run.e0) as any[]) {
+          const m = mapRange(g.s0, g.e0, g.start, g.end); if (!m) continue
+          const parts: any[] = []
+          if (qP) { const gf = qGF!.get(g.gid) as { fid: number } | undefined
+            for (const p of qP.all(g.gid, gf?.fid ?? -1) as any[]) { const pm = mapRange(p.s0, p.e0, p.start, p.end); if (pm) parts.push([p.fid, p.type, p.strand, p.phase, p.parent, p.start, p.end, ...pm]) } }
+          genes.push([g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, ...m, parts])
         }
       }
       if (genes.length) rows.push({ path: pr.path, hap: pr.hap, genes })
@@ -502,6 +566,8 @@ blocksRouter.post('/blocks/genes_tok', (req, res) => {
   const t0 = Date.now(); const dist = openDistill(syn.distill); const d = new Database(gp, { readonly: true })
   try {
     const qG = d.prepare('SELECT g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, t.s0, t.e0 FROM gene g JOIN gene_tok t ON t.gid=g.gid WHERE g.pid=? AND t.e0>? AND t.s0<? ORDER BY t.s0')
+    const qP = hasTable(d, 'feature') ? d.prepare('SELECT f.fid, f.type, f.strand, f.phase, f.parent, f.start, f.end, t.s0, t.e0 FROM feature f JOIN feature_tok t ON t.fid=f.fid WHERE f.gid=? AND f.fid<>? ORDER BY f.start LIMIT 200') : null
+    const qGF = qP ? d.prepare('SELECT fid FROM gene WHERE gid=?') : null
     const pathOf = new Map(syn.paths.map(p => [p.path, p]))
     const byHap = new Map<string, { path: string; hap: string; genes: any[] }>()
     for (const [path, rs0, re0] of ranges.slice(0, 500)) {
@@ -517,12 +583,20 @@ blocksRouter.post('/blocks/genes_tok', (req, res) => {
       const bpAt = (k: number) => { const c = colA[k]; return c >= 0 ? syn.colBp[c] : 1 }
       let row = byHap.get(pr.hap); if (!row) { row = { path: pr.path, hap: pr.hap, genes: [] }; byHap.set(pr.hap, row) }
       const seen = new Set(row.genes.map((g: any) => g[0]))
+      const mapRange = (fs0: number, fe0: number, start: number, end: number) => {
+        if (fe0 <= s0 || fs0 >= e0) return null
+        let part = 0; let sk = fs0, ek = fe0 - 1
+        if (sk < s0) { sk = s0; part |= 1 } if (ek >= e0) { ek = e0 - 1; part |= 2 }
+        const so = Math.min(bpAt(sk - from) - 1, Math.max(0, (start - 1) - cum[sk - from])), eo = Math.min(bpAt(ek - from) - 1, Math.max(0, end - cum[ek - from] - 1))
+        return [[] as [number, number][], nameAt(sk - from), Math.round(so), nameAt(ek - from), Math.round(eo), part] as const
+      }
       for (const g of qG.all(pr.pid, s0, e0) as any[]) {
         if (seen.has(g.gid)) continue
-        let part = 0; let sk = g.s0, ek = g.e0 - 1
-        if (sk < s0) { sk = s0; part |= 1 } if (ek >= e0) { ek = e0 - 1; part |= 2 }
-        const so = Math.min(bpAt(sk - from) - 1, Math.max(0, (g.start - 1) - cum[sk - from])), eo = Math.min(bpAt(ek - from) - 1, Math.max(0, g.end - cum[ek - from] - 1))
-        row.genes.push([g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, [], nameAt(sk - from), Math.round(so), nameAt(ek - from), Math.round(eo), part]); seen.add(g.gid)
+        const m = mapRange(g.s0, g.e0, g.start, g.end); if (!m) continue
+        const parts: any[] = []
+        if (qP) { const gf = qGF!.get(g.gid) as { fid: number } | undefined
+          for (const p of qP.all(g.gid, gf?.fid ?? -1) as any[]) { const pm = mapRange(p.s0, p.e0, p.start, p.end); if (pm) parts.push([p.fid, p.type, p.strand, p.phase, p.parent, p.start, p.end, ...pm]) } }
+        row.genes.push([g.gid, g.name, g.strand, g.type, g.pseudo, g.start, g.end, ...m, parts]); seen.add(g.gid)
       }
     }
     res.json({ rows: [...byHap.values()].filter(r => r.genes.length), ms: Date.now() - t0 })
