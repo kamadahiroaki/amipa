@@ -37,7 +37,7 @@ const handle = mountBlockMsa(root, data, {
   onSites: q => api.fetchBlockSites(DB, q), onTokRanges: (c0, c1) => api.fetchBlockTokRanges(DB, c0, c1),
   onGenes: ranges => api.fetchBlockGenes(DB, ranges), onGenesCols: (c0, c1, paths) => api.fetchBlockGenesCols(DB, c0, c1, paths), onGenesTok: ranges => api.fetchBlockGenesTok(DB, ranges),
   onOrth: (c0, c1, max) => api.fetchBlockOrth(DB, c0, c1, max), onOrthRows: (c0, c1, paths) => api.fetchBlockOrthRows(DB, c0, c1, paths),
-  onBaseFetch: (ranges, label, maxLeaves) => api.fetchBubbleMsaRanges(DB, ranges, label, 0, 0, maxLeaves), onLocate: names => api.fetchBlockLocate(DB, names), onFeature: q => api.fetchBlockFeature(DB, q),
+  onBaseFetch: (ranges, label, maxLeaves) => api.fetchBubbleMsaRanges(DB, ranges, label, 0, 0, maxLeaves), onLocate: names => api.fetchBlockLocate(DB, names), onFeature: q => api.fetchBlockFeature(DB, q), onOrthGroup: og => api.fetchBlockOrthGroup(DB, og),
   onView: () => {}, onSelectHap: () => {}, onBaseMsa: () => {},
 })
 await sleep(1200)
@@ -58,6 +58,8 @@ for (const L of E.loci) {
 }
 // 期待: ybeF では擬似遺伝子の 8 株に機能喪失が付く（厳密な数は注釈次第なので 5 以上なら OK とする）
 const main = E.loci.slice().sort((a, b) => b.ncodon - a.ncodon)[0]; const nlof = [...main.rows.values()].filter(S => !S.absent && S.lof).length
-const ok = nlof >= 8 && nlof <= 10 && main.modelStops === 0 && errors.length === 0   /* RefSeq の擬似遺伝子 8 株は全部、RefSeq が無傷とする株は多くて 2 */
+// 運命の表の経路（窓を開かずに群の列区間で計算）: og 1839 = ybeF。窓と同じ機能喪失の数になる
+let fateOk = false; try { const fe = await handle._fateEffects(1839); console.log(`[fate effects og 1839] locus ${fe.L && fe.L.name} codons ${fe.L && fe.L.ncodon} internal stops ${fe.L && fe.L.modelStops} | LoF rows ${fe.lof}`); fateOk = fe.L && fe.L.modelStops === 0 && fe.lof >= 8 && fe.lof <= 10 } catch (e) { errors.push('fate effects: ' + (e && e.stack || e)) }
+const ok = nlof >= 8 && nlof <= 10 && main.modelStops === 0 && fateOk && errors.length === 0   /* RefSeq の擬似遺伝子 8 株は全部、RefSeq が無傷とする株は多くて 2 */
 console.log(ok ? 'OK' : 'NG', 'LoF rows', nlof, 'errors', errors.length); for (const e of errors.slice(0, 3)) console.log('  ' + String(e).split('\n').slice(0, 3).join('\n    '))
 process.exit(ok ? 0 : 1)
