@@ -190,7 +190,13 @@ def consensus_order_fast(at, L, order="ref", sample_backbone=4000):
     backbone = (nhap * 2 >= H) & ~multi & at.inL[L]
     refs = [pi for pi in present if at.isref(pi)]
     if order == "ref" and refs:
-        o = max(refs, key=lambda pi: at.rowbp[pi]); okind = "ref"
+        # 参照のコンティグが複数（複数染色体）なら、同じサンプルのコンティグをコンティグ名の自然順に繋いだ 1 本を順序パスにする（2026-10-18）。
+        # サンプルは参照候補（GRCh38 / CHM13 …）のうち塩基数の和が最大のもの。以前は最長の 1 本だけで、他の染色体は「置けない列」として末尾に id 順で並んでいた
+        bysamp = {}
+        for pi in refs: bysamp.setdefault(at.labels_of(pi)[0], []).append(pi)
+        samp = max(bysamp, key=lambda s_: sum(int(at.rowbp[p]) for p in bysamp[s_]))
+        natkey = lambda nm: [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", str(nm))]
+        olist = sorted(bysamp[samp], key=lambda pi: natkey(at.labels_of(pi)[2])); o = olist[0]; okind = "ref"
     else:
         bb = np.flatnonzero(backbone)
         if bb.size > sample_backbone: bb = np.sort(np.random.default_rng(1).choice(bb, sample_backbone, replace=False))
@@ -199,8 +205,10 @@ def consensus_order_fast(at, L, order="ref", sample_backbone=4000):
         for pi in present:
             s = T[pi][0][bbset[T[pi][0]]]
             pairs[pi] = set(zip(s[:-1].tolist(), s[1:].tolist())) | set(zip(s[1:].tolist(), s[:-1].tolist()))
-        o = max(present, key=lambda pi: sum(len(pairs[pi] & pairs[q]) for q in present if q != pi)); okind = "medoid"
-    sig_o, ori_o, ns_o, bp_o = T[o]
+        o = max(present, key=lambda pi: sum(len(pairs[pi] & pairs[q]) for q in present if q != pi)); okind = "medoid"; olist = [o]
+    if len(olist) == 1: sig_o, ori_o, ns_o, bp_o = T[o]
+    else: sig_o, ori_o, ns_o, bp_o = (np.concatenate([T[p][k] for p in olist]) for k in range(4))   # 複数コンティグを繋いだ順序パス
+    opath = ",".join(at.p_names[p] for p in olist)
     uo, fo = np.unique(sig_o, return_index=True)
     pos = np.full(V, -1.0); ori0 = np.full(V, -1, np.int8); pos[uo] = fo; ori0[uo] = ori_o[fo]
     cum_o = np.concatenate(([0], np.cumsum(bp_o)))
@@ -269,5 +277,5 @@ def consensus_order_fast(at, L, order="ref", sample_backbone=4000):
     # 前の値で穴埋め
     m = xlab >= 0; ff = np.maximum.accumulate(np.where(m, np.arange(len(xlab)), -1)); xlab = np.where(ff >= 0, xlab[np.maximum(ff, 0)], 0)
     inorder = np.zeros(V, bool); inorder[uo] = True
-    return dict(order=order_v, col=col, ori0=ori0, xlab=xlab, backbone=backbone, nhap=nhap, opath=at.p_names[o], okind=okind,
-                present=present, haps=haps, unplaced=int(len(unplaced)), inorder=inorder, H=H)
+    return dict(order=order_v, col=col, ori0=ori0, xlab=xlab, backbone=backbone, nhap=nhap, opath=opath, okind=okind,
+                present=present, haps=haps, unplaced=int(len(unplaced)), inorder=inorder, H=H, norder=len(olist))

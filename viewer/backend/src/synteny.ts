@@ -653,6 +653,7 @@ export function rootData(syn: Synteny): any {
     genes: fs.existsSync(syn.file.replace(/\.synteny$/, '.genes')),   // 遺伝子サイドカー <db>.genes（annot/build_genes.py）があるか
     natoms: syn.atoms.length, nboundaries: syn.bnd.length, t_build: syn.meta.t_build, maxlayer: syn.maxlayer, supermap: syn.hasSupermap,
     atoms: syn.atoms.map(a => [a.x0, a.span, a.c0, a.c1]),   // [合意累積 bp の始点, 幅, 列の始点, 列の終点]（画面はドラッグを原子と列に直す）
+    refs: (() => { try { return JSON.parse(syn.meta.refcontigs || '[]') } catch { return [] } })(),   // 参照コンティグ [{cid, key, name, length}]（複数染色体のアトラスで座標に名前を添える。tree.py が書く）
   }
   return { meta, windows: [root], tree: syn.tree }
 }

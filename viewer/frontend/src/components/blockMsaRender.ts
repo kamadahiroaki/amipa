@@ -65,6 +65,9 @@ const _densRef = new Map();
 function levelDensRef(){ if (_densRef.has(st.li)) return _densRef.get(st.li); const L = level(); const d = [];
   for (const h of L.haps) for (const c of h.contigs) for (const x of c.inst) if (x[5]<4 && x.length>12 && x[2]>0) d.push(x[11]/x[2]*1000);
   d.sort((a,b)=>a-b); const ref = d.length ? Math.max(0.5, 2*d[Math.floor(d.length/2)]) : 10; _densRef.set(st.li, ref); return ref; }
+/* 参照コンティグ名を添えた座標（複数染色体のアトラスだけ。DATA.meta.refs = [{cid, key, name, length}]） */
+function refName(cid){ const R = DATA && DATA.meta && DATA.meta.refs; if (!R || R.length < 2 || cid == null) return ''; const r = R.find(x => x.cid === cid); return r ? r.name : ''; }
+function fmtref(x, cid){ const n = refName(cid); return (n ? n + ':' : '') + fmtbp(x); }
 function fmtbp(x){ if (x>=1e6) return (x/1e6).toFixed(x>=1e7?1:2)+' Mb'; if (x>=1e3) return (x/1e3).toFixed(x>=1e5?0:1)+' kb'; return x+' bp'; }
 // 範囲のラベル。両端が同じ表記に丸まるときは kb の桁を増やして区別する
 function fmtRange(xa, xb){ let a = fmtbp(xa), b = fmtbp(xb); if (a !== b) return a + '–' + b;
@@ -674,6 +677,8 @@ function translate(c){ if (!c || c.length < 3) return '?'; const a = NT_IDX[c[0]
 const AA3 = { A: 'Ala', R: 'Arg', N: 'Asn', D: 'Asp', C: 'Cys', Q: 'Gln', E: 'Glu', G: 'Gly', H: 'His', I: 'Ile', L: 'Leu', K: 'Lys', M: 'Met', F: 'Phe', P: 'Pro', S: 'Ser', T: 'Thr', W: 'Trp', Y: 'Tyr', V: 'Val', '*': 'Ter', X: 'Xaa', '?': '?' };
 const EFF = { 1: '同義', 2: '非同義', 3: '終止獲得', 4: '終止喪失', 5: '開始喪失', 6: 'フレームシフト', 7: 'インフレーム indel', 8: '読み枠がずれた区間' };
 const EFF_COL = { 1: '#8aa0b4', 2: '#e08a1e', 3: '#c9302c', 4: '#c9302c', 5: '#c9302c', 6: '#c9302c', 7: '#d4b000', 8: 'rgba(201,48,44,.5)' };
+/* 遺伝子の CDS の片。親（転写産物）が複数なら（GENCODE）、CDS の合計長が最大の 1 本だけ（読み枠は 1 本の転写産物で決める） */
+function cdsPartsOf(ge){ const cds = (ge[13] || []).filter(p => p[1] === 'CDS'); if (cds.length < 2) return cds; const by = new Map(); for (const p of cds){ const k = p[4] == null ? '' : String(p[4]); const e = by.get(k) || { len: 0, parts: [] }; e.len += Math.max(0, p[6] - p[5] + 1); e.parts.push(p); by.set(k, e); } if (by.size <= 1) return cds; let best = null; for (const e of by.values()) if (!best || e.len > best.len) best = e; return best.parts; }
 function ensureEffects(){ const w = win(); const M = baseOf(); if (!w || !M || !w._gcols || M.indexBacked) return null; if (w._beff === undefined || w._beff === null){ try { w._beff = computeEffects(w, M); } catch (e) { console.warn('effects', e); w._beff = { code: new Map(), info: new Map(), loci: [], byGene: new Map(), error: String(e) }; } } return w._beff; }
 function computeEffects(w, M){ const refRow = LY.rows.find(r => r.isref); return computeEffectsCore(M, w._gcols, refRow ? refRow.hap : null); }
 /* 窓に依らない本体: M（塩基 MSA）、gcols（hap → 遺伝子の配列）、参照株。運命の表（窓を開かずに群の列区間を取る）からも呼ぶ */
@@ -684,7 +689,7 @@ function computeEffectsCore(M, gcols, refHap){ const t0 = Date.now(); const ncol
   // 遺伝子 → CDS の列区間（モデル候補）。片があれば CDS の片、無ければ cds 型の遺伝子そのもの
   const cands = [];
   for (const [hap, gs] of (gcols || new Map())){ const mi = M._rowOf.get(hap); if (mi == null) continue; const row = rows[mi];
-    for (const ge of gs){ const cds = (ge[13] || []).filter(p => p[1] === 'CDS'); const segs = cds.length ? cds.map(p => ({ i0: baseColIndex(M, p[8], p[9]), i1: baseColIndex(M, p[10], p[11]), phase: Number(p[3]) || 0, s: p[5] })) : (ge[3] === 'cds' ? [{ i0: baseColIndex(M, ge[8], ge[9]), i1: baseColIndex(M, ge[10], ge[11]), phase: 0, s: ge[5] }] : []);
+    for (const ge of gs){ const cds = cdsPartsOf(ge); const segs = cds.length ? cds.map(p => ({ i0: baseColIndex(M, p[8], p[9]), i1: baseColIndex(M, p[10], p[11]), phase: Number(p[3]) || 0, s: p[5] })) : (ge[3] === 'cds' ? [{ i0: baseColIndex(M, ge[8], ge[9]), i1: baseColIndex(M, ge[10], ge[11]), phase: 0, s: ge[5] }] : []);
       const ok = segs.filter(s => s.i0 >= 0 && s.i1 >= 0); if (!ok.length) continue; const cA = Math.min(...ok.map(s => Math.min(s.i0, s.i1))), cB = Math.max(...ok.map(s => Math.max(s.i0, s.i1)));
       /* 表示の向きでの転写の向き: この行の注釈の開始（ゲノム座標の小さい端）の列と終了の列の大小で、表示がゲノムの向きと同じか（up）を測る。
          row.strand の意味に頼らず実データで決める（2026-10-16: strand で決めると全行の枠が逆になり全部に終止が出た） */
@@ -754,7 +759,7 @@ function drawGeneBandCols(gh, Hh){ const w = win(); if (!st.lane || !w._gcols) r
   for (const ge of gs){ for (const [x0, x1] of geneSpanX(w, ge)){ gh.fillStyle = geneColorCols(ge); gh.globalAlpha = .9; gh.fillRect(x0, y, Math.max(1, x1 - x0), h); gh.globalAlpha = 1;
       if (w.mode === 'base' && ge[3] === 'cds' && x1 - x0 >= 24){ // 読み枠: CDS の片ごとに phase を引いた所からコドン境界に目盛り。この行の塩基だけを数える（gap 列は飛ばす）。片が複数＝プログラムされたフレームシフト（phase 2）や真核のエキソン
         const M = L.base; const mi = M._rowOf ? M._rowOf.get(ref.hap) : null; const U = mi != null ? baseUngapped(M, mi) : null;
-        const cp = (ge[13] || []).filter(p => p[1] === 'CDS'); const segs = cp.length ? cp.map(p => [p[8], p[9], p[10], p[11], p[2], Number(p[3]) || 0]) : [[ge[8], ge[9], ge[10], ge[11], ge[2], 0]];
+        const cp = cdsPartsOf(ge); const segs = cp.length ? cp.map(p => [p[8], p[9], p[10], p[11], p[2], Number(p[3]) || 0]) : [[ge[8], ge[9], ge[10], ge[11], ge[2], 0]];
         if (U){ gh.fillStyle = TH.panel; for (const [n0, o0, n1, o1, strand, phase] of segs){ const i0 = baseColIndex(M, n0, o0), i1 = baseColIndex(M, n1, o1); if (i0 < 0 || i1 < 0) continue; const pa = U.posOf[Math.min(i0, i1)], pb = U.posOf[Math.max(i0, i1)]; if (pa < 0 || pb < 0) continue;
             const tick = q => { const xr = baseXOfCol(U.colOf[q]); if (xr && xr[0] >= x0 - 1 && xr[0] <= x1 + 1) gh.fillRect(xr[0], y, 1, h); };
             if (strand === '-'){ for (let q = pb - phase - 2; q >= pa; q -= 3) tick(q); } else { for (let q = pa + phase; q <= pb; q += 3) tick(q); } } } }
@@ -1067,7 +1072,7 @@ function drawHeaderBase(){
   for (const c of LY.cols){
     if (c.type==='block'){ g.fillStyle = colorOf(c.rank); g.fillRect(c.x, H-6, c.w, 4); if (st.sel===c.rank){ g.fillStyle=TH.selbg; g.fillRect(c.x,0,c.w,H); g.strokeStyle=TH.sel; g.strokeRect(c.x+.5,.5,c.w-1,H-1); }
       if (c.w>=30){ g.fillStyle=TH.ink; g.textAlign='center'; g.textBaseline='alphabetic'; g.fillText('#'+(c.rank+1), c.x+c.w/2, 11); } }
-    const lab = st.axis==='ref' ? (c.type==='block' ? fmtbp(L.blocks[c.rank].x) : '') : fmtbp(c.cum);
+    const lab = st.axis==='ref' ? (c.type==='block' ? fmtref(L.blocks[c.rank].rx0 != null ? L.blocks[c.rank].rx0 : L.blocks[c.rank].x, L.blocks[c.rank].ref_contig) : '') : fmtbp(c.cum);
     if (lab && c.x - lastLabelX > 48){ g.fillStyle = TH.muted; g.fillRect(c.x, H-12, 1, 6); g.textAlign='left'; g.textBaseline='alphabetic'; g.fillText(lab, c.x+2, H-14); lastLabelX = c.x; }
   }
   // 遺伝子トラック: 各ブロック列の参照区間に重なる遺伝子を、列の中の相対位置に短い帯で描く（+ 鎖は上、− 鎖は下）
@@ -1420,7 +1425,7 @@ function gridHoverSitesBase(e, rect){ const ri = Math.floor((e.clientY-rect.top)
   const k = siteAt(px); const h0 = inRow ? {ri} : null;
   if (!st.hover || !h0 || st.hover.ri!==h0.ri){ st.hover = h0; drawGrid(); drawLabels(); }
   setHoverInfo(k!=null && inRow ? siteInfo(k, ri) : '', 'site'); emitHover(k); }
-function blockInfo(rank, L){ const memtxt = (L.members ? `<p><span class="k">含む最細段のブロック (${membersOf(L,rank).length}):</span> ${membersOf(L,rank).map(m=>'#'+(m+1)).join(', ')}</p>` : '') + (()=>{ if (!st.genes.size) return ''; const gs = genesOf(L.blocks[rank]); return `<p><span class="k">遺伝子 ${gs.length} 個 (${geneDensity(rank).toFixed(1)}/Mb):</span> ${gs.slice(0,12).map(x=>esc(x.name)+(x.strand==='-'?'−':'')).join(', ')}${gs.length>12?' …':''}</p>`; })(); const B = L.blocks[rank]; const P = LY.prof && LY.prof.get(rank); return (`<p><span class="h">ブロック #${rank+1}</span><br>${esc(B.name)}<br><span class="k">錨列 ${B.c0+1}–${B.c1+1} · 原子区間 ${B.ncol} · 張り ${fmtbp(B.span)}<br>典型 ${fmtbp(B.tbp)} · 最長 ${fmtbp(B.bpmax)} · ${B.nhap} hap · ${B.rx0 != null ? `参照 ${fmtbp(B.rx0)}–${fmtbp(B.rx1)} · 合意 ${fmtbp(B.x)}` : `参照 ${fmtbp(B.x)}`}${B.atoms != null ? ` · 原子 ${B.atoms} 個` : ''}</span>${P?`<br><span class="k">状態: 主鎖 ${P.main} / 逆位 ${P.inv} / 別位置 ${P.disp} / 持たない ${P.abs}${P.divmed!=null?` · 変異密度の中央値 ${(100*P.divmed).toFixed(1)}%`:''}</span>`:''}</p>`) + memtxt; }
+function blockInfo(rank, L){ const memtxt = (L.members ? `<p><span class="k">含む最細段のブロック (${membersOf(L,rank).length}):</span> ${membersOf(L,rank).map(m=>'#'+(m+1)).join(', ')}</p>` : '') + (()=>{ if (!st.genes.size) return ''; const gs = genesOf(L.blocks[rank]); return `<p><span class="k">遺伝子 ${gs.length} 個 (${geneDensity(rank).toFixed(1)}/Mb):</span> ${gs.slice(0,12).map(x=>esc(x.name)+(x.strand==='-'?'−':'')).join(', ')}${gs.length>12?' …':''}</p>`; })(); const B = L.blocks[rank]; const P = LY.prof && LY.prof.get(rank); return (`<p><span class="h">ブロック #${rank+1}</span><br>${esc(B.name)}<br><span class="k">錨列 ${B.c0+1}–${B.c1+1} · 原子区間 ${B.ncol} · 張り ${fmtbp(B.span)}<br>典型 ${fmtbp(B.tbp)} · 最長 ${fmtbp(B.bpmax)} · ${B.nhap} hap · ${B.rx0 != null ? `参照 ${fmtref(B.rx0, B.ref_contig)}–${fmtbp(B.rx1)} · 合意 ${fmtbp(B.x)}` : `参照 ${fmtref(B.x, B.ref_contig)}`}${B.atoms != null ? ` · 原子 ${B.atoms} 個` : ''}</span>${P?`<br><span class="k">状態: 主鎖 ${P.main} / 逆位 ${P.inv} / 別位置 ${P.disp} / 持たない ${P.abs}${P.divmed!=null?` · 変異密度の中央値 ${(100*P.divmed).toFixed(1)}%`:''}</span>`:''}</p>`) + memtxt; }
 function itemHtml(h){
   const L = level(); const r = LY.rows[h.ri]; let html = `<p><span class="h">${esc(r.label)}</span> <span class="k">${esc(r.sub)}</span></p>`;
   if (h.p){ const o = h.p.o, it = o.it; const B = L.blocks[o.rank];
