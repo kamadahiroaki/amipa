@@ -62,12 +62,22 @@ await back(); await show('back')
 await back(); await show('back to root')
 // S5: 全体から直接 原子 62 の内側
 handle._drillRange(1232000, 1240000); await show('S5 root → inside atom 62')
-// S8: 塩基の段の横スクロール（README 改訂 113）: 原子 62 の内側 8 kb は 7 px/塩基で画面幅 1200 px を桁で超える（600 bp の S6 は 146 列 = 1,176 px で画面に入るので動かない） → Shift+ホイール／格子のドラッグで bsx が動き、当たり判定もずれた分を拾う
-{ const s0 = handle._state(); const gw = $('gridwrap'); gw.dispatchEvent(new W.WheelEvent('wheel', { deltaY: 300, shiftKey: true, bubbles: true, cancelable: true })); const s1 = handle._state()
-  const grid = $('grid'); grid.dispatchEvent(new W.MouseEvent('mousedown', { button: 0, clientX: 600, clientY: 20, bubbles: true })); W.dispatchEvent(new W.MouseEvent('mousemove', { clientX: 400, clientY: 20 })); W.dispatchEvent(new W.MouseEvent('mouseup', { clientX: 400, clientY: 20 })); const s2 = handle._state()
+// S8: 塩基の段のズーム軸（README 改訂 117）: 入った直後は画面に収まる俯瞰（群 1 px 以上・アレル色）。「塩基」で 7 px/塩基になり横スクロール、
+//     Shift+ホイール／格子のドラッグで bsx が動き当たり判定もずれた分を拾う。Ctrl+ホイールで倍率が変わる。「全体」で俯瞰に戻る
+{ const s0 = handle._state(); const gw = $('gridwrap'); const grid = $('grid')
+  handle._baseZoom(7); const s1 = handle._state()
+  gw.dispatchEvent(new W.WheelEvent('wheel', { deltaY: 300, shiftKey: true, bubbles: true, cancelable: true })); const s2 = handle._state()
+  grid.dispatchEvent(new W.MouseEvent('mousedown', { button: 0, clientX: 600, clientY: 20, bubbles: true })); W.dispatchEvent(new W.MouseEvent('mousemove', { clientX: 400, clientY: 20 })); W.dispatchEvent(new W.MouseEvent('mouseup', { clientX: 400, clientY: 20 })); const s3 = handle._state()
   grid.dispatchEvent(new W.MouseEvent('mousemove', { clientX: 100, clientY: 20, bubbles: true })); const tip = ($('hoverbody').textContent || '').replace(/\s+/g, ' ').slice(0, 50)
-  const ok = s0.mode === 'base' && s0.bfullW > 1200 && s1.bsx === 300 && s2.bsx === 500 && /ノード/.test(tip); if (!ok) errors.push('S8 base scroll: ' + JSON.stringify({ s0, s1: s1.bsx, s2: s2.bsx, tip }))
-  console.log(`[S8 base scroll] bfullW=${s0.bfullW} cw=${s0.bcw} | shift+wheel 300 → bsx ${s1.bsx} | drag −200 px → bsx ${s2.bsx} | hover x=100: ${tip} | ${ok ? 'OK' : 'NG'}`) }
+  gw.dispatchEvent(new W.WheelEvent('wheel', { deltaY: 300, ctrlKey: true, bubbles: true, cancelable: true })); const s4 = handle._state()
+  handle._baseZoom('fit'); const s5 = handle._state()
+  // 列見出しのドラッグ: その範囲を画面幅に（入れ子の窓は作らない）
+  const hdr = $('hdr'); hdr.dispatchEvent(new W.MouseEvent('mousedown', { button: 0, clientX: 300, clientY: 10, bubbles: true })); W.dispatchEvent(new W.MouseEvent('mousemove', { clientX: 600, clientY: 10 })); W.dispatchEvent(new W.MouseEvent('mouseup', { clientX: 600, clientY: 10 })); const s6 = handle._state()
+  const okDrag = s6.nwins === s5.nwins && !s6.bzFit && s6.bz > s5.bz; if (!okDrag) errors.push('S8 header drag zoom: ' + JSON.stringify({ s5: [s5.nwins, s5.bz], s6: [s6.nwins, s6.bz, s6.bzFit] }))
+  console.log(`[S8b header drag] bz ${s5.bz.toFixed(3)} → ${s6.bz.toFixed(3)} windows ${s5.nwins} → ${s6.nwins} | ${okDrag ? 'OK' : 'NG'}`); handle._baseZoom('fit')
+  const ok = s0.mode === 'base' && s0.bzFit && s0.bfullW <= 1200 && s1.bcw === 7 && s1.bfullW > 1200 && s2.bsx === 300 && s3.bsx === 500 && /ノード/.test(tip) && s4.bz < 7 && s4.bz > 0 && s5.bzFit && s5.bfullW <= 1200
+  if (!ok) errors.push('S8 base zoom: ' + JSON.stringify({ s0, s1: [s1.bcw, s1.bfullW], s2: s2.bsx, s3: s3.bsx, tip, s4: s4.bz, s5: [s5.bzFit, s5.bfullW] }))
+  console.log(`[S8 base zoom] fit: bz=${s0.bz.toFixed(3)} items=${s0.nitems} fullW=${s0.bfullW} vOnly=${s0.bvOnly} | 塩基: cw=${s1.bcw} fullW=${s1.bfullW} | shift+wheel → bsx ${s2.bsx} | drag → bsx ${s3.bsx} | hover: ${tip.slice(0, 24)} | ctrl+wheel down → bz ${s4.bz} | 全体 → fit=${s5.bzFit} fullW=${s5.bfullW} | ${ok ? 'OK' : 'NG'}`) }
 await back(); await show('back')
 // S6: 全体から狭い範囲 1,230,000–1,230,600（塩基へ）
 handle._drillRange(1230000, 1230600); await show('S6 root → 600 bp')
