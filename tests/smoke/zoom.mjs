@@ -84,5 +84,12 @@ handle._drillRange(1230000, 1230600); await show('S6 root → 600 bp')
 await back(); await show('back')
 // S7: 全体から 1.23–1.25 の後、その中でさらに狭く（アレル行列→塩基）
 handle._drillRange(1230000, 1250000); await show('S7a 2-atom window'); handle._drillRange(1236000, 1237000); await show('S7b → 1 kb inside'); 
+// S9: 3,000 列超の原子 → 索引の俯瞰（1 サイト = 1 列、塩基セルなし）→ 列見出しの狭いドラッグで子の塩基の窓（README 改訂 118）
+{ const A = data.meta.atoms; let big = -1, bestN = 1e9; A.forEach((a, i) => { const n = a[3] - a[2] + 1; if (n > 3000 && n < bestN){ bestN = n; big = i } })
+  handle._zoomTo({ atoms: [big, big] }, 'S9 big atom'); await show(`S9 big atom #${big + 1} (${bestN} cols)`)
+  const s0 = handle._state(); const hdr = $('hdr'); hdr.dispatchEvent(new W.MouseEvent('mousedown', { button: 0, clientX: 300, clientY: 10, bubbles: true })); W.dispatchEvent(new W.MouseEvent('mousemove', { clientX: 330, clientY: 10 })); W.dispatchEvent(new W.MouseEvent('mouseup', { clientX: 330, clientY: 10 }))
+  await show('S9b drag 30 px on index'); const s1 = handle._state()
+  const ok = s0.mode === 'base' && s0.idx && s0.bcw === 0 && s0.nitems > 0 && s1.mode === 'base' && !s1.idx && s1.nwins === s0.nwins + 1
+  if (!ok) errors.push('S9 index overview: ' + JSON.stringify({ s0, s1 })); console.log(`[S9 index] overview idx=${s0.idx} items=${s0.nitems} bz=${(s0.bz || 0).toFixed(3)} → drag → idx=${s1.idx} mode=${s1.mode} windows ${s0.nwins}→${s1.nwins} | ${ok ? 'OK' : 'NG'}`) }
 console.log('ERRORS', errors.length); for (const e of errors.slice(0, 5)) console.log('  ' + String(e).split('\n').slice(0, 3).join('\n    '))
 process.exit(0)
