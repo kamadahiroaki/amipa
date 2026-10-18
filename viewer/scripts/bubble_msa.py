@@ -322,17 +322,19 @@ def main():
             % (len(pis), ntok / 1e6))
 
     # --- 各触れ contig を distill から slice し、S 内極大 run を抽出 ---
+    RUNFLAGS = {}
     def runs_of(pi):
         a, b = int(p_off[pi]), int(p_off[pi + 1])
         if b <= a:
             return []
         if RNG is not None:
             # 与えた範囲だけを読み、前後 flank 分の文脈を付けて 1 範囲 = 1 通過にする（S の判定はしない）
-            out = []
+            out = []; fl = []
             for s0, e0 in RNG[pi]:
                 lo = max(0, s0 - args.flank); hi = min(b - a, e0 + args.flank)
                 tk = np.asarray(p_tok[a + lo:a + hi]); oo = np.asarray(p_ori[a + lo:a + hi])
-                out.append(([int(x) for x in tk], [int(x) for x in oo]))
+                out.append(([int(x) for x in tk], [int(x) for x in oo])); fl.append((lo == 0, hi == b - a))   # コンティグの端に届いたか（歩きの向き）
+            RUNFLAGS[pi] = fl
             return out
         tk = np.asarray(p_tok[a:b])
         # ★ token ごとの `int(t) in Sdense`(Python ループ)は WG の chr 級 contig で数秒/contig
@@ -383,8 +385,9 @@ def main():
         isref = isref_pi(pi)
         rr = runs_of(pi)
         for k, (ids, ors) in enumerate(rr):
+            fl_ = RUNFLAGS.get(pi); fl_ = fl_[k] if fl_ and k < len(fl_) else (False, False)
             runs.append(dict(samp=samp, lab=lab, ctg=ctg, path=full, isref=isref, ids=ids, ors=ors,
-                             k=(0 if len(rr) == 1 else k + 1)))
+                             k=(0 if len(rr) == 1 else k + 1), cend=fl_))
             if len(runs) >= MAX_ROWS:
                 break
         if len(runs) >= MAX_ROWS:
@@ -471,8 +474,9 @@ def main():
                 s = rc(s); inv.append(n); rc_votes[n] = rc_votes.get(n, 0) + 1
             else: rc_votes[n] = rc_votes.get(n, 0) - 1
             cells[n] = s
+        ce = r.get("cend", (False, False))
         raw.append(dict(samp=r["samp"], label=r["label"], path=r["path"],
-                        strand=("-" if rev else "+"), cells=cells, inv=inv,
+                        strand=("-" if rev else "+"), cells=cells, inv=inv, ends=([ce[1], ce[0]] if rev else [ce[0], ce[1]]),   # 表示の左端・右端がコンティグの端か
                         nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"]))
 
     # --- 固定幅列。★同じサイトの排他アレルは「アレル群」として **1 ブロック**にまとめる。
@@ -647,6 +651,16 @@ def main():
         else:
             i1 = max(i for i, ch in enumerate(sq) if ch not in "-~")
             r["seq"] = "." * i0 + sq[i0:i1 + 1] + "." * (len(sq) - i1 - 1)
+    # 窓の端の列を落とす: 端の列に「範囲の外」の行があり、その行がコンティグの端で切れているのではない（＝この窓で読んでいないだけ）なら、
+    # その列は一部の行にしか判断材料が無いので出さない（最大 40 列ずつ）。コンティグの端で切れている行の「範囲の外」は残す（意味がある）
+    if cols:
+        t0 = 0
+        while t0 < min(40, len(cols) - 1) and any(r["seq"][t0] == "." and not r["ends"][0] for r in raw): t0 += 1
+        t1 = len(cols)
+        while t1 - 1 > t0 and len(cols) - t1 < 40 and any(r["seq"][t1 - 1] == "." and not r["ends"][1] for r in raw): t1 -= 1
+        if t0 or t1 < len(cols):
+            cols = cols[t0:t1]
+            for r in raw: r["seq"] = r["seq"][t0:t1]
 
     # --- bubble 内部(選択ノード配下の葉)の列範囲＋pad に自動トリム。
     #     変異は内部に集中する一方、flank は隣接 VNTR 等を拾いがちなので、内部基準で切ると焦点が定まる。 ---
@@ -698,7 +712,7 @@ def main():
                cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
-                      "inv": r["inv"]} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
+                      "inv": r["inv"], "ends": r.get("ends", [False, False])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
     print(json.dumps(out))
 
 if __name__ == "__main__":
