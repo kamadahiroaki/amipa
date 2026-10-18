@@ -1069,7 +1069,15 @@ export default function App() {
     if (my !== blkReq.current) return                                  // 古い問い合わせは捨てる
     set(names.length ? new Set(names) : null)
   }, [selectedDb, mapLayer])
-  const msaHiSet = useMemo(() => new Set(msaNodeSel), [msaNodeSel])  // グラフ強調用（bubble MSA の選択）。ブロックは窓全体の塗り分けで見せるのでリングは出さない
+  const [blkVis, setBlkVis] = useState<Set<string> | null>(null)   // 塩基の段で見えている範囲のノード（葉と、グラフが描いている層の祖先）
+  const blkVisReq = useRef(0)
+  const onBlockBaseVisible = useCallback((v: { names: string[]; sync: boolean } | null) => {
+    const my = ++blkVisReq.current
+    if (!v || !v.names.length || !selectedDb) { setBlkVis(null); return }
+    void fetchBlockAncestors(selectedDb, mapLayer, v.names.slice(0, 200)).then(up => { if (my !== blkVisReq.current) return; setBlkVis(new Set([...v.names, ...up])) })
+    if (v.sync) void fetchBlockBbox(selectedDb, { names: v.names }).then(f => { if (my !== blkVisReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer) })   // グラフ連動: 見えている範囲に寄せる
+  }, [selectedDb, mapLayer])
+  const msaHiSet = useMemo(() => { const s0 = new Set(msaNodeSel); if (blkVis) for (const n of blkVis) s0.add(n); return s0 }, [msaNodeSel, blkVis])  // グラフ強調用（bubble MSA の選択）。ブロックは窓全体の塗り分けで見せるのでリングは出さない
   const msaHoverSet = useMemo(() => { if (blkHov && blkHov.size) return blkHov; return (msaHover && msaHover.length ? new Set(msaHover) : null) }, [msaHover, blkHov])
 
   useEffect(() => {
@@ -3097,6 +3105,7 @@ export default function App() {
             db={selectedDb}
             onHoverBlock={b => { void resolveBlock(b, setBlkHov) }}
             onView={onBlockView}
+            onBaseVisible={onBlockBaseVisible}
             onSelectHap={onBlockSelectHap}
             onBaseMsa={onBlockBaseMsa}
             hapMarks={blkHapMarks}

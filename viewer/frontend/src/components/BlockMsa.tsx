@@ -11,6 +11,7 @@ interface Props {
   db: string | null
   onSelectBlock?: (b: BlockRef | null) => void
   onHoverBlock?: (b: BlockRef | null) => void
+  onBaseVisible?: (v: { names: string[]; sync: boolean } | null) => void
   onView?: (v: BlockView | null) => void            // 見えている窓・段のブロックと色（グラフの塗り分け用）、範囲（グラフ連動用）
   onSelectHap?: (groupKey: string, hap: string) => void   // 行ラベルのクリック → グラフのパス群の選択切替
   onBaseMsa?: (req: BlockDrillRequest) => void           // 底: ブロックの各行のトークン範囲を塩基レベル MSA へ
@@ -19,11 +20,11 @@ interface Props {
   onReady?: (h: BlockMsaHandle | null) => void
 }
 
-export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa, hapMarks, genes, onReady }: Props) {
+export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa, onBaseVisible, hapMarks, genes, onReady }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const handleRef = useRef<BlockMsaHandle | null>(null)
-  const cbRef = useRef({ onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa })
-  useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa } }, [onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa])
+  const cbRef = useRef({ onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa, onBaseVisible })
+  useEffect(() => { cbRef.current = { onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa, onBaseVisible } }, [onSelectBlock, onHoverBlock, onView, onSelectHap, onBaseMsa, onBaseVisible])
   useEffect(() => { handleRef.current?.setHapMarks(hapMarks ?? new Map()) }, [hapMarks])
   useEffect(() => { handleRef.current?.setGenes(genes ?? new Map()) }, [genes])
   const [msg, setMsg] = useState<string | null>(null)
@@ -60,6 +61,7 @@ export default function BlockMsa({ db, onSelectBlock, onHoverBlock, onView, onSe
         onBaseFetch: (ranges, label, maxLeaves) => fetchBubbleMsaRanges(db, ranges, label, 0, 0, maxLeaves),   // 木: 塩基レベル MSA をパネル内に出す（畳まずに受けて画面側で畳む）。maxLeaves=変異の少ない区間で葉の上限を上げる
         onLocate: names => fetchBlockLocate(db, names),      // 木: グラフのノード → 葉（原子）の場所
         onView: v => cbRef.current.onView?.(v),
+        onBaseVisible: v => cbRef.current.onBaseVisible?.(v),   // 塩基の段で見えている範囲（グラフで囲う・寄せる）
         onSelectHap: (k, h) => cbRef.current.onSelectHap?.(k, h),
         onBaseMsa: req => cbRef.current.onBaseMsa?.(req),
       })
