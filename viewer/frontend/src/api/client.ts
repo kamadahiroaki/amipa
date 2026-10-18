@@ -810,6 +810,9 @@ export async function fetchBlockSites(dbFile: string, q: { c0?: number; c1?: num
   try { const res = await fetch(`/api/blocks/sites?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }
 // 原子の範囲 → その層のノード名（木の経路。参照座標を使わない）
+export async function fetchBlockAncestors(dbFile: string, layer: number, names: string[]): Promise<string[]> {
+  try { const res = await fetch(`/api/blocks/ancestors?db=${encodeURIComponent(dbFile)}&layer=${layer}&names=${encodeURIComponent(names.slice(0, 200).join(','))}`); if (!res.ok) return names; const j = await res.json(); return Array.isArray(j.names) && j.names.length ? j.names : names } catch { return names }
+}
 export async function fetchBlockNodesTree(dbFile: string, layer: number, a0: number, a1: number): Promise<string[]> {
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), a0: String(a0), a1: String(a1) })
   try { const res = await fetch(`/api/blocks/nodes2?${p}`); if (!res.ok) return []; const j = await res.json(); return Array.isArray(j.names) ? j.names as string[] : [] } catch { return [] }

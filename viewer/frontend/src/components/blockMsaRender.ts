@@ -645,7 +645,7 @@ function ensureGenesCols(w){ if (!genesOn() || !w || !(w.mode === 'sites' || w.m
   w._gcolsLoading = true; (byCols ? cb.onGenesCols(L0.c0, L0.c1) : cb.onGenesTok(rw.ranges)).then(r => { w._gcolsLoading = false; const m = new Map(); if (r && r.rows) for (const row of r.rows){ const a = m.get(row.hap) || []; a.push(...row.genes); m.set(row.hap, a); } w._gcols = m; if (win() === w){ drawGrid(); drawHeader(); } }).catch(() => { w._gcolsLoading = false; }); }
 // 列の区間 → x（アレル行列: サイトの並び。塩基: ノードとオフセットで列を特定）
 function sitesXOfCols(S, pc0, pc1){ const n = S.nsites; if (!n) return null; let lo = 0, hi = n; while (lo < hi){ const m = (lo + hi) >> 1; if (S.sites[m].c1 < pc0) lo = m + 1; else hi = m; } const k0 = lo; if (k0 >= n || S.sites[k0].c0 > pc1) return null; let k1 = k0; while (k1 + 1 < n && S.sites[k1 + 1].c0 <= pc1) k1++; return [SITES_X0 + k0*LY.siteW, SITES_X0 + (k1 + 1)*LY.siteW, k0, k1]; }
-function baseColIndex(M, node, off){ if (!M._nodeOff){ M._nodeOff = new Map(); (M.cols || []).forEach((c, i) => { for (const nm of (c.nodes || [])){ const key = nm + '|' + (c.off != null ? c.off : 0); if (!M._nodeOff.has(key)) M._nodeOff.set(key, i); } }); } let i = M._nodeOff.get(node + '|' + off); if (i == null){ for (let d = 1; d <= 3 && i == null; d++){ i = M._nodeOff.get(node + '|' + (off - d)); if (i == null) i = M._nodeOff.get(node + '|' + (off + d)); } } return i == null ? -1 : i; }
+function baseColIndex(M, node, off){ if (!M._nodeOff){ M._nodeOff = new Map(); (M.cols || []).forEach((c, i) => { (c.nodes || []).forEach((nm, j) => { const o = (c.so && c.so[j] != null) ? c.so[j] : (c.off != null ? c.off : 0); if (o < 0) return; const key = nm + '|' + o; if (!M._nodeOff.has(key)) M._nodeOff.set(key, i); }); }); }   /* c.so = 格納向きのオフセット（逆相補で表示したノードは L-1-k。遺伝子の端は格納向きで来る） */ let i = M._nodeOff.get(node + '|' + off); if (i == null){ for (let d = 1; d <= 3 && i == null; d++){ i = M._nodeOff.get(node + '|' + (off - d)); if (i == null) i = M._nodeOff.get(node + '|' + (off + d)); } } return i == null ? -1 : i; }
 /* 索引の俯瞰: 木の列 [pc0, pc1] に掛かるサイトの列範囲 → [x0, x1, k0, k1]。無ければ null */
 function baseXOfTreeCols(M, pc0, pc1){ const cols = M.cols; let lo = 0, hi = cols.length; while (lo < hi){ const m = (lo + hi) >> 1; if (cols[m].tc1 < pc0) lo = m + 1; else hi = m; } const k0 = lo; if (k0 >= cols.length || cols[k0].tc0 > pc1) return null; let k1 = k0; while (k1 + 1 < cols.length && cols[k1 + 1].tc0 <= pc1) k1++; const xa = baseXOfCol(k0), xb = baseXOfCol(k1); return (xa && xb) ? [xa[0], xb[1], k0, k1] : null; }
 function nextSiteX(M, pc0){ const cols = M.cols; let lo = 0, hi = cols.length; while (lo < hi){ const m = (lo + hi) >> 1; if (cols[m].tc0 < pc0) lo = m + 1; else hi = m; } const xr = lo < cols.length ? baseXOfCol(lo) : null; return xr ? [xr[0] - 1, xr[0] + 1] : null; }   /* サイトを含まない区間: 次のサイトの左に細く */
@@ -977,7 +977,7 @@ function dispFrac(p, f){ f = Math.max(0, Math.min(1, f)); if (st.mode==='own') r
 function foldPartAt(p, x){ const parts = p.parts; if (!parts) return null; for (const q of parts){ if (q.fold && x >= q.x && x <= q.x + q.w) return q; } return null; }
 function xInInstance(p, c){ const inv = p.o.dir === 0; const cc = Math.max(0, Math.min(1, inv ? 1 - c : c));
   if (p.col) return p.col.x + cc*p.col.w;
-  if (p.ext && p.ext[1] > p.ext[0]){ let e0 = p.ext[0], e1 = p.ext[1]; if (inv){ const t = e0; e0 = 255 - e1; e1 = 255 - t; } return p.x + Math.max(0, Math.min(1, (cc*255 - e0)/(e1 - e0)))*p.w; }
+  if (p.ext && p.ext[1] > p.ext[0]){ let e0 = p.ext[0], e1 = p.ext[1]; if (inv){ const t = e0; e0 = 255 - e1; e1 = 255 - t; } const t = (cc*255 - e0)/(e1 - e0); if (t < -0.05 || t > 1.05) return NaN; return p.x + Math.max(0, Math.min(1, t))*p.w; }   /* 片の合意範囲の外の錨は描かない（端に寄せると多数の線が 1 点に集まった。2026-10-18） */
   return p.x + cc*p.w; }
 // 行 r の各標本錨の表示 x。cons: 錨の合意座標をブロックの合意範囲に写す（逆位のインスタンスは鏡像）。own: その株の bp 位置（鎖で反転）
 function anchorSetXs(r, rows, xarr, m, cons){ const L = level(); const xs = new Float32Array(m).fill(NaN), ys = new Int8Array(m), ors = new Int8Array(m);
@@ -1264,7 +1264,9 @@ function openSitesCols(atom, c0, c1, label, key){ if (!(cb && cb.onSites)) retur
   }).catch(e => { endDrill(); drawAll(); toast('失敗: ' + esc(String(e))); }); }
 function openBaseCols(atom, c0, c1, label, key, maxLeaves){ if (!(cb && cb.onTokRanges && (cb.onBaseFetch || cb.onBaseMsa))){ toast('この構成では塩基へ渡せません'); return; } beginDrill(`${label}: 各行のトークン範囲を求めています…`);
   cb.onTokRanges(c0, c1).then(r => { endDrill(); const rs = (r && r.ranges || []).filter(x => x[2] > x[1]); if (!r || r.error || !rs.length){ drawAll(); toast(`塩基へ渡せませんでした: ${esc((r && r.error) || 'この列を持つ株がありません')}`); return; }
-    const absent = (r.absent || []).length; if (absent) toast(`${absent} 株はこの区間を持たないので塩基の段に出ません`);
+    const hapOfPath = new Map(); for (const h of (WINS[0].levels[0].haps || [])) for (const c of (h.contigs || [])) hapOfPath.set(c.path, h.hap);
+    const hasHap = new Set(rs.map(x => hapOfPath.get(x[0]) || x[0])); const allHaps = new Set((WINS[0].levels[0].haps || []).map(h => h.hap));
+    const absent = [...allHaps].filter(h => !hasHap.has(h)).length; if (absent) toast(`${absent} 株はこの区間を持たないので塩基の段に出ません`);   /* 株（ハプロタイプ）で数える。以前はパス（コンティグ）で数えて断片化したアセンブリで 1,919 と出た */
     openBase(rs, label, -1, c0, c1, maxLeaves, xOfCols(atom, c0, c1)); }).catch(e => { endDrill(); drawAll(); toast('失敗: ' + esc(String(e))); }); }
 // ── 系統樹: 全体の木（サイドカー）／表示範囲の木（画面側で作り直す）、高さの閾値で枝をまとめる ──
 function activeTree(){ return (st.treeMode === 'range' && st.localTree) ? st.localTree : DATA.tree; }

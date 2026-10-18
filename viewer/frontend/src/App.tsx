@@ -8,7 +8,7 @@ import BlockMsa from './components/BlockMsa'
 import type { BlockView } from './components/blockMsaRender'
 import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
-import { API_LEVEL_REQUIRED, fetchBlockView, fetchBlockBbox, blockSelKey, type BlockSel, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
+import { API_LEVEL_REQUIRED, fetchBlockView, fetchBlockBbox, blockSelKey, type BlockSel, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -1061,7 +1061,10 @@ export default function App() {
   const resolveBlock = useCallback(async (b: BlockRef | null, set: (v: Set<string> | null) => void) => {
     const my = ++blkReq.current
     if (!b || !selectedDb) { set(null); return }
-    if (b.names && b.names.length) { set(new Set(b.names)); return }   // 塩基の段: ノード名が分かっているので参照区間を引かない
+    if (b.names && b.names.length) {   // 塩基の段: 葉のノード名。グラフが粗い層を描いていれば、その層の祖先に直して光らせる（直さないと名前が合わず何も光らない）
+      const nm = b.names.filter(x => /^n\d+$/.test(x)); if (!nm.length) { set(null); return }
+      const up = await fetchBlockAncestors(selectedDb, mapLayer, nm); if (my !== blkReq.current) return
+      set(new Set([...nm, ...up])); return }
     const names = (b.tree && b.a0 != null && b.a1 != null) ? await fetchBlockNodesTree(selectedDb, mapLayer, b.a0, b.a1) : await fetchBlockNodes(selectedDb, mapLayer, b.ref_contig, b.x, b.x + b.span)   // 木: 原子の範囲 → ノード名（参照座標を使わない）
     if (my !== blkReq.current) return                                  // 古い問い合わせは捨てる
     set(names.length ? new Set(names) : null)

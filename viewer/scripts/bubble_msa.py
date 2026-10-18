@@ -43,6 +43,20 @@ MAX_COLS   = 320
 MAX_TOKENS = 800_000_000
 
 _SYN_CACHE = {}
+def synteny_dcol(path):
+    """<db>.synteny の dcol（dense id → 合意列）。常駐実行器で使い回すため sys.modules に置く"""
+    import sqlite3 as _sq
+    cache = sys.modules.setdefault("__amipa_cache__", type(sys)("__amipa_cache__")).__dict__.setdefault("dcol", {})
+    try: mt = os.path.getmtime(path)
+    except OSError: return None
+    ent = cache.get(path)
+    if not ent or ent[0] != mt:
+        try:
+            con = _sq.connect("file:%s?mode=ro" % path, uri=True); row = con.execute("SELECT dtype, n, blob FROM arrays WHERE name='dcol'").fetchone(); con.close()
+        except Exception: return None
+        if not row: return None
+        ent = (mt, np.frombuffer(row[2], dtype=np.dtype(row[0]))); cache[path] = ent
+    return ent[1]
 def synteny_cols(path, dense_of_name):
     """<db>.synteny の dcol（dense id → 合意列）でノード名 → 合意列。常駐実行器で使い回すため sys.modules に置く"""
     import sqlite3 as _sq
@@ -385,20 +399,29 @@ def main():
     #   比較の基準鎖は **その行自身の優勢向き**(bp 加重の多数決=長い共有ノードが決める)。
     #   優勢向きと違うステップだけ逆相補する。→ 逆走 contig は全体が揃って参照と一致し、
     #   局所的に反転しているノードだけが差分として出る(それが生物学的な実体)。
-    raw = []; dense_of_name = {}
+    raw = []; dense_of_name = {}; rc_votes = {}   # ノードが表示で逆相補されている行の多数（列の塩基オフセットを格納向きに直すため）
+    # 行の向き: 合意列があれば「歩きが合意列を減らす向きに進むか」で決める（2026-10-18）。格納向きの bp の多数決だと、局所的に長い反転を
+    # 含む逆鎖のコンティグが順向きと判定され、行が逆に読まれた（chr21 n73207575 の CA が半数の株で TG、573/574 が並列に見えず直列に）
+    dcache = synteny_dcol(args.synteny) if (args.synteny and os.environ.get("AMIPA_MSA_ROWDIR", "bp") == "col") else None
     for r in runs:
         ids, ors = r["ids"], r["ors"]
         nodes = [nname(t) for t in ids]
         wp = sum(len(seqleaf.get(n, "")) for n, o in zip(nodes, ors) if o)        # '+' の bp
         wm = sum(len(seqleaf.get(n, "")) for n, o in zip(nodes, ors) if not o)    # '-' の bp
         rev = wm > wp                       # この行の優勢向き('-' 優勢 = 逆走 contig)
+        if dcache is not None:
+            cs = [int(dcache[int(t)]) for t in ids if 0 <= int(t) < len(dcache) and dcache[int(t)] >= 0]
+            if len(cs) >= 2:
+                d = np.sign(np.diff(np.asarray(cs, np.int64))); sgn_ = int(d.sum())
+                if sgn_ != 0: rev = sgn_ < 0
         cells, inv = {}, []
         for n, o in zip(nodes, ors):
             if n in cells:
                 continue
             s = seqleaf.get(n, "?")
             if (not o) != rev:              # ステップ向きが行の優勢向きと違う = 局所反転
-                s = rc(s); inv.append(n)
+                s = rc(s); inv.append(n); rc_votes[n] = rc_votes.get(n, 0) + 1
+            else: rc_votes[n] = rc_votes.get(n, 0) - 1
             cells[n] = s
         raw.append(dict(samp=r["samp"], label=r["label"], path=r["path"],
                         strand=("-" if rev else "+"), cells=cells, inv=inv,
@@ -431,18 +454,48 @@ def main():
         for r in raw:
             sq = r["seq"]
             for a_, b_ in zip(sq, sq[1:]): succ.setdefault(a_, set()).add(b_); pred.setdefault(b_, set()).add(a_)
-        cls = {}
-        for n in alln:
-            p_, s_ = pred.get(n), succ.get(n)
-            if p_ and s_: cls.setdefault((frozenset(p_), frozenset(s_)), []).append(n)
-        paired = {n for ms in cls.values() if len(ms) >= 2 for n in ms}
+        # 並列＝直前と直後のノードを少なくとも 1 つずつ共有し、同じ行に共存しない（排他）。完全一致だと、広い窓で別の経路を通る行が
+        # 前後の集合を変えるだけで外れた（chr21 n73207573/574）
+        paired = set()
+        for p_ in list(succ):
+            S_ = [n for n in succ[p_] if succ.get(n)]
+            if len(S_) < 2 or len(S_) > 16: continue
+            for ia in range(len(S_)):
+                for ib in range(ia + 1, len(S_)):
+                    a_, b_ = S_[ia], S_[ib]
+                    if succ[a_] & succ[b_] and not (present[a_] & present[b_]): paired.add(a_); paired.add(b_)
         # 区切りは参照行（無ければ最初の行）の上の、並列な相手を持たないノードに限り、順はその行の中の位置（正確）。合意列は錨でないノードでは
         # 近似なので順に使うとアレルの中や島の中が入れ替わった（ecoli ybeF で内部の終止 10）
+        # 区切り＝並列な相手を持たず、行の 1/4 以上が持つノード（共有の多い鎖のノードは合意列が正確）。順は合意列（参照行の向きに合わせる）。
+        # 参照行の上のノードだけに限ると、参照がその区間を別の経路で通るとき区切りが数百塩基立たず、上流の indel でオフセットが 1 ずれた
         base_row = next((r for r in raw if r["isref"]), raw[0])
+        need_ = max(2, (len(raw) + 3) // 4)
+        inv_nodes = {n for n in alln if n not in paired and len(present[n]) >= need_ and colof.get(n, -1) >= 0}
+        # 区切りの順: 参照行の上のものはその行の中の位置（正確）。参照行に無いものは、それを持つ行で直前に通った「順の決まった区切り」の
+        # 位置の直後に置く（合意列は錨でないノードでは近似で、順に使うと ecoli ybeF で内部の終止が 4 出た）
         seg_pos = {}
         for k, n in enumerate(base_row["seq"]):
-            if n not in paired and n not in seg_pos: seg_pos[n] = k
-        inv_nodes = set(seg_pos)
+            if n in inv_nodes and n not in seg_pos: seg_pos[n] = float(k)
+        for _ in range(3):
+            changed = False
+            for r in raw:
+                last = None; steps = 0
+                for n in r["seq"]:
+                    if n not in inv_nodes: continue
+                    if n in seg_pos: last = seg_pos[n]; steps = 0; continue
+                    steps += 1
+                    if last is not None: seg_pos[n] = last + 1e-4 * steps; changed = True
+                    # 直前が無い（行の先頭側）なら次の周回で後ろから決める
+            if not changed: break
+        for r in raw:   # まだ位置の無い区切り: 行の中で直後の区切りの手前
+            nxt = None; steps = 0
+            for n in reversed(r["seq"]):
+                if n not in inv_nodes: continue
+                if n in seg_pos: nxt = seg_pos[n]; steps = 0; continue
+                steps += 1
+                if nxt is not None: seg_pos[n] = nxt - 1e-4 * steps
+        for n in inv_nodes:
+            if n not in seg_pos: seg_pos[n] = 1e9 + colof[n]
     else:
         inv_nodes = {n for n in alln if len(present[n]) == len(raw)}
         seg_pos = {}                                   # 不変ノード → 並びの中の位置（参照行があれば参照行、無ければ最初の行）
@@ -464,6 +517,26 @@ def main():
                 back = 0
                 for n in reversed(sq[:first]):
                     back += len(seqleaf.get(n, "")); keyof.setdefault(n, (seg_pos[sq[first]], -1 - back))
+        if colof:
+            # 区切りの間を区間ごとに: 区切り A → B が表示の向き（seg_pos が増える）なら A から前向きに、逆（局所的に逆に通る区間）なら
+            # B から前向き＝並びを逆にして測る（chr21 n73207574 が 575 の後ろに落ちた）
+            sidx = [i for i, n in enumerate(sq) if n in inv_nodes]
+            for i in sidx: keyof.setdefault(sq[i], (seg_pos[sq[i]], -1))
+            for a_, b_ in zip(sidx, sidx[1:]):
+                mid = sq[a_ + 1:b_]
+                if not mid: continue
+                A_, B_ = sq[a_], sq[b_]
+                if seg_pos[A_] <= seg_pos[B_]: base_, seq_ = A_, mid
+                else: base_, seq_ = B_, mid[::-1]
+                off = len(seqleaf.get(base_, ""))
+                for n in seq_: keyof.setdefault(n, (seg_pos[base_], off)); off += len(seqleaf.get(n, ""))
+            if sidx:   # 最後の区切りより後
+                seg = seg_pos[sq[sidx[-1]]]; off = len(seqleaf.get(sq[sidx[-1]], ""))
+                for n in sq[sidx[-1] + 1:]: keyof.setdefault(n, (seg, off)); off += len(seqleaf.get(n, ""))
+            else:
+                off = 0
+                for n in sq: keyof.setdefault(n, (-1, off)); off += len(seqleaf.get(n, ""))
+            continue
         for n in sq:
             L_ = len(seqleaf.get(n, ""))
             if n in inv_nodes:
@@ -492,8 +565,14 @@ def main():
         if w == 0:
             continue
         meta = dict(nodes=g, rb=rb)
+        def soffs(k):   # 列 k（表示の向き）→ 各ノードの格納向きのオフセット（ノードより先なら -1）。逆相補で表示しているノードは L-1-k
+            out = []
+            for n in g:
+                L_ = len(seqleaf.get(n, ""))
+                out.append(-1 if k >= L_ else ((L_ - 1 - k) if rc_votes.get(n, 0) > 0 else k))
+            return out
         if w <= CAP:
-            for k in range(w): cols.append(dict(kind="base", off=k, **meta))
+            for k in range(w): cols.append(dict(kind="base", off=k, so=soffs(k), **meta))
         else:
             for k in range(HEAD): cols.append(dict(kind="base", off=k, **meta))
             cols.append(dict(kind="ell", bp=w, **meta))
@@ -558,7 +637,7 @@ def main():
     out = dict(name=label, bp=(min(anc)[0] if anc else None), refname=refname,
                nrow=len(raw), nallele=len(uniq),
                scan=dict(leaves=len(leaves), contigs=len(pis), tokens=ntok),   # 走査コストの実測(診断用)
-               cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp") if k in c} for c in cols],
+               cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
                       "inv": r["inv"]} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)

@@ -104,6 +104,21 @@ blocksRouter.get('/blocks/tokranges', (req, res) => {
   } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
+// 葉のノード名 → 指定した層の祖先の名前（グラフが粗い層を描いているとき、塩基の段のホバーをグラフで光らせる）。GET /api/blocks/ancestors?db&layer&names=n1,n2
+//   parent_name を 1 段ずつ辿る（名前は 200 個まで、深さ ≤ 16）。layer が葉の層以上なら名前をそのまま返す
+blocksRouter.get('/blocks/ancestors', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const layer = Number(q.layer); const names = String(q.names || '').split(',').filter(x => x).slice(0, 200)
+  try {
+    const d = getDb(q.db); const st = d.prepare('SELECT layer_index AS L, parent_name AS p FROM nodes WHERE node_name = ? LIMIT 1')
+    const out = new Set<string>(); const memo = new Map<string, string | null>()
+    for (const nm0 of names) { let nm: string | null = nm0
+      for (let k = 0; k < 16 && nm; k++) { const r = st.get(nm) as { L: number; p: string | null } | undefined; if (!r) { nm = null; break } if (!Number.isFinite(layer) || r.L <= layer) break; if (memo.has(nm)) { nm = memo.get(nm)!; continue } const pp: string | null = r.p && r.p !== nm ? r.p : null; memo.set(nm, pp); nm = pp }
+      if (nm) out.add(nm) }
+    res.json({ names: [...out] })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
+})
 // 原子の範囲 → その層のノード名（木の経路。参照座標を使わない）: GET /api/blocks/nodes2?db&layer&a0&a1
 blocksRouter.get('/blocks/nodes2', (req, res) => {
   const q = req.query as Record<string, string>
