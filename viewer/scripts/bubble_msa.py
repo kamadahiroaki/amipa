@@ -152,6 +152,37 @@ def main():
             if e0 > s0: RNG.setdefault(pi, []).append((s0, e0))
         if not RNG:
             die("範囲が空です（パス名が distill と一致しません）")
+        # 行の範囲を、窓に出るノード（全行の範囲の和）まで延ばす（2026-10-19）。行ごとの範囲は「窓の列に入るトークンの最初〜最後」なので、
+        # 合意列の並びの都合で他の行の範囲だけが少し先まで届くと、その列をこの行は通っているのに「範囲の外」になった（HG01978#2 の n73207588）。
+        # 端から外へ、和集合に入るノードを辿って延ばす（和集合に無いノードが 64 個続いたら止める。最大 20,000 トークン）
+        EXT, GAPMAX = 20000, 64
+        parts = [np.asarray(p_tok[int(p_off[pi]) + s0:int(p_off[pi]) + e0]) for pi, rs in RNG.items() for s0, e0 in rs]
+        Sall = np.unique(np.concatenate(parts)) if parts else np.zeros(0, p_tok.dtype)
+        for _pass in range(2):
+            grew = False
+            for pi, rs in RNG.items():
+                a0 = int(p_off[pi]); n_ = int(p_off[pi + 1]) - a0; out_ = []
+                for s0, e0 in rs:
+                    lo = max(0, s0 - EXT); seg = np.asarray(p_tok[a0 + lo:a0 + s0]); m = np.isin(seg, Sall)
+                    ns0 = s0; miss = 0
+                    for k in range(len(seg) - 1, -1, -1):
+                        if m[k]: ns0 = lo + k; miss = 0
+                        else:
+                            miss += 1
+                            if miss > GAPMAX: break
+                    hi = min(n_, e0 + EXT); seg = np.asarray(p_tok[a0 + e0:a0 + hi]); m = np.isin(seg, Sall)
+                    ne0 = e0; miss = 0
+                    for k in range(len(seg)):
+                        if m[k]: ne0 = e0 + k + 1; miss = 0
+                        else:
+                            miss += 1
+                            if miss > GAPMAX: break
+                    if ns0 != s0 or ne0 != e0: grew = True
+                    out_.append((ns0, ne0))
+                RNG[pi] = out_
+            if not grew: break
+            parts = [np.asarray(p_tok[int(p_off[pi]) + s0:int(p_off[pi]) + e0]) for pi, rs in RNG.items() for s0, e0 in rs]
+            Sall = np.unique(np.concatenate(parts))
         label = args.label or str(req.get("label") or "Blocks")
     elif not sel_nodes:
         die("ノードが指定されていません")
