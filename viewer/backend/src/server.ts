@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import compression from 'compression'
 import path from 'path'
+import fs from 'fs'
 import { READONLY } from './config'
 import { graphRouter } from './routes/graph'
 import { statsRouter } from './routes/stats'
@@ -11,7 +12,7 @@ import { sessionRouter } from './routes/session'
 import { bubbleMsaRouter } from './routes/bubbleMsa'
 import { exportRouter } from './routes/exportData'
 import { renderRouter } from './routes/render'
-import { blocksRouter } from './routes/blocks'
+import { blocksRouter, warmBlocksRoot } from './routes/blocks'
 import { initWorkerPool } from './workerPool'
 import { prewarmAtStartup } from './prewarm'
 import { warmRunners } from './pyRunner'
@@ -173,5 +174,7 @@ app.listen(PORT, () => {
   // 起動時プリウォーム（AMIPA_PREWARM に DB 名をカンマ区切り）。この時点では利用者がいないので
   // 絞らずフル速度で読む。DB 切り替え時の自動プリウォームは /stats 側で開始し進捗を返す。
   prewarmAtStartup()
-  warmRunners()   // 常駐 python 実行器（bubble_msa）を立ち上げて import numpy を済ませる（計算ノードでは Lustre から 6〜43 秒）
+  warmRunners()
+  // 木のサイドカー（<db>.synteny）を起動直後に読み込み、根の窓を作っておく（ヒト 3 染色体で 1.4 GB・初回 38 秒。最初に Blocks を開いた人が待たない）
+  setTimeout(() => { try { const dir = getDbDir(); for (const f of fs.readdirSync(dir)) { if (!f.endsWith('.db')) continue; if (!fs.existsSync(path.join(dir, f + '.synteny'))) continue; const t0 = Date.now(); try { warmBlocksRoot(f); console.log(`[synteny] warmed ${f} ${Date.now() - t0} ms`) } catch (e) { console.log(`[synteny] warm ${f} failed: ${String(e)}`) } } } catch { /* */ } }, 2000)   // 常駐 python 実行器（bubble_msa）を立ち上げて import numpy を済ませる（計算ノードでは Lustre から 6〜43 秒）
 })

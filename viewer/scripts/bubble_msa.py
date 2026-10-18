@@ -27,7 +27,7 @@ WG(110M ノード/34.8k contig/8.1B token)でも動くよう、DB/distill 全体
   rows:[{samp, label:'sample#hap'(複数通過なら ·2), path:元のパス名, strand, seq, isref, allele}]}
 エラー時は {error:"..."} を出し exit 0(backend が JSON として扱えるように)。
 """
-import argparse, json, re, sqlite3, sys
+import argparse, json, os, re, sqlite3, sys
 import numpy as np
 
 CAP, HEAD, TAIL = 12, 7, 3
@@ -42,6 +42,23 @@ MAX_COLS   = 320
 # --max-tokens / backend の env MSA_MAX_TOKENS で調整可。
 MAX_TOKENS = 800_000_000
 
+_SYN_CACHE = {}
+def synteny_cols(path, dense_of_name):
+    """<db>.synteny の dcol（dense id → 合意列）でノード名 → 合意列。常駐実行器で使い回すため sys.modules に置く"""
+    import sqlite3 as _sq
+    cache = sys.modules.setdefault("__amipa_cache__", type(sys)("__amipa_cache__")).__dict__.setdefault("dcol", {})
+    try: mt = os.path.getmtime(path)
+    except OSError: return None
+    ent = cache.get(path)
+    if not ent or ent[0] != mt:
+        try:
+            con = _sq.connect("file:%s?mode=ro" % path, uri=True); row = con.execute("SELECT dtype, n, blob FROM arrays WHERE name='dcol'").fetchone(); con.close()
+        except Exception: return None
+        if not row: return None
+        ent = (mt, np.frombuffer(row[2], dtype=np.dtype(row[0]))); cache[path] = ent
+    dc = ent[1]
+    return {n: int(dc[d]) if 0 <= d < len(dc) else -1 for n, d in dense_of_name.items()}
+
 def die(msg):
     print(json.dumps({"error": msg})); sys.exit(0)
 
@@ -55,6 +72,7 @@ def main():
                     help="stdin の JSON {ranges:[[path名, s0, e0],…], label} で対象を与える（Blocks パネルの底からの受け渡し）。"
                          "S=範囲内のトークンの葉集合、行=与えたパスの範囲だけ")
     ap.add_argument("--label", default="")
+    ap.add_argument("--synteny", default="", help="木のサイドカー <db>.synteny。あれば列の区切りと順を合意列（dcol）で決める（行が窓の一部しか覆わないときも揃う）")
     ap.add_argument("--samples", default="",
                     help="対象 sample/hap/contig キーのカンマ区切り(空=この bubble を通る全パス)。参照は常に含む")
     ap.add_argument("--flank", type=int, default=4)
@@ -367,7 +385,7 @@ def main():
     #   比較の基準鎖は **その行自身の優勢向き**(bp 加重の多数決=長い共有ノードが決める)。
     #   優勢向きと違うステップだけ逆相補する。→ 逆走 contig は全体が揃って参照と一致し、
     #   局所的に反転しているノードだけが差分として出る(それが生物学的な実体)。
-    raw = []
+    raw = []; dense_of_name = {}
     for r in runs:
         ids, ors = r["ids"], r["ors"]
         nodes = [nname(t) for t in ids]
@@ -385,6 +403,7 @@ def main():
         raw.append(dict(samp=r["samp"], label=r["label"], path=r["path"],
                         strand=("-" if rev else "+"), cells=cells, inv=inv,
                         nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"]))
+        for t, n in zip(ids, nodes): dense_of_name.setdefault(n, int(t))
 
     # --- 固定幅列。★同じサイトの排他アレルは「アレル群」として **1 ブロック**にまとめる。
     #   旧実装は「id 隣接・等長・排他のペア」だけを統合していたので、3 アレル以上の site(G/A/C)や
@@ -401,26 +420,61 @@ def main():
     #   やり方: 全行が持つノード（不変ノード）で各行の並びを区切り、区切りの中（＝バブルの通り方＝アレル）で、区切りの先頭からの
     #   塩基オフセットが同じノード同士を同じ列群にする（29+32 と 31+30 の 2 bp ずつのアレルは [29|31][32|30] に揃う）。
     #   長さの違うアレルはオフセットがずれた所から別の群＝gap になる（整列としてはそれが正しい）。
-    inv_nodes = {n for n in alln if len(present[n]) == len(raw)}
-    seg_pos = {}                                   # 不変ノード → 並びの中の位置（参照行があれば参照行、無ければ最初の行）
-    base_row = next((r for r in raw if r["isref"]), raw[0])
-    for i, n in enumerate(base_row["seq"]):
-        if n in inv_nodes and n not in seg_pos: seg_pos[n] = i
-    nseg = len(seg_pos)
-    for r in raw:                                  # 参照行に無い不変ノードは無い（全行が持つ）はずだが、順が違う行は位置を後ろに
-        for n in r["seq"]:
-            if n in inv_nodes and n not in seg_pos: seg_pos[n] = nseg; nseg += 1
+    colof = synteny_cols(args.synteny, dense_of_name) if args.synteny else None
+    if colof:
+        # ★区切りの決め方（2026-10-18）: 以前は「全行が持つノード」。窓の中で別の経路を通る行（断片化したコンティグ、chr21 の 28 行中 16 行）が
+        #   あると区切りが数百列にわたって立たず、オフセットがずれてアレルが別の列に落ちた（n75194845–848 の間に 843 と 847 が並び全株どちらかが欠失）。
+        #   ここでは区切り＝**並列な相手を持たないノード**（行の並びで見た直前・直後のノード集合が同じ別のノードが無い＝バブルのアレルでない）。
+        #   区切りの順は合意列。区切りの間はこれまでどおり行ごとの塩基オフセットで揃える（多ノードのアレルの中の順を保つ。合意列で並べると
+        #   錨でないノードの列は近似なので、アレルの中が入れ替わって読み枠が壊れた＝ecoli ybeF で内部の終止 14）
+        pred, succ = {}, {}
+        for r in raw:
+            sq = r["seq"]
+            for a_, b_ in zip(sq, sq[1:]): succ.setdefault(a_, set()).add(b_); pred.setdefault(b_, set()).add(a_)
+        cls = {}
+        for n in alln:
+            p_, s_ = pred.get(n), succ.get(n)
+            if p_ and s_: cls.setdefault((frozenset(p_), frozenset(s_)), []).append(n)
+        paired = {n for ms in cls.values() if len(ms) >= 2 for n in ms}
+        # 区切りは参照行（無ければ最初の行）の上の、並列な相手を持たないノードに限り、順はその行の中の位置（正確）。合意列は錨でないノードでは
+        # 近似なので順に使うとアレルの中や島の中が入れ替わった（ecoli ybeF で内部の終止 10）
+        base_row = next((r for r in raw if r["isref"]), raw[0])
+        seg_pos = {}
+        for k, n in enumerate(base_row["seq"]):
+            if n not in paired and n not in seg_pos: seg_pos[n] = k
+        inv_nodes = set(seg_pos)
+    else:
+        inv_nodes = {n for n in alln if len(present[n]) == len(raw)}
+        seg_pos = {}                                   # 不変ノード → 並びの中の位置（参照行があれば参照行、無ければ最初の行）
+        base_row = next((r for r in raw if r["isref"]), raw[0])
+        for i, n in enumerate(base_row["seq"]):
+            if n in inv_nodes and n not in seg_pos: seg_pos[n] = i
+        nseg = len(seg_pos)
+        for r in raw:                                  # 参照行に無い不変ノードは無い（全行が持つ）はずだが、順が違う行は位置を後ろに
+            for n in r["seq"]:
+                if n in inv_nodes and n not in seg_pos: seg_pos[n] = nseg; nseg += 1
     keyof = {}                                     # ノード → (区切りの順位, オフセット bp)。行によって違えば最初の行の値
     for r in raw:
         seg = -1; off = 0
-        for n in r["seq"]:
+        sq = r["seq"]
+        if colof:
+            # 最初の区切りより前のノード: その区切りから後ろ向きに測った負のオフセット（他の行の前の区間と混ぜない）
+            first = next((i for i, n in enumerate(sq) if n in inv_nodes), None)
+            if first is not None:
+                back = 0
+                for n in reversed(sq[:first]):
+                    back += len(seqleaf.get(n, "")); keyof.setdefault(n, (seg_pos[sq[first]], -1 - back))
+        for n in sq:
             L_ = len(seqleaf.get(n, ""))
             if n in inv_nodes:
                 seg = seg_pos[n]; off = 0; keyof.setdefault(n, (seg, -1))      # 不変ノード自身は区切り（オフセット -1）
                 off += L_; continue
             keyof.setdefault(n, (seg, off)); off += L_
     bykey = {}
-    for n in alln: bykey.setdefault(keyof.get(n, (-2, int(n[1:]))), []).append(n)
+    if False:
+        pass
+    else:
+        for n in alln: bykey.setdefault(keyof.get(n, (-2, int(n[1:]))), []).append(n)
     groups = []
     for key in sorted(bykey.keys()):
         members = sorted(bykey[key], key=lambda n: -len(present[n]))   # 株数の多い順に、排他なら同じ群へ

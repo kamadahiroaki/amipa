@@ -883,14 +883,22 @@ function arrowPath(g, x, y, w, h, dir){ const hd = Math.min(6, Math.max(2, w*0.3
 // 尺度が少数派サイトなら位置が分かるので山型、私有サイト／錨でない bp は位置が無いので一定の高さ（値が大きいほど低い）。
 // 高さ 1 = この層の典型密度の 2 倍以上で 0、密度 0 で満杯（既存の濃淡と同じ正規化）。返り値: ビンごとの高さ 0..1（null=満杯）
 function profileHeights(o, cons, nbins, hapIdx, ext, flip){ const it = o.it; if (!(it.length>12) || it[2]<=0) return null;
-  if (st.measure==='minor'){ const vs = cons ? consSites(it) : varSites(it); if (!vs.length) return null;
-    const h = new Float32Array(nbins); const cnt = new Float32Array(nbins);
-    const scale = (it[11]||vs.length) / vs.length;                                  // 位置は 1/255 に丸めて重複を落としているので、実数に戻す
-    const e0 = (cons && ext) ? ext[0] : 0, e1 = (cons && ext) ? Math.max(ext[0]+1, ext[1]) : 255;      // 合意座標モード: この片の合意範囲だけ
-    // 通過内の位置（各行の並びモード）は矢印の左端がトークンの小さい側なのは '+' 鎖のとき。'-' 鎖のコンティグは表示で反転しているので左右を入れ替える
-    for (let i=0;i<vs.length;i++){ if (cons && (vs[i] < e0 || vs[i] > e1)) continue; let b = Math.min(nbins-1, Math.floor((vs[i]-e0)/(e1-e0)*nbins)); if ((!cons && flip) || (cons && o.dir === 0)) b = nbins-1-b; cnt[b] += scale; }
-    const bpPerBin = (cons ? Math.max(1, level().blocks[o.rank].tbp) * (e1-e0)/255 : it[2]) / nbins; const dref = levelDensRef();
-    for (let i=0;i<nbins;i++){ const dens = cnt[i]/bpPerBin*1000; h[i] = 1 - Math.min(1, dens/(2*dref)); } return h; }
+  if (st.measure==='minor'){
+    // 少数派サイトの位置は 1/255 に丸めて重複を落とした集合しか無い（併合したブロックではさらに粗い）。以前は 1 点に「総数 ÷ 点数」を積んでビンに
+    // 入れていたので、点のあるビンは密度が跳ね上がって底、無いビンは満杯、と 2 極に分かれた（ヒト chr20-22 で顕著、README 改訂 120）。
+    // ここでは点の**占有**（その 1/255 区間にサイトがあるか）を近傍で平滑化し、インスタンス全体の平均密度をその相対値で配る
+    let useCons = cons; let vs = cons ? consSites(it) : varSites(it); if (cons && !vs.length){ vs = varSites(it); useCons = false; }   // 下段など合意座標の位置が無いものは通過内の位置で
+    const avg = (it[11]||0) / it[2] * 1000; const dref = levelDensRef(); const h = new Float32Array(nbins);
+    if (!vs.length){ h.fill(1 - Math.min(1, avg/(2*dref))); return h; }
+    const e0 = (useCons && ext) ? ext[0] : 0, e1 = (useCons && ext) ? Math.max(ext[0]+1, ext[1]) : 255; const nq = e1 - e0 + 1;
+    const occ = new Float32Array(nq); let nin = 0; for (let i=0;i<vs.length;i++){ const q = vs[i] - e0; if (q < 0 || q >= nq) continue; occ[q] = 1; nin++; }
+    if (!nin){ h.fill(1 - Math.min(1, avg/(2*dref))); return h; }
+    const rad = Math.max(1, Math.min(16, Math.round(nq / Math.max(1, nin) / 2)));   // 点の間隔の半分ほどで平滑化
+    const sm = new Float32Array(nq); { let acc = 0; for (let q=0;q<Math.min(nq, rad+1);q++) acc += occ[q]; for (let q=0;q<nq;q++){ const lo = q - rad, hi = q + rad; sm[q] = acc / (Math.min(nq-1, hi) - Math.max(0, lo) + 1); if (hi + 1 < nq) acc += occ[hi + 1]; if (lo >= 0) acc -= occ[lo]; } }
+    let mean = 0; for (let q=0;q<nq;q++) mean += sm[q]; mean /= nq; mean = Math.max(1e-6, mean);
+    for (let b=0;b<nbins;b++){ const qa = Math.floor(b*nq/nbins), qb = Math.max(qa+1, Math.floor((b+1)*nq/nbins)); let v = 0; for (let q=qa;q<qb;q++) v += sm[q]; v /= (qb - qa);
+      const dens = avg * v / mean; let bb = b; if ((!useCons && flip) || (useCons && o.dir === 0)) bb = nbins-1-b; h[bb] = 1 - Math.min(1, dens/(2*dref)); }
+    return h; }
   const v = measureOf(it); if (v==null) return null; const S = densStats(); const q = pct(S.all, v); const h = new Float32Array(nbins); h.fill(1 - q); return h; }
 // 長い隙間を畳んだ矢印: 配列の部品は保存度プロファイルの断片（向きの先端は末端の部品だけ）、隙間の部品は斜線の箱に長さ
 function foldedArrow(g, p, o, yy, hh, col, hapIdx){ const flipS = p.ct && p.ct.c && p.ct.c.strand === '-'; const NB = 255; const hFull = profileHeights(o, false, NB, hapIdx, null, flipS);
@@ -1009,7 +1017,7 @@ function drawLanesCached(){ const key = laneKey(); const g = cv.grid.getContext(
     _laneCache = { key, canvas: c, jmarks: LY.rows.map(r => r.jmarks || []) }; }
   else LY.rows.forEach((r, ri) => { r.jmarks = _laneCache.jmarks[ri] || []; });   // 配置オブジェクトが作り直されていてもホバー用の位置を戻す
   g.drawImage(_laneCache.canvas, 0, 0, cv.grid.clientWidth, cv.grid.clientHeight); }
-function drawCtgBreaks(){ if (!LY_pack || isSites() || isBase() || !LY) return; const g = cv.grid.getContext('2d'); g.fillStyle = TH.ink; g.globalAlpha = .55; LY.rows.forEach((r, ri) => { for (const x of (r.ctgBreaks || [])) g.fillRect(x, ri*RH + 2, 1, RH - 4); }); g.globalAlpha = 1; }
+function drawCtgBreaks(){ if (!LY_pack || isSites() || isBase() || !LY) return; const g = cv.grid.getContext('2d'); g.fillStyle = TH.muted; LY.rows.forEach((r, ri) => { for (const x of (r.ctgBreaks || [])){ const y = ri*RH + RH - 7; g.beginPath(); g.moveTo(x - 2.5, y + 5); g.lineTo(x + 2.5, y + 5); g.lineTo(x, y); g.closePath(); g.fill(); } }); }   /* 小さな三角（以前の全高の縦線は対応線と紛らわしかった） */
 function drawGrid(){ drawGridBase(); drawCtgBreaks(); drawOgBand(); if (!isSites() && !isBase() && genesOn()) drawLanesCached(); if (isSites()){ drawSitesGrid(); if (genesOn() && st.lane) drawOrthMarksAll(cv.grid.getContext('2d')); } if (isBase()){ if (genesOn()) ensureGenesCols(win()); drawBaseGrid(); if (genesOn()){ const g = cv.grid.getContext('2d'); g.save(); g.translate(-bsx(), 0); if (!drawOrthMarksAll(g)){ drawGeneLanesCols(g); } g.restore(); } } drawBusy(); }
 // 計算中の帯は、どの段の描画よりも後に、画面に見えている範囲（横スクロール位置）に重ねる
 function drawBusy(){ if (!st.busy) return; const g = cv.grid.getContext('2d'); const W = cv.grid.clientWidth, H = cv.grid.clientHeight; const sx = $('body').scrollLeft || 0, vw = $('gridwrap').clientWidth || W;

@@ -39,11 +39,13 @@ function blocksPath(dbFile: string): string | null {
   return null
 }
 
+const _rootCache = new Map<string, { key: string; json: string }>()
+export function warmBlocksRoot(db: string): void { const syn = loadSynteny(db); if (!syn) return; const key = syn.file + '|' + syn.mtime; const c = _rootCache.get(db); if (!c || c.key !== key) _rootCache.set(db, { key, json: JSON.stringify(rootData(syn)) }) }
 blocksRouter.get('/blocks', (req, res) => {
   const { db } = req.query as Record<string, string>
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
   // 窓に依らない一つの木（<db>.synteny）があればそれを優先（plans/msa-multires.md §15）。根の窓を木から作って返す
-  try { const syn = loadSynteny(db); if (syn) { res.json(rootData(syn)); return } } catch (err) { res.status(500).json({ error: 'synteny: ' + String(err) }); return }
+  try { const syn = loadSynteny(db); if (syn) { const key = syn.file + '|' + syn.mtime; let c = _rootCache.get(db); if (!c || c.key !== key) { c = { key, json: JSON.stringify(rootData(syn)) }; _rootCache.set(db, c) } res.type('application/json').send(c.json); return } } catch (err) { res.status(500).json({ error: 'synteny: ' + String(err) }); return }   // 根の窓は木が変わるまで同じ（ヒト 3 染色体で 14 秒・7 MB）なので文字列ごと覚える
   const p = blocksPath(db)
   if (!p) { res.json({ error: 'この DB には多解像度 MSA のサイドカーがありません（' + path.basename(db) + BLOCKS_SUFFIX + '）' }); return }
   res.type('application/json'); fs.createReadStream(p).pipe(res)
@@ -288,6 +290,8 @@ blocksRouter.post('/blocks/nodemap', async (req, res) => {
 //   矩形: その層の範囲のノード座標の min/max（葉は列を等間隔に最大 4,000 本標本化）。参照に無い島でも正しく寄る。
 blocksRouter.get('/blocks/bbox', (req, res) => { runBbox(res, req.query as Record<string, string>) })
 blocksRouter.post('/blocks/bbox', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; const q: Record<string, string> = { db: String(b.db ?? ''), target: String(b.target ?? '') }; runBbox(res, q, Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []) })
+// 矩形の標本の本数: 1 本＝本体 DB の主キー 1 回のシーク。コールドの Lustre では 1 回 ~10 ms なので 4,000 本で 35 秒かかった（ヒト chr20-22）
+const BBOX_SAMPLE = Number(process.env.AMIPA_BBOX_SAMPLE) || 600
 function runBbox(res: any, q: Record<string, string>, namesList?: string[]) {
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const syn = loadSynteny(q.db)
@@ -296,7 +300,16 @@ function runBbox(res: any, q: Record<string, string>, namesList?: string[]) {
   const t0 = Date.now()
   try {
     // 葉の集合（a0,a1 / c0,c1 / x0,x1 のどれでも。集合の意味で解決）
-    const rsel = resolveNames(syn, syn.maxlayer, q, 200000, namesList); if ('error' in rsel) { res.status(400).json({ error: rsel.error }); return }
+    // 矩形の材料は葉の名前の標本で足りる（下で 4,000 本に間引く）。原子・列の範囲なら、各行のトークンを走査せずに合意列 → 元のノード番号
+    // （col2orig）を等間隔に引く（2026-10-18: chr20-22 の 273 原子で 82 秒、配信全体を塞いでいた）。名前の集合（POST）のときは従来どおり
+    let rsel: ReturnType<typeof resolveNames>
+    if (!namesList && syn.col2orig && ((q.a0 != null && q.a1 != null) || (q.c0 != null && q.c1 != null))) {
+      const cc0 = q.a0 != null ? syn.atoms[Math.max(0, Number(q.a0))].c0 : Math.floor(Number(q.c0)), cc1 = q.a1 != null ? syn.atoms[Math.min(syn.atoms.length - 1, Number(q.a1))].c1 : Math.ceil(Number(q.c1))
+      const n = Math.max(0, cc1 - cc0 + 1); const step = Math.max(1, Math.floor(n / 20000)); const out: string[] = []
+      for (let c = cc0; c <= cc1; c += step) { const o = syn.col2orig[c]; if (o >= 0) out.push('n' + o) }
+      rsel = { names: out, truncated: step > 1, c0: cc0, c1: cc1, how: 'cols-sampled' }
+    } else rsel = resolveNames(syn, syn.maxlayer, q, 200000, namesList)
+    if ('error' in rsel) { res.status(400).json({ error: rsel.error }); return }
     const all = rsel.names; const c0 = rsel.c0, c1 = rsel.c1
     const atoms = (q.a0 != null && q.a1 != null) ? syn.atoms.slice(Number(q.a0), Number(q.a1) + 1) : syn.atoms.filter(a => a.c1 >= c0 && a.c0 <= c1); const a0 = atoms.length ? atoms[0].id : -1, a1 = atoms.length ? atoms[atoms.length - 1].id : -1
     const d = getDb(q.db)
@@ -312,7 +325,7 @@ function runBbox(res: any, q: Record<string, string>, namesList?: string[]) {
         layer = chosen >= 0 ? chosen : 0
       } finally { ds.close() }
     } else counts.push(all.length)
-    const names: string[] = []; const step = Math.max(1, Math.ceil(all.length / 4000)); for (let i = 0; i < all.length; i += step) names.push(all[i])
+    const names: string[] = []; const step = Math.max(1, Math.ceil(all.length / BBOX_SAMPLE)); for (let i = 0; i < all.length; i += step) names.push(all[i]); names.sort((u, v) => Number(u.slice(1)) - Number(v.slice(1)))   // 主キーの近い順に引く
     const bboxLayer = syn.maxlayer
     if (!names.length) { res.json({ layer, count: 0, counts, c0, c1, ms: Date.now() - t0 }); return }
     let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity, sx = 0, sy = 0, n = 0
