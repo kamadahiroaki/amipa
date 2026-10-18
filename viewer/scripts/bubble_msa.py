@@ -402,31 +402,47 @@ def main():
     raw = []; dense_of_name = {}; rc_votes = {}   # ノードが表示で逆相補されている行の多数（列の塩基オフセットを格納向きに直すため）
     # 行の向き: 合意列があれば「歩きが合意列を減らす向きに進むか」で決める（2026-10-18）。格納向きの bp の多数決だと、局所的に長い反転を
     # 含む逆鎖のコンティグが順向きと判定され、行が逆に読まれた（chr21 n73207575 の CA が半数の株で TG、573/574 が並列に見えず直列に）
-    dcache = synteny_dcol(args.synteny) if (args.synteny and os.environ.get("AMIPA_MSA_ROWDIR", "bp") == "col") else None
+    # 行の向き（2026-10-18）: まず格納向きの bp の多数決で決め、次に**参照行（無ければ最初の行）と共有するノードの並び**が参照行と逆なら
+    # 裏返す（共有が無ければ合意列の増減で比べる）。行ごとに独立に決めると、局所反転を含む逆鎖コンティグが参照と逆向きに読まれ、
+    # 区切りの順と行の並びが食い違って列がずれた（chr21 n73207582 が 578 の後ろへ、HG01978#2 の欠失）
+    dcache = synteny_dcol(args.synteny) if args.synteny else None
+    pre = []
     for r in runs:
         ids, ors = r["ids"], r["ors"]
         nodes = [nname(t) for t in ids]
         wp = sum(len(seqleaf.get(n, "")) for n, o in zip(nodes, ors) if o)        # '+' の bp
         wm = sum(len(seqleaf.get(n, "")) for n, o in zip(nodes, ors) if not o)    # '-' の bp
-        rev = wm > wp                       # この行の優勢向き('-' 優勢 = 逆走 contig)
-        if dcache is not None:
-            cs = [int(dcache[int(t)]) for t in ids if 0 <= int(t) < len(dcache) and dcache[int(t)] >= 0]
-            if len(cs) >= 2:
-                d = np.sign(np.diff(np.asarray(cs, np.int64))); sgn_ = int(d.sum())
-                if sgn_ != 0: rev = sgn_ < 0
+        pre.append([r, nodes, ors, wm > wp])
+        for t, n in zip(ids, nodes): dense_of_name.setdefault(n, int(t))
+    def disp(p): return p[1][::-1] if p[3] else p[1]
+    bi = next((k for k, p in enumerate(pre) if p[0]["isref"]), 0)
+    if pre:
+        bseq = disp(pre[bi]); bpos = {}
+        for k, n in enumerate(bseq): bpos.setdefault(n, k)
+        def ctrend(seq):
+            if dcache is None: return 0
+            cs = [int(dcache[dense_of_name[n]]) for n in seq if n in dense_of_name and 0 <= dense_of_name[n] < len(dcache) and dcache[dense_of_name[n]] >= 0]
+            return int(np.sign(np.diff(np.asarray(cs, np.int64))).sum()) if len(cs) >= 2 else 0
+        btrend = ctrend(bseq)
+        for k, p in enumerate(pre):
+            if k == bi: continue
+            sq = disp(p); sh = [bpos[n] for n in sq if n in bpos]
+            t = int(np.sign(np.diff(np.asarray(sh, np.int64))).sum()) if len(sh) >= 2 else 0
+            if t == 0 and btrend != 0: t = ctrend(sq) * (1 if btrend > 0 else -1)
+            if t < 0: p[3] = not p[3]
+    for r, nodes, ors, rev in pre:
         cells, inv = {}, []
         for n, o in zip(nodes, ors):
             if n in cells:
                 continue
             s = seqleaf.get(n, "?")
-            if (not o) != rev:              # ステップ向きが行の優勢向きと違う = 局所反転
+            if (not o) != rev:              # ステップ向きが行の表示の向きと違う = 局所反転
                 s = rc(s); inv.append(n); rc_votes[n] = rc_votes.get(n, 0) + 1
             else: rc_votes[n] = rc_votes.get(n, 0) - 1
             cells[n] = s
         raw.append(dict(samp=r["samp"], label=r["label"], path=r["path"],
                         strand=("-" if rev else "+"), cells=cells, inv=inv,
                         nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"]))
-        for t, n in zip(ids, nodes): dense_of_name.setdefault(n, int(t))
 
     # --- 固定幅列。★同じサイトの排他アレルは「アレル群」として **1 ブロック**にまとめる。
     #   旧実装は「id 隣接・等長・排他のペア」だけを統合していたので、3 アレル以上の site(G/A/C)や
@@ -471,31 +487,35 @@ def main():
         base_row = next((r for r in raw if r["isref"]), raw[0])
         need_ = max(2, (len(raw) + 3) // 4)
         inv_nodes = {n for n in alln if n not in paired and len(present[n]) >= need_ and colof.get(n, -1) >= 0}
-        # 区切りの順: 参照行の上のものはその行の中の位置（正確）。参照行に無いものは、それを持つ行で直前に通った「順の決まった区切り」の
-        # 位置の直後に置く（合意列は錨でないノードでは近似で、順に使うと ecoli ybeF で内部の終止が 4 出た）
-        seg_pos = {}
+        # 区切りの順: 全行の「区切りの並び」を有向辺にしてトポロジカルに並べる（行の向きは参照に揃えてある）。同点・閉路は参照行の位置、
+        # 次に合意列で決める。参照に無い区切りを「直前の区切りの直後」に置く近似は、行ごとに直前が違うと順が崩れた
+        import heapq as _hq
+        bposf = {}
         for k, n in enumerate(base_row["seq"]):
-            if n in inv_nodes and n not in seg_pos: seg_pos[n] = float(k)
-        for _ in range(3):
-            changed = False
-            for r in raw:
-                last = None; steps = 0
-                for n in r["seq"]:
-                    if n not in inv_nodes: continue
-                    if n in seg_pos: last = seg_pos[n]; steps = 0; continue
-                    steps += 1
-                    if last is not None: seg_pos[n] = last + 1e-4 * steps; changed = True
-                    # 直前が無い（行の先頭側）なら次の周回で後ろから決める
-            if not changed: break
-        for r in raw:   # まだ位置の無い区切り: 行の中で直後の区切りの手前
-            nxt = None; steps = 0
-            for n in reversed(r["seq"]):
-                if n not in inv_nodes: continue
-                if n in seg_pos: nxt = seg_pos[n]; steps = 0; continue
-                steps += 1
-                if nxt is not None: seg_pos[n] = nxt - 1e-4 * steps
-        for n in inv_nodes:
-            if n not in seg_pos: seg_pos[n] = 1e9 + colof[n]
+            if n in inv_nodes: bposf.setdefault(n, k)
+        prio = {n: (0, bposf[n]) if n in bposf else (1, colof.get(n, 0)) for n in inv_nodes}
+        outs = {n: set() for n in inv_nodes}; indeg = {n: 0 for n in inv_nodes}
+        for r in raw:
+            sq_ = [n for n in r["seq"] if n in inv_nodes]
+            for a_, b_ in zip(sq_, sq_[1:]):
+                if a_ != b_ and b_ not in outs[a_]: outs[a_].add(b_); indeg[b_] += 1
+        # 参照行の位置を持つ区切りどうしの合意列の値で、参照に無い区切りの優先度を参照の位置へ寄せる（同じ位置付近で並ぶように）
+        bl = sorted((colof[n], bposf[n]) for n in bposf)
+        if bl:
+            xs_ = [c for c, _ in bl]; ys_ = [k for _, k in bl]
+            for n in inv_nodes:
+                if n not in bposf: prio[n] = (0, float(np.interp(colof[n], xs_, ys_)) + 1e-3)
+        order_ = []; heap = [(prio[n], n) for n in inv_nodes if indeg[n] == 0]; _hq.heapify(heap); done_ = set()
+        while len(order_) < len(inv_nodes):
+            if not heap:   # 閉路: 残りの中で優先度が最小のものを入れる
+                rest = [n for n in inv_nodes if n not in done_]; m_ = min(rest, key=lambda n: prio[n]); indeg[m_] = 0; heap = [(prio[m_], m_)]
+            _, n = _hq.heappop(heap)
+            if n in done_: continue
+            done_.add(n); order_.append(n)
+            for m_ in outs[n]:
+                indeg[m_] -= 1
+                if indeg[m_] == 0 and m_ not in done_: _hq.heappush(heap, (prio[m_], m_))
+        seg_pos = {n: float(k) for k, n in enumerate(order_)}
     else:
         inv_nodes = {n for n in alln if len(present[n]) == len(raw)}
         seg_pos = {}                                   # 不変ノード → 並びの中の位置（参照行があれば参照行、無ければ最初の行）
