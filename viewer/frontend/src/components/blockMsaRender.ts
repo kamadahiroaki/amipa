@@ -443,12 +443,12 @@ function baseSetScroll(x){ const nx = Math.max(0, Math.min(x, baseScrollMax()));
 function baseCellColor(ch){ const c = BASE_COLORS[ch.toUpperCase()] || BASE_COLORS.N; return c; }
 // 比較の基準（列見出しの下段に出し、「参照一致を省く」の基準になる）: 参照パスの行、または列ごとの多数派の塩基
 function baseCmpSeq(M){ if (st.baseCmp === 'major'){ if (!M._major){ const n = (M.cols || []).length; const out = new Array(n).fill('-');
-      for (let i = 0; i < n; i++){ const cnt = new Map(); for (const r of M.rows){ const ch = r.seq[i]; if (!ch || ch === '-' || ch === '~') continue; cnt.set(ch, (cnt.get(ch) || 0) + 1); } let best = '-', bn = 0; for (const [ch, c] of cnt) if (c > bn){ bn = c; best = ch; } out[i] = best; } M._major = out; }
+      for (let i = 0; i < n; i++){ const cnt = new Map(); for (const r of M.rows){ const ch = r.seq[i]; if (!ch || ch === '-' || ch === '~' || ch === '.') continue; cnt.set(ch, (cnt.get(ch) || 0) + 1); } let best = '-', bn = 0; for (const [ch, c] of cnt) if (c > bn){ bn = c; best = ch; } out[i] = best; } M._major = out; }
     return { seq: M._major, label: '多数派（列ごとの最頻の塩基）', isRow: null }; }
   const rr = M._refRow != null ? M.rows[M._refRow] : null; return rr ? { seq: rr.seq, label: (rr.isref ? '参照パス ' : '先頭の行 ') + rr.label, isRow: M._refRow } : { seq: null, label: '', isRow: null }; }
 function baseFontPx(cw, h){ return Math.max(0, Math.min(13, h - 2, Math.floor(cw / 0.62))); }
 // 区画（畳んだ群）の中でのこの行のアレル番号: 群の中の隙間を除いた配列が同じ行は同じアレル。番号は多い順（0 = 多数派）。持たない行は -1
-function baseBlkAllele(M, it, mi){ if (!M._blk) M._blk = new Map(); let e = M._blk.get(it.ci0); if (!e){ const cnt = new Map(); const keys = []; for (const r of M.rows){ const k = r.seq.slice(it.ci0, it.ci1 + 1).replace(/-/g, ''); keys.push(k); if (k) cnt.set(k, (cnt.get(k) || 0) + 1); }
+function baseBlkAllele(M, it, mi){ if (!M._blk) M._blk = new Map(); let e = M._blk.get(it.ci0); if (!e){ const cnt = new Map(); const keys = []; for (const r of M.rows){ const k = r.seq.slice(it.ci0, it.ci1 + 1).replace(/[-.]/g, ''); keys.push(k); if (k) cnt.set(k, (cnt.get(k) || 0) + 1); }
     const order = [...cnt.entries()].sort((u, v) => v[1] - u[1] || (u[0] < v[0] ? -1 : 1)).map(([k]) => k); const idx = new Map(order.map((k, i) => [k, i])); e = { per: keys.map(k => (k ? idx.get(k) : -1)), n: order.length, counts: order.map(k => cnt.get(k)), lens: order.map(k => k.length) }; M._blk.set(it.ci0, e); } return mi != null && mi < e.per.length ? e.per[mi] : -1; }
 // 比較の基準のアレル: 参照行ならその行のアレル、多数派なら 0（最も多いアレル）
 function baseBlkCmp(M, it){ const ri = st.baseCmp === 'major' ? null : M._refRow; return ri != null ? baseBlkAllele(M, it, ri) : 0; }
@@ -462,6 +462,7 @@ function drawBaseGrid(){ const M = baseOf(); if (!M || !LY.bxs) return; const g 
         g.fillStyle = same ? TH.line2 : SITES_COLORS[Math.min(a, SITES_COLORS.length - 1)]; g.fillRect(x, y + 1, w, h - 2);
         if (inv){ for (let i = it.ci0; i <= it.ci1; i++) if (inv.has(i)){ g.fillStyle = TH.inv; g.fillRect(x, y, w, 2); break; } } continue; }
       const ch = row.seq[it.ci]; if (ch === '-' || ch === undefined) continue;
+      if (ch === '.'){ g.fillStyle = TH.line2; g.fillRect(x + Math.max(0, w/2 - 1), y + h/2 - 1, Math.min(2, w), 2); continue; }   /* この行の範囲の外（窓の端より先は読んでいない）: 小さな点 */
       if (ch === '~'){ g.fillStyle = TH.line; g.fillRect(x, y + 2, w, h - 4); continue; }
       if (st.baseDiff && cmpSeq && cmpSeq[it.ci] === ch){ g.fillStyle = TH.line2; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = TH.muted; g.fillText('·', x + w/2, y + h/2 + 1); } continue; }   // 基準と一致 → 省く（基準の配列は列見出しの下段）
       const col = baseCellColor(ch); g.fillStyle = col[1]; g.fillRect(x, y, w, h); if (letters){ g.fillStyle = col[0]; g.fillText(ch, x + w/2, y + h/2 + 1); }
@@ -488,7 +489,7 @@ function drawBaseHeader(){ const M = baseOf(); if (!M || !LY.bxs) return; const 
     const [_k0, _k1] = baseVisible(); for (let k = _k0; k <= _k1; k++){ const it = items[k]; const x = xs[k], w = xs[k+1] - xs[k] - (cw >= 8 ? 1 : 0);
       if (it.kind === 'blk'){ const a = baseBlkCmp(M, it); gh.fillStyle = a >= 0 ? SITES_COLORS[Math.min(a, SITES_COLORS.length - 1)] : TH.gap; gh.fillRect(x, y + 1, w, h - 2);
         if (w >= 26){ gh.fillStyle = a >= 0 ? '#fff' : TH.muted; gh.font = `bold ${Math.min(fpx, 10)}px "IBM Plex Mono"`; gh.fillText(fmtBpShort(it.n), x + w/2, y + h/2 + 1); gh.font = `bold ${fpx}px "IBM Plex Mono"`; } continue; }
-      const ch = refRow.seq[it.ci]; if (!ch || ch === '-'){ gh.fillStyle = TH.gap; gh.fillRect(x, y + 1, w, h - 2); continue; }
+      const ch = refRow.seq[it.ci]; if (!ch || ch === '-' || ch === '.'){ gh.fillStyle = TH.gap; gh.fillRect(x, y + 1, w, h - 2); continue; }
       if (ch === '~'){ gh.fillStyle = TH.line; gh.fillRect(x, y + 1, w, h - 2); continue; }
       const col = baseCellColor(ch); gh.fillStyle = col[1]; gh.fillRect(x, y, w, h); if (cw >= 5 && fpx >= 8){ gh.fillStyle = col[0]; gh.fillText(ch, x + w/2, y + h/2 + 1); } }
     gh.textBaseline = 'alphabetic'; gh.textAlign = 'left'; }
@@ -504,7 +505,7 @@ function baseGroupInfo(k, ri, ci){ const M = baseOf(); const gr = LY.bgroups[k];
   const bit = LY.bitems ? LY.bitems.find(it => it.kind === 'blk' && it.g === gr.g) : null; let blk = '';
   if (bit){ baseBlkAllele(M, bit, 0); const e = M._blk.get(bit.ci0); const a = mi != null ? baseBlkAllele(M, bit, mi) : -1; blk = `<br><span class="k">この倍率では群を 1 区画で表示（Ctrl+ホイールか＋で拡大すると塩基が出る）。アレル ${e.n} 種: ${e.lens.slice(0, 4).map((L, i) => `#${i + 1} ${L.toLocaleString()} bp × ${e.counts[i]} 行`).join('、')}${e.n > 4 ? '…' : ''}${a >= 0 ? `。この行はアレル #${a + 1}` : ''}</span>`; }
   return `<p><span class="h">ノード ${esc(gr.nodes.join(' | '))}</span>${gr.nodes.length > 1 ? `<br><span class="k">同じサイトの排他アレル ${gr.nodes.length} 個を 1 列に重ねた群（帯の上の青緑線）</span>` : ''}<br><span class="k">ノードの長さ ${gr.bp.toLocaleString()} bp${gr.rb ? ` · 参照 ${fmtbp(gr.rb)}` : ''}${gr.variant ? ' · 行間で塩基が違う' : ''}</span>${blk}` +
-    (row ? `<br><span class="k">${esc(row.label)}（${row.strand} 鎖）:</span> ${col ? (row.seq[ci] === '-' ? '欠失（gap）' : row.seq[ci] === '~' ? '畳んだ部分' : `塩基 ${esc(row.seq[ci])}${col.off != null ? '（ノード内 ' + (col.off + 1) + ' 塩基目）' : ''}`) : ''}${(M._inv[mi] && ci != null && M._inv[mi].has(ci)) ? ' · 周りと逆向きに通過（逆相補で表示）' : ''}` : '') + (r && ci != null ? effectInfo(r.hap, ci) : '') + `</p>`; }
+    (row ? `<br><span class="k">${esc(row.label)}（${row.strand} 鎖）:</span> ${col ? (row.seq[ci] === '-' ? '欠失（gap）' : row.seq[ci] === '.' ? 'この行の範囲の外（窓の端より先はこの行を読んでいない。欠失ではない）' : row.seq[ci] === '~' ? '畳んだ部分' : `塩基 ${esc(row.seq[ci])}${col.off != null ? '（ノード内 ' + (col.off + 1) + ' 塩基目）' : ''}`) : ''}${(M._inv[mi] && ci != null && M._inv[mi].has(ci)) ? ' · 周りと逆向きに通過（逆相補で表示）' : ''}` : '') + (r && ci != null ? effectInfo(r.hap, ci) : '') + `</p>`; }
 function baseRef(k){ const M = baseOf(); if (!M || k == null || !LY.bgroups || !LY.bgroups[k]) return null; const gr = LY.bgroups[k]; const L = level();
   return { win: st.win, level: st.li, W: 0, rank: k, name: gr.nodes[0], ref_contig: (L.refc != null ? L.refc : 0), x: gr.rb || 0, span: Math.max(1, gr.bp), tbp: gr.bp, nhap: 0, label: gr.nodes.join('|'), names: gr.nodes, base: true }; }
 function baseWindow(M, label, parent, pblock, c0, c1, order0){ const pw = WINS[parent]; const Lp = pw.levels[0];
@@ -676,7 +677,7 @@ function drawGeneLanesCols(g){ const w = win(); if (!st.lane || !w._gcols) retur
       for (const pass of [0, 1, 2]) for (const p of parts){ if (PART_KIND[p[1]] !== pass) continue; for (const [x0, x1] of geneSpanX(w, p)){ const wv = Math.max(1, x1 - x0); g.fillStyle = col;
           if (pass === 2) g.fillRect(x0, y, wv, h); else if (pass === 1){ g.globalAlpha = .45; g.fillRect(x0, y, wv, h); g.globalAlpha = 1; } else { g.globalAlpha = .35; g.fillRect(x0, y + 1, wv, Math.max(1, h - 2)); g.globalAlpha = 1; } } } } }); }
 /* 行 mi の塩基だけを数えた位置 ↔ 列（gap 列を飛ばす）。読み枠の目盛りに使う */
-function baseUngapped(M, mi){ if (!M._ung) M._ung = new Map(); let U = M._ung.get(mi); if (U) return U; const seq = M.rows[mi].seq || ''; const n = seq.length; const posOf = new Int32Array(n).fill(-1); const colOf = []; for (let i = 0; i < n; i++){ const ch = seq[i]; if (ch && ch !== '-' && ch !== '~'){ posOf[i] = colOf.length; colOf.push(i); } } U = { posOf, colOf }; M._ung.set(mi, U); return U; }
+function baseUngapped(M, mi){ if (!M._ung) M._ung = new Map(); let U = M._ung.get(mi); if (U) return U; const seq = M.rows[mi].seq || ''; const n = seq.length; const posOf = new Int32Array(n).fill(-1); const colOf = []; for (let i = 0; i < n; i++){ const ch = seq[i]; if (ch && ch !== '-' && ch !== '~' && ch !== '.'){ posOf[i] = colOf.length; colOf.push(i); } } U = { posOf, colOf }; M._ung.set(mi, U); return U; }
 // ---- 変異の効果（段階 A、README 改訂 115）----
 //   塩基の窓で、座位（列の区間が重なる遺伝子の群）ごとに「モデル」＝最も多くの株が同じ列区間に持つ CDS の注釈を 1 つ選び、その株の読み枠
 //   （CDS の片を転写の順に繋ぎ、先頭の phase を飛ばす＝GenBank の join と同じ）で**全行**のコドンを読む。比較の相手は列ごとの多数派（または参照）の
@@ -725,7 +726,7 @@ function computeEffectsCore(M, gcols, refHap){ const t0 = Date.now(); const ncol
     L.mcols = mcols; L.ncodon = Math.floor(mcols.length / 3); if (L.ncodon < 2) continue;
     { const rdm = c => { const ch = mrow.seq[c]; const u = ch ? ch.toUpperCase() : 'N'; return dirUp ? u : (COMP[u] || 'N'); }; let stops = 0; for (let k = 0; k < L.ncodon - 1; k++) if (translate(rdm(mcols[3*k]) + rdm(mcols[3*k+1]) + rdm(mcols[3*k+2])) === '*') stops++; L.modelStops = stops; L.startCodon = rdm(mcols[0]) + rdm(mcols[1]) + rdm(mcols[2]); L.endCodon = translate(rdm(mcols[3*(L.ncodon-1)]) + rdm(mcols[3*(L.ncodon-1)+1]) + rdm(mcols[3*(L.ncodon-1)+2])); }   /* モデル自身の枠の検算（内部の終止が 0、先頭が開始コドン、末尾が終止なら枠は正しい） */
     const isM = new Uint8Array(ncol); for (const c of mcols) isM[c] = 1; const codonOfCol = new Int32Array(ncol).fill(-1); mcols.forEach((c, i) => { codonOfCol[c] = Math.floor(i / 3); });
-    const rd = (seq, c) => { const ch = seq[c]; if (!ch || ch === '-' || ch === '~') return null; const u = ch.toUpperCase(); return dirUp ? u : (COMP[u] || 'N'); };
+    const rd = (seq, c) => { const ch = seq[c]; if (!ch || ch === '-' || ch === '~' || ch === '.') return null; const u = ch.toUpperCase(); return dirUp ? u : (COMP[u] || 'N'); };
     const cmpCodon = k => { const a = rd(cmpSeq, mcols[3*k]), b = rd(cmpSeq, mcols[3*k+1]), d = rd(cmpSeq, mcols[3*k+2]); if (a && b && d) return a + b + d; return rd(mrow.seq, mcols[3*k]) + rd(mrow.seq, mcols[3*k+1]) + rd(mrow.seq, mcols[3*k+2]); };
     const ccache = new Map(); const CC = k => { let v = ccache.get(k); if (v === undefined){ v = cmpCodon(k); ccache.set(k, v); } return v; };
     // 転写順の全列（片の範囲の中）: モデルに塩基があるか、行に塩基があるかで aligned / 欠失 / 挿入
@@ -1167,7 +1168,7 @@ function orthEffectNote(o){ if (!isBase() || !st.beff || !genesOn()) return ''; 
 function drawOgBand(){ if (st.selOg == null) return; const w = win(); const O = w._orth; if (!O || !O.groups) return; const gr = O.groups.find(x => x[0] === st.selOg); if (!gr) return; const xs = orthX(ogObj(gr)); if (!xs) return; const g = cv.grid.getContext('2d'); const H = cv.grid.clientHeight; g.save(); g.translate(-bsx(), 0); for (const [x0, x1] of xs){ g.fillStyle = TH.selbg; g.fillRect(x0, 0, Math.max(1, x1 - x0), H); } g.restore(); }
 // 行がこの列範囲を覆っているか（無い遺伝子の白抜きは、覆っている行だけに描く）
 function rowCovers(r, o){ const L = level(); if (isSites()){ const S = L.sites; const hi = S._hidx ? S._hidx.get(r.hap) : null; if (hi == null || !S._cells) return false; const rr = sitesXOfCols(S, o.c0, o.c1); if (!rr) return true; for (let k = rr[2]; k <= rr[3]; k++) if (S._cells[k * S.H + hi] !== 255) return true; return false; }
-  if (isBase()){ const M = L.base; const mi = M._rowOf ? M._rowOf.get(r.hap) : null; if (mi == null) return false; if (M.indexBacked){ const rr = baseXOfTreeCols(M, o.c0, o.c1); if (!rr) return true; const sq = M.rows[mi].seq || ''; for (let i = rr[2]; i <= rr[3]; i++) if (sq[i] && sq[i] !== '-') return true; return false; } const sp = baseNodeSpans(M); const a = sp.get(o.n0) || sp.get(o.n1); if (!a) return false; const seq = M.rows[mi].seq || ''; for (let i = a[0]; i <= Math.min(a[1], seq.length - 1); i++) if (seq[i] && seq[i] !== '-') return true; return false; }
+  if (isBase()){ const M = L.base; const mi = M._rowOf ? M._rowOf.get(r.hap) : null; if (mi == null) return false; if (M.indexBacked){ const rr = baseXOfTreeCols(M, o.c0, o.c1); if (!rr) return true; const sq = M.rows[mi].seq || ''; for (let i = rr[2]; i <= rr[3]; i++) if (sq[i] && sq[i] !== '-') return true; return false; } const sp = baseNodeSpans(M); const a = sp.get(o.n0) || sp.get(o.n1); if (!a) return false; const seq = M.rows[mi].seq || ''; for (let i = a[0]; i <= Math.min(a[1], seq.length - 1); i++) if (seq[i] && seq[i] !== '-' && seq[i] !== '.') return true; return false; }
   for (const p of (r.items || [])){ const B = L.blocks[p.o.rank]; if (B && B.c0 != null && B.c1 >= o.c0 && B.c0 <= o.c1) return true; } return false; }
 // 行の差分印: 無い（白抜き）、擬似（橙の斜線）、合意と逆向き（紫）、その株だけの遺伝子（青緑の刻み）。描けたら true（従来のレーンを出さない）
 function drawOrthMarks(g, r, y){ const w = win(); const O = w._orth; const rows = w._orthRows; if (!O || !O.groups || !rows) return false; const row = rows.get(r.hap); if (!row) return false; const have = new Map(row.st.map(s => [s[0], s])); const yb = y + RH - 4, h = 3;
@@ -1307,7 +1308,7 @@ function localFeatures(L){ const haps = L.haps.map(h => h.hap); const n = haps.l
     for (let i = 0; i < n; i++){ const hi = S._hidx.get(haps[i]); const bits = new Uint32Array(words); const cells = new Uint8Array(S.nsites); cells.fill(255); if (hi != null) for (let k = 0; k < S.nsites; k++){ const a = S._cells[k*H + hi]; cells[k] = a; if (a !== 255) setbit(bits, k * 16 + a); } sk[i] = bits; ex[i] = cells; }
     return { n, haps, sk, exact: (a, b) => { const A = ex[a], B = ex[b]; let m = 0, c = 0; for (let k = 0; k < A.length; k++){ const u = A[k], v = B[k]; if (u === 255 || v === 255) continue; c++; if (u !== v) m++; } return c ? m / c : 1; } }; }
   if (mode === 'base'){ const M = L.base; const rowOf = M._rowOf || new Map((M.rows || []).map((r, i) => [r.label, i]));   /* M._rowOf は baseLayout が _inv 等と一緒に作る。ここで作ると baseLayout の初期化が飛ぶので触らない */
-    for (let i = 0; i < n; i++){ const mi = rowOf.get(haps[i]); const seq = mi != null ? (M.rows[mi].seq || '') : ''; const bits = new Uint32Array(words); for (let k = 0; k < seq.length; k++){ const ch = seq.charCodeAt(k); if (ch === 45) continue; setbit(bits, k * 8 + (ch & 7)); } sk[i] = bits; ex[i] = seq; }
+    for (let i = 0; i < n; i++){ const mi = rowOf.get(haps[i]); const seq = mi != null ? (M.rows[mi].seq || '') : ''; const bits = new Uint32Array(words); for (let k = 0; k < seq.length; k++){ const ch = seq.charCodeAt(k); if (ch === 45 || ch === 46) continue;   /* '-' と '.'（範囲の外） */ setbit(bits, k * 8 + (ch & 7)); } sk[i] = bits; ex[i] = seq; }
     return { n, haps, sk, exact: (a, b) => { const A = ex[a], B = ex[b]; const len = Math.min(A.length, B.length); let m = 0, c = 0; for (let k = 0; k < len; k++){ const u = A.charCodeAt(k), v = B.charCodeAt(k); if (u === 45 || v === 45) continue; c++; if (u !== v) m++; } return c ? m / c : 1; } }; }
   // ブロック段: 見えているブロック（原子）の有無 ＋ 合意座標の少数派サイトの区画（cvs、0..255）。重みはブロックの長さ
   const vis = visibleBlocks(); const span = new Map(vis.map(r => [r, Math.max(1, L.blocks[r].span || 1)]));

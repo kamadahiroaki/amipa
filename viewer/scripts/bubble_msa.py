@@ -608,12 +608,19 @@ def main():
         k = c["off"]
         return s[k] if k < len(s) else "-"        # 同群で短いアレルは末尾を gap 埋め
     for r in raw:
-        r["seq"] = "".join(cellchar(r, c) for c in cols)
+        sq = "".join(cellchar(r, c) for c in cols)
+        # 行の範囲の外（最初の塩基より前・最後の塩基より後）は "."＝読んでいない。窓の端で、この行のトークン範囲は終わっているが
+        # 他の行の範囲がもう少し先まで届くと、その列がこの行の欠失に見えた（2026-10-19: HG01978#2 の n73207588 以降）
+        i0 = next((i for i, ch in enumerate(sq) if ch not in "-~"), None)
+        if i0 is None: r["seq"] = "." * len(sq)
+        else:
+            i1 = max(i for i, ch in enumerate(sq) if ch not in "-~")
+            r["seq"] = "." * i0 + sq[i0:i1 + 1] + "." * (len(sq) - i1 - 1)
 
     # --- bubble 内部(選択ノード配下の葉)の列範囲＋pad に自動トリム。
     #     変異は内部に集中する一方、flank は隣接 VNTR 等を拾いがちなので、内部基準で切ると焦点が定まる。 ---
     def is_var(ci):
-        vals = set(r["seq"][ci] for r in raw); vals.discard("~")
+        vals = set(r["seq"][ci] for r in raw); vals.discard("~"); vals.discard(".")
         return len(vals) > 1
     leafset = set(leaves)
     intidx = [ci for ci in range(len(cols)) if any(n in leafset for n in cols[ci]["nodes"])]
@@ -629,7 +636,7 @@ def main():
     for r in raw: r["seq"] = r["seq"][a:b]
     # 変異フラグ(トリム後)
     for ci, c in enumerate(cols):
-        vals = set(r["seq"][ci] for r in raw); vals.discard("~")
+        vals = set(r["seq"][ci] for r in raw); vals.discard("~"); vals.discard(".")
         c["variant"] = bool(c.get("variant")) or (len(vals) > 1)
 
     # 列が属する群の連番(frontend が境界の描画とブロック見出しに使う)
