@@ -56,7 +56,12 @@ class Atlas:
         return any(low == p or low.startswith(p + "#") or low.startswith(p + ".") for p in self.refpref)
     def labels_of(self, pi):
         full = self.p_names[pi]; base = re.sub(r"\[[^\]]*\]$", "", full); f = base.split("#")
-        samp = f[0]; hap = "#".join(f[:2]) if len(f) >= 3 else base; ctg = f[2] if len(f) >= 3 else ""
+        # PanSN: sample#hap#contig。2 項（`GRCh38#chr20`、ハプロタイプ番号の無い参照）は sample#contig とみなし hap = sample#0
+        # （以前は 2 項目をハプロタイプ名と読んで、参照が染色体ごとに別の行になっていた。2026-10-18）。1 項はパス名そのものを hap に
+        samp = f[0]
+        if len(f) >= 3: hap = "#".join(f[:2]); ctg = f[2]
+        elif len(f) == 2: hap = f[0] + "#0"; ctg = f[1]
+        else: hap = base; ctg = ""
         return samp, hap, ctg
 
     def traversals(self):

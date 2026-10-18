@@ -33,7 +33,7 @@ export interface Synteny {
   meta: Record<string, string>; circular: boolean; H: number; total: number; tiers: number[]; floor: number
   atoms: Atom[]; bnd: Boundary[]; paths: PathRow[]; inst: Inst[][]      // inst[pid] は pos 昇順
   anchorX: Int32Array; anchorTier: Int8Array; anchorCol: Int32Array      // rank → 合意座標 / 層 / 列
-  rankOfCol: Int32Array; dcol: Int32Array | null; colX: Int32Array; colBp: Int32Array; colXc: Float64Array; orig2col: Int32Array | null; col2orig: Int32Array | null; nat: number; distill: string | null; maxlayer: number; hasSupermap: boolean
+  rankOfCol: Int32Array; dcol: Int32Array | null; colX: Int32Array; colBp: Int32Array; colNhap: Uint16Array; colXc: Float64Array; orig2col: Int32Array | null; col2orig: Int32Array | null; nat: number; distill: string | null; maxlayer: number; hasSupermap: boolean
   junc: Junc[][]
   tree: any | null
   hapOrder: string[]                                                       // 参照ハプロを先に、名前順
@@ -62,8 +62,8 @@ export function loadSynteny(dbFile: string): Synteny | null {
     const ncols = Number(meta.ncols || 0); const rankOfCol = new Int32Array(ncols).fill(-1)
     for (const r of d.prepare('SELECT rank, x, tier, col FROM anchors').iterate() as Iterable<{ rank: number; x: number; tier: number; col: number }>) { anchorTier[r.rank] = r.tier; anchorCol[r.rank] = r.col; if (r.col < ncols) rankOfCol[r.col] = r.rank }
     // 列ごとの合意座標と塩基数（座位のアレルの幅・位置）。1.5M 行で約 1 s
-    const colX = new Int32Array(ncols), colBp = new Int32Array(ncols)
-    try { for (const r of d.prepare('SELECT col, x, bp FROM cols').iterate() as Iterable<{ col: number; x: number; bp: number }>) { colX[r.col] = r.x; colBp[r.col] = r.bp } } catch { /* 古いサイドカー */ }
+    const colX = new Int32Array(ncols), colBp = new Int32Array(ncols), colNhap = new Uint16Array(ncols)   // colNhap: その列（ノード）を持つ株の数（対応線のその場の抽出で、区画ごとに最も共有の多い列を選ぶ）
+    try { for (const r of d.prepare('SELECT col, x, bp, nhap FROM cols').iterate() as Iterable<{ col: number; x: number; bp: number; nhap: number }>) { colX[r.col] = r.x; colBp[r.col] = r.bp; colNhap[r.col] = Math.min(65535, r.nhap || 0) } } catch { /* 古いサイドカー */ }
     // 合意累積 bp（全列の塩基数の前置和）。参照座標 x は参照に無い島で進まず、原子の幅（全列の bp）と座標系が合わないので、
     // 範囲・幅・対応線・サイトの位置は全部この座標で持つ。参照座標は rx0/rx1 として別に持つ（グラフ寄せ・目盛り）
     const colXc = new Float64Array(ncols + 1); for (let c = 0; c < ncols; c++) colXc[c + 1] = colXc[c] + colBp[c]
@@ -82,7 +82,7 @@ export function loadSynteny(dbFile: string): Synteny | null {
     const syn: Synteny = {
       file: p, mtime, meta, circular: meta.circular === '1', H: Number(meta.H || haps.length), total: Math.round(colXc[ncols]),
       tiers: (meta.tiers || '').split(',').map(Number).filter(v => Number.isFinite(v)), floor: Number(meta.floor || 500),
-      atoms, bnd, paths, inst, anchorX, anchorTier, anchorCol, rankOfCol, dcol, colX, colBp, colXc, orig2col, col2orig, nat: atoms.length, distill: distillFor(path.join(getDbDir(), path.basename(dbFile))), maxlayer: Number(meta.maxlayer || 0), hasSupermap, junc, tree, hapOrder: haps,
+      atoms, bnd, paths, inst, anchorX, anchorTier, anchorCol, rankOfCol, dcol, colX, colBp, colNhap, colXc, orig2col, col2orig, nat: atoms.length, distill: distillFor(path.join(getDbDir(), path.basename(dbFile))), maxlayer: Number(meta.maxlayer || 0), hasSupermap, junc, tree, hapOrder: haps,
     }
     cache.set(p, syn)
     return syn
@@ -179,6 +179,35 @@ function mergeInstances(syn: Synteny, parts: Inst[], rank: number, blk: { x: num
 
 // 標本錨（対応線）: 範囲内の原子インスタンスの標本から、層 ≤ 1 を主錨、それ以外を第二錨として最大 M 本ずつ
 const ANC_REC = 14   // rank u32, tok u32, bp u32, ori u8, tier u8
+// 窓の錨を画面で均等な密度に（README 改訂 119）: 事前の標本（原子ごと 512 本、インスタンスの anc）で区画が埋まらないとき、
+// 錨の全体（anchors 表: 順位 → 列・合意座標・層）から区画ごとに 1 本を選び、各行の位置を distill のトークンから引き直す。
+// 走査するトークンが ANC_SCAN_MAX を超える窓（全体の窓など）は事前の標本のまま。環境変数で調整
+const ANC_SCAN_MAX = Number(process.env.AMIPA_ANC_SCAN_MAX) || 30_000_000
+const ANC_FILL_MIN = Number(process.env.AMIPA_ANC_FILL_MIN) || 0.9      // 錨のある区画のうち、事前の標本で埋まる割合がこれ未満なら引き直す
+function anchorsOnDemand(syn: Synteny, pids: number[], instsByPid: Map<number, Inst[]>, M: number, have: Map<number, Map<number, { tok: number; bp: number; ori: number }>>):
+    Map<number, Map<number, { tok: number; bp: number; ori: number }>> | null {
+  // 区画ごとに「最も多くの株が持つ列（ノード）」を 1 本選び（2 株以上）、各行がそれを通る位置を引く。錨（80% 以上の株・順序一貫）に限らない:
+  // 変異の多い区間では錨が 1 本も無い（chr20-22 の原子 94-95: 80% 層の錨 0）が、2 株以上が共有するノードはあり、隣の行と線が引ける。
+  // 鍵は -(列+1)（錨の順位と区別。pick が合意座標を colXc から取る）。1 行が同じ列を 2 回通るときは最初の通過
+  if (!syn.dcol || !syn.distill || !syn.colNhap) return null
+  let ntok = 0; for (const pid of pids) for (const it of instsByPid.get(pid) || []) ntok += it.e0 - it.s0
+  if (ntok > ANC_SCAN_MAX) return null
+  const atomIds = new Set<number>(); for (const pid of pids) for (const it of instsByPid.get(pid) || []) atomIds.add(it.atom)
+  let lo = Infinity, hi = -Infinity; for (const a of atomIds){ const A = syn.atoms[a]; if (A.x0 < lo) lo = A.x0; if (A.x0 + A.span > hi) hi = A.x0 + A.span }
+  if (!(hi > lo)) return null
+  const w = hi - lo; const binOf = (x: number) => Math.min(M - 1, Math.max(0, Math.floor((x - lo) / w * M)))
+  const pick = new Int32Array(M).fill(-1), pickN = new Int32Array(M), covered = new Uint8Array(M)
+  for (const a of atomIds){ const A = syn.atoms[a]; for (let c = A.c0; c <= A.c1; c++){ const n = syn.colNhap[c]; if (n < 2) continue; const b = binOf(syn.colXc[c]); if (n > pickN[b]){ pickN[b] = n; pick[b] = c } } }
+  for (const r of have.keys()) covered[binOf(syn.anchorX[r])] = 1
+  let na = 0, nc = 0; for (let b = 0; b < M; b++){ if (pick[b] >= 0){ na++; if (covered[b]) nc++ } }
+  if (!na || nc / na >= ANC_FILL_MIN) return null
+  const want = new Uint8Array(syn.colNhap.length); for (let b = 0; b < M; b++) if (pick[b] >= 0) want[pick[b]] = 1
+  const dist = openDistill(syn.distill); const out = new Map<number, Map<number, { tok: number; bp: number; ori: number }>>()
+  for (const pid of pids){ const pi = dist.pidx.get(syn.paths[pid].path); if (pi == null) continue
+    for (const it of instsByPid.get(pid) || []){ const toks = dist.read(pi, it.s0, it.e0); let bp = it.pos
+      for (let k = 0; k < toks.length; k++){ const c = syn.dcol[toks[k]]; if (c >= 0){ if (want[c]){ const key = -(c + 1); let m = out.get(key); if (!m){ m = new Map(); out.set(key, m) } if (!m.has(pid)) m.set(pid, { tok: it.s0 + k, bp, ori: it.dir ? 1 : 0 }) } bp += syn.colBp[c] } } } }
+  return out
+}
 function anchorsForRange(syn: Synteny, pids: number[], instsByPid: Map<number, Inst[]>, M: number, tierPrimary = 1) {
   type Hit = { tok: number; bp: number; ori: number }
   const perRank1 = new Map<number, Map<number, Hit>>(), perRank2 = new Map<number, Map<number, Hit>>()
@@ -193,20 +222,33 @@ function anchorsForRange(syn: Synteny, pids: number[], instsByPid: Map<number, I
       }
     }
   }
+  const xOfKey = (r: number) => r >= 0 ? syn.anchorX[r] : Math.round(syn.colXc[-r - 1])   // 錨の順位、またはその場で選んだ列 -(列+1)
   const pick = (per: Map<number, Map<number, Hit>>) => {
-    const ranks = [...per.keys()].sort((u, v) => u - v)
-    const sel = ranks.length <= M ? ranks : Array.from({ length: M }, (_, i) => ranks[Math.round(i * (ranks.length - 1) / Math.max(1, M - 1))])
-    const x = sel.map(r => syn.anchorX[r])
+    const ranks = [...per.keys()].sort((u, v) => xOfKey(u) - xOfKey(v))   // 合意座標の順（色の帯が左→右になるように）
+    // 画面で均等になるように合意座標 x で M 個のビンに分け、各ビンから最も多くの行が持つ錨を 1 本選ぶ（2026-10-18）。
+    // 以前は順位（錨の番号）で等間隔に選んでいたので、錨が密な所（一意な区間）に偏り、反復や島の多い所が空いた
+    // （chr20-22 の根の窓: 10 px ごとのビンの 57/120 が空・最大 80 本 → x で選ぶと空きは錨の無い所だけ）
+    let sel: number[]
+    if (ranks.length <= M) sel = ranks
+    else {
+      let lo = Infinity, hi = -Infinity; for (const r of ranks) { const x = xOfKey(r); if (x < lo) lo = x; if (x > hi) hi = x }
+      const best = new Int32Array(M).fill(-1), bestN = new Int32Array(M), w = Math.max(1, hi - lo)
+      for (const r of ranks) { const b = Math.min(M - 1, Math.floor((xOfKey(r) - lo) / w * M)); const n = per.get(r)!.size; if (n > bestN[b]) { bestN[b] = n; best[b] = r } }
+      sel = Array.from(best).filter((r, b) => bestN[b] > 0).sort((u, v) => xOfKey(u) - xOfKey(v))
+    }
+    const x = sel.map(r => xOfKey(r))
     const rows: Record<string, { i: string; tok: string; bp: string; ori: string }> = {}
     const byPid = new Map<number, { i: number[]; tok: number[]; bp: number[]; ori: number[] }>()
     sel.forEach((r, i) => { for (const [pid, h] of per.get(r)!) { let e = byPid.get(pid); if (!e) { e = { i: [], tok: [], bp: [], ori: [] }; byPid.set(pid, e) } e.i.push(i); e.tok.push(h.tok); e.bp.push(h.bp); e.ori.push(h.ori) } })
     for (const [pid, e] of byPid) rows[syn.paths[pid].path] = { i: b64(Uint16Array.from(e.i)), tok: b64(Uint32Array.from(e.tok)), bp: b64(Uint32Array.from(e.bp)), ori: b64(Uint8Array.from(e.ori)) }
     return { m: sel.length, x, rows }
   }
+  let ondemand = false
+  try { const od = anchorsOnDemand(syn, pids, instsByPid, M, perRank1); if (od && od.size){ perRank1.clear(); for (const [r, m] of od) perRank1.set(r, m); ondemand = true } } catch (e) { console.log('[anchors] on-demand failed: ' + String(e)) }
   // 主錨が無い範囲（島の中など、低い層の錨しか無い）は第二錨を主錨として使う（対応線が消えないように）
   if (perRank1.size === 0 && perRank2.size > 0) { const a = pick(perRank2); return { m: a.m, x: a.x, rows: a.rows, m2: 0, x2: [], rows2: {}, promoted: true } }
   const a1 = pick(perRank1), a2 = pick(perRank2)
-  return { m: a1.m, x: a1.x, rows: a1.rows, m2: a2.m, x2: a2.x, rows2: a2.rows }
+  return { m: a1.m, x: a1.x, rows: a1.rows, m2: a2.m, x2: a2.x, rows2: a2.rows, ondemand }
 }
 
 
