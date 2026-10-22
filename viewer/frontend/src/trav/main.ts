@@ -125,7 +125,7 @@ function treeOrder(): number[] {
 }
 
 // ---- 描画 ----
-type Piece = { blk: number; px0: number; px1: number; tr: Trav; inv: boolean; disp: boolean }
+type Piece = { blk: number; px0: number; px1: number; tr: Trav; inv: boolean; disp: boolean; fwd: boolean; c0: number; c1: number }
 let lastPieces = new Map<number, Piece[]>()
 function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
 function drawCore() {
@@ -151,14 +151,14 @@ function drawCore() {
   }
   g.fillStyle = '#666'; g.font = '10px system-ui'; g.fillText(`${fmtbp(bpOfX(v0))}  x ${fmt(Math.floor(v0))} ${refPos(v0)}`, LAB + 2, TOP - 2); const tt = `${refPos(v1)} x ${fmt(Math.ceil(v1))}  ${fmtbp(bpOfX(v1 + 1))}`; g.fillText(tt, W - g.measureText(tt).width - 4, TOP - 2)
 
-  // 行
+  // 行: 通過をブロックごとの片に割る。合意座標モードは片をその座標の位置に、各行の並びモードはコンティグの順に詰める
   const byHap = new Map<number, Trav[]>(); for (const r of rows) { if (!byHap.has(r.hid)) byHap.set(r.hid, []); byHap.get(r.hid)!.push(r) }
   const cpByHap = new Map<number, Copy[]>(); for (const c of copies) { if (!cpByHap.has(c.hid)) cpByHap.set(c.hid, []); cpByHap.get(c.hid)!.push(c) }
   const rpByHap = new Map<number, Rep[]>(); for (const c of reps) { if (!rpByHap.has(c.hid)) rpByHap.set(c.hid, []); rpByHap.get(c.hid)!.push(c) }
-  const piecesOf = new Map<number, Piece[]>()
+  const piecesOf = new Map<number, Piece[]>(); const fullView = v0 <= 0 && v1 >= root.R - 2
   for (const hid of hapOrder) {
-    const ts = byHap.get(hid) || []; const pcs: Piece[] = []
-    // コンティグごとの主な向きと、コンティグ内の順が合意と合わない通過（転座: 最長単調部分列から外れるもの）
+    const ts = byHap.get(hid) || []
+    // コンティグごとの主な向き（錨数で重み）と、コンティグ内の順が合意と合わない通過（転座: 最長単調部分列から外れるもの）
     const pids = [...new Set(ts.map(r => r.pid))]; const inv = new Set<Trav>(), disp = new Set<Trav>(); const domOf = new Map<number, number>(); const firstX = new Map<number, number>()
     for (const pid of pids) {
       const trs = ts.filter(r => r.pid === pid).sort((a, b) => a.i0 - b.i0); const dom = trs.reduce((t, r) => t + r.dir * r.nanch, 0) >= 0 ? 1 : -1; domOf.set(pid, dom); firstX.set(pid, Math.min(...trs.map(r => r.x0)))
@@ -169,29 +169,32 @@ function drawCore() {
       const keep = new Set<number>(); for (let i = best; i >= 0; i = P[i]) keep.add(i)
       trs.forEach((r, i) => { if (!keep.has(i) && r.nanch >= 50) disp.add(r) })
     }
-    // 各行の並び: コンティグを座標順に詰める。1 コンティグなら主な向きで鏡にし、座標最小の通過が左に来るよう回す（環状）
-    let scale = 1, offOf = new Map<number, number>(), total = 1, mirror = new Map<number, boolean>(), rot = 0
-    if (mode === 'rows') {
-      const order = pids.slice().sort((a, b) => firstX.get(a)! - firstX.get(b)!); let tot = 0
-      for (const pid of order) { const trs = ts.filter(r => r.pid === pid); const lo = Math.min(...trs.map(r => r.bp0 ?? 0)), hi = Math.max(...trs.map(r => (r.bp0 ?? 0) + r.bp)); offOf.set(pid, tot - lo); mirror.set(pid, domOf.get(pid)! < 0); tot += hi - lo }
-      total = Math.max(1, tot); scale = wPx() / total
-      const fullView = v0 <= 0 && v1 >= root.R - 2
-      if (pids.length === 1 && fullView) { const pid = pids[0]; const bigT = ts.filter(r => r.nanch >= 1000); const r0 = (bigT.length ? bigT : ts).reduce((m, r) => r.x0 < m.x0 ? r : m, (bigT.length ? bigT : ts)[0]); const b0 = (r0.bp0 ?? 0), b1 = b0 + r0.bp; const tlen = root.haps[hid].bp || total; const start = mirror.get(pid) ? tlen - b1 : b0; rot = start - (Math.min(...ts.map(r => r.bp0 ?? 0))); total = Math.max(1, tlen); scale = wPx() / total }
-    }
-    const rangeOf = new Map<number, [number, number]>(); for (const pid of pids) { const trs = ts.filter(r => r.pid === pid); rangeOf.set(pid, [Math.min(...trs.map(r => r.bp0 ?? 0)), Math.max(...trs.map(r => (r.bp0 ?? 0) + r.bp))]) }
-    const fullView = v0 <= 0 && v1 >= root.R - 2; const rotating = pids.length === 1 && fullView
-    const pos = (r: Trav, bp: number) => {   // コンティグ上の bp → 行の画面 x（各行の並び）。鏡は表示範囲に掛かる部分の中で折り返す
-      const [lo, hi] = rangeOf.get(r.pid)!; const tlen = root!.haps[hid].bp || total
-      let b = mirror.get(r.pid) ? (rotating ? tlen - bp : lo + hi - bp) : bp
-      if (rotating) { b = b - rot; if (b < 0) b += tlen; if (b >= tlen) b -= tlen } else b += offOf.get(r.pid)!
-      return LAB + b * scale
-    }
+    // 片（ブロック × 通過）。各行の並び用に、コンティグ上の bp 位置（読む向きに揃えた鍵）と幅を付ける
+    type Raw = { blk: number; tr: Trav; c0: number; c1: number; key: number; wbp: number; fwd: boolean }
+    const raw: Raw[] = []
     for (const r of ts) for (let bi = blockAt(r.x0); bi < blocks.length && blocks[bi].x0 <= r.x1; bi++) {
       const b = blocks[bi]; if (b.x1 < r.x0) continue
-      const c0 = Math.max(b.x0, r.x0), c1 = Math.min(b.x1, r.x1)
-      if (mode === 'coord') pcs.push({ blk: bi, px0: X(c0), px1: X(c1 + 1), tr: r, inv: inv.has(r), disp: disp.has(r) })
-      else { const L = Math.max(1, r.x1 - r.x0); const f0 = (c0 - r.x0) / L, f1 = (c1 + 1 - r.x0) / L; const [q0, q1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]; const base = r.bp0 ?? 0
-        pcs.push({ blk: bi, px0: pos(r, base + q0 * r.bp), px1: pos(r, base + q1 * r.bp), tr: r, inv: inv.has(r), disp: disp.has(r) }) }
+      const c0 = Math.max(b.x0, r.x0), c1 = Math.min(b.x1, r.x1); const Lx = Math.max(1, r.x1 - r.x0 + 1); const f0 = (c0 - r.x0) / Lx, f1 = (c1 + 1 - r.x0) / Lx
+      const [q0, q1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]; const bpA = (r.bp0 ?? 0) + q0 * r.bp, bpB = (r.bp0 ?? 0) + q1 * r.bp   // コンティグ上の bp 区間（格納向き）
+      const mir = domOf.get(r.pid)! < 0; const key = mir ? -bpB : bpA   // 読む向き（主な向き）に並ぶ鍵
+      raw.push({ blk: bi, tr: r, c0, c1, key, wbp: Math.max(1, bpB - bpA), fwd: (r.dir >= 0) !== mir })
+    }
+    const pcs: Piece[] = []
+    if (mode === 'coord') { for (const q of raw) pcs.push({ blk: q.blk, px0: X(q.c0), px1: X(q.c1 + 1), tr: q.tr, inv: inv.has(q.tr), disp: disp.has(q.tr), fwd: q.tr.dir >= 0, c0: q.c0, c1: q.c1 }) }
+    else {
+      const order = pids.slice().sort((a, b) => firstX.get(a)! - firstX.get(b)!); const crank = new Map(order.map((p, i) => [p, i]))
+      raw.sort((a, b) => crank.get(a.tr.pid)! - crank.get(b.tr.pid)! || a.key - b.key)
+      if (pids.length === 1 && fullView && raw.length) {   // 環状: 錨 1,000 個以上の通過のうち座標最小のものを左端に回す
+        const big = raw.filter(q => q.tr.nanch >= 1000); const start = (big.length ? big : raw).reduce((m, q) => q.c0 < m.c0 ? q : m, (big.length ? big : raw)[0]); const k = raw.indexOf(start)
+        raw.push(...raw.splice(0, k))
+      }
+      const total = raw.reduce((t, q) => t + q.wbp, 0) + 1; const gapBp = total * 0.004; let cum = 0, lastPid = -1
+      const scale = (W - LAB) / (total + gapBp * Math.max(0, pids.length - 1))
+      for (const q of raw) {
+        if (lastPid >= 0 && q.tr.pid !== lastPid) cum += gapBp
+        lastPid = q.tr.pid; const px0 = LAB + cum * scale; cum += q.wbp; const px1 = LAB + cum * scale
+        pcs.push({ blk: q.blk, px0, px1, tr: q.tr, inv: inv.has(q.tr), disp: disp.has(q.tr), fwd: q.fwd, c0: q.c0, c1: q.c1 })
+      }
     }
     piecesOf.set(hid, pcs)
   }
@@ -206,13 +209,14 @@ function drawCore() {
       const px0 = Math.max(LAB, Math.min(p.px0, p.px1)), px1 = Math.min(W, Math.max(p.px0, p.px1)); const w = Math.max(1, px1 - px0); const yy = y + 2, hh = BLK
       // 片の中は合意の向きに明→暗。画面上で左が合意の先頭なら明→暗、逆（逆位・逆鎖）なら暗→明
       g.fillStyle = `hsla(${hue(p.blk)}, 62%, 52%, ${p.tr.copy >= 1 ? .5 : .9})`; g.fillRect(px0, yy, w, hh)
+      if (mode === 'rows' && !p.fwd) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(px0, yy + hh - 2, w, 2) }   // 各行の並びで読む向きと逆（逆位）は下辺を暗く
       if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 2; g.strokeRect(px0 + 1, yy + 1, Math.max(1, w - 2), hh - 2); if (w > 10 && mode === 'coord') { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(px0 + 7, yy + 1); g.lineTo(px0 + 2, yy + hh / 2); g.lineTo(px0 + 7, yy + hh - 1); g.fill() } }
       else if (p.disp && mode === 'coord') { g.strokeStyle = '#333'; g.lineWidth = 1; g.setLineDash([3, 2]); g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1); g.setLineDash([]) }
     }
     for (const r of byHap.get(hid) || []) {   // 通過ごとに向きの三角（右端または左端）とコピー番号
       const ps = pcs.filter(p => p.tr === r); if (!ps.length) continue
       const lo = Math.max(LAB, Math.min(...ps.map(p => Math.min(p.px0, p.px1)))), hi = Math.min(W, Math.max(...ps.map(p => Math.max(p.px0, p.px1)))); if (hi - lo < 24) continue
-      const fwd = mode === 'coord' ? r.dir >= 0 : true; const yy = y + 2, hh = BLK
+      const fwd = mode === 'coord' ? r.dir >= 0 : ps[0].fwd; const yy = y + 2, hh = BLK
       if (!(ps[0].inv && mode === 'coord')) { g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, yy); g.lineTo(hi - 1, yy + hh / 2); g.lineTo(hi - 6, yy + hh) } else { g.moveTo(lo + 6, yy); g.lineTo(lo + 1, yy + hh / 2); g.lineTo(lo + 6, yy + hh) } g.fill() }
       if (r.copy >= 1 && hi - lo > 40) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
     }
@@ -223,7 +227,7 @@ function drawCore() {
   // 連結線: bp で等間隔に標本し、隣の行でその座標を含む片の中の位置を結ぶ
   if (mode === 'rows' && ($('showlines') as HTMLInputElement).checked) {
     g.lineWidth = 1; const nS = Math.max(8, Math.floor((W - LAB) / 12)); const xsS: number[] = []; for (let k = 0; k < nS; k++) xsS.push(xOfPx(LAB + (k + 0.5) / nS * (W - LAB)))
-    const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { const b = blocks[p.blk]; const c0 = Math.max(b.x0, p.tr.x0), c1 = Math.min(b.x1, p.tr.x1); if (x < c0 || x > c1 + 1) continue; const f = (x - c0) / Math.max(1, c1 + 1 - c0); const fx = p.tr.dir >= 0 ? f : 1 - f; out.push(p.px0 + fx * (p.px1 - p.px0)) } return out }
+    const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { if (x < p.c0 || x > p.c1 + 1) continue; const f = (x - p.c0) / Math.max(1, p.c1 + 1 - p.c0); out.push(p.px0 + (p.fwd ? f : 1 - f) * (p.px1 - p.px0)) } return out }
     for (let k = 0; k + 1 < hapOrder.length; k++) {
       const A = piecesOf.get(hapOrder[k]) || [], B = piecesOf.get(hapOrder[k + 1]) || []; const yA = TOP + k * ROW + 2 + BLK, yB = TOP + (k + 1) * ROW + 2
       for (const x of xsS) {
@@ -258,7 +262,7 @@ cv.addEventListener('mousemove', e => {
 })
 window.addEventListener('mouseup', () => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; og.clearRect(0, 0, ov.width, ov.height); if (b - a < 4) return; hist.push(view); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; draw(); loadRange() })
 cv.addEventListener('dblclick', e => { if (!root) return; hist.push(view); if (e.offsetY < TOP && e.offsetX >= LAB) { const b = blocks[blockAt(xOfPx(e.offsetX))]; view = b ? [b.x0, b.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
-cv.addEventListener('wheel', e => { if (!root || e.offsetX < LAB) return; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (inRows && e.offsetY >= TOP) return; e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; draw(); scheduleRange() }, { passive: false })
+cv.addEventListener('wheel', e => { if (!root || e.offsetX < LAB) return; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (!inRows || e.offsetY >= TOP) return; /* ホイールの拡大縮小は各行の並びの上段だけ（合意座標ではドラッグで） */ e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; draw(); scheduleRange() }, { passive: false })
 $('all').addEventListener('click', () => { if (!root) return; hist.push(view); view = [0, root.R - 1]; loadRange() })
 $('back').addEventListener('click', () => { const v = hist.pop(); if (v) { view = v; loadRange() } })
 $('minanch').addEventListener('change', () => { loadAtoms().then(loadRange) }); $('nblk').addEventListener('change', () => { blocks = makeBlocks(); if (($('order') as HTMLSelectElement).value === 'tree') hapOrder = treeOrder(); draw() })
