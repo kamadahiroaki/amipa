@@ -6,6 +6,8 @@ import Database from 'better-sqlite3'
 import fs from 'fs'
 import path from 'path'
 import { getDbDir } from './db'
+import { distillFor } from './routes/bubbleMsa'
+import { openDistill, Distill } from './distill'
 
 export const TRAV_SUFFIX = '.trav'
 
@@ -28,6 +30,8 @@ export interface Trav {
   haps: string[]; paths: TravPath[]; atoms: TravAtom[]; bounds: TravBound[]
   xbp: Float64Array                                   // 座標 → 累積 bp（長さ R+1）
   hapPaths: number[][]                                 // hid → pid の一覧
+  dbFile: string
+  xOfDense?: Int32Array; kindOfDense?: Uint8Array; bpOfDense?: Int32Array; dist?: Distill | null   // 錨の列（travCols）用。初回に読む
 }
 
 const cache = new Map<string, Trav>()
@@ -51,7 +55,7 @@ export function loadTrav(dbFile: string): Trav | null {
   let xbp = new Float64Array(0)
   if (xb) { const big = new BigInt64Array(xb.blob.buffer, xb.blob.byteOffset, xb.blob.byteLength / 8); xbp = new Float64Array(big.length); for (let i = 0; i < big.length; i++) xbp[i] = Number(big[i]) }
   const hapPaths: number[][] = haps.map(() => []); for (const r of paths) hapPaths[r.hid].push(r.pid)
-  const t: Trav = { file: p, mtime, db, meta, H: haps.length, R: Number(meta.R ?? xbp.length - 1), haps, paths, atoms, bounds, xbp, hapPaths }
+  const t: Trav = { file: p, mtime, db, meta, H: haps.length, R: Number(meta.R ?? xbp.length - 1), haps, paths, atoms, bounds, xbp, hapPaths, dbFile }
   cache.set(p, t)
   return t
 }
@@ -137,4 +141,103 @@ export function nodeNamesForRange(t: Trav, x0: number, x1: number, max = 5000): 
   const step = n > max ? n / max : 1; const out: string[] = []
   for (let k = 0; k < Math.min(n, max); k++) { const x = a + Math.floor(k * step); const d = dense[x]; if (d >= 1) out.push('n' + idmap[d - 1].toString()) }
   return out
+}
+
+// ---- 錨の列（ブロックと塩基の間の段） ----
+// 表示範囲 [x0, x1] を ncol 列に等分し、各通過（行）について列ごとに
+//   pres = その列の錨（座標を持つノード）のうち行が持つ割合、cls = 行がその列で持つトークン列（錨も錨でないノードも、合意の向きで）のアレル番号
+//   （同じトークン列＝同じ番号。0 ＝最多、255 ＝その列に掛からない）、ins = 錨でないノードの bp（挿入の長さ）
+// を返す。トークンは distill の p_tok を通過の範囲だけ読む。走査が COLS_SCAN_MAX トークンを超える範囲は tooBig で断る（画面はブロックの段のまま）。
+const COLS_SCAN_MAX = Number(process.env.AMIPA_TRAV_COLS_MAX) || 30_000_000
+function b64(buf: ArrayBufferView): string { return Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength).toString('base64') }
+function ensureCols(t: Trav): boolean {
+  if (t.xOfDense && t.kindOfDense && t.bpOfDense && t.dist) return true
+  if (t.dist === null) return false
+  const xd = t.db.prepare("SELECT blob FROM arrays WHERE name='x_of_dense'").get() as { blob: Buffer } | undefined
+  const kd = t.db.prepare("SELECT blob FROM arrays WHERE name='kind'").get() as { blob: Buffer } | undefined
+  const dir = distillFor(path.join(getDbDir(), path.basename(t.dbFile)))
+  if (!xd || !kd || !dir) { t.dist = null; return false }
+  t.xOfDense = new Int32Array(xd.blob.buffer.slice(xd.blob.byteOffset, xd.blob.byteOffset + xd.blob.byteLength))
+  t.kindOfDense = new Uint8Array(kd.blob.buffer.slice(kd.blob.byteOffset, kd.blob.byteOffset + kd.blob.byteLength))
+  t.dist = openDistill(dir)
+  // ノードの bp: distill の s_bp は S 行のファイル順なので s_id で並べ直す（dense id で引けるように）
+  const N = t.xOfDense.length; const bp = new Int32Array(N)
+  const rd = (f: string) => { const fd = fs.openSync(path.join(dir, f), 'r'); const head = Buffer.alloc(128); fs.readSync(fd, head, 0, 128, 0); const major = head[6]; const hlen = major === 1 ? head.readUInt16LE(8) : head.readUInt32LE(8); const off = (major === 1 ? 10 : 12) + hlen
+    const hb = Buffer.alloc(hlen); fs.readSync(fd, hb, 0, hlen, major === 1 ? 10 : 12); const m = /'descr':\s*'[<|=]?([iu])(\d)'/.exec(hb.toString('latin1')); const w = m ? Number(m[2]) : 4
+    const sz = fs.fstatSync(fd).size - off; const buf = Buffer.alloc(sz); fs.readSync(fd, buf, 0, sz, off); fs.closeSync(fd)
+    const n = sz / w; const out = new Float64Array(n)
+    if (w === 8) { const v = new BigInt64Array(buf.buffer, buf.byteOffset, n); for (let i = 0; i < n; i++) out[i] = Number(v[i]) } else { const v = new Int32Array(buf.buffer, buf.byteOffset, n); out.set(v) }
+    return out }
+  try { const sid = rd('s_id.npy'), sbp = rd('s_bp.npy'); for (let i = 0; i < sid.length; i++) { const d = sid[i]; if (d >= 0 && d < N) bp[d] = sbp[i] } } catch (e) { console.log('[trav] s_bp read failed: ' + String(e)) }
+  t.bpOfDense = bp
+  return true
+}
+export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAnchors = 50): any {
+  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
+  const X = t.xOfDense!, K = t.kindOfDense!, BP = t.bpOfDense!, dist = t.dist!
+  x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); const W = x1 - x0 + 1; if (W <= 0) return { error: 'empty' }
+  ncol = Math.max(1, Math.min(W, Math.floor(ncol) || 1))
+  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
+  let ntok = 0; for (const r of rows) ntok += r.i1 - r.i0 + 1
+  if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, x0, x1 }
+  const colOf = (x: number) => Math.min(ncol - 1, Math.floor((x - x0) * ncol / W))
+  const nanch = new Uint16Array(ncol); for (let c = 0; c < ncol; c++) { const a = Math.ceil(c * W / ncol), b = Math.ceil((c + 1) * W / ncol); nanch[c] = Math.min(65535, Math.max(0, b - a)) }
+  type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array }
+  const outs: RowOut[] = []
+  const T0 = Date.now(); let tRead = 0, tMix = 0, nread = 0
+  for (const r of rows) {
+    const pi = dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
+    // 通過が窓からはみ出すときは、窓に当たるトークン区間を（x が錨の番号に比例するとして）補間で見積もり、読んだ端の錨が窓の中なら広げて読み直す
+    const Lt = r.i1 - r.i0 + 1; const span = Math.max(1, r.x1 - r.x0); let s0 = r.i0, e0 = r.i1 + 1
+    if (r.x0 < x0 || r.x1 > x1) {
+      const wx0 = Math.max(x0, r.x0), wx1 = Math.min(x1, r.x1)
+      const fa = r.dir >= 0 ? (wx0 - r.x0) / span : (r.x1 - wx1) / span, fb = r.dir >= 0 ? (wx1 - r.x0) / span : (r.x1 - wx0) / span
+      let pad = Math.max(500, 0.1 * (fb - fa) * Lt + 0.02 * Lt); s0 = Math.max(r.i0, Math.floor(r.i0 + fa * Lt - pad)); e0 = Math.min(r.i1 + 1, Math.ceil(r.i0 + fb * Lt + pad))
+    }
+    let toks: Float64Array
+    for (;;) {
+      const tr0 = Date.now(); toks = dist.read(pi, s0, e0); tRead += Date.now() - tr0; nread += toks.length
+      // 読んだ区間の両端で最初に出る錨が窓の中なら、窓の内容を切っているかもしれないので広げる
+      let lo = -1, hi = -1
+      for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { lo = X[d]; break } }
+      for (let k = toks.length - 1; k >= 0; k--) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { hi = X[d]; break } }
+      const cutLo = s0 > r.i0 && lo >= x0 && lo <= x1, cutHi = e0 < r.i1 + 1 && hi >= x0 && hi <= x1
+      if (!cutLo && !cutHi) break
+      const grow = Math.max(1000, e0 - s0); if (cutLo) s0 = Math.max(r.i0, s0 - grow); if (cutHi) e0 = Math.min(r.i1 + 1, e0 + grow)
+    }
+    const n = toks.length
+    const pres = new Uint8Array(ncol), cls = new Uint8Array(ncol).fill(255), ins = new Uint16Array(ncol), h1 = new Uint32Array(ncol), h2 = new Uint32Array(ncol), has = new Uint8Array(ncol); const cnt = new Uint16Array(ncol); const insb = new Float64Array(ncol)
+    let tw0 = -1, tw1 = -1
+    // 合意の向きに歩く（dir<0 なら逆から）。錨でないノードは直前の（窓の中の）錨の列に付ける。窓の外の錨を見たら「外」に戻る。
+    // 窓の最初の錨より前の錨でないノードは、次の錨が窓の中ならその列に付ける（窓の縁をまたぐ錨の間の配列）
+    const tm0 = Date.now()
+    const step = r.dir >= 0 ? 1 : -1; let k = r.dir >= 0 ? 0 : n - 1; let cur = -1; let pend: number[] = []
+    for (; k >= 0 && k < n; k += step) {
+      const d = toks[k]; const kd = K[d]
+      if (kd === 1 || kd === 2) {
+        const x = X[d]
+        if (x >= x0 && x <= x1) {
+          const c = Math.min(ncol - 1, Math.floor((x - x0) * ncol / W)); cur = c; cnt[c]++
+          h1[c] = Math.imul(h1[c] ^ d, 0x01000193) >>> 0; h2[c] = (Math.imul(h2[c], 0x9E3779B1) + d + 1) >>> 0; has[c] = 1
+          if (pend.length) { for (const q of pend) { h1[c] = Math.imul(h1[c] ^ q, 0x01000193) >>> 0; h2[c] = (Math.imul(h2[c], 0x9E3779B1) + q + 1) >>> 0; insb[c] += BP[q] } pend = [] }
+          const ti = s0 + k; if (tw0 < 0 || ti < tw0) tw0 = ti; if (ti > tw1) tw1 = ti
+        } else { cur = -1; pend = [] }
+      } else if (cur >= 0) { h1[cur] = Math.imul(h1[cur] ^ d, 0x01000193) >>> 0; h2[cur] = (Math.imul(h2[cur], 0x9E3779B1) + d + 1) >>> 0; insb[cur] += BP[d] }
+      else pend.push(d)
+    }
+    tMix += Date.now() - tm0
+    for (let c = 0; c < ncol; c++) { pres[c] = nanch[c] ? Math.min(255, Math.round(255 * cnt[c] / nanch[c])) : 0; ins[c] = Math.min(65535, Math.round(insb[c])) }
+    outs.push({ id: r.id, pid: r.pid, hid: r.hid, dir: r.dir, copy: r.copy, tw0, tw1, pres, cls, ins, h1, h2, has })
+  }
+  // 列ごとにトークン列（ハッシュ）の種類を数え、多い順に番号を振る
+  const ncls = new Uint8Array(ncol), nrow = new Uint16Array(ncol), major = new Uint16Array(ncol)
+  for (let c = 0; c < ncol; c++) {
+    const m = new Map<string, number>(); for (const o of outs) if (o.has[c]) { const key = o.h1[c] + ':' + o.h2[c]; m.set(key, (m.get(key) || 0) + 1) }
+    const ranked = [...m.entries()].sort((a, b) => b[1] - a[1]); const idx = new Map(ranked.map((e, i) => [e[0], i]))
+    for (const o of outs) if (o.has[c]) o.cls[c] = Math.min(254, idx.get(o.h1[c] + ':' + o.h2[c])!)
+    ncls[c] = Math.min(255, ranked.length); nrow[c] = m.size ? ranked.reduce((a, e) => a + e[1], 0) : 0; major[c] = ranked.length ? ranked[0][1] : 0
+  }
+  const ms = Date.now() - T0; if (ms > 2000) console.log(`[trav/cols] ${rows.length} rows, read ${nread} tok (${tRead} ms), mix ${tMix} ms, total ${ms} ms`)
+  return { x0, x1, ncol, ntok, nread, ms, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
+    rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins) })) }
 }
