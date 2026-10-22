@@ -13,6 +13,7 @@
   #info { color: #444; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60vw; }
   #wrap { position: relative; }
   canvas { display: block; }
+  #ov { position: absolute; left: 0; top: 0; pointer-events: none; }
   #tip { position: fixed; pointer-events: none; background: rgba(30,30,30,.92); color: #fff; padding: 4px 7px; border-radius: 3px; font-size: 11px; display: none; max-width: 420px; white-space: pre; z-index: 9; }
   button { font: inherit; }
   #legend { font-size: 11px; color: #444; padding: 4px 10px; border-bottom: 1px solid #e5e5e5; background: #fdfdfd; line-height: 1.5; }
@@ -38,7 +39,7 @@
   <b>行</b> 色＝原子（同じ色＝同じブロック。株間の対応）／コンティグの境は細い黒線／三角＝向き／<span style="color:#8e44ad">紫の上線</span>＝コンティグの主な向きと逆（逆位）／下段に下がった片＝コンティグ内の順が合意と違う（転座）／連結線＝合意座標を等間隔に標本し、隣の行の同じ場所を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）。範囲の拡大は上段のドラッグかホイール／<span style="color:#7a1414">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style="color:#d35400">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分
   <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数
 </div>
-<div id="wrap"><canvas id="cv"></canvas><div id="tip"></div></div>
+<div id="wrap"><canvas id="cv"></canvas><canvas id="ov"></canvas><div id="tip"></div></div>
 <script type="module" src="/src/trav/main.ts"></script>
 </body>
 </html>

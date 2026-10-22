@@ -10,7 +10,7 @@ type Copy = { id: number; pid: number; hid: number; x0: number; x1: number; ia0:
 type Root = { meta: any; H: number; R: number; total_bp: number; haps: Hap[]; atoms: Atom[]; bounds: Bound[] }
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement
-const cv = $('cv') as HTMLCanvasElement; const g = cv.getContext('2d')!; const tip = $('tip')
+const cv = $('cv') as HTMLCanvasElement; const g = cv.getContext('2d')!; const tip = $('tip'); const ov = $('ov') as HTMLCanvasElement; const og = ov.getContext('2d')!
 const TOP = 70, LAB = 150; let ROW = 13; const BLK = 8   // ROW は並びのモードで変える（連結線の分）
 let db = '', root: Root | null = null, view: [number, number] = [0, 1], hist: [number, number][] = []
 type Rep = { id: number; pid: number; hid: number; i0: number; i1: number; bp: number; x0: number; x1: number }
@@ -91,6 +91,7 @@ function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
 function drawCore() {
   const W = cv.parentElement!.clientWidth, H = TOP + (root ? hapOrder.length * ROW : 0) + 20
   cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio; cv.style.width = W + 'px'; cv.style.height = H + 'px'; g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
+  ov.width = cv.width; ov.height = cv.height; ov.style.width = cv.style.width; ov.style.height = cv.style.height; og.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
   g.fillStyle = '#fafafa'; g.fillRect(0, 0, W, H)
   if (!root) return
   // 上段: 原子（色は番号、高さは通るハプロタイプ数）、境界（持続度で高さ）
@@ -201,7 +202,7 @@ function drawCore() {
 let drag: [number, number] | null = null; let sel: [number, number] | null = null   // sel: 読み込み中に残す選択の矩形（画面 px）
 cv.addEventListener('mousedown', e => { const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (e.offsetX > LAB && (!inRows || e.offsetY < TOP)) drag = [e.offsetX, e.offsetX] })   // 各行の並びでは上段だけ（行の中は座標に写せない）
 cv.addEventListener('mousemove', e => {
-  if (drag) { drag[1] = e.offsetX; draw(); g.fillStyle = 'rgba(52,152,219,.2)'; g.fillRect(Math.min(...drag), 0, Math.abs(drag[1] - drag[0]), cv.height); return }
+  if (drag) { drag[1] = e.offsetX; og.clearRect(0, 0, ov.width, ov.height); og.fillStyle = 'rgba(52,152,219,.2)'; og.fillRect(Math.min(drag[0], drag[1]), 0, Math.abs(drag[1] - drag[0]), ov.height); return }   // ドラッグ中は本体を描き直さない（重い）
   if (!root) return
   const k = Math.floor((e.offsetY - TOP) / ROW); const x = xOfPx(e.offsetX)
   if (e.offsetY < TOP && e.offsetX >= LAB) {
@@ -218,7 +219,7 @@ cv.addEventListener('mousemove', e => {
   tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
   tip.textContent = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}`).concat(rhit.map(r => `反復（この株で 2 回以上出るノードの連なり） トークン ${fmt(r.i0)}–${fmt(r.i1)}  ${fmtbp(r.bp)}`)).join('\n')
 })
-window.addEventListener('mouseup', e => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; if (b - a < 4) { draw(); return } hist.push(view); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; draw(); loadRange() })
+window.addEventListener('mouseup', e => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; og.clearRect(0, 0, ov.width, ov.height); if (b - a < 4) return; hist.push(view); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; draw(); loadRange() })
 cv.addEventListener('dblclick', e => { if (!root) return; hist.push(view); if (e.offsetY < TOP && e.offsetX >= LAB) { const x = xOfPx(e.offsetX); const a = root.atoms.find(a => a.x0 <= x && a.x1 >= x); view = a ? [a.x0, a.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
 cv.addEventListener('wheel', e => { if (!root || e.offsetX < LAB) return; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (inRows && e.offsetY >= TOP) return; e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; draw(); scheduleRange() }, { passive: false })
 $('all').addEventListener('click', () => { if (!root) return; hist.push(view); view = [0, root.R - 1]; loadRange() })
