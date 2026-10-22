@@ -15,6 +15,8 @@
   canvas { display: block; }
   #tip { position: fixed; pointer-events: none; background: rgba(30,30,30,.92); color: #fff; padding: 4px 7px; border-radius: 3px; font-size: 11px; display: none; max-width: 420px; white-space: pre; z-index: 9; }
   button { font: inherit; }
+  #legend { font-size: 11px; color: #444; padding: 4px 10px; border-bottom: 1px solid #e5e5e5; background: #fdfdfd; line-height: 1.5; }
+  #legend b { margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -26,6 +28,11 @@
   <label><input id="showreps" type="checkbox" checked> 反復</label>
   <label><input id="showbounds" type="checkbox" checked> 境界</label>
   <span id="info"></span>
+</div>
+<div id="legend">
+  <b>上段</b> 四角＝原子（座標区間。高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／縦縞＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株、高さ＝持続度）
+  <b>行</b> 青・緑＝同じハプロタイプの別コンティグを交互に／三角＝向き／<span style="color:#7a1414">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style="color:#d35400">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分
+  <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数
 </div>
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div></div>
 <script type="module" src="/src/trav/main.ts"></script>

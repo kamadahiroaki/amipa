@@ -97,10 +97,10 @@ function draw() {
     for (const r of ts) {
       const px0 = Math.max(LAB, X(r.x0)), px1 = Math.min(W, X(r.x1 + 1)); const w = Math.max(1.5, px1 - px0)
       const s = shade.get(r.pid)! % 2
-      g.fillStyle = r.copy >= 1 ? 'rgba(230,126,34,.85)' : s ? 'rgba(22,160,133,.85)' : 'rgba(41,128,185,.85)'
+      g.fillStyle = r.copy >= 1 ? 'rgba(230,126,34,.45)' : s ? 'rgba(22,160,133,.85)' : 'rgba(41,128,185,.85)'   // 座標の再訪は弱い指標なので薄く
       g.fillRect(px0, y + 3, w, ROW - 6)
       if (w > 8) { g.fillStyle = '#fff'; g.beginPath(); if (r.dir >= 0) { g.moveTo(px1 - 6, y + 3); g.lineTo(px1 - 1, y + ROW / 2); g.lineTo(px1 - 6, y + ROW - 3) } else { g.moveTo(px0 + 6, y + 3); g.lineTo(px0 + 1, y + ROW / 2); g.lineTo(px0 + 6, y + ROW - 3) } g.fill() }
-      if (r.copy >= 1 && w > 14) { g.fillStyle = '#fff'; g.font = '9px system-ui'; g.fillText('·' + r.copy, px0 + 2, y + 10) }
+      if (r.copy >= 1 && w > 14) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, px0 + 2, y + 10) }
     }
     if (($('showreps') as HTMLInputElement).checked) for (const c of (rpByHap.get(hid) || [])) {   // 反復（出現単位）: 行の上辺に濃い赤
       const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.fillStyle = 'rgba(120,20,20,.9)'; g.fillRect(px0, y + 1, Math.max(1, px1 - px0), 2)
