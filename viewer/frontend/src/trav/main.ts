@@ -161,7 +161,8 @@ function drawCore() {
     // コンティグごとの主な向き（錨数で重み）と、コンティグ内の順が合意と合わない通過（転座: 最長単調部分列から外れるもの）
     const pids = [...new Set(ts.map(r => r.pid))]; const inv = new Set<Trav>(), disp = new Set<Trav>(); const domOf = new Map<number, number>(); const firstX = new Map<number, number>()
     for (const pid of pids) {
-      const trs = ts.filter(r => r.pid === pid).sort((a, b) => a.i0 - b.i0); const dom = trs.reduce((t, r) => t + r.dir * r.nanch, 0) >= 0 ? 1 : -1; domOf.set(pid, dom); firstX.set(pid, Math.min(...trs.map(r => r.x0)))
+      const trs = ts.filter(r => r.pid === pid).sort((a, b) => a.i0 - b.i0); const dom = trs.reduce((t, r) => t + r.dir * r.nanch, 0) >= 0 ? 1 : -1; domOf.set(pid, dom)
+      const main = trs.reduce((m, r) => r.nanch > m.nanch ? r : m, trs[0]); firstX.set(pid, main.x0)   // コンティグの順は最大の通過の座標で決める（小さな転座片を基準にすると行が乱れる）
       for (const r of trs) if (r.dir !== dom) inv.add(r)
       const seq = trs.map(r => dom >= 0 ? r.x0 : -r.x0); const n = seq.length; const L = new Array(n).fill(1), P = new Array(n).fill(-1)
       for (let i = 0; i < n; i++) for (let j = 0; j < i; j++) if (seq[j] <= seq[i] && L[j] + 1 > L[i]) { L[i] = L[j] + 1; P[i] = j }
