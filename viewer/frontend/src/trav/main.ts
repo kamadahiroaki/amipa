@@ -18,6 +18,8 @@ let rows: Trav[] = [], copies: Copy[] = [], reps: Rep[] = [], perHap: Record<str
 let hapOrder: number[] = []   // 表示順の hid（参照らしい名前を先に、名前順）
 let atomStats: AtomStat[] = []; let refTrav: Trav[] = []   // 参照ハプロタイプの通過（座標 → 参照 bp の目安）
 const fmt = (n: number) => n.toLocaleString('en-US')
+function showErr(where: string, e: any) { const m = `${where}: ${e && (e.stack || e.message || e)}`.slice(0, 400); $('info').textContent = 'エラー ' + m; $('info').style.color = '#c0392b'; $('busy').style.display = 'none'; console.error(where, e) }
+window.addEventListener('error', ev => showErr('window', ev.error || ev.message)); window.addEventListener('unhandledrejection', ev => showErr('promise', (ev as any).reason))
 const fmtbp = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(2) + ' Mb' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kb' : n + ' bp'
 
 async function loadDbList() {
@@ -49,8 +51,8 @@ async function loadRange() {
   const my = ++loading; $('busy').style.display = 'inline'; const minanch = Number(($('minanch') as HTMLInputElement).value) || 0
   const r = await fetch(`/api/trav/range?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${minanch}`)
   if (my !== loading) return
-  const j = await r.json(); rows = j.trav; copies = j.copies; reps = j.reps || []; perHap = j.perHap; $('busy').style.display = 'none'; sel = null
-  hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : baseOrder.slice()
+  const j = await r.json(); rows = j.trav; copies = j.copies; reps = j.reps || []; perHap = j.perHap; $('busy').style.display = 'none'; sel = null; $('info').style.color = ''
+  try { hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : baseOrder.slice() } catch (e) { showErr('tree', e); hapOrder = baseOrder.slice() }
   const nh2 = Object.values(perHap).filter(n => (n as number) >= 2).length
   $('info').textContent = `${db}: 座標 ${fmt(Math.floor(view[0]))}–${fmt(Math.ceil(view[1]))} / ${fmt(root.R)}（${fmtbp(j.bp0)}–${fmtbp(j.bp1)}） 通過 ${fmt(rows.length)} コピー ${fmt(copies.length)} 2 回以上通るハプロタイプ ${nh2} | 原子 ${root.atoms.length} 錨 強 ${fmt(root.meta.strong)} 補間 ${fmt(root.meta.interp)}`
   draw()
@@ -85,7 +87,8 @@ function refPos(x: number): string {
   const f = (x - t.x0) / Math.max(1, t.x1 - t.x0); const bp = t.dir >= 0 ? t.bp0 + f * t.bp : t.bp0 + (1 - f) * t.bp
   return `${root!.haps[t.hid].hap.split('#')[0]} ${fmtbp(bp)}`
 }
-function draw() {
+function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
+function drawCore() {
   const W = cv.parentElement!.clientWidth, H = TOP + (root ? hapOrder.length * ROW : 0) + 20
   cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio; cv.style.width = W + 'px'; cv.style.height = H + 'px'; g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
   g.fillStyle = '#fafafa'; g.fillRect(0, 0, W, H)
@@ -113,6 +116,7 @@ function draw() {
   const rpByHap = new Map<number, Rep[]>(); for (const c of reps) { if (!rpByHap.has(c.hid)) rpByHap.set(c.hid, []); rpByHap.get(c.hid)!.push(c) }
   const atomsIn = root.atoms.filter(a => a.x1 >= v0 && a.x0 <= v1)
   type Piece = { atom: number; px0: number; px1: number; dir: number; tr: Trav }
+  const lowerAtom = (arr: Atom[], x: number) => { let lo = 0, hi = arr.length; while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m].x1 < x) lo = m + 1; else hi = m } return lo }   // x1 >= x の最初の原子（原子は x 順）
   const piecesOf = new Map<number, Piece[]>()      // hid → 片（画面座標）
   // 各行の並び: コンティグを最初の通過の座標順に詰め、コンティグの中は bp（通過の bp0 から）。行ごとに bp の総和を幅に合わせる
   const rowScale = new Map<number, { total: number; off: Map<number, number>; sep: number[] }>()
@@ -124,7 +128,7 @@ function draw() {
       for (const pid of pids) { const trs = ts.filter(r => r.pid === pid); const lo = Math.min(...trs.map(r => r.bp0 ?? 0)), hi = Math.max(...trs.map(r => (r.bp0 ?? 0) + r.bp)); off.set(pid, tot - lo); tot += hi - lo; sep.push(tot) }
       rowScale.set(hid, { total: Math.max(1, tot), off, sep })
     }
-    for (const r of ts) for (const a of atomsIn) {
+    for (const r of ts) for (let ai = lowerAtom(atomsIn, r.x0); ai < atomsIn.length && atomsIn[ai].x0 <= r.x1; ai++) { const a = atomsIn[ai]
       if (a.x1 < r.x0 || a.x0 > r.x1) continue
       const c0 = Math.max(a.x0, r.x0), c1 = Math.min(a.x1, r.x1)
       if (mode === 'coord') pcs.push({ atom: a.id, px0: X(c0), px1: X(c1 + 1), dir: r.dir, tr: r })
@@ -182,7 +186,7 @@ function draw() {
   if (mode === 'rows' && ($('showlines') as HTMLInputElement).checked) {
     g.lineWidth = 1
     const nS = Math.max(8, Math.floor((W - LAB) / 14)); const xsS: number[] = []; for (let k = 0; k < nS; k++) xsS.push(v0 + (k + 0.5) / nS * (v1 - v0))
-    const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { const a = root!.atoms[p.atom - 1]; const c0 = Math.max(a.x0, p.tr.x0), c1 = Math.min(a.x1, p.tr.x1); if (x < c0 || x > c1 + 1) continue; const f = (x - c0) / Math.max(1, c1 + 1 - c0); const fx = p.tr.dir >= 0 ? f : 1 - f; out.push(p.px0 + fx * (p.px1 - p.px0)) } return out }
+    const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { const a = root!.atoms[p.atom - 1]; if (!a || a.x1 < x || a.x0 > x) continue; const c0 = Math.max(a.x0, p.tr.x0), c1 = Math.min(a.x1, p.tr.x1); if (x < c0 || x > c1 + 1) continue; const f = (x - c0) / Math.max(1, c1 + 1 - c0); const fx = p.tr.dir >= 0 ? f : 1 - f; out.push(p.px0 + fx * (p.px1 - p.px0)) } return out }
     for (let k = 0; k + 1 < hapOrder.length; k++) {
       const A = piecesOf.get(hapOrder[k]) || [], B = piecesOf.get(hapOrder[k + 1]) || []; const yA = TOP + k * ROW + 2 + BLK, yB = TOP + (k + 1) * ROW + 2
       for (const x of xsS) {
