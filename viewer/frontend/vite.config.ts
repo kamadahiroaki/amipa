@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 
 export default defineConfig({
   plugins: [react()],
+  build: { rollupOptions: { input: { main: 'index.html', trav: 'trav.html' } } },   // trav.html: 通過（traversal）の試作ページ（React なし）
   server: {
     port: 3000,
     // strictPort: 3000 が埋まっていたら黙って別ポートへドリフトせず即エラー終了する。
