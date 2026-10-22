@@ -211,7 +211,7 @@ function drawCore() {
       g.fillStyle = `hsla(${hue(p.blk)}, 62%, 52%, ${p.tr.copy >= 1 ? .5 : .9})`; g.fillRect(px0, yy, w, hh)
       if (mode === 'rows' && !p.fwd) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(px0, yy + hh - 2, w, 2) }   // 各行の並びで読む向きと逆（逆位）は下辺を暗く
       if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 2; g.strokeRect(px0 + 1, yy + 1, Math.max(1, w - 2), hh - 2); if (w > 10 && mode === 'coord') { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(px0 + 7, yy + 1); g.lineTo(px0 + 2, yy + hh / 2); g.lineTo(px0 + 7, yy + hh - 1); g.fill() } }
-      else if (p.disp && mode === 'coord') { g.strokeStyle = '#333'; g.lineWidth = 1; g.setLineDash([3, 2]); g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1); g.setLineDash([]) }
+      else if (p.disp) { g.strokeStyle = '#333'; g.lineWidth = 1; g.setLineDash([3, 2]); g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1); g.setLineDash([]) }   // 転座（多数派の位置と違う所にある片）は各行の並びでも破線で
     }
     for (const r of byHap.get(hid) || []) {   // 通過ごとに向きの三角（右端または左端）とコピー番号
       const ps = pcs.filter(p => p.tr === r); if (!ps.length) continue
