@@ -1,6 +1,6 @@
 // 通過サイドカー `<db>.trav` の API（試作）。GET /api/trav/root?db  /api/trav/range?db&x0&x1[&min]  /api/trav/path?db&pid
 import { Router } from 'express'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats } from '../trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange } from '../trav'
 
 export const travRouter = Router()
 
@@ -29,4 +29,11 @@ travRouter.get('/trav/atoms', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travAtomStats(t, q.minanch != null ? Number(q.minanch) : 50)) } catch (err) { res.status(500).json({ error: String(err) }) }
+})
+
+travRouter.get('/trav/nodes', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const x0 = Number(q.x0), x1 = Number(q.x1)
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json({ names: nodeNamesForRange(t, Math.floor(x0), Math.floor(x1), Number(q.max) || 5000) }) } catch (err) { res.status(500).json({ error: String(err) }) }
 })

@@ -13,7 +13,8 @@ const $ = (id: string) => document.getElementById(id) as HTMLElement
 const cv = $('cv') as HTMLCanvasElement; const g = cv.getContext('2d')!; const tip = $('tip')
 const TOP = 70, ROW = 13, LAB = 150
 let db = '', root: Root | null = null, view: [number, number] = [0, 1], hist: [number, number][] = []
-let rows: Trav[] = [], copies: Copy[] = [], perHap: Record<string, number> = {}, loading = 0
+type Rep = { id: number; pid: number; hid: number; i0: number; i1: number; bp: number; x0: number; x1: number }
+let rows: Trav[] = [], copies: Copy[] = [], reps: Rep[] = [], perHap: Record<string, number> = {}, loading = 0
 let hapOrder: number[] = []   // 表示順の hid（参照らしい名前を先に、名前順）
 let atomStats: AtomStat[] = []; let refTrav: Trav[] = []   // 参照ハプロタイプの通過（座標 → 参照 bp の目安）
 const fmt = (n: number) => n.toLocaleString('en-US')
@@ -46,7 +47,7 @@ async function loadRange() {
   const my = ++loading; const minanch = Number(($('minanch') as HTMLInputElement).value) || 0
   const r = await fetch(`/api/trav/range?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${minanch}`)
   if (my !== loading) return
-  const j = await r.json(); rows = j.trav; copies = j.copies; perHap = j.perHap
+  const j = await r.json(); rows = j.trav; copies = j.copies; reps = j.reps || []; perHap = j.perHap
   const nh2 = Object.values(perHap).filter(n => (n as number) >= 2).length
   $('info').textContent = `${db}: 座標 ${fmt(Math.floor(view[0]))}–${fmt(Math.ceil(view[1]))} / ${fmt(root.R)}（${fmtbp(j.bp0)}–${fmtbp(j.bp1)}） 通過 ${fmt(rows.length)} コピー ${fmt(copies.length)} 2 回以上通るハプロタイプ ${nh2} | 原子 ${root.atoms.length} 錨 強 ${fmt(root.meta.strong)} 補間 ${fmt(root.meta.interp)}`
   draw()
@@ -82,6 +83,7 @@ function draw() {
   // 行: ハプロタイプ ＞ コンティグ ＞ 通過
   const byHap = new Map<number, Trav[]>(); for (const r of rows) { if (!byHap.has(r.hid)) byHap.set(r.hid, []); byHap.get(r.hid)!.push(r) }
   const cpByHap = new Map<number, Copy[]>(); for (const c of copies) { if (!cpByHap.has(c.hid)) cpByHap.set(c.hid, []); cpByHap.get(c.hid)!.push(c) }
+  const rpByHap = new Map<number, Rep[]>(); for (const c of reps) { if (!rpByHap.has(c.hid)) rpByHap.set(c.hid, []); rpByHap.get(c.hid)!.push(c) }
   hapOrder.forEach((hid, k) => {
     const y = TOP + k * ROW; const hap = root!.haps[hid]
     g.fillStyle = k % 2 ? '#f2f2f2' : '#fafafa'; g.fillRect(0, y, W, ROW)
@@ -98,6 +100,9 @@ function draw() {
       g.fillRect(px0, y + 3, w, ROW - 6)
       if (w > 8) { g.fillStyle = '#fff'; g.beginPath(); if (r.dir >= 0) { g.moveTo(px1 - 6, y + 3); g.lineTo(px1 - 1, y + ROW / 2); g.lineTo(px1 - 6, y + ROW - 3) } else { g.moveTo(px0 + 6, y + 3); g.lineTo(px0 + 1, y + ROW / 2); g.lineTo(px0 + 6, y + ROW - 3) } g.fill() }
       if (r.copy >= 1 && w > 14) { g.fillStyle = '#fff'; g.font = '9px system-ui'; g.fillText('·' + r.copy, px0 + 2, y + 10) }
+    }
+    if (($('showreps') as HTMLInputElement).checked) for (const c of (rpByHap.get(hid) || [])) {   // 反復（出現単位）: 行の上辺に濃い赤
+      const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.fillStyle = 'rgba(120,20,20,.9)'; g.fillRect(px0, y + 1, Math.max(1, px1 - px0), 2)
     }
     if (($('showcopies') as HTMLInputElement).checked) for (const c of (cpByHap.get(hid) || [])) {
       const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.strokeStyle = '#c0392b'; g.lineWidth = 2; g.beginPath(); g.moveTo(px0, y + ROW - 1); g.lineTo(px1, y + ROW - 1); g.stroke()
@@ -119,17 +124,17 @@ cv.addEventListener('mousemove', e => {
     return
   }
   if (k < 0 || k >= hapOrder.length || e.offsetX < LAB) { tip.style.display = 'none'; return }
-  const hid = hapOrder[k]; const hit = rows.filter(r => r.hid === hid && r.x0 <= x && r.x1 >= x)
-  if (!hit.length) { tip.style.display = 'none'; return }
+  const hid = hapOrder[k]; const hit = rows.filter(r => r.hid === hid && r.x0 <= x && r.x1 >= x); const rhit = reps.filter(r => r.hid === hid && r.x0 <= x && r.x1 >= x)
+  if (!hit.length && !rhit.length) { tip.style.display = 'none'; return }
   tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
-  tip.textContent = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}`).join('\n')
+  tip.textContent = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}`).concat(rhit.map(r => `反復（この株で 2 回以上出るノードの連なり） トークン ${fmt(r.i0)}–${fmt(r.i1)}  ${fmtbp(r.bp)}`)).join('\n')
 })
 window.addEventListener('mouseup', e => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; if (b - a < 4) { draw(); return } hist.push(view); view = [xOfPx(a), xOfPx(b)]; loadRange() })
 cv.addEventListener('dblclick', e => { if (!root) return; hist.push(view); if (e.offsetY < TOP && e.offsetX >= LAB) { const x = xOfPx(e.offsetX); const a = root.atoms.find(a => a.x0 <= x && a.x1 >= x); view = a ? [a.x0, a.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
 cv.addEventListener('wheel', e => { if (!root || e.offsetX < LAB) return; e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; loadRange() }, { passive: false })
 $('all').addEventListener('click', () => { if (!root) return; hist.push(view); view = [0, root.R - 1]; loadRange() })
 $('back').addEventListener('click', () => { const v = hist.pop(); if (v) { view = v; loadRange() } })
-$('minanch').addEventListener('change', () => { loadRange(); loadAtoms() }); $('showcopies').addEventListener('change', draw); $('showbounds').addEventListener('change', draw)
+$('minanch').addEventListener('change', () => { loadRange(); loadAtoms() }); $('showcopies').addEventListener('change', draw); $('showbounds').addEventListener('change', draw); $('showreps').addEventListener('change', draw)
 $('db').addEventListener('change', () => { db = ($('db') as HTMLSelectElement).value; history.replaceState(null, '', `?db=${encodeURIComponent(db)}`); loadRoot() })
 window.addEventListener('resize', draw)
 loadDbList().then(loadRoot)
