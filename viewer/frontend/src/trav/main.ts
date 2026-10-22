@@ -22,10 +22,12 @@ async function getJson(url: string): Promise<{ ok: boolean; status: number; json
   return { ok: x.status >= 200 && x.status < 300, status: x.status, json: async () => JSON.parse(txt) }
 }
 const cv = $('cv') as HTMLCanvasElement; const g = cv.getContext('2d')!; const tip = $('tip'); const ov = $('ov') as HTMLCanvasElement; const og = ov.getContext('2d')!
-const TOP = 70, LAB = 150, BLK = 8; let ROW = 13
+const TOP = 70, TREEW = 70, LAB = 150 + TREEW, BLK = 8; let ROW = 13   // 左に木（TREEW）、ラベル、右に本体
 let db = '', root: Root | null = null, view: [number, number] = [0, 1], hist: [number, number][] = []
 let rows: Trav[] = [], copies: Copy[] = [], reps: Rep[] = [], perHap: Record<string, number> = {}, loading = 0
 let hapOrder: number[] = [], baseOrder: number[] = [], atomStats: AtomStat[] = [], refTrav: Trav[] = []
+type Clade = { leaves: number[]; size: number; h: number; kids: Clade[] }
+let treeRoot: Clade | null = null   // 表示範囲の木（描画用）
 let atomCum: number[] = []        // 原子 i の開始 bp（root.atoms の順）
 let blocks: Block[] = []           // 今の表示範囲のブロック
 const fmt = (n: number) => n.toLocaleString('en-US')
@@ -56,9 +58,9 @@ function makeBlocks(): Block[] {
   const edges = [Math.floor(v0), ...inside, Math.floor(v1) + 1]; const out: Block[] = []
   for (let i = 0; i + 1 < edges.length; i++) {
     const x0 = edges[i], x1 = edges[i + 1] - 1; if (x1 < x0) continue
-    const a0 = atomAt(x0), a1 = atomAt(x1); let nhap = 0, nhap2 = 0, tangled = false
-    for (let k = a0; k <= a1; k++) { const st = atomStats[k]; const a = root.atoms[k]; nhap = Math.max(nhap, st ? st.nhap : a.nhap); if (st) { nhap2 = Math.max(nhap2, st.nhap2); tangled = tangled || !!st.tangled } }
-    out.push({ id: i, x0, x1, bp: bpOfX(x1 + 1) - bpOfX(x0), a0, a1, nhap, nhap2, tangled })
+    const a0 = atomAt(x0), a1 = atomAt(x1); let nhap = 0, nhap2 = 0, tbp = 0, abp = 0
+    for (let k = a0; k <= a1; k++) { const st = atomStats[k]; const a = root.atoms[k]; nhap = Math.max(nhap, st ? st.nhap : a.nhap); abp += a.bp; if (st) { nhap2 = Math.max(nhap2, st.nhap2); if (st.tangled) tbp += a.bp } }
+    out.push({ id: i, x0, x1, bp: bpOfX(x1 + 1) - bpOfX(x0), a0, a1, nhap, nhap2, tangled: tbp >= 0.3 * Math.max(1, abp) })   // もつれた原子が bp の 3 割以上のときだけ
   }
   return out
 }
@@ -106,6 +108,7 @@ async function loadRange() {
 
 // ---- 表示範囲の木（UPGMA）: ブロックごとの状態（無し/順/逆/両方）の bp 重み不一致率 ----
 function treeOrder(): number[] {
+  treeRoot = null
   if (!root || !blocks.length) return baseOrder.slice()
   const H = root.haps.length, nb = blocks.length; const state = new Uint8Array(H * nb)
   const dom = new Map<number, number>(); for (const r of rows) dom.set(r.pid, (dom.get(r.pid) || 0) + r.dir * r.nanch)
@@ -113,15 +116,16 @@ function treeOrder(): number[] {
   const w = blocks.map(b => Math.max(1, b.bp)); const wsum = w.reduce((a, b) => a + b, 0)
   const ids = baseOrder.slice(); const n = ids.length; const D: number[][] = Array.from({ length: n }, () => new Array(n).fill(0))
   for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { let dsum = 0; for (let k = 0; k < nb; k++) { const a = state[ids[i] * nb + k], b = state[ids[j] * nb + k]; if (a !== b) dsum += w[k] * (a === 0 || b === 0 ? 1 : 0.5) } D[i][j] = D[j][i] = dsum / wsum }
-  let clusters: { leaves: number[]; size: number }[] = ids.map((_, i) => ({ leaves: [i], size: 1 })); let dist = D.map(r => r.slice())
+  let clusters: Clade[] = ids.map((_, i) => ({ leaves: [i], size: 1, h: 0, kids: [] })); let dist = D.map(r => r.slice())
   while (clusters.length > 1) {
     let bi = 0, bj = 1, bd = Infinity; for (let i = 0; i < clusters.length; i++) for (let j = i + 1; j < clusters.length; j++) if (dist[i][j] < bd) { bd = dist[i][j]; bi = i; bj = j }
-    const A = clusters[bi], B = clusters[bj]; const merged = { leaves: A.leaves.concat(B.leaves), size: A.size + B.size }
+    const A = clusters[bi], B = clusters[bj]; const merged: Clade = { leaves: A.leaves.concat(B.leaves), size: A.size + B.size, h: bd, kids: [A, B] }
     const nd: number[] = []; for (let k = 0; k < clusters.length; k++) if (k !== bi && k !== bj) nd.push((dist[bi][k] * A.size + dist[bj][k] * B.size) / (A.size + B.size))
     clusters = clusters.filter((_, k) => k !== bi && k !== bj); dist = dist.filter((_, k) => k !== bi && k !== bj).map(r => r.filter((_, k) => k !== bi && k !== bj))
     clusters.push(merged); for (let k = 0; k < dist.length; k++) dist[k].push(nd[k]); dist.push(nd.concat([0]))
   }
-  return clusters[0].leaves.map(i => ids[i])
+  treeRoot = clusters[0]; const mapLeaf = (c: Clade) => { c.leaves = c.leaves.map(i => ids[i]); c.kids.forEach(mapLeaf) }; mapLeaf(treeRoot)
+  return treeRoot.leaves
 }
 
 // ---- 描画 ----
@@ -141,7 +145,7 @@ function drawCore() {
     const px0 = Math.max(LAB, X(b.x0)), px1 = Math.min(W, X(b.x1 + 1)); const h = 8 + 30 * Math.min(1, b.nhap / root.H)
     g.fillStyle = `hsla(${hue(b.id)}, 60%, 55%, .6)`; g.fillRect(px0, TOP - 12 - h, Math.max(1, px1 - px0), h)
     if (b.nhap2 > 0) { g.fillStyle = 'rgba(192,57,43,.9)'; g.fillRect(px0, TOP - 12, Math.max(1, px1 - px0), 3) }
-    if (b.tangled) { g.fillStyle = 'rgba(0,0,0,.25)'; for (let xx = px0; xx < px1; xx += 6) g.fillRect(xx, TOP - 12 - h, 2, h) }
+    if (b.tangled) { g.fillStyle = 'rgba(120,120,120,.45)'; g.fillRect(px0, TOP - 12 - h, Math.max(1, px1 - px0), h); if (px1 - px0 > 10) { g.fillStyle = '#fff'; g.font = 'bold 11px system-ui'; g.fillText('?', (px0 + px1) / 2 - 3, TOP - 12 - h / 2 + 4) } }
     if (px1 - px0 > 44) { g.fillStyle = '#333'; g.font = '10px system-ui'; g.fillText(`${fmtbp(b.bp)} ${b.nhap}/${root.H}${b.nhap2 ? ` ×${b.nhap2}` : ''}`, px0 + 2, TOP - 14 - h) }
   }
   if (($('showbounds') as HTMLInputElement).checked) for (const b of root.bounds) {
@@ -204,7 +208,7 @@ function drawCore() {
     const y = TOP + k * ROW; const hap = root!.haps[hid]
     g.fillStyle = k % 2 ? '#f2f2f2' : '#fafafa'; g.fillRect(0, y, W, ROW)
     const n = perHap[hid] || 0; const oneBlk = blocks.length === 1
-    g.fillStyle = oneBlk && n >= 2 ? '#b03a2e' : '#333'; g.font = '11px system-ui'; g.fillText(`${hap.hap}${hap.nexcl ? ` +${hap.nexcl}冗長` : ''}${oneBlk && n >= 2 ? ` ×${n}` : (n > 1 ? ` (${n})` : '')}`, 4, y + 10)
+    g.fillStyle = oneBlk && n >= 2 ? '#b03a2e' : '#333'; g.font = '11px system-ui'; g.fillText(`${hap.hap}${hap.nexcl ? ` +${hap.nexcl}冗長` : ''}${oneBlk && n >= 2 ? ` ×${n}` : (n > 1 ? ` (${n})` : '')}`, TREEW + 4, y + 10)
     const pcs = piecesOf.get(hid) || []
     for (const p of pcs) {
       const px0 = Math.max(LAB, Math.min(p.px0, p.px1)), px1 = Math.min(W, Math.max(p.px0, p.px1)); const w = Math.max(1, px1 - px0); const yy = y + 2, hh = BLK
@@ -224,6 +228,18 @@ function drawCore() {
     if (($('showreps') as HTMLInputElement).checked && mode === 'coord') for (const c of (rpByHap.get(hid) || [])) { const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.fillStyle = 'rgba(120,20,20,.9)'; g.fillRect(px0, y + 1, Math.max(1, px1 - px0), 2) }
     if (($('showcopies') as HTMLInputElement).checked && mode === 'coord') for (const c of (cpByHap.get(hid) || [])) { const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.strokeStyle = '#c0392b'; g.lineWidth = 2; g.beginPath(); g.moveTo(px0, y + BLK + 3); g.lineTo(px1, y + BLK + 3); g.stroke() }
   })
+  if (treeRoot && ($('order') as HTMLSelectElement).value === 'tree') {   // 系統樹: 根が左、葉が右。枝の長さは不一致率
+    const rowOf = new Map(hapOrder.map((h, k) => [h, k])); const hmax = Math.max(1e-9, treeRoot.h); g.strokeStyle = '#555'; g.lineWidth = 1
+    const xOfH = (h: number) => 4 + (1 - h / hmax) * (TREEW - 8)
+    const walk = (c: Clade): number => {
+      if (!c.kids.length) { const y = TOP + rowOf.get(c.leaves[0])! * ROW + 2 + BLK / 2; g.beginPath(); g.moveTo(xOfH(c.h), y); g.lineTo(TREEW - 2, y); g.stroke(); return y }
+      const ys = c.kids.map(walk); const x = xOfH(c.h)
+      g.beginPath(); g.moveTo(x, Math.min(...ys)); g.lineTo(x, Math.max(...ys)); g.stroke()
+      for (const k of c.kids) { const xk = xOfH(k.h); const yk = TOP + (k.leaves.reduce((t, l) => t + rowOf.get(l)!, 0) / k.leaves.length) * ROW + 2 + BLK / 2; g.beginPath(); g.moveTo(x, yk); g.lineTo(xk, yk); g.stroke() }
+      return ys.reduce((t, v) => t + v, 0) / ys.length
+    }
+    walk(treeRoot)
+  }
   if (sel) { g.fillStyle = 'rgba(52,152,219,.15)'; g.fillRect(sel[0], 0, sel[1] - sel[0], H); g.fillStyle = '#c0392b'; g.font = '12px system-ui'; g.fillText('計算中…', sel[0] + 4, 14) }
   // 連結線: bp で等間隔に標本し、隣の行でその座標を含む片の中の位置を結ぶ
   if (mode === 'rows' && ($('showlines') as HTMLInputElement).checked) {
@@ -263,7 +279,7 @@ cv.addEventListener('mousemove', e => {
 })
 window.addEventListener('mouseup', () => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; og.clearRect(0, 0, ov.width, ov.height); if (b - a < 4) return; hist.push(view); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; draw(); loadRange() })
 cv.addEventListener('dblclick', e => { if (!root) return; hist.push(view); if (e.offsetY < TOP && e.offsetX >= LAB) { const b = blocks[blockAt(xOfPx(e.offsetX))]; view = b ? [b.x0, b.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
-cv.addEventListener('wheel', e => { if (!root || e.offsetX < LAB) return; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (!inRows || e.offsetY >= TOP) return; /* ホイールの拡大縮小は各行の並びの上段だけ（合意座標ではドラッグで） */ e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; draw(); scheduleRange() }, { passive: false })
+cv.addEventListener('wheel', e => { if (true) return; if (!root || e.offsetX < LAB) return; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (!inRows || e.offsetY >= TOP) return; /* ホイールの拡大縮小は無効（ドラッグで） */ e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; draw(); scheduleRange() }, { passive: false })
 $('all').addEventListener('click', () => { if (!root) return; hist.push(view); view = [0, root.R - 1]; loadRange() })
 $('back').addEventListener('click', () => { const v = hist.pop(); if (v) { view = v; loadRange() } })
 $('minanch').addEventListener('change', () => { loadAtoms().then(loadRange) }); $('nblk').addEventListener('change', () => { blocks = makeBlocks(); if (($('order') as HTMLSelectElement).value === 'tree') hapOrder = treeOrder(); draw() })
