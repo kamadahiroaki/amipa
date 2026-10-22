@@ -293,7 +293,7 @@ function drawCore() {
       const A = piecesOf.get(hapOrder[k]) || [], B = piecesOf.get(hapOrder[k + 1]) || []; const yA = TOP + k * ROW + 2 + BLK, yB = TOP + (k + 1) * ROW + 2
       for (const x of xsS) {
         const pa = posIn(A, x), pb = posIn(B, x); if (!pa.length || !pb.length) continue
-        g.strokeStyle = `hsla(${hue(blockAt(x))}, 60%, 40%, ${pa.length * pb.length > 1 ? .7 : .4})`
+        g.strokeStyle = `hsla(${hue(blockAt(x))}, 60%, 40%, ${useCols ? .12 : (pa.length * pb.length > 1 ? .7 : .4)})`   // 錨の列の段ではセルの邪魔にならないよう薄く
         for (const xa of pa) for (const xb of pb) { if (xa < LAB || xb < LAB) continue; g.beginPath(); g.moveTo(xa, yA); g.lineTo(xb, yB); g.stroke() }
       }
     }

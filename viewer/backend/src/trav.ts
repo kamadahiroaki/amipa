@@ -188,7 +188,8 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   const outs: RowOut[] = []
   const T0 = Date.now(); let tRead = 0, tMix = 0, nread = 0
   for (const r of rows) {
-    const pi = dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
+    // distill のパス番号: .trav の pid は distill の p_names の順（構築器が同じ順で読む）。名前で引くと重複した名前（ヒト v2 の分割された W 行）で別のパスに当たる
+    const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
     // 通過が窓からはみ出すときは、窓に当たるトークン区間を（x が錨の番号に比例するとして）補間で見積もり、読んだ端の錨が窓の中なら広げて読み直す
     const Lt = r.i1 - r.i0 + 1; const span = Math.max(1, r.x1 - r.x0); let s0 = r.i0, e0 = r.i1 + 1
     if (r.x0 < x0 || r.x1 > x1) {
