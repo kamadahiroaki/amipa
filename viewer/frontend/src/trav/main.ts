@@ -143,7 +143,7 @@ function drawCore() {
   // 上段: ブロック（色は番号、高さは通るハプロタイプの割合）、×n の赤い帯、もつれの縦縞、境界（支持と持続度）
   for (const b of blocks) {
     const px0 = Math.max(LAB, X(b.x0)), px1 = Math.min(W, X(b.x1 + 1)); const h = 8 + 30 * Math.min(1, b.nhap / root.H)
-    g.fillStyle = `hsla(${hue(b.id)}, 60%, 55%, .6)`; g.fillRect(px0, TOP - 12 - h, Math.max(1, px1 - px0), h)
+    g.fillStyle = `hsla(${hue(b.id)}, 70%, 50%, .85)`; g.fillRect(px0, TOP - 12 - h, Math.max(1, px1 - px0), h); g.strokeStyle = 'rgba(0,0,0,.5)'; g.lineWidth = 1; g.strokeRect(px0 + .5, TOP - 12 - h + .5, Math.max(1, px1 - px0) - 1, h - 1)
     if (b.nhap2 > 0) { g.fillStyle = 'rgba(192,57,43,.9)'; g.fillRect(px0, TOP - 12, Math.max(1, px1 - px0), 3) }
     if (b.tangled) { g.fillStyle = 'rgba(120,120,120,.45)'; g.fillRect(px0, TOP - 12 - h, Math.max(1, px1 - px0), h); if (px1 - px0 > 10) { g.fillStyle = '#fff'; g.font = 'bold 11px system-ui'; g.fillText('?', (px0 + px1) / 2 - 3, TOP - 12 - h / 2 + 4) } }
     if (px1 - px0 > 44) { g.fillStyle = '#333'; g.font = '10px system-ui'; g.fillText(`${fmtbp(b.bp)} ${b.nhap}/${root.H}${b.nhap2 ? ` ×${b.nhap2}` : ''}`, px0 + 2, TOP - 14 - h) }
@@ -168,11 +168,12 @@ function drawCore() {
       const trs = ts.filter(r => r.pid === pid).sort((a, b) => a.i0 - b.i0); const dom = trs.reduce((t, r) => t + r.dir * r.nanch, 0) >= 0 ? 1 : -1; domOf.set(pid, dom)
       const main = trs.reduce((m, r) => r.nanch > m.nanch ? r : m, trs[0]); firstX.set(pid, main.x0)   // コンティグの順は最大の通過の座標で決める（小さな転座片を基準にすると行が乱れる）
       for (const r of trs) if (r.dir !== dom) inv.add(r)
-      const seq = trs.map(r => dom >= 0 ? r.x0 : -r.x0); const n = seq.length; const L = new Array(n).fill(1), P = new Array(n).fill(-1)
-      for (let i = 0; i < n; i++) for (let j = 0; j < i; j++) if (seq[j] <= seq[i] && L[j] + 1 > L[i]) { L[i] = L[j] + 1; P[i] = j }
-      let best = 0; for (let i = 1; i < n; i++) if (L[i] > L[best]) best = i
-      const keep = new Set<number>(); for (let i = best; i >= 0; i = P[i]) keep.add(i)
-      trs.forEach((r, i) => { if (!keep.has(i) && r.nanch >= 50) disp.add(r) })
+      // 転座: コンティグ上で隣り合う（錨 ≥50 の）通過のどちらからも座標が JFAR 以上離れている通過（局所の重なりや小片は数えない）
+      const JFAR = 20000; const big = trs.filter(r => r.nanch >= 50)
+      for (let i = 0; i < big.length; i++) {
+        const r = big[i]; const nb = [big[i - 1], big[i + 1]].filter(Boolean) as Trav[]; if (!nb.length) continue
+        const far = nb.every(q => r.x0 > q.x1 + JFAR || r.x1 < q.x0 - JFAR); if (far) disp.add(r)
+      }
     }
     // 片（ブロック × 通過）。各行の並び用に、コンティグ上の bp 位置（読む向きに揃えた鍵）と幅を付ける
     type Raw = { blk: number; tr: Trav; c0: number; c1: number; key: number; wbp: number; fwd: boolean }
@@ -185,7 +186,7 @@ function drawCore() {
       raw.push({ blk: bi, tr: r, c0, c1, key, wbp: Math.max(1, bpB - bpA), fwd: (r.dir >= 0) !== mir })
     }
     const pcs: Piece[] = []
-    if (mode === 'coord') { for (const q of raw) pcs.push({ blk: q.blk, px0: X(q.c0), px1: X(q.c1 + 1), tr: q.tr, inv: inv.has(q.tr), disp: disp.has(q.tr), fwd: q.tr.dir >= 0, c0: q.c0, c1: q.c1 }) }
+    if (mode === 'coord') { for (const q of raw) pcs.push({ blk: q.blk, px0: X(q.c0), px1: X(q.c1 + 1), tr: q.tr, inv: inv.has(q.tr), disp: disp.has(q.tr), fwd: !inv.has(q.tr), c0: q.c0, c1: q.c1 }) }   // 向きはコンティグの主な向きに対する相対
     else {
       const order = pids.slice().sort((a, b) => firstX.get(a)! - firstX.get(b)!); const crank = new Map(order.map((p, i) => [p, i]))
       raw.sort((a, b) => crank.get(a.tr.pid)! - crank.get(b.tr.pid)! || a.key - b.key)
@@ -213,29 +214,31 @@ function drawCore() {
     for (const p of pcs) {
       const px0 = Math.max(LAB, Math.min(p.px0, p.px1)), px1 = Math.min(W, Math.max(p.px0, p.px1)); const w = Math.max(1, px1 - px0); const yy = y + 2, hh = BLK
       // 片の中は合意の向きに明→暗。画面上で左が合意の先頭なら明→暗、逆（逆位・逆鎖）なら暗→明
-      g.fillStyle = `hsla(${hue(p.blk)}, 62%, 52%, ${p.tr.copy >= 1 ? .5 : .9})`; g.fillRect(px0, yy, w, hh)
+      g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, ${p.tr.copy >= 1 ? .55 : 1})`; g.fillRect(px0, yy, w, hh)
+      if (w >= 3) { g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1; g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1) }   // ブロック境界の枠
       if (mode === 'rows' && !p.fwd) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(px0, yy + hh - 2, w, 2) }   // 各行の並びで読む向きと逆（逆位）は下辺を暗く
-      if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 2; g.strokeRect(px0 + 1, yy + 1, Math.max(1, w - 2), hh - 2); if (w > 10 && mode === 'coord') { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(px0 + 7, yy + 1); g.lineTo(px0 + 2, yy + hh / 2); g.lineTo(px0 + 7, yy + hh - 1); g.fill() } }
+      if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 2; g.strokeRect(px0 + 1, yy + 1, Math.max(1, w - 2), hh - 2); if (w > 10) { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(px0 + 7, yy + 1); g.lineTo(px0 + 2, yy + hh / 2); g.lineTo(px0 + 7, yy + hh - 1); g.fill() } }
       else if (p.disp) { g.strokeStyle = '#333'; g.lineWidth = 1; g.setLineDash([3, 2]); g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1); g.setLineDash([]) }   // 転座（多数派の位置と違う所にある片）は各行の並びでも破線で
     }
     for (const r of byHap.get(hid) || []) {   // 通過ごとに向きの三角（右端または左端）とコピー番号
       const ps = pcs.filter(p => p.tr === r); if (!ps.length) continue
       const lo = Math.max(LAB, Math.min(...ps.map(p => Math.min(p.px0, p.px1)))), hi = Math.min(W, Math.max(...ps.map(p => Math.max(p.px0, p.px1)))); if (hi - lo < 24) continue
-      const fwd = mode === 'coord' ? r.dir >= 0 : ps[0].fwd; const yy = y + 2, hh = BLK
-      if (!(ps[0].inv && mode === 'coord')) { g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, yy); g.lineTo(hi - 1, yy + hh / 2); g.lineTo(hi - 6, yy + hh) } else { g.moveTo(lo + 6, yy); g.lineTo(lo + 1, yy + hh / 2); g.lineTo(lo + 6, yy + hh) } g.fill() }
+      const fwd = ps[0].fwd; const yy = y + 2, hh = BLK
+      if (!ps[0].inv) { g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, yy); g.lineTo(hi - 1, yy + hh / 2); g.lineTo(hi - 6, yy + hh) } else { g.moveTo(lo + 6, yy); g.lineTo(lo + 1, yy + hh / 2); g.lineTo(lo + 6, yy + hh) } g.fill() }
       if (r.copy >= 1 && hi - lo > 40) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
     }
     if (($('showreps') as HTMLInputElement).checked && mode === 'coord') for (const c of (rpByHap.get(hid) || [])) { const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.fillStyle = 'rgba(120,20,20,.9)'; g.fillRect(px0, y + 1, Math.max(1, px1 - px0), 2) }
     if (($('showcopies') as HTMLInputElement).checked && mode === 'coord') for (const c of (cpByHap.get(hid) || [])) { const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.strokeStyle = '#c0392b'; g.lineWidth = 2; g.beginPath(); g.moveTo(px0, y + BLK + 3); g.lineTo(px1, y + BLK + 3); g.stroke() }
   })
   if (treeRoot && ($('order') as HTMLSelectElement).value === 'tree') {   // 系統樹: 根が左、葉が右。枝の長さは不一致率
-    const rowOf = new Map(hapOrder.map((h, k) => [h, k])); const hmax = Math.max(1e-9, treeRoot.h); g.strokeStyle = '#555'; g.lineWidth = 1
-    const xOfH = (h: number) => 4 + (1 - h / hmax) * (TREEW - 8)
-    const walk = (c: Clade): number => {
-      if (!c.kids.length) { const y = TOP + rowOf.get(c.leaves[0])! * ROW + 2 + BLK / 2; g.beginPath(); g.moveTo(xOfH(c.h), y); g.lineTo(TREEW - 2, y); g.stroke(); return y }
-      const ys = c.kids.map(walk); const x = xOfH(c.h)
+    const rowOf = new Map(hapOrder.map((h, k) => [h, k])); const hmax = Math.max(1e-9, treeRoot.h); g.strokeStyle = '#444'; g.lineWidth = 1
+    const xOfH = (h: number) => 4 + (1 - Math.sqrt(Math.max(0, h) / hmax)) * (TREEW - 8)   // 近い株の併合が 0 付近に集まるので平方根で広げる
+    const walk = (c: Clade): number => {   // 返り値はこのクレードの中心 y（子の中心の平均）。葉は行の中心
+      const x = xOfH(c.h)
+      if (!c.kids.length) { const y = TOP + rowOf.get(c.leaves[0])! * ROW + 2 + BLK / 2; g.beginPath(); g.moveTo(x, y); g.lineTo(TREEW - 2, y); g.stroke(); return y }
+      const ys = c.kids.map(walk)
       g.beginPath(); g.moveTo(x, Math.min(...ys)); g.lineTo(x, Math.max(...ys)); g.stroke()
-      for (const k of c.kids) { const xk = xOfH(k.h); const yk = TOP + (k.leaves.reduce((t, l) => t + rowOf.get(l)!, 0) / k.leaves.length) * ROW + 2 + BLK / 2; g.beginPath(); g.moveTo(x, yk); g.lineTo(xk, yk); g.stroke() }
+      c.kids.forEach((k, i) => { const xk = xOfH(k.h); g.beginPath(); g.moveTo(x, ys[i]); g.lineTo(xk, ys[i]); g.stroke() })
       return ys.reduce((t, v) => t + v, 0) / ys.length
     }
     walk(treeRoot)
