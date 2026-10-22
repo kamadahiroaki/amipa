@@ -15,7 +15,7 @@ travRouter.get('/trav/range', (req, res) => {
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const x0 = Number(q.x0), x1 = Number(q.x1)
   if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 < x0) { res.status(400).json({ error: 'bad x0/x1' }); return }
-  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travRange(t, Math.floor(x0), Math.floor(x1), { minOverlap: Number(q.min) || 0 })) } catch (err) { res.status(500).json({ error: String(err) }) }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travRange(t, Math.floor(x0), Math.floor(x1), { minOverlap: Number(q.min) || 0, minAnchors: q.minanch != null ? Number(q.minanch) : 50 })) } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 travRouter.get('/trav/path', (req, res) => {

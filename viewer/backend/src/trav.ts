@@ -63,10 +63,10 @@ export function travRoot(t: Trav): any {
 }
 
 // 座標区間 [x0, x1] に重なる通過とコピー。ハプロタイプごとの通過数（×n の材料）も返す
-export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number } = {}): any {
+export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number; minAnchors?: number } = {}): any {
   const rows = t.db.prepare('SELECT id, pid, hid, i0, i1, x0, x1, dir, copy, nanch, bp FROM trav WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid, i0').all(x1, x0) as TravRow[]
-  const mo = opts.minOverlap ?? 0
-  const out = mo > 0 ? rows.filter(r => Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo) : rows
+  const mo = opts.minOverlap ?? 0; const ma = opts.minAnchors ?? 0   // 錨が少ない断片（硬い領域のかけら）は既定で出さない。ヒト v2 は 50 錨未満が 8,964 本で、x≈1.52M の 1 か所に 5,298 本集中
+  const out = rows.filter(r => r.nanch >= ma && (mo <= 0 || Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo))
   const copies = t.db.prepare('SELECT id, pid, hid, x0, x1, ia0, ia1, ib0, ib1, bpa, bpb FROM copies WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid').all(x1, x0) as CopyRow[]
   const perHap: Record<number, number> = {}
   for (const r of out) perHap[r.hid] = (perHap[r.hid] || 0) + 1
