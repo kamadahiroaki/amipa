@@ -4,7 +4,8 @@
 type Atom = { id: number; x0: number; x1: number; bp: number; nhap: number }
 type Bound = { x: number; support: number; persistence: number }
 type Hap = { hid: number; hap: string; ncontig: number; nexcl: number; bp: number }
-type Trav = { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number }
+type Trav = { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number; bp0?: number }
+type AtomStat = { id: number; nhap: number; nhap2: number; counts: Record<string, number> }
 type Copy = { id: number; pid: number; hid: number; x0: number; x1: number; ia0: number; ia1: number; ib0: number; ib1: number; bpa: number; bpb: number }
 type Root = { meta: any; H: number; R: number; total_bp: number; haps: Hap[]; atoms: Atom[]; bounds: Bound[] }
 
@@ -14,6 +15,7 @@ const TOP = 70, ROW = 13, LAB = 150
 let db = '', root: Root | null = null, view: [number, number] = [0, 1], hist: [number, number][] = []
 let rows: Trav[] = [], copies: Copy[] = [], perHap: Record<string, number> = {}, loading = 0
 let hapOrder: number[] = []   // 表示順の hid（参照らしい名前を先に、名前順）
+let atomStats: AtomStat[] = []; let refTrav: Trav[] = []   // 参照ハプロタイプの通過（座標 → 参照 bp の目安）
 const fmt = (n: number) => n.toLocaleString('en-US')
 const fmtbp = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(2) + ' Mb' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kb' : n + ' bp'
 
@@ -29,7 +31,15 @@ async function loadRoot() {
   root = await r.json(); view = [0, root!.R - 1]; hist = []
   const refLike = (h: string) => /^(GRCh38|CHM13|GCF_000148365)/.test(h) ? 0 : 1
   hapOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(root!.haps[a].hap) - refLike(root!.haps[b].hap) || root!.haps[a].hap.localeCompare(root!.haps[b].hap))
-  await loadRange()
+  await loadRange(); await loadAtoms()
+}
+async function loadAtoms() {
+  if (!root) return
+  const minanch = Number(($('minanch') as HTMLInputElement).value) || 0
+  const r = await fetch(`/api/trav/atoms?db=${encodeURIComponent(db)}&minanch=${minanch}`); atomStats = r.ok ? (await r.json()).atoms : []
+  const refH = root.haps.find(h => /^(GRCh38|CHM13)/.test(h.hap)); refTrav = []
+  if (refH) { const rr = await fetch(`/api/trav/range?db=${encodeURIComponent(db)}&x0=0&x1=${root.R}&minanch=1000`); if (rr.ok) refTrav = ((await rr.json()).trav as Trav[]).filter(t => t.hid === refH.hid) }
+  draw()
 }
 async function loadRange() {
   if (!root) return
@@ -44,6 +54,11 @@ async function loadRange() {
 function X(x: number) { const w = cv.width / devicePixelRatio - LAB; return LAB + (x - view[0]) / Math.max(1, view[1] - view[0]) * w }
 function xOfPx(px: number) { const w = cv.width / devicePixelRatio - LAB; return view[0] + (px - LAB) / w * (view[1] - view[0]) }
 function hue(i: number) { return (i * 137.508) % 360 }
+function refPos(x: number): string {
+  const t = refTrav.find(t => t.x0 <= x && t.x1 >= x); if (!t || t.bp0 == null) return ''
+  const f = (x - t.x0) / Math.max(1, t.x1 - t.x0); const bp = t.dir >= 0 ? t.bp0 + f * t.bp : t.bp0 + (1 - f) * t.bp
+  return `${root!.haps[t.hid].hap.split('#')[0]} ${fmtbp(bp)}`
+}
 function draw() {
   const W = cv.parentElement!.clientWidth, H = TOP + (root ? hapOrder.length * ROW : 0) + 20
   cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio; cv.style.width = W + 'px'; cv.style.height = H + 'px'; g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
@@ -55,14 +70,15 @@ function draw() {
     if (a.x1 < v0 || a.x0 > v1) continue
     const px0 = Math.max(LAB, X(a.x0)), px1 = Math.min(W, X(a.x1 + 1)); const h = 8 + 30 * Math.min(1, a.nhap / root.H)
     g.fillStyle = `hsla(${hue(a.id)}, 60%, 55%, .55)`; g.fillRect(px0, TOP - 12 - h, Math.max(1, px1 - px0), h)
-    if (px1 - px0 > 40) { g.fillStyle = '#333'; g.font = '10px system-ui'; g.fillText(`#${a.id} ${fmtbp(a.bp)} ${a.nhap}/${root.H}`, px0 + 2, TOP - 14 - h) }
+    const st = atomStats[a.id - 1]; if (st && st.nhap2 > 0) { g.fillStyle = 'rgba(192,57,43,.9)'; g.fillRect(px0, TOP - 12, Math.max(1, px1 - px0), 3) }   // 2 回以上通るハプロタイプがある原子
+    if (px1 - px0 > 40) { g.fillStyle = '#333'; g.font = '10px system-ui'; g.fillText(`#${a.id} ${fmtbp(a.bp)} ${a.nhap}/${root.H}${st && st.nhap2 ? ` ×${st.nhap2}` : ''}`, px0 + 2, TOP - 14 - h) }
   }
   if (($('showbounds') as HTMLInputElement).checked) for (const b of root.bounds) {
     if (b.x < v0 || b.x > v1) continue
     const px = X(b.x); const h = 6 + 8 * Math.log10(1 + b.persistence / 1000)
     g.strokeStyle = b.support >= root.H * 0.5 ? '#c0392b' : b.support >= 2 ? '#7f8c8d' : '#d0d0d0'; g.lineWidth = 1; g.beginPath(); g.moveTo(px, TOP - 10); g.lineTo(px, TOP - 10 + h); g.stroke()
   }
-  g.fillStyle = '#666'; g.font = '10px system-ui'; g.fillText(`x ${fmt(Math.floor(v0))}`, LAB + 2, TOP - 2); const t = `x ${fmt(Math.ceil(v1))}`; g.fillText(t, W - g.measureText(t).width - 4, TOP - 2)
+  g.fillStyle = '#666'; g.font = '10px system-ui'; g.fillText(`x ${fmt(Math.floor(v0))} ${refPos(v0)}`, LAB + 2, TOP - 2); const t = `${refPos(v1)} x ${fmt(Math.ceil(v1))}`; g.fillText(t, W - g.measureText(t).width - 4, TOP - 2)
   // 行: ハプロタイプ ＞ コンティグ ＞ 通過
   const byHap = new Map<number, Trav[]>(); for (const r of rows) { if (!byHap.has(r.hid)) byHap.set(r.hid, []); byHap.get(r.hid)!.push(r) }
   const cpByHap = new Map<number, Copy[]>(); for (const c of copies) { if (!cpByHap.has(c.hid)) cpByHap.set(c.hid, []); cpByHap.get(c.hid)!.push(c) }
@@ -95,18 +111,25 @@ cv.addEventListener('mousemove', e => {
   if (drag) { drag[1] = e.offsetX; draw(); g.fillStyle = 'rgba(52,152,219,.2)'; g.fillRect(Math.min(...drag), 0, Math.abs(drag[1] - drag[0]), cv.height); return }
   if (!root) return
   const k = Math.floor((e.offsetY - TOP) / ROW); const x = xOfPx(e.offsetX)
+  if (e.offsetY < TOP && e.offsetX >= LAB) {
+    const a = root.atoms.find(a => a.x0 <= x && a.x1 >= x); if (!a) { tip.style.display = 'none'; return }
+    const st = atomStats[a.id - 1]; const multi = st ? Object.entries(st.counts).filter(([, n]) => n >= 2).map(([h, n]) => `${root!.haps[Number(h)].hap} ×${n}`) : []
+    tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
+    tip.textContent = `原子 #${a.id}  座標 ${fmt(a.x0)}–${fmt(a.x1)}  ${fmtbp(a.bp)}  通るハプロタイプ ${st ? st.nhap : a.nhap}/${root.H}  ${refPos(a.x0)}` + (multi.length ? `\n2 回以上: ${multi.slice(0, 12).join(', ')}${multi.length > 12 ? ` +${multi.length - 12}` : ''}` : '')
+    return
+  }
   if (k < 0 || k >= hapOrder.length || e.offsetX < LAB) { tip.style.display = 'none'; return }
   const hid = hapOrder[k]; const hit = rows.filter(r => r.hid === hid && r.x0 <= x && r.x1 >= x)
   if (!hit.length) { tip.style.display = 'none'; return }
   tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
-  tip.textContent = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}`).join('\n')
+  tip.textContent = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}`).join('\n')
 })
 window.addEventListener('mouseup', e => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; if (b - a < 4) { draw(); return } hist.push(view); view = [xOfPx(a), xOfPx(b)]; loadRange() })
-cv.addEventListener('dblclick', () => { if (!root) return; hist.push(view); view = [0, root.R - 1]; loadRange() })
+cv.addEventListener('dblclick', e => { if (!root) return; hist.push(view); if (e.offsetY < TOP && e.offsetX >= LAB) { const x = xOfPx(e.offsetX); const a = root.atoms.find(a => a.x0 <= x && a.x1 >= x); view = a ? [a.x0, a.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
 cv.addEventListener('wheel', e => { if (!root || e.offsetX < LAB) return; e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; loadRange() }, { passive: false })
 $('all').addEventListener('click', () => { if (!root) return; hist.push(view); view = [0, root.R - 1]; loadRange() })
 $('back').addEventListener('click', () => { const v = hist.pop(); if (v) { view = v; loadRange() } })
-$('minanch').addEventListener('change', () => loadRange()); $('showcopies').addEventListener('change', draw); $('showbounds').addEventListener('change', draw)
+$('minanch').addEventListener('change', () => { loadRange(); loadAtoms() }); $('showcopies').addEventListener('change', draw); $('showbounds').addEventListener('change', draw)
 $('db').addEventListener('change', () => { db = ($('db') as HTMLSelectElement).value; history.replaceState(null, '', `?db=${encodeURIComponent(db)}`); loadRoot() })
 window.addEventListener('resize', draw)
 loadDbList().then(loadRoot)

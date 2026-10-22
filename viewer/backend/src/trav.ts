@@ -19,7 +19,7 @@ export function travPath(dbFile: string): string | null {
 export interface TravPath { pid: number; path: string; hid: number; orient: number; relation: number; excluded: number; ntok: number; bp: number }
 export interface TravAtom { id: number; x0: number; x1: number; bp: number; nhap: number }
 export interface TravBound { x: number; support: number; persistence: number }
-export interface TravRow { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number }
+export interface TravRow { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number; bp0?: number }
 export interface CopyRow { id: number; pid: number; hid: number; x0: number; x1: number; ia0: number; ia1: number; ib0: number; ib1: number; bpa: number; bpb: number }
 
 export interface Trav {
@@ -64,7 +64,7 @@ export function travRoot(t: Trav): any {
 
 // 座標区間 [x0, x1] に重なる通過とコピー。ハプロタイプごとの通過数（×n の材料）も返す
 export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number; minAnchors?: number } = {}): any {
-  const rows = t.db.prepare('SELECT id, pid, hid, i0, i1, x0, x1, dir, copy, nanch, bp FROM trav WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid, i0').all(x1, x0) as TravRow[]
+  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid, i0').all(x1, x0) as TravRow[]
   const mo = opts.minOverlap ?? 0; const ma = opts.minAnchors ?? 0   // 錨が少ない断片（硬い領域のかけら）は既定で出さない。ヒト v2 は 50 錨未満が 8,964 本で、x≈1.52M の 1 か所に 5,298 本集中
   const out = rows.filter(r => r.nanch >= ma && (mo <= 0 || Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo))
   const copies = t.db.prepare('SELECT id, pid, hid, x0, x1, ia0, ia1, ib0, ib1, bpa, bpb FROM copies WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid').all(x1, x0) as CopyRow[]
@@ -75,11 +75,29 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
 
 // 錨でないトークンも含めた「このコンティグのトークン区間 [i0, i1] が座標のどこに当たるか」は trav 表から引く
 export function travOfPath(t: Trav, pid: number): TravRow[] {
-  return t.db.prepare('SELECT id, pid, hid, i0, i1, x0, x1, dir, copy, nanch, bp FROM trav WHERE pid = ? ORDER BY i0').all(pid) as TravRow[]
+  return t.db.prepare('SELECT * FROM trav WHERE pid = ? ORDER BY i0').all(pid) as TravRow[]
 }
 
 export function repsOfRange(t: Trav, pids: number[]): any[] {
   if (!pids.length) return []
   const q = `SELECT id, pid, hid, i0, i1, bp FROM reps WHERE pid IN (${pids.map(() => '?').join(',')}) ORDER BY pid, i0`
   return t.db.prepare(q).all(...pids)
+}
+
+// 原子 × ハプロタイプの通過数（ブロックの段の ×n）。通過が原子の半分以上を覆うか、通過が原子に収まる（原子の内側の小さな通過）ものを数える
+export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; nhap: number; nhap2: number; counts: Record<number, number> }[] } {
+  const key = `atoms:${minAnchors}`; const c = (t as any)[key]; if (c) return c
+  const rows = t.db.prepare('SELECT hid, x0, x1, nanch FROM trav WHERE nanch >= ? ORDER BY x0').all(minAnchors) as { hid: number; x0: number; x1: number; nanch: number }[]
+  const out = t.atoms.map(a => ({ id: a.id, nhap: 0, nhap2: 0, counts: {} as Record<number, number> }))
+  let j = 0
+  for (let ai = 0; ai < t.atoms.length; ai++) {
+    const a = t.atoms[ai]; const o = out[ai]
+    while (j < rows.length && rows[j].x1 < a.x0) j++
+    for (let k = j; k < rows.length && rows[k].x0 <= a.x1; k++) {
+      const r = rows[k]; const ov = Math.min(r.x1, a.x1) - Math.max(r.x0, a.x0) + 1
+      if (ov >= 0.5 * (a.x1 - a.x0 + 1) || (r.x0 >= a.x0 && r.x1 <= a.x1)) o.counts[r.hid] = (o.counts[r.hid] || 0) + 1
+    }
+    const v = Object.values(o.counts); o.nhap = v.length; o.nhap2 = v.filter(n => n >= 2).length
+  }
+  const res = { atoms: out }; (t as any)[key] = res; return res
 }
