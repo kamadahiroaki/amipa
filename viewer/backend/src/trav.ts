@@ -88,12 +88,24 @@ export function repsOfRange(t: Trav, pids: number[]): any[] {
   return t.db.prepare(q).all(...pids)
 }
 
-// 原子 × ハプロタイプの通過数（ブロックの段の ×n）。通過が原子の半分以上を覆うか、通過が原子に収まる（原子の内側の小さな通過）ものを数える
+// 反復（出現単位）を座標に写したもの（hid ごと、x0 順）。×n の裏付けに使う
+function repsByHap(t: Trav): Map<number, [number, number][]> {
+  const c = (t as any).__repsByHap; if (c) return c
+  const rows = t.db.prepare('SELECT r.hid, r.i0, r.i1, t.x0 AS tx0, t.x1 AS tx1, t.i0 AS ti0, t.i1 AS ti1, t.dir FROM reps r JOIN trav t ON t.pid = r.pid AND t.i0 <= r.i1 AND t.i1 >= r.i0').all() as any[]
+  const m = new Map<number, [number, number][]>()
+  for (const r of rows) { const L = Math.max(1, r.ti1 - r.ti0); const f0 = Math.max(0, Math.min(1, (r.i0 - r.ti0) / L)), f1 = Math.max(0, Math.min(1, (r.i1 - r.ti0) / L)); const [a0, a1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]
+    if (!m.has(r.hid)) m.set(r.hid, []); m.get(r.hid)!.push([Math.round(r.tx0 + a0 * (r.tx1 - r.tx0)), Math.round(r.tx0 + a1 * (r.tx1 - r.tx0))]) }
+  for (const v of m.values()) v.sort((a, b) => a[0] - b[0])
+  ;(t as any).__repsByHap = m; return m
+}
+// 原子 × ハプロタイプの通過数（ブロックの段の ×n）。座標の再訪だけでは信用できない（試作で untangle の重複の +1% しか拾えず、もつれで偽が出る）ので、
+// ×n はその株の反復（2 回以上出るノードの連なり）がその原子に掛かるときだけ数える。通過が原子の半分以上を覆うか、通過が原子に収まる（原子の内側の小さな通過）ものを数える
 // 単調性の違反の切断を持つハプロタイプが通る株の 3 割を超える原子は「もつれ」（順序が線形にならない硬い領域）とし、×n を数えない
 export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; nhap: number; nhap2: number; tangled: boolean; counts: Record<number, number> }[] } {
   const key = `atoms:${minAnchors}`; const c = (t as any)[key]; if (c) return c
   const rows = t.db.prepare('SELECT hid, x0, x1, nanch FROM trav WHERE nanch >= ? ORDER BY x0').all(minAnchors) as { hid: number; x0: number; x1: number; nanch: number }[]
   const out = t.atoms.map(a => ({ id: a.id, nhap: 0, nhap2: 0, tangled: false, counts: {} as Record<number, number> }))
+  const RB = repsByHap(t); const hasRep = (hid: number, a: TravAtom) => { const v = RB.get(hid); if (!v) return false; for (const [r0, r1] of v) { if (r0 > a.x1) break; if (r1 >= a.x0) return true } return false }
   let j = 0
   for (let ai = 0; ai < t.atoms.length; ai++) {
     const a = t.atoms[ai]; const o = out[ai]
@@ -109,6 +121,7 @@ export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; 
       if (dup || rs.length === 0) o.counts[r.hid] = (o.counts[r.hid] || 0) + 1
       rs.push([r.x0, r.x1])
     }
+    for (const h of Object.keys(o.counts)) { const hid = Number(h); if (o.counts[hid] >= 2 && !hasRep(hid, a)) o.counts[hid] = 1 }   // 反復の裏付けが無い再訪は 1 回に
     const v = Object.values(o.counts); o.nhap = v.length; o.tangled = (a.ntangle || 0) > 0.3 * Math.max(1, o.nhap); o.nhap2 = o.tangled ? 0 : v.filter(n => n >= 2).length
   }
   const res = { atoms: out }; (t as any)[key] = res; return res
