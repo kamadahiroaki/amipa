@@ -31,7 +31,7 @@ async function loadRoot() {
   if (!r.ok) { root = null; $('info').textContent = `${db}: .trav が無い（${r.status}）`; draw(); return }
   root = await r.json(); view = [0, root!.R - 1]; hist = []
   const refLike = (h: string) => /^(GRCh38|CHM13|GCF_000148365)/.test(h) ? 0 : 1
-  hapOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(root!.haps[a].hap) - refLike(root!.haps[b].hap) || root!.haps[a].hap.localeCompare(root!.haps[b].hap))
+  hapOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(root!.haps[a].hap) - refLike(root!.haps[b].hap) || root!.haps[a].hap.localeCompare(root!.haps[b].hap)); baseOrder = hapOrder.slice()
   await loadRange(); await loadAtoms()
 }
 async function loadAtoms() {
@@ -42,12 +42,15 @@ async function loadAtoms() {
   if (refH) { const rr = await fetch(`/api/trav/range?db=${encodeURIComponent(db)}&x0=0&x1=${root.R}&minanch=1000`); if (rr.ok) refTrav = ((await rr.json()).trav as Trav[]).filter(t => t.hid === refH.hid) }
   draw()
 }
+let rangeTimer: any = null
+function scheduleRange(ms = 120) { if (rangeTimer) clearTimeout(rangeTimer); $('busy').style.display = 'inline'; rangeTimer = setTimeout(() => { rangeTimer = null; loadRange() }, ms) }
 async function loadRange() {
   if (!root) return
-  const my = ++loading; const minanch = Number(($('minanch') as HTMLInputElement).value) || 0
+  const my = ++loading; $('busy').style.display = 'inline'; const minanch = Number(($('minanch') as HTMLInputElement).value) || 0
   const r = await fetch(`/api/trav/range?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${minanch}`)
   if (my !== loading) return
-  const j = await r.json(); rows = j.trav; copies = j.copies; reps = j.reps || []; perHap = j.perHap
+  const j = await r.json(); rows = j.trav; copies = j.copies; reps = j.reps || []; perHap = j.perHap; $('busy').style.display = 'none'; sel = null
+  hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : baseOrder.slice()
   const nh2 = Object.values(perHap).filter(n => (n as number) >= 2).length
   $('info').textContent = `${db}: 座標 ${fmt(Math.floor(view[0]))}–${fmt(Math.ceil(view[1]))} / ${fmt(root.R)}（${fmtbp(j.bp0)}–${fmtbp(j.bp1)}） 通過 ${fmt(rows.length)} コピー ${fmt(copies.length)} 2 回以上通るハプロタイプ ${nh2} | 原子 ${root.atoms.length} 錨 強 ${fmt(root.meta.strong)} 補間 ${fmt(root.meta.interp)}`
   draw()
@@ -55,6 +58,28 @@ async function loadRange() {
 function X(x: number) { const w = cv.width / devicePixelRatio - LAB; return LAB + (x - view[0]) / Math.max(1, view[1] - view[0]) * w }
 function xOfPx(px: number) { const w = cv.width / devicePixelRatio - LAB; return view[0] + (px - LAB) / w * (view[1] - view[0]) }
 function hue(i: number) { return (i * 137.508) % 360 }
+function treeOrder(): number[] {
+  // 表示範囲の原子ごとに、各ハプロタイプの状態（0 無し, 1 順向き, 2 逆向き, 3 両方/複数）を作り、bp 重みの不一致率で UPGMA（n ≤ 数百を想定）
+  if (!root) return hapOrder
+  const [v0, v1] = view; const atomsIn = root.atoms.filter(a => a.x1 >= v0 && a.x0 <= v1); if (!atomsIn.length) return hapOrder
+  const H = root.haps.length; const state = new Uint8Array(H * atomsIn.length); const aIdx = new Map(atomsIn.map((a, i) => [a.id, i]))
+  const dom = new Map<number, number>(); for (const r of rows) dom.set(r.pid, (dom.get(r.pid) || 0) + r.dir * r.nanch)
+  for (const r of rows) { const d = (dom.get(r.pid) || 0) >= 0 ? r.dir : -r.dir; for (const a of atomsIn) { if (a.x1 < r.x0 || a.x0 > r.x1) continue; const k = r.hid * atomsIn.length + aIdx.get(a.id)!; const cur = state[k]; const nv = d >= 0 ? 1 : 2; state[k] = cur === 0 ? nv : (cur === nv ? cur : 3) } }
+  const w = atomsIn.map(a => Math.max(1, Math.min(a.x1, v1) - Math.max(a.x0, v0) + 1)); const wsum = w.reduce((a, b) => a + b, 0)
+  const ids = hapOrder.slice(); const n = ids.length; const D: number[][] = Array.from({ length: n }, () => new Array(n).fill(0))
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { let dsum = 0; for (let k = 0; k < atomsIn.length; k++) { const a = state[ids[i] * atomsIn.length + k], b = state[ids[j] * atomsIn.length + k]; if (a !== b) dsum += w[k] * (a === 0 || b === 0 ? 1 : 0.5) } D[i][j] = D[j][i] = dsum / wsum }
+  // UPGMA: クラスタを併合して葉の順を得る
+  let clusters: { leaves: number[]; size: number }[] = ids.map((_, i) => ({ leaves: [i], size: 1 })); let dist = D.map(r => r.slice())
+  while (clusters.length > 1) {
+    let bi = 0, bj = 1, bd = Infinity; for (let i = 0; i < clusters.length; i++) for (let j = i + 1; j < clusters.length; j++) if (dist[i][j] < bd) { bd = dist[i][j]; bi = i; bj = j }
+    const A = clusters[bi], B = clusters[bj]; const merged = { leaves: A.leaves.concat(B.leaves), size: A.size + B.size }
+    const nd: number[] = []; for (let k = 0; k < clusters.length; k++) if (k !== bi && k !== bj) nd.push((dist[bi][k] * A.size + dist[bj][k] * B.size) / (A.size + B.size))
+    clusters = clusters.filter((_, k) => k !== bi && k !== bj); dist = dist.filter((_, k) => k !== bi && k !== bj).map(r => r.filter((_, k) => k !== bi && k !== bj))
+    clusters.push(merged); for (let k = 0; k < dist.length; k++) dist[k].push(nd[k]); dist.push(nd.concat([0]))
+  }
+  return clusters[0].leaves.map(i => ids[i])
+}
+let baseOrder: number[] = []
 function refPos(x: number): string {
   const t = refTrav.find(t => t.x0 <= x && t.x1 >= x); if (!t || t.bp0 == null) return ''
   const f = (x - t.x0) / Math.max(1, t.x1 - t.x0); const bp = t.dir >= 0 ? t.bp0 + f * t.bp : t.bp0 + (1 - f) * t.bp
@@ -119,9 +144,22 @@ function draw() {
     const oneAtom = root!.atoms.some(a => a.x0 <= v0 && a.x1 >= v1)
     g.fillStyle = oneAtom && n >= 2 ? '#b03a2e' : '#333'; g.font = '11px system-ui'; g.fillText(`${hap.hap}${hap.nexcl ? ` +${hap.nexcl}冗長` : ''}${oneAtom && n >= 2 ? ` ×${n}` : (n > 1 ? ` (${n})` : '')}`, 4, y + 10)
     const pcs = piecesOf.get(hid) || []
+    // コンティグごとの主な向き（錨数で重み）と、コンティグ内の順が合意座標の順と合わない通過（転座: 最長の単調部分列に入らないもの）
+    const inv = new Set<Trav>(), displaced = new Set<Trav>()
+    for (const pid of new Set((byHap.get(hid) || []).map(r => r.pid))) {
+      const trs = (byHap.get(hid) || []).filter(r => r.pid === pid).sort((a, b) => a.i0 - b.i0); const dom = trs.reduce((t, r) => t + r.dir * r.nanch, 0) >= 0 ? 1 : -1
+      for (const r of trs) if (r.dir !== dom) inv.add(r)
+      const seq = trs.map(r => dom >= 0 ? r.x0 : -r.x0); const n = seq.length; const L = new Array(n).fill(1), P = new Array(n).fill(-1)   // LIS
+      for (let i2 = 0; i2 < n; i2++) for (let j2 = 0; j2 < i2; j2++) if (seq[j2] <= seq[i2] && L[j2] + 1 > L[i2]) { L[i2] = L[j2] + 1; P[i2] = j2 }
+      let best = 0; for (let i2 = 1; i2 < n; i2++) if (L[i2] > L[best]) best = i2
+      const keep = new Set<number>(); for (let i2 = best; i2 >= 0; i2 = P[i2]) keep.add(i2)
+      trs.forEach((r, i2) => { if (!keep.has(i2) && r.nanch >= 50) displaced.add(r) })
+    }
     for (const p of pcs) {
       const px0 = Math.max(LAB, Math.min(p.px0, p.px1)), px1 = Math.min(W, Math.max(p.px0, p.px1)); const w = Math.max(1, px1 - px0)
-      g.fillStyle = `hsla(${hue(p.atom)}, 60%, 50%, ${p.tr.copy >= 1 ? .45 : .85})`; g.fillRect(px0, y + 2, w, BLK)
+      const yy = (mode === 'coord' && displaced.has(p.tr)) ? y + 2 + BLK / 2 : y + 2; const hh = (mode === 'coord' && displaced.has(p.tr)) ? BLK / 2 : BLK   // 転座は下段に下げて細く
+      g.fillStyle = `hsla(${hue(p.atom)}, 60%, 50%, ${p.tr.copy >= 1 ? .45 : .85})`; g.fillRect(px0, yy, w, hh)
+      if (inv.has(p.tr)) { g.fillStyle = 'rgba(142,68,173,.95)'; g.fillRect(px0, y + 1, w, 2) }   // 逆位: 紫の上線
     }
     // 通過の向きの三角（通過ごとに 1 つ、端に）とコピー番号
     for (const r of byHap.get(hid) || []) {
@@ -129,7 +167,6 @@ function draw() {
       const lo = Math.min(...ps.map(p => Math.min(p.px0, p.px1))), hi = Math.max(...ps.map(p => Math.max(p.px0, p.px1))); if (hi - lo < 8) continue
       const fwd = mode === 'coord' ? r.dir >= 0 : true   // 各行の並びでは常にコンティグの向きに進む
       g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, y + 2); g.lineTo(hi - 1, y + 2 + BLK / 2); g.lineTo(hi - 6, y + 2 + BLK) } else { g.moveTo(lo + 6, y + 2); g.lineTo(lo + 1, y + 2 + BLK / 2); g.lineTo(lo + 6, y + 2 + BLK) } g.fill()
-      if (mode === 'rows' && r.dir < 0) { g.fillStyle = 'rgba(142,68,173,.9)'; g.fillRect(lo, y + 1, Math.max(1, hi - lo), 1) }   // 各行の並びでは逆向き（座標が減る）を紫の上線で
       if (r.copy >= 1 && hi - lo > 14) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
     }
     if (mode === 'rows') { const sc = rowScale.get(hid); if (sc) { g.fillStyle = '#222'; const w = (W - LAB) / sc.total; for (const sp of sc.sep.slice(0, -1)) g.fillRect(LAB + sp * w, y + 1, 1, BLK + 2) } }
@@ -140,22 +177,25 @@ function draw() {
       const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.strokeStyle = '#c0392b'; g.lineWidth = 2; g.beginPath(); g.moveTo(px0, y + BLK + 2); g.lineTo(px1, y + BLK + 2); g.stroke()
     }
   })
-  // 連結線: 隣の行の同じ原子の片の中心を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）
+  if (sel) { g.fillStyle = 'rgba(52,152,219,.15)'; g.fillRect(sel[0], 0, sel[1] - sel[0], H); g.fillStyle = '#c0392b'; g.font = '12px system-ui'; g.fillText('計算中…', sel[0] + 4, 14) }
+  // 連結線: 合意座標を等間隔に標本し、隣の行でその座標を含む片の中の位置を結ぶ（密度が一定になる。原子ごとだと再編成の所に線が集中して黒くなる）
   if (mode === 'rows' && ($('showlines') as HTMLInputElement).checked) {
     g.lineWidth = 1
+    const nS = Math.max(8, Math.floor((W - LAB) / 14)); const xsS: number[] = []; for (let k = 0; k < nS; k++) xsS.push(v0 + (k + 0.5) / nS * (v1 - v0))
+    const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { const a = root!.atoms[p.atom - 1]; const c0 = Math.max(a.x0, p.tr.x0), c1 = Math.min(a.x1, p.tr.x1); if (x < c0 || x > c1 + 1) continue; const f = (x - c0) / Math.max(1, c1 + 1 - c0); const fx = p.tr.dir >= 0 ? f : 1 - f; out.push(p.px0 + fx * (p.px1 - p.px0)) } return out }
     for (let k = 0; k + 1 < hapOrder.length; k++) {
       const A = piecesOf.get(hapOrder[k]) || [], B = piecesOf.get(hapOrder[k + 1]) || []; const yA = TOP + k * ROW + 2 + BLK, yB = TOP + (k + 1) * ROW + 2
-      const byAtom = new Map<number, Piece[]>(); for (const p of B) { if (!byAtom.has(p.atom)) byAtom.set(p.atom, []); byAtom.get(p.atom)!.push(p) }
-      for (const p of A) {
-        const qs = byAtom.get(p.atom); if (!qs) continue; const cx = (p.px0 + p.px1) / 2
-        for (const q of qs) { const cq = (q.px0 + q.px1) / 2; if (cx < LAB || cq < LAB) continue; g.strokeStyle = `hsla(${hue(p.atom)}, 60%, 45%, .55)`; g.beginPath(); g.moveTo(cx, yA); g.lineTo(cq, yB); g.stroke() }
+      for (const x of xsS) {
+        const pa = posIn(A, x), pb = posIn(B, x); if (!pa.length || !pb.length) continue
+        const a = root!.atoms.find(a => a.x0 <= x && a.x1 >= x); g.strokeStyle = `hsla(${a ? hue(a.id) : 0}, 60%, 40%, ${pa.length * pb.length > 1 ? .7 : .4})`
+        for (const xa of pa) for (const xb of pb) { if (xa < LAB || xb < LAB) continue; g.beginPath(); g.moveTo(xa, yA); g.lineTo(xb, yB); g.stroke() }
       }
     }
   }
 }
 // 操作
-let drag: [number, number] | null = null
-cv.addEventListener('mousedown', e => { if (e.offsetX > LAB) drag = [e.offsetX, e.offsetX] })
+let drag: [number, number] | null = null; let sel: [number, number] | null = null   // sel: 読み込み中に残す選択の矩形（画面 px）
+cv.addEventListener('mousedown', e => { const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (e.offsetX > LAB && (!inRows || e.offsetY < TOP)) drag = [e.offsetX, e.offsetX] })   // 各行の並びでは上段だけ（行の中は座標に写せない）
 cv.addEventListener('mousemove', e => {
   if (drag) { drag[1] = e.offsetX; draw(); g.fillStyle = 'rgba(52,152,219,.2)'; g.fillRect(Math.min(...drag), 0, Math.abs(drag[1] - drag[0]), cv.height); return }
   if (!root) return
@@ -174,12 +214,12 @@ cv.addEventListener('mousemove', e => {
   tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
   tip.textContent = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}`).concat(rhit.map(r => `反復（この株で 2 回以上出るノードの連なり） トークン ${fmt(r.i0)}–${fmt(r.i1)}  ${fmtbp(r.bp)}`)).join('\n')
 })
-window.addEventListener('mouseup', e => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; if (b - a < 4) { draw(); return } hist.push(view); view = [xOfPx(a), xOfPx(b)]; loadRange() })
+window.addEventListener('mouseup', e => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; if (b - a < 4) { draw(); return } hist.push(view); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; draw(); loadRange() })
 cv.addEventListener('dblclick', e => { if (!root) return; hist.push(view); if (e.offsetY < TOP && e.offsetX >= LAB) { const x = xOfPx(e.offsetX); const a = root.atoms.find(a => a.x0 <= x && a.x1 >= x); view = a ? [a.x0, a.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
-cv.addEventListener('wheel', e => { if (!root || e.offsetX < LAB) return; e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; loadRange() }, { passive: false })
+cv.addEventListener('wheel', e => { if (!root || e.offsetX < LAB) return; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (inRows && e.offsetY >= TOP) return; e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root.R - 1, n1)]; draw(); scheduleRange() }, { passive: false })
 $('all').addEventListener('click', () => { if (!root) return; hist.push(view); view = [0, root.R - 1]; loadRange() })
 $('back').addEventListener('click', () => { const v = hist.pop(); if (v) { view = v; loadRange() } })
-$('minanch').addEventListener('change', () => { loadRange(); loadAtoms() }); $('showcopies').addEventListener('change', draw); $('showbounds').addEventListener('change', draw); $('showreps').addEventListener('change', draw); $('mode').addEventListener('change', draw); $('showlines').addEventListener('change', draw)
+$('minanch').addEventListener('change', () => { loadRange(); loadAtoms() }); $('showcopies').addEventListener('change', draw); $('showbounds').addEventListener('change', draw); $('showreps').addEventListener('change', draw); $('mode').addEventListener('change', draw); $('showlines').addEventListener('change', draw); $('order').addEventListener('change', () => { hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : baseOrder.slice(); draw() })
 $('db').addEventListener('change', () => { db = ($('db') as HTMLSelectElement).value; history.replaceState(null, '', `?db=${encodeURIComponent(db)}`); loadRoot() })
 window.addEventListener('resize', draw)
 loadDbList().then(loadRoot)
