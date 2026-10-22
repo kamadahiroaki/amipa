@@ -24,6 +24,8 @@
   <label>DB <select id="db"></select></label>
   <label>錨の床 <input id="minanch" type="number" value="50" min="0" step="10"></label>
   <button id="all">全体</button><button id="back">戻る</button>
+  <label>並び <select id="mode"><option value="coord">合意座標</option><option value="rows">各行の並び</option></select></label>
+  <label><input id="showlines" type="checkbox" checked> 連結線</label>
   <label><input id="showcopies" type="checkbox" checked> コピー</label>
   <label><input id="showreps" type="checkbox" checked> 反復</label>
   <label><input id="showbounds" type="checkbox" checked> 境界</label>
@@ -31,7 +33,7 @@
 </div>
 <div id="legend">
   <b>上段</b> 四角＝原子（座標区間。高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／縦縞＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株、高さ＝持続度）
-  <b>行</b> 青・緑＝同じハプロタイプの別コンティグを交互に／三角＝向き／<span style="color:#7a1414">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style="color:#d35400">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分
+  <b>行</b> 色＝原子（同じ色＝同じブロック。株間の対応）／コンティグの境は細い黒線／三角＝向き／連結線＝隣の行の同じ原子を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）／<span style="color:#7a1414">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style="color:#d35400">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分
   <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数
 </div>
 <div id="wrap"><canvas id="cv"></canvas><div id="tip"></div></div>
