@@ -93,9 +93,16 @@ export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; 
   for (let ai = 0; ai < t.atoms.length; ai++) {
     const a = t.atoms[ai]; const o = out[ai]
     while (j < rows.length && rows[j].x1 < a.x0) j++
+    // ハプロタイプごとに、原子に関わる通過を x の順に見て、既に数えた範囲と 50% 以上重なるものだけを「もう 1 回」と数える
+    // （共線な断片が並んでいるだけなら 1 回。硬い領域の細切れを ×n にしない）
+    const seen: Record<number, [number, number][]> = {}
     for (let k = j; k < rows.length && rows[k].x0 <= a.x1; k++) {
       const r = rows[k]; const ov = Math.min(r.x1, a.x1) - Math.max(r.x0, a.x0) + 1
-      if (ov >= 0.5 * (a.x1 - a.x0 + 1) || (r.x0 >= a.x0 && r.x1 <= a.x1)) o.counts[r.hid] = (o.counts[r.hid] || 0) + 1
+      if (!(ov >= 0.5 * (a.x1 - a.x0 + 1) || (r.x0 >= a.x0 && r.x1 <= a.x1))) continue
+      const rs = seen[r.hid] || (seen[r.hid] = []); let dup = false
+      for (const [s0, s1] of rs) { const o2 = Math.min(s1, r.x1) - Math.max(s0, r.x0) + 1; if (o2 >= 0.5 * Math.min(s1 - s0 + 1, r.x1 - r.x0 + 1)) { dup = true; break } }
+      if (dup || rs.length === 0) o.counts[r.hid] = (o.counts[r.hid] || 0) + 1
+      rs.push([r.x0, r.x1])
     }
     const v = Object.values(o.counts); o.nhap = v.length; o.nhap2 = v.filter(n => n >= 2).length
   }
