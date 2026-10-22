@@ -173,12 +173,14 @@ function ensureCols(t: Trav): boolean {
   return true
 }
 export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAnchors = 50): any {
+  const T00 = Date.now()
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
   const X = t.xOfDense!, K = t.kindOfDense!, BP = t.bpOfDense!, dist = t.dist!
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); const W = x1 - x0 + 1; if (W <= 0) return { error: 'empty' }
   ncol = Math.max(1, Math.min(W, Math.floor(ncol) || 1))
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
-  let ntok = 0; for (const r of rows) ntok += r.i1 - r.i0 + 1
+  // 読む量の見積もり: 通過のうち窓に掛かる割合（x が錨の番号に比例するとして）× トークン数 ＋ 余白。ヒトは 1 通過が 100 万トークンなので全長で数えると小さな窓でも断ってしまう
+  let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
   if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, x0, x1 }
   const colOf = (x: number) => Math.min(ncol - 1, Math.floor((x - x0) * ncol / W))
   const nanch = new Uint16Array(ncol); for (let c = 0; c < ncol; c++) { const a = Math.ceil(c * W / ncol), b = Math.ceil((c + 1) * W / ncol); nanch[c] = Math.min(65535, Math.max(0, b - a)) }
@@ -238,6 +240,6 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
     ncls[c] = Math.min(255, ranked.length); nrow[c] = m.size ? ranked.reduce((a, e) => a + e[1], 0) : 0; major[c] = ranked.length ? ranked[0][1] : 0
   }
   const ms = Date.now() - T0; if (ms > 2000) console.log(`[trav/cols] ${rows.length} rows, read ${nread} tok (${tRead} ms), mix ${tMix} ms, total ${ms} ms`)
-  return { x0, x1, ncol, ntok, nread, ms, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
+  return { x0, x1, ncol, ntok, nread, ms, msPre: T0 - T00, msRead: tRead, nrows: rows.length, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
     rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins) })) }
 }
