@@ -15,6 +15,12 @@ type Root = { meta: any; H: number; R: number; total_bp: number; haps: Hap[]; at
 type Block = { id: number; x0: number; x1: number; bp: number; a0: number; a1: number; nhap: number; nhap2: number; tangled: boolean }
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement
+const PARAMS = new URLSearchParams(location.search); const SYNC = PARAMS.get('sync') === '1'
+async function getJson(url: string): Promise<{ ok: boolean; status: number; json: () => Promise<any> }> {
+  if (!SYNC) return fetch(url)
+  const x = new XMLHttpRequest(); x.open('GET', url, false); x.send(null); const txt = x.responseText
+  return { ok: x.status >= 200 && x.status < 300, status: x.status, json: async () => JSON.parse(txt) }
+}
 const cv = $('cv') as HTMLCanvasElement; const g = cv.getContext('2d')!; const tip = $('tip'); const ov = $('ov') as HTMLCanvasElement; const og = ov.getContext('2d')!
 const TOP = 70, LAB = 150, BLK = 8; let ROW = 13
 let db = '', root: Root | null = null, view: [number, number] = [0, 1], hist: [number, number][] = []
@@ -26,7 +32,7 @@ const fmt = (n: number) => n.toLocaleString('en-US')
 const fmtbp = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(2) + ' Mb' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kb' : Math.round(n) + ' bp'
 function showErr(where: string, e: any) { $('info').textContent = 'エラー ' + `${where}: ${e && (e.stack || e.message || e)}`.slice(0, 400); $('info').style.color = '#c0392b'; $('busy').style.display = 'none'; console.error(where, e) }
 window.addEventListener('error', ev => showErr('window', ev.error || ev.message)); window.addEventListener('unhandledrejection', ev => showErr('promise', (ev as any).reason))
-const hue = (i: number) => (i * 137.508) % 360
+const hue = (i: number) => blocks.length > 1 ? (i / (blocks.length - 1)) * 300 : 200   // ブロック番号 → 色相（左から右へ一方向）
 const numOf = (id: string, dflt: number) => { const v = Number(($(id) as HTMLInputElement).value); return Number.isFinite(v) ? v : dflt }
 
 // ---- 座標 ↔ bp ↔ 画面 ----
@@ -60,15 +66,16 @@ function blockAt(x: number): number { let lo = 0, hi = blocks.length - 1; while 
 
 // ---- 読み込み ----
 async function loadDbList() {
-  const r = await fetch('/api/databases'); const dbs = (await r.json()) as string[]
+  const r = await getJson('/api/databases'); const dbs = (await r.json()) as string[]
   const sel = $('db') as HTMLSelectElement; sel.innerHTML = dbs.map(d => `<option>${d}</option>`).join('')
   const q = new URLSearchParams(location.search).get('db'); if (q && dbs.includes(q)) sel.value = q
   db = sel.value
 }
 async function loadRoot() {
-  const r = await fetch(`/api/trav/root?db=${encodeURIComponent(db)}`)
+  const r = await getJson(`/api/trav/root?db=${encodeURIComponent(db)}`)
   if (!r.ok) { root = null; $('info').textContent = `${db}: .trav が無い（${r.status}）`; draw(); return }
   root = await r.json(); view = [0, root!.R - 1]; hist = []
+  const vq = PARAMS.get('view'); if (vq) { const [a, b] = vq.split('-').map(Number); if (Number.isFinite(a) && Number.isFinite(b)) view = [Math.max(0, a), Math.min(root!.R - 1, b)] }
   atomCum = []; let c = 0; for (const a of root!.atoms) { atomCum.push(c); c += a.bp }
   const refLike = (h: string) => /^(GRCh38|CHM13|GCF_000148365)/.test(h) ? 0 : 1
   baseOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(root!.haps[a].hap) - refLike(root!.haps[b].hap) || root!.haps[a].hap.localeCompare(root!.haps[b].hap)); hapOrder = baseOrder.slice()
@@ -76,9 +83,9 @@ async function loadRoot() {
 }
 async function loadAtoms() {
   if (!root) return
-  const r = await fetch(`/api/trav/atoms?db=${encodeURIComponent(db)}&minanch=${numOf('minanch', 50)}`); atomStats = r.ok ? (await r.json()).atoms : []
+  const r = await getJson(`/api/trav/atoms?db=${encodeURIComponent(db)}&minanch=${numOf('minanch', 50)}`); atomStats = r.ok ? (await r.json()).atoms : []
   const refH = root.haps.find(h => /^(GRCh38|CHM13)/.test(h.hap)); refTrav = []
-  if (refH) { const rr = await fetch(`/api/trav/range?db=${encodeURIComponent(db)}&x0=0&x1=${root.R}&minanch=1000`); if (rr.ok) refTrav = ((await rr.json()).trav as Trav[]).filter(t => t.hid === refH.hid) }
+  if (refH) { const rr = await getJson(`/api/trav/range?db=${encodeURIComponent(db)}&x0=0&x1=${root.R}&minanch=1000`); if (rr.ok) refTrav = ((await rr.json()).trav as Trav[]).filter(t => t.hid === refH.hid) }
 }
 let rangeTimer: any = null
 function scheduleRange(ms = 120) { if (rangeTimer) clearTimeout(rangeTimer); $('busy').style.display = 'inline'; rangeTimer = setTimeout(() => { rangeTimer = null; loadRange() }, ms) }
@@ -86,7 +93,7 @@ async function loadRange() {
   if (!root) return
   const my = ++loading; $('busy').style.display = 'inline'
   try {
-    const r = await fetch(`/api/trav/range?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}`)
+    const r = await getJson(`/api/trav/range?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}`)
     if (my !== loading) return
     const j = await r.json(); rows = j.trav; copies = j.copies; reps = j.reps || []; perHap = j.perHap; sel = null; $('info').style.color = ''
     blocks = makeBlocks()
@@ -168,11 +175,15 @@ function drawCore() {
       const order = pids.slice().sort((a, b) => firstX.get(a)! - firstX.get(b)!); let tot = 0
       for (const pid of order) { const trs = ts.filter(r => r.pid === pid); const lo = Math.min(...trs.map(r => r.bp0 ?? 0)), hi = Math.max(...trs.map(r => (r.bp0 ?? 0) + r.bp)); offOf.set(pid, tot - lo); mirror.set(pid, domOf.get(pid)! < 0); tot += hi - lo }
       total = Math.max(1, tot); scale = wPx() / total
-      if (pids.length === 1) { const pid = pids[0]; const r0 = ts.reduce((m, r) => r.x0 < m.x0 ? r : m, ts[0]); const b0 = (r0.bp0 ?? 0), b1 = b0 + r0.bp; const tlen = root.haps[hid].bp || total; const start = mirror.get(pid) ? tlen - b1 : b0; rot = start - (Math.min(...ts.map(r => r.bp0 ?? 0))); total = Math.max(1, tlen); scale = wPx() / total }
+      const fullView = v0 <= 0 && v1 >= root.R - 2
+      if (pids.length === 1 && fullView) { const pid = pids[0]; const bigT = ts.filter(r => r.nanch >= 1000); const r0 = (bigT.length ? bigT : ts).reduce((m, r) => r.x0 < m.x0 ? r : m, (bigT.length ? bigT : ts)[0]); const b0 = (r0.bp0 ?? 0), b1 = b0 + r0.bp; const tlen = root.haps[hid].bp || total; const start = mirror.get(pid) ? tlen - b1 : b0; rot = start - (Math.min(...ts.map(r => r.bp0 ?? 0))); total = Math.max(1, tlen); scale = wPx() / total }
     }
-    const pos = (r: Trav, bp: number) => {   // コンティグ上の bp → 行の画面 x（各行の並び）
-      const tlen = root!.haps[hid].bp || total; let b = mirror.get(r.pid) ? (pids.length === 1 ? tlen - bp : (offOf.get(r.pid)! * 0 + (Math.max(...(byHap.get(hid) || []).filter(q => q.pid === r.pid).map(q => (q.bp0 ?? 0) + q.bp)) + Math.min(...(byHap.get(hid) || []).filter(q => q.pid === r.pid).map(q => q.bp0 ?? 0))) - bp)) : bp
-      if (pids.length === 1) { b = b - rot; if (b < 0) b += tlen; if (b >= tlen) b -= tlen } else b += offOf.get(r.pid)!
+    const rangeOf = new Map<number, [number, number]>(); for (const pid of pids) { const trs = ts.filter(r => r.pid === pid); rangeOf.set(pid, [Math.min(...trs.map(r => r.bp0 ?? 0)), Math.max(...trs.map(r => (r.bp0 ?? 0) + r.bp))]) }
+    const fullView = v0 <= 0 && v1 >= root.R - 2; const rotating = pids.length === 1 && fullView
+    const pos = (r: Trav, bp: number) => {   // コンティグ上の bp → 行の画面 x（各行の並び）。鏡は表示範囲に掛かる部分の中で折り返す
+      const [lo, hi] = rangeOf.get(r.pid)!; const tlen = root!.haps[hid].bp || total
+      let b = mirror.get(r.pid) ? (rotating ? tlen - bp : lo + hi - bp) : bp
+      if (rotating) { b = b - rot; if (b < 0) b += tlen; if (b >= tlen) b -= tlen } else b += offOf.get(r.pid)!
       return LAB + b * scale
     }
     for (const r of ts) for (let bi = blockAt(r.x0); bi < blocks.length && blocks[bi].x0 <= r.x1; bi++) {
@@ -192,18 +203,18 @@ function drawCore() {
     g.fillStyle = oneBlk && n >= 2 ? '#b03a2e' : '#333'; g.font = '11px system-ui'; g.fillText(`${hap.hap}${hap.nexcl ? ` +${hap.nexcl}冗長` : ''}${oneBlk && n >= 2 ? ` ×${n}` : (n > 1 ? ` (${n})` : '')}`, 4, y + 10)
     const pcs = piecesOf.get(hid) || []
     for (const p of pcs) {
-      const px0 = Math.max(LAB, Math.min(p.px0, p.px1)), px1 = Math.min(W, Math.max(p.px0, p.px1)); const w = Math.max(1, px1 - px0); const low = mode === 'coord' && (p.inv || p.disp)
-      const yy = low ? y + 2 + BLK / 2 : y + 2, hh = low ? BLK / 2 + 1 : BLK
-      g.fillStyle = `hsla(${hue(p.blk)}, 60%, 50%, ${p.tr.copy >= 1 ? .45 : .85})`; g.fillRect(px0, yy, w, hh)
-      if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 1.5; g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1); if (w > 10 && mode === 'coord') { g.fillStyle = '#8e44ad'; g.beginPath(); g.moveTo(px0 + 7, yy); g.lineTo(px0 + 1, yy + hh / 2); g.lineTo(px0 + 7, yy + hh); g.fill() } }
-      else if (p.disp && mode === 'coord') { g.strokeStyle = '#555'; g.lineWidth = 1; g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1) }
+      const px0 = Math.max(LAB, Math.min(p.px0, p.px1)), px1 = Math.min(W, Math.max(p.px0, p.px1)); const w = Math.max(1, px1 - px0); const yy = y + 2, hh = BLK
+      // 片の中は合意の向きに明→暗。画面上で左が合意の先頭なら明→暗、逆（逆位・逆鎖）なら暗→明
+      g.fillStyle = `hsla(${hue(p.blk)}, 62%, 52%, ${p.tr.copy >= 1 ? .5 : .9})`; g.fillRect(px0, yy, w, hh)
+      if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 2; g.strokeRect(px0 + 1, yy + 1, Math.max(1, w - 2), hh - 2); if (w > 10 && mode === 'coord') { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(px0 + 7, yy + 1); g.lineTo(px0 + 2, yy + hh / 2); g.lineTo(px0 + 7, yy + hh - 1); g.fill() } }
+      else if (p.disp && mode === 'coord') { g.strokeStyle = '#333'; g.lineWidth = 1; g.setLineDash([3, 2]); g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1); g.setLineDash([]) }
     }
     for (const r of byHap.get(hid) || []) {   // 通過ごとに向きの三角（右端または左端）とコピー番号
       const ps = pcs.filter(p => p.tr === r); if (!ps.length) continue
-      const lo = Math.max(LAB, Math.min(...ps.map(p => Math.min(p.px0, p.px1)))), hi = Math.min(W, Math.max(...ps.map(p => Math.max(p.px0, p.px1)))); if (hi - lo < 10) continue
-      const fwd = mode === 'coord' ? r.dir >= 0 : true; const yy = (mode === 'coord' && (ps[0].inv || ps[0].disp)) ? y + 2 + BLK / 2 : y + 2, hh = (mode === 'coord' && (ps[0].inv || ps[0].disp)) ? BLK / 2 + 1 : BLK
+      const lo = Math.max(LAB, Math.min(...ps.map(p => Math.min(p.px0, p.px1)))), hi = Math.min(W, Math.max(...ps.map(p => Math.max(p.px0, p.px1)))); if (hi - lo < 24) continue
+      const fwd = mode === 'coord' ? r.dir >= 0 : true; const yy = y + 2, hh = BLK
       if (!(ps[0].inv && mode === 'coord')) { g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, yy); g.lineTo(hi - 1, yy + hh / 2); g.lineTo(hi - 6, yy + hh) } else { g.moveTo(lo + 6, yy); g.lineTo(lo + 1, yy + hh / 2); g.lineTo(lo + 6, yy + hh) } g.fill() }
-      if (r.copy >= 1 && hi - lo > 14) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
+      if (r.copy >= 1 && hi - lo > 40) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
     }
     if (($('showreps') as HTMLInputElement).checked && mode === 'coord') for (const c of (rpByHap.get(hid) || [])) { const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.fillStyle = 'rgba(120,20,20,.9)'; g.fillRect(px0, y + 1, Math.max(1, px1 - px0), 2) }
     if (($('showcopies') as HTMLInputElement).checked && mode === 'coord') for (const c of (cpByHap.get(hid) || [])) { const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.strokeStyle = '#c0392b'; g.lineWidth = 2; g.beginPath(); g.moveTo(px0, y + BLK + 3); g.lineTo(px1, y + BLK + 3); g.stroke() }
@@ -255,4 +266,5 @@ for (const id of ['showcopies', 'showbounds', 'showreps', 'mode', 'showlines']) 
 $('order').addEventListener('change', () => { hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : baseOrder.slice(); draw() })
 $('db').addEventListener('change', () => { db = ($('db') as HTMLSelectElement).value; history.replaceState(null, '', `?db=${encodeURIComponent(db)}`); loadRoot() })
 window.addEventListener('resize', draw)
+for (const [k, id] of [['mode', 'mode'], ['order', 'order'], ['nblk', 'nblk'], ['minanch', 'minanch']] as [string, string][]) { const v = PARAMS.get(k); if (v != null) ($(id) as HTMLInputElement).value = v }
 loadDbList().then(loadRoot)
