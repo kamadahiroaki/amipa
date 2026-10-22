@@ -1,0 +1,85 @@
+// 通過（traversal）のサイドカー `<db>.trav`（functions/anchor2/build/synteny2_build.py が作る、SQLite）を読む。
+// 設計: amipa-lab/plans/anchor2-traversals.md。錨の座標 x（多数決順の順位）、通過 trav（コンティグ × 座標区間 × 向き × コピー番号）、
+// コピー copies（同じコンティグの通過の座標の重なり）、境界 bounds（支持・持続度）、原子 atoms、反復 reps（出現単位）。
+// 現行の `.synteny` と並行して読む（置き換えはまだ）。
+import Database from 'better-sqlite3'
+import fs from 'fs'
+import path from 'path'
+import { getDbDir } from './db'
+
+export const TRAV_SUFFIX = '.trav'
+
+export function travPath(dbFile: string): string | null {
+  const base = path.join(getDbDir(), path.basename(dbFile))
+  try { if (fs.existsSync(base + TRAV_SUFFIX)) return base + TRAV_SUFFIX } catch { /* ignore */ }
+  try { const rp = fs.realpathSync(base) + TRAV_SUFFIX; if (fs.existsSync(rp)) return rp } catch { /* ignore */ }
+  return null
+}
+
+export interface TravPath { pid: number; path: string; hid: number; orient: number; relation: number; excluded: number; ntok: number; bp: number }
+export interface TravAtom { id: number; x0: number; x1: number; bp: number; nhap: number }
+export interface TravBound { x: number; support: number; persistence: number }
+export interface TravRow { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number }
+export interface CopyRow { id: number; pid: number; hid: number; x0: number; x1: number; ia0: number; ia1: number; ib0: number; ib1: number; bpa: number; bpb: number }
+
+export interface Trav {
+  file: string; mtime: number; db: Database.Database
+  meta: Record<string, any>; H: number; R: number
+  haps: string[]; paths: TravPath[]; atoms: TravAtom[]; bounds: TravBound[]
+  xbp: Float64Array                                   // 座標 → 累積 bp（長さ R+1）
+  hapPaths: number[][]                                 // hid → pid の一覧
+}
+
+const cache = new Map<string, Trav>()
+
+export function loadTrav(dbFile: string): Trav | null {
+  const p = travPath(dbFile)
+  if (!p) return null
+  let mtime = 0
+  try { mtime = fs.statSync(p).mtimeMs } catch { /* ignore */ }
+  const c = cache.get(p)
+  if (c && c.mtime === mtime) return c
+  if (c) { try { c.db.close() } catch { /* ignore */ } }
+  const db = new Database(p, { readonly: true })
+  const meta: Record<string, any> = {}
+  for (const r of db.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]) { try { meta[r.key] = JSON.parse(r.value) } catch { meta[r.key] = r.value } }
+  const haps = (db.prepare('SELECT hid, hap FROM haps ORDER BY hid').all() as { hid: number; hap: string }[]).map(r => r.hap)
+  const paths = db.prepare('SELECT pid, path, hid, orient, relation, excluded, ntok, bp FROM paths ORDER BY pid').all() as TravPath[]
+  const atoms = db.prepare('SELECT id, x0, x1, bp, nhap FROM atoms ORDER BY x0').all() as TravAtom[]
+  const bounds = db.prepare('SELECT x, support, persistence FROM bounds ORDER BY x').all() as TravBound[]
+  const xb = db.prepare("SELECT blob FROM arrays WHERE name='xbp'").get() as { blob: Buffer } | undefined
+  let xbp = new Float64Array(0)
+  if (xb) { const big = new BigInt64Array(xb.blob.buffer, xb.blob.byteOffset, xb.blob.byteLength / 8); xbp = new Float64Array(big.length); for (let i = 0; i < big.length; i++) xbp[i] = Number(big[i]) }
+  const hapPaths: number[][] = haps.map(() => []); for (const r of paths) hapPaths[r.hid].push(r.pid)
+  const t: Trav = { file: p, mtime, db, meta, H: haps.length, R: Number(meta.R ?? xbp.length - 1), haps, paths, atoms, bounds, xbp, hapPaths }
+  cache.set(p, t)
+  return t
+}
+
+// 根: メタ・ハプロタイプ・原子・境界（持続度つき）・コンティグの関係の要約
+export function travRoot(t: Trav): any {
+  const perHap = t.haps.map((hap, hid) => { const ps = t.hapPaths[hid]; return { hid, hap, ncontig: ps.length, nexcl: ps.filter(pid => t.paths[pid].excluded).length, bp: ps.reduce((a, pid) => a + t.paths[pid].bp, 0) } })
+  return { meta: t.meta, H: t.H, R: t.R, total_bp: t.xbp.length ? t.xbp[t.xbp.length - 1] : 0, haps: perHap, atoms: t.atoms, bounds: t.bounds }
+}
+
+// 座標区間 [x0, x1] に重なる通過とコピー。ハプロタイプごとの通過数（×n の材料）も返す
+export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number } = {}): any {
+  const rows = t.db.prepare('SELECT id, pid, hid, i0, i1, x0, x1, dir, copy, nanch, bp FROM trav WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid, i0').all(x1, x0) as TravRow[]
+  const mo = opts.minOverlap ?? 0
+  const out = mo > 0 ? rows.filter(r => Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo) : rows
+  const copies = t.db.prepare('SELECT id, pid, hid, x0, x1, ia0, ia1, ib0, ib1, bpa, bpb FROM copies WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid').all(x1, x0) as CopyRow[]
+  const perHap: Record<number, number> = {}
+  for (const r of out) perHap[r.hid] = (perHap[r.hid] || 0) + 1
+  return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: out, copies, perHap }
+}
+
+// 錨でないトークンも含めた「このコンティグのトークン区間 [i0, i1] が座標のどこに当たるか」は trav 表から引く
+export function travOfPath(t: Trav, pid: number): TravRow[] {
+  return t.db.prepare('SELECT id, pid, hid, i0, i1, x0, x1, dir, copy, nanch, bp FROM trav WHERE pid = ? ORDER BY i0').all(pid) as TravRow[]
+}
+
+export function repsOfRange(t: Trav, pids: number[]): any[] {
+  if (!pids.length) return []
+  const q = `SELECT id, pid, hid, i0, i1, bp FROM reps WHERE pid IN (${pids.map(() => '?').join(',')}) ORDER BY pid, i0`
+  return t.db.prepare(q).all(...pids)
+}

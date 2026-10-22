@@ -13,6 +13,7 @@ import { bubbleMsaRouter } from './routes/bubbleMsa'
 import { exportRouter } from './routes/exportData'
 import { renderRouter } from './routes/render'
 import { blocksRouter, warmBlocksRoot } from './routes/blocks'
+import { travRouter } from './routes/trav'
 import { initWorkerPool } from './workerPool'
 import { prewarmAtStartup } from './prewarm'
 import { warmRunners } from './pyRunner'
@@ -157,6 +158,7 @@ app.use('/api', sessionRouter)
 app.use('/api', bubbleMsaRouter)
 app.use('/api', exportRouter)
 app.use('/api', renderRouter)
+app.use('/api', travRouter)   // 通過サイドカー <db>.trav（試作、設計案 anchor2-traversals）
 app.use('/api', blocksRouter)
 
 // Serve built frontend in production
