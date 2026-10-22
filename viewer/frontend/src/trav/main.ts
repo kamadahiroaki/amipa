@@ -5,7 +5,7 @@ type Atom = { id: number; x0: number; x1: number; bp: number; nhap: number }
 type Bound = { x: number; support: number; persistence: number }
 type Hap = { hid: number; hap: string; ncontig: number; nexcl: number; bp: number }
 type Trav = { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number; bp0?: number }
-type AtomStat = { id: number; nhap: number; nhap2: number; counts: Record<string, number> }
+type AtomStat = { id: number; nhap: number; nhap2: number; tangled?: boolean; counts: Record<string, number> }
 type Copy = { id: number; pid: number; hid: number; x0: number; x1: number; ia0: number; ia1: number; ib0: number; ib1: number; bpa: number; bpb: number }
 type Root = { meta: any; H: number; R: number; total_bp: number; haps: Hap[]; atoms: Atom[]; bounds: Bound[] }
 
@@ -72,6 +72,7 @@ function draw() {
     const px0 = Math.max(LAB, X(a.x0)), px1 = Math.min(W, X(a.x1 + 1)); const h = 8 + 30 * Math.min(1, a.nhap / root.H)
     g.fillStyle = `hsla(${hue(a.id)}, 60%, 55%, .55)`; g.fillRect(px0, TOP - 12 - h, Math.max(1, px1 - px0), h)
     const st = atomStats[a.id - 1]; if (st && st.nhap2 > 0) { g.fillStyle = 'rgba(192,57,43,.9)'; g.fillRect(px0, TOP - 12, Math.max(1, px1 - px0), 3) }   // 2 回以上通るハプロタイプがある原子
+    if (st && st.tangled) { g.fillStyle = 'rgba(0,0,0,.25)'; for (let xx = px0; xx < px1; xx += 6) g.fillRect(xx, TOP - 12 - h, 2, h) }   // もつれ（順序が線形にならない硬い領域）は斜線代わりの縦縞
     if (px1 - px0 > 40) { g.fillStyle = '#333'; g.font = '10px system-ui'; g.fillText(`#${a.id} ${fmtbp(a.bp)} ${a.nhap}/${root.H}${st && st.nhap2 ? ` ×${st.nhap2}` : ''}`, px0 + 2, TOP - 14 - h) }
   }
   if (($('showbounds') as HTMLInputElement).checked) for (const b of root.bounds) {
@@ -120,7 +121,7 @@ cv.addEventListener('mousemove', e => {
     const a = root.atoms.find(a => a.x0 <= x && a.x1 >= x); if (!a) { tip.style.display = 'none'; return }
     const st = atomStats[a.id - 1]; const multi = st ? Object.entries(st.counts).filter(([, n]) => n >= 2).map(([h, n]) => `${root!.haps[Number(h)].hap} ×${n}`) : []
     tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
-    tip.textContent = `原子 #${a.id}  座標 ${fmt(a.x0)}–${fmt(a.x1)}  ${fmtbp(a.bp)}  通るハプロタイプ ${st ? st.nhap : a.nhap}/${root.H}  ${refPos(a.x0)}` + (multi.length ? `\n2 回以上: ${multi.slice(0, 12).join(', ')}${multi.length > 12 ? ` +${multi.length - 12}` : ''}` : '')
+    tip.textContent = `原子 #${a.id}  座標 ${fmt(a.x0)}–${fmt(a.x1)}  ${fmtbp(a.bp)}  通るハプロタイプ ${st ? st.nhap : a.nhap}/${root.H}  ${refPos(a.x0)}${st && st.tangled ? '  【もつれ: 順序が線形にならない領域。×n は数えない】' : ''}` + (multi.length ? `\n2 回以上: ${multi.slice(0, 12).join(', ')}${multi.length > 12 ? ` +${multi.length - 12}` : ''}` : '')
     return
   }
   if (k < 0 || k >= hapOrder.length || e.offsetX < LAB) { tip.style.display = 'none'; return }

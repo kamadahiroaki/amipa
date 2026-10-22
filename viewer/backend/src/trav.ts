@@ -17,7 +17,7 @@ export function travPath(dbFile: string): string | null {
 }
 
 export interface TravPath { pid: number; path: string; hid: number; orient: number; relation: number; excluded: number; ntok: number; bp: number }
-export interface TravAtom { id: number; x0: number; x1: number; bp: number; nhap: number }
+export interface TravAtom { id: number; x0: number; x1: number; bp: number; nhap: number; ntangle?: number }
 export interface TravBound { x: number; support: number; persistence: number }
 export interface TravRow { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number; bp0?: number }
 export interface CopyRow { id: number; pid: number; hid: number; x0: number; x1: number; ia0: number; ia1: number; ib0: number; ib1: number; bpa: number; bpb: number }
@@ -45,7 +45,7 @@ export function loadTrav(dbFile: string): Trav | null {
   for (const r of db.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]) { try { meta[r.key] = JSON.parse(r.value) } catch { meta[r.key] = r.value } }
   const haps = (db.prepare('SELECT hid, hap FROM haps ORDER BY hid').all() as { hid: number; hap: string }[]).map(r => r.hap)
   const paths = db.prepare('SELECT pid, path, hid, orient, relation, excluded, ntok, bp FROM paths ORDER BY pid').all() as TravPath[]
-  const atoms = db.prepare('SELECT id, x0, x1, bp, nhap FROM atoms ORDER BY x0').all() as TravAtom[]
+  const atoms = db.prepare('SELECT * FROM atoms ORDER BY x0').all() as TravAtom[]   // ntangle は version 3 から
   const bounds = db.prepare('SELECT x, support, persistence FROM bounds ORDER BY x').all() as TravBound[]
   const xb = db.prepare("SELECT blob FROM arrays WHERE name='xbp'").get() as { blob: Buffer } | undefined
   let xbp = new Float64Array(0)
@@ -89,10 +89,11 @@ export function repsOfRange(t: Trav, pids: number[]): any[] {
 }
 
 // 原子 × ハプロタイプの通過数（ブロックの段の ×n）。通過が原子の半分以上を覆うか、通過が原子に収まる（原子の内側の小さな通過）ものを数える
-export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; nhap: number; nhap2: number; counts: Record<number, number> }[] } {
+// 単調性の違反の切断を持つハプロタイプが通る株の 3 割を超える原子は「もつれ」（順序が線形にならない硬い領域）とし、×n を数えない
+export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; nhap: number; nhap2: number; tangled: boolean; counts: Record<number, number> }[] } {
   const key = `atoms:${minAnchors}`; const c = (t as any)[key]; if (c) return c
   const rows = t.db.prepare('SELECT hid, x0, x1, nanch FROM trav WHERE nanch >= ? ORDER BY x0').all(minAnchors) as { hid: number; x0: number; x1: number; nanch: number }[]
-  const out = t.atoms.map(a => ({ id: a.id, nhap: 0, nhap2: 0, counts: {} as Record<number, number> }))
+  const out = t.atoms.map(a => ({ id: a.id, nhap: 0, nhap2: 0, tangled: false, counts: {} as Record<number, number> }))
   let j = 0
   for (let ai = 0; ai < t.atoms.length; ai++) {
     const a = t.atoms[ai]; const o = out[ai]
@@ -108,7 +109,7 @@ export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; 
       if (dup || rs.length === 0) o.counts[r.hid] = (o.counts[r.hid] || 0) + 1
       rs.push([r.x0, r.x1])
     }
-    const v = Object.values(o.counts); o.nhap = v.length; o.nhap2 = v.filter(n => n >= 2).length
+    const v = Object.values(o.counts); o.nhap = v.length; o.tangled = (a.ntangle || 0) > 0.3 * Math.max(1, o.nhap); o.nhap2 = o.tangled ? 0 : v.filter(n => n >= 2).length
   }
   const res = { atoms: out }; (t as any)[key] = res; return res
 }
