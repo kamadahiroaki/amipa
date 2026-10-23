@@ -277,6 +277,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50): any
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
   const q = gdb.prepare('SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?')
+  const qch = gdb.prepare("SELECT f.type, t.s0, t.e0 FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds','exon','five_prime_UTR','three_prime_UTR','UTR')")   // 子（エキソン・CDS・UTR）のトークン範囲
   const out: any[] = []; let n = 0; const T0 = Date.now()
   // まず件数だけ数え、多すぎる範囲（全景など）はトークンを読まずに断る
   const qn = gdb.prepare('SELECT count(*) AS n FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?')
@@ -305,7 +306,16 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50): any
         const f0 = (s0 - r.i0) / Lt, f1 = (e0 - r.i0) / Lt; const [u0, u1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]; gx0 = Math.round(r.x0 + u0 * span); gx1 = Math.round(r.x0 + u1 * span)
       }
       if (gx1 < x0 || gx0 > x1) continue
-      out.push({ gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: A[1] >= 0 || B[1] >= 0, og: -1 })
+      // 子（エキソン・CDS・UTR）: 遺伝子のトークン範囲の中の位置を座標に比例で写す（転写産物が複数なら種類ごとに併合）。遺伝子が多い範囲（5,000 超）では省く
+      let ch: [string, number, number][] | undefined
+      if (rows.length <= 400 && n <= 5000) {
+        const L = Math.max(1, g.e0 - g.s0); const span2 = gx1 - gx0; const rev = r.dir < 0
+        const toX = (tok: number) => { const f = Math.max(0, Math.min(1, (tok - g.s0) / L)); return rev ? gx1 - f * span2 : gx0 + f * span2 }
+        const per = new Map<string, [number, number][]>()
+        for (const c of qch.all(g.gid) as { type: string; s0: number; e0: number }[]) { const kind = /cds/i.test(c.type) ? 'cds' : /utr/i.test(c.type) ? 'utr' : 'exon'; const a = toX(c.s0), b = toX(c.e0); const lo = Math.round(Math.min(a, b)), hi = Math.round(Math.max(a, b)); if (!per.has(kind)) per.set(kind, []); per.get(kind)!.push([lo, hi]) }
+        if (per.size) { ch = []; for (const [kind, iv] of per) { iv.sort((u, v) => u[0] - v[0]); let cur: [number, number] | null = null; for (const [lo, hi] of iv) { if (cur && lo <= cur[1] + 1) cur[1] = Math.max(cur[1], hi); else { if (cur) ch.push([kind, cur[0], cur[1]]); cur = [lo, hi] } } if (cur) ch.push([kind, cur[0], cur[1]]) } }
+      }
+      out.push({ gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: A[1] >= 0 || B[1] >= 0, og: -1, ch })
       geneAnch.push(acc)
     }
   }
@@ -331,14 +341,14 @@ export function travNodeSet(t: Trav, x0: number, x1: number, minAnchors = 50, ma
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
   let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
   if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, names: [] }
-  const seen = new Uint8Array(X.length); const names: string[] = []; let truncated = false; const T0 = Date.now()
+  const seen = new Uint8Array(X.length); const names: string[] = []; const xs: number[] = []; let truncated = false; const T0 = Date.now()
   outer: for (const r of rows) {
     const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
     const wt = windowTokens(t, r, pi, x0, x1); let full = false
-    forEachWindowToken(r, wt.toks, wt.s0, x0, x1, X, K, (d) => { if (full || seen[d]) return; seen[d] = 1; if (names.length >= max) { truncated = true; full = true; return } names.push('n' + idmap[d - 1].toString()) })
+    forEachWindowToken(r, wt.toks, wt.s0, x0, x1, X, K, (d, _isA, xa) => { if (full || seen[d]) return; seen[d] = 1; if (names.length >= max) { truncated = true; full = true; return } names.push('n' + idmap[d - 1].toString()); xs.push(xa) })   // xs = 付いている錨の座標（塗り分け用）
     if (full) break outer
   }
-  return { x0, x1, n: names.length, truncated, ms: Date.now() - T0, names }
+  return { x0, x1, n: names.length, truncated, ms: Date.now() - T0, names, xs }
 }
 // ---- ノード名 → 座標（グラフ → パネル）: n<元 id> を id_map の逆引きで dense に、x_of_dense で座標に。錨でないノードは x=-1 ----
 function origIndex(t: Trav): { ids: Float64Array; order: Uint32Array } {

@@ -213,6 +213,7 @@ export interface BlockColorMap {
   filter?: boolean                               // Blocks の窓の範囲にグラフを絞る（範囲外のノードと辺を描かない）
   filterRange?: [number, number]                 // 絞る範囲（窓の合意座標の張り）。葉はノードの合意座標で判定、スーパーノードは原子で判定
   filterSel?: BlockSel                           // 集合の意味での窓（原子の範囲／列範囲）。部分グラフはこれで引く（bp の近似を使わない）
+  dimSet?: Set<string>                           // Traversals の表示範囲: この集合（表示している層の名前）に無いノードを薄灰で描く（隠さない。色は nodeColors で）
 }
 export function blockColorOf(bm: BlockColorMap, contig: number | null | undefined, bp: number | null | undefined,
                              bpEnd: number | null | undefined, multi: number | null | undefined): number | null {
@@ -1513,7 +1514,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         // まず名前 → ブロック番号（ワーカーの対応表。参照座標の無い葉やスーパーノードも塗れる）、無ければ参照区間の規則
         const bm = blockColorsRef.current
         let blockColor: number | null | undefined = undefined
-        if (bm) {
+        if (bm && bm.dimSet) blockColor = bm.dimSet.has(n.node_name) ? 0x228be6 : null   // Traversals の範囲: 中＝既定色（nodeColors があればそれ）、外＝薄灰
+        else if (bm) {
           const rc = bm.rankColors
           if (rc && bm.atomRank) {
             // 木: ノード → 原子（nodemap の記憶）→ 今の段のブロック番号を描画のたびに引く（窓が変わっても記憶はそのまま使える）。

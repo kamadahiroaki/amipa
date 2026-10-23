@@ -15,12 +15,13 @@ interface Props {
   onReady?: (h: TravHandle | null) => void
   onHoverNodes?: (names: string[] | null) => void   // 塩基の段でホバーしたノード（グラフで強調）
   hapMarks?: Map<string, string>                    // 主画面で選択中のパス群（ハプロタイプ名 → 色）→ 行ラベルの丸
+  onRange?: (v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean } | null) => void   // 表示範囲のノードと色（グラフを寄せる・塗る・範囲外を薄灰か非表示）
 }
-export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks }: Props) {
+export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const hRef = useRef<TravHandle | null>(null)
-  const cbRef = useRef({ onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes })
-  useEffect(() => { cbRef.current = { onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes } }, [onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes])
+  const cbRef = useRef({ onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange })
+  useEffect(() => { cbRef.current = { onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange } }, [onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange])
   useEffect(() => { hRef.current?.setHapMarks(hapMarks ?? new Map()) }, [hapMarks])
   useEffect(() => {
     hRef.current?.destroy(); hRef.current = null; cbRef.current.onReady?.(null)
@@ -31,10 +32,11 @@ export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGrap
       onFilter: sel => cbRef.current.onFilter?.(sel),
       onGraphRange: () => cbRef.current.onGraphRange?.(),
       onHoverNodes: names => cbRef.current.onHoverNodes?.(names),
+      onRange: v => cbRef.current.onRange?.(v),
     })
     hRef.current.setHapMarks(hapMarks ?? new Map())
     cbRef.current.onReady?.(hRef.current)
-    return () => { hRef.current?.destroy(); hRef.current = null; cbRef.current.onReady?.(null); cbRef.current.onFilter?.(null); cbRef.current.onHoverNodes?.(null) }
+    return () => { hRef.current?.destroy(); hRef.current = null; cbRef.current.onReady?.(null); cbRef.current.onFilter?.(null); cbRef.current.onHoverNodes?.(null); cbRef.current.onRange?.(null) }
   }, [db])
   return <div ref={rootRef} style={{ width: '100%', height: '100%' }} />
 }

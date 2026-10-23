@@ -1047,6 +1047,31 @@ export default function App() {
   const onTravFilter = useCallback((sel: { names: string[] } | null) => {
     setTrvColors(sel && sel.names.length ? { maxSpan: 1, contigs: new Map(), db: selectedDb ?? undefined, filter: true, filterSel: { names: sel.names } } : null)
   }, [selectedDb])
+  // Traversals の表示範囲: 範囲のノード（葉の名前）→ 表示している層の名前に直して、範囲外を薄灰（hide なら非表示）、範囲内はブロックの色で塗る、寄せる
+  const [trvRange, setTrvRange] = useState<{ names: string[]; colors: number[] | null; fit: boolean; hide: boolean } | null>(null)
+  const trvRangeReq = useRef(0)
+  const onTravRange = useCallback((v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean } | null) => {
+    setTrvRange(v)
+    if (v && v.fit && selectedDb) { const my = ++trvRangeReq.current; void fetchBlockBbox(selectedDb, { names: v.names.slice(0, 5000) }).then(f => { if (my !== trvRangeReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer) }) }
+  }, [selectedDb])
+  const trvNodeColors = useMemo(() => { const m = new Map<string, number>(); if (trvRange && trvRange.colors) trvRange.names.forEach((n, i) => { const c = trvRange.colors![i]; if (c != null && c >= 0) m.set(n, c) }); return m }, [trvRange])
+  useEffect(() => {   // 範囲の葉の名前 → 表示している層の名前（/api/blocks/subgraph の名前だけ）。層が変わるたびに引き直す
+    if (!trvRange || !selectedDb) { setTrvColors(null); return }
+    if (trvRange.hide) { setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, filter: true, filterSel: { names: trvRange.names } }); return }
+    let live = true
+    fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: selectedDb, layer: mapLayer, names: trvRange.names, namesOnly: true }) })
+      .then(r => r.json()).then(j => { if (!live) return; const names: string[] = Array.isArray(j?.names) ? j.names : trvRange.names; setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set([...names, ...trvRange.names]) }) })
+      .catch(() => { if (live) setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) }) })
+    return () => { live = false }
+  }, [trvRange, selectedDb, mapLayer])
+  // グラフの塗りや重ね表示を初期値に戻す（Traversals／Blocks の範囲、ホバー、MSA の選択、洪水、重ね着色、辺の太さ、リボン、パス選択）
+  const resetGraphView = useCallback(() => {
+    setTrvRange(null); setTrvColors(null); setTrvHov(null); setBlkColors(null); setBlkHov(null); setBlkVis(null); setMsaNodeSel([]); setMsaHover(null)
+    setFloodMode(false); setFloodResult(null); setNodeGreyMode(false); setBandMode(false); setRegionMode(false); setGeneMode(false); setEdgeWidthMode('off'); setShowAlignColors(false)
+    setRibbonSel(new Map()); setSelectedPaths(new Map())
+    travApiRef.current?.resetLinks?.()
+    showHint('グラフの塗りと重ね表示を初期値に戻しました')
+  }, [showHint])
   const [trvHov, setTrvHov] = useState<Set<string> | null>(null)   // Traversals の塩基の段でホバー中のノード（マゼンタ）
   const trvHovReq = useRef(0)
   const onTravHover = useCallback((names: string[] | null) => {
@@ -1910,6 +1935,13 @@ export default function App() {
           >
             Share view
           </button>
+          <button
+            onClick={resetGraphView}
+            title="グラフの塗りと重ね表示を初期値に戻す（Traversals／Blocks の範囲の塗りと絞り込み、ホバーの強調、MSA の選択、洪水、重ね着色、辺の太さ、リボン、パス選択）"
+            style={{ fontFamily: 'sans-serif', fontSize: 13, padding: '4px 10px', border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057', cursor: 'pointer' }}
+          >
+            Reset
+          </button>
           {/* 8.3 Export: 現ビューポートの部分グラフ/ノードをファイル書き出し */}
           <div ref={exportMenuRef} style={{ position: 'relative' }}>
             <button onClick={() => setShowExportMenu(v => !v)}
@@ -2385,7 +2417,6 @@ export default function App() {
                   showNodeNames={showNodeNames}
                   showRefPos={showRefPos && refposAvail}
                   refContigs={refContigs}
-                  nodeColors={activeNodeColors}
                   selectedPaths={selectedPaths}
                   ribbons={ribbonHidden ? EMPTY_RIBBONS : ribbons}
                   layerZoom={lodMeta.layerZoom}
@@ -2400,6 +2431,7 @@ export default function App() {
                   msaHighlight={msaHiSet}
                   msaHoverNodes={msaHoverSet}
                   blockColors={blkColors ?? trvColors}
+                  nodeColors={trvNodeColors.size ? new Map([...activeNodeColors, ...trvNodeColors]) : activeNodeColors}
                   onVisibleAtoms={atoms => { blkApiRef.current?.setGraphAtoms?.(atoms) }}
                   onViewportChange={(vp, layer, glyphs) => {
                     setMapViewport(vp); setMapLayer(layer)
@@ -3177,11 +3209,10 @@ export default function App() {
         <div style={{ height: trvH, flexShrink: 0, overflow: 'hidden', borderTop: '1px solid #c8cdd3', background: '#fff' }}>
           <TravPanel
             db={selectedDb}
-            onVisible={onBlockBaseVisible}
+            onRange={onTravRange}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
-            onFilter={onTravFilter}
             onGraphRange={onTravGraphRange}
-            onReady={h => { travApiRef.current = h; if (!h) { setTrvColors(null); setTrvHov(null) } }}
+            onReady={h => { travApiRef.current = h; if (!h) { setTrvRange(null); setTrvColors(null); setTrvHov(null) } }}
             onHoverNodes={onTravHover}
             hapMarks={blkHapMarks}
           />
