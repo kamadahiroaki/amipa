@@ -20,14 +20,14 @@ export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGrap
   const hRef = useRef<TravHandle | null>(null)
   const cbRef = useRef({ onVisible, onSelectHap, onFilter, onGraphRange, onReady })
   useEffect(() => { cbRef.current = { onVisible, onSelectHap, onFilter, onGraphRange, onReady } }, [onVisible, onSelectHap, onFilter, onGraphRange, onReady])
-  const [msaReq, setMsaReq] = useState<{ ranges: [number, number, number][]; label: string; key: number } | null>(null)
+  const [msaReq, setMsaReq] = useState<{ ranges: [number, number, number][]; label: string; key: number; maxLeaves: number } | null>(null)
   const [msaH, setMsaH] = useState(260)
   useEffect(() => {
     hRef.current?.destroy(); hRef.current = null; cbRef.current.onReady?.(null)
     if (!db || !rootRef.current) return
     setMsaReq(null)
     hRef.current = mountTrav(rootRef.current, { db, params: new URLSearchParams(window.location.search) }, {   // ?view=a-b&mode=…&shot=… を主画面でも受ける（撮影・再現用）
-      onBaseMsa: (ranges, label) => setMsaReq({ ranges, label, key: Date.now() }),
+      onBaseMsa: (ranges, label) => setMsaReq({ ranges, label, key: Date.now(), maxLeaves: 3000 }),   // 葉の上限は「塩基へ」の見積もりと同じ 3,000
       onVisible: v => cbRef.current.onVisible?.(v),
       onSelectHap: h => cbRef.current.onSelectHap?.(h),
       onFilter: sel => cbRef.current.onFilter?.(sel),

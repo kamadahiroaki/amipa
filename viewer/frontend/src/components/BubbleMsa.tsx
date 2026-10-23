@@ -19,7 +19,7 @@ interface Props {
   sampleKeys: string[]              // 選択中のパス群キー([...ribbonSel.keys()])
   ribbonLevel: string
   // Blocks パネルの底からの受け渡し（各行のトークン範囲）。key が変わるたびに取り直す。ノード選択とは排他
-  rangeReq?: { ranges: [string | number, number, number][]; label: string; key: number } | null   // パス名か distill のパス番号（Traversals パネル）
+  rangeReq?: { ranges: [string | number, number, number][]; label: string; key: number; maxLeaves?: number } | null   // パス名か distill のパス番号（Traversals パネル）。maxLeaves=葉の上限（既定 400。Traversals は 3,000）
 }
 
 const STYLE = `
@@ -212,7 +212,7 @@ export default function BubbleMsa(props: Props) {
     if (!db) return
     if (rangeReq && rangeReq.ranges.length) {
       setLoading(true); setErr(null); setSortCol(null)
-      const d = await fetchBubbleMsaRanges(db, rangeReq.ranges, rangeReq.label, flank)
+      const d = await fetchBubbleMsaRanges(db, rangeReq.ranges, rangeReq.label, flank, undefined, rangeReq.maxLeaves)
       setLoading(false)
       if (d.error) { setErr(d.error); setData(null) } else setData(d)
       return
