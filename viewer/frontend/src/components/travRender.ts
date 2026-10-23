@@ -57,6 +57,7 @@ let genes: Gene[] = [], genesNote = ''      // 遺伝子レーン（今の表示
 let treeCut: number | null = null          // 系統樹のまとめ: 併合の高さがこれ（根の高さに対する割合）以下の枝を代表 1 株に（null＝まとめない）
 let groupOf = new Map<number, number[]>()  // 代表 hid → まとめた枝の hid 一覧
 let located: number[] = []                 // グラフから来た座標（縦線の印）
+let baseAuto = false                       // ?base=1 で一度だけ塩基へを押す
 const showGenes = () => ($('genes') as HTMLInputElement).checked
 const rungSel = () => ($('rung') as HTMLSelectElement).value
 // 段の自動切替: ブロックが 3 個以下（表示範囲が原子の中〜数個）か 200 kb 以下なら錨の列
@@ -142,6 +143,7 @@ async function loadRange() {
       if (cols && ($('order') as HTMLSelectElement).value === 'tree') hapOrder = treeOrder()   // 木を錨の列（アレル）で作り直す
     }
     updateBase()
+    if (PARAMS.get('base') === '1' && !baseAuto && !($('base') as HTMLButtonElement).disabled) { baseAuto = true; setTimeout(() => $('base').click(), 0) }   // URL で塩基 MSA まで開く（撮影・再現用）
     genes = []; genesNote = ''
     if (showGenes()) {   // 遺伝子レーン: 通過ごとの遺伝子を座標に写したもの
       draw()
