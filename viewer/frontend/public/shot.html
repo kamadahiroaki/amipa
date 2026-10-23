@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>shot</title>
+<!-- 撮影用: 主画面を iframe に入れ、/api/sleep の画像で load を遅らせる（headless firefox は load の直後に撮る）。
+     例: /shot.html?db=ecoli50.db&trav=1&view=130000-131500&ms=15000&w=1500&h=1000 -->
+<style>html,body{margin:0;background:#fff;overflow:hidden}iframe{border:0;display:block}img{position:absolute;left:-9px;top:-9px;width:1px;height:1px}</style></head>
+<body><script>
+const q = new URLSearchParams(location.search); const ms = Math.max(0, Math.min(20000, Number(q.get('ms')) || 12000)); const w = Number(q.get('w')) || 1500, h = Number(q.get('h')) || 1000
+q.delete('ms'); q.delete('w'); q.delete('h')
+document.write('<iframe src="/?' + q.toString().replace(/"/g, '') + '" width="' + w + '" height="' + h + '"></iframe><img src="/api/sleep?ms=' + ms + '">')
+</script></body></html>
