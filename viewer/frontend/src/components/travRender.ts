@@ -174,7 +174,8 @@ async function loadRange() {
     const nh2 = Object.values(perHap).filter(n => (n as number) >= 2).length
     $('info').textContent = `${db}: 座標 ${fmt(Math.floor(view[0]))}–${fmt(Math.ceil(view[1]))} / ${fmt(root.R)}（${fmtbp(j.bp0)}–${fmtbp(j.bp1)}） ブロック ${blocks.length}（原子 ${root.atoms.length}） 通過 ${fmt(rows.length)} コピー ${fmt(copies.length)} 2 回以上通る株 ${nh2} | 錨 強 ${fmt(root.meta.strong)} 補間 ${fmt(root.meta.interp)}`
     cols = null; colsNote = ''
-    if (wantCols()) {   // 錨の列: まずブロックの段を描いてから取りに行く
+    const viewBp = bpOfX(view[1] + 1) - bpOfX(view[0])
+    if (wantCols() || viewBp <= 2_000_000) {   // 錨の列: まずブロックの段を描いてから取りに行く（ブロックの段でも 2 Mb 以下なら読み、欠失の切れ目に使う）
       draw()
       const rc = await getJson(`/api/trav/cols?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&ncol=${Math.floor(bodyPx())}&minanch=${numOf('minanch', 50)}`)
       if (my !== loading) return
