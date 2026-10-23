@@ -146,7 +146,8 @@ def main():
         name2pi = {nm: i for i, nm in enumerate(p_names)}
         RNG = {}
         for r in (req.get("ranges") or []):
-            pi = name2pi.get(str(r[0]))
+            # r[0] はパス名か、distill の p_names の番号（通過パネルは番号で渡す。ヒト chr20-22 v2 は分割された W 行の名前が重複する）
+            pi = int(r[0]) if isinstance(r[0], int) and 0 <= int(r[0]) < len(p_names) else name2pi.get(str(r[0]))
             if pi is None: continue
             n_ = int(p_off[pi + 1]) - int(p_off[pi]); s0 = max(0, min(n_, int(r[1]))); e0 = max(s0, min(n_, int(r[2])))
             if e0 > s0: RNG.setdefault(pi, []).append((s0, e0))

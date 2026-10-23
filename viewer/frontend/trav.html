@@ -6,43 +6,16 @@
 <title>AMIPA traversals (試作)</title>
 <style>
   :root { color-scheme: light; }
-  body { margin: 0; font: 12px/1.4 system-ui, sans-serif; background: #fafafa; color: #222; }
-  #bar { display: flex; gap: 10px; align-items: center; padding: 6px 10px; background: #fff; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
-  #bar label { color: #555; }
-  #bar input[type=number] { width: 70px; }
-  #info { color: #444; margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60vw; }
-  #wrap { position: relative; }
-  canvas { display: block; }
-  #ov { position: absolute; left: 0; top: 0; pointer-events: none; }
-  #tip { position: fixed; pointer-events: none; background: rgba(30,30,30,.92); color: #fff; padding: 4px 7px; border-radius: 3px; font-size: 11px; display: none; max-width: 420px; white-space: pre; z-index: 9; }
-  button { font: inherit; }
-  #legend { font-size: 11px; color: #444; padding: 4px 10px; border-bottom: 1px solid #e5e5e5; background: #fdfdfd; line-height: 1.5; }
-  #legend b { margin-right: 4px; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; font: 12px/1.4 system-ui, sans-serif; background: #fafafa; color: #222; }
+  #pagebar { padding: 4px 10px; background: #fff; border-bottom: 1px solid #ddd; flex-shrink: 0; }
+  #pagebar .k { color: #777; margin-left: 10px; }
+  #root { flex: 1; min-height: 0; }
 </style>
 </head>
 <body>
-<div id="bar">
-  <label>DB <select id="db"></select></label>
-  <label>錨の床 <input id="minanch" type="number" value="50" min="0" step="10"></label>
-  <label>ブロック <input id="nblk" type="number" value="30" min="1" max="500" step="5"></label>
-  <button id="all">全体</button><button id="back">戻る</button>
-  <label>並び <select id="mode"><option value="coord">合意座標</option><option value="rows">各行の並び</option></select></label>
-  <label title="ブロックの段と塩基の間の段。錨の列＝表示範囲を画面の列に等分し、行ごとに錨の有無（濃さ）と錨の間のアレル（色。灰＝多数派、色＝少数派のアレル番号）と挿入（上辺の黒）を出す。自動＝ブロックが 3 個以下か 200 kb 以下で切り替え">段 <select id="rung"><option value="auto">自動</option><option value="blocks">ブロック</option><option value="cols">錨の列</option></select></label>
-  <label><input id="showlines" type="checkbox" checked> 連結線</label>
-  <label>並べ替え <select id="order"><option value="tree">表示範囲の木</option><option value="name">名前</option></select></label>
-  <label><input id="showcopies" type="checkbox" checked> コピー</label>
-  <label><input id="showreps" type="checkbox" checked> 反復</label>
-  <label><input id="showbounds" type="checkbox" checked> 境界</label>
-  <span id="busy" style="color:#c0392b;font-weight:600;display:none">計算中…</span>
-  <span id="info"></span>
-</div>
-<div id="legend">
-  <b>上段</b> 四角＝ブロック（表示範囲を持続度の高い境界で「ブロック」個に切った区間。横幅は bp に比例、高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／灰色の覆いと「?」＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株。高さ＝持続度＝その境界を潰したときの原子の幅。大きいほど大きなブロックを分ける境界）／ダブルクリックでそのブロックに寄る
-  <b>行</b> 色＝ブロック（同じ色＝同じブロック。株間の対応）／三角＝向き／<span style="color:#8e44ad">紫の枠と左向き三角、下段</span>＝コンティグの主な向きと逆（逆位）／<span style="color:#333">黒の破線</span>＝転座（コンティグ上の前後の通過から座標が 2 万錨以上離れている）／各行の並び: 1 コンティグの株は主な向きで鏡にし座標最小の通過を左に回す（環状）／連結線＝bp で等間隔に標本し、隣の行の同じ場所を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）。範囲の拡大は上段のドラッグ（ホイールは無効）。拡大すると境界が増え、原子まで細かくなる。左の木＝表示範囲の UPGMA（枝の長さ＝ブロックの有無・向きの不一致率）／<span style="color:#7a1414">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style="color:#d35400">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分
-  <b>錨の列（ブロックと塩基の間の段）</b> 各行を画面の列（1 列＝数錨〜数百錨）に切り、<span style="color:#888">灰</span>＝その列のトークン列が多数派と同じ、<span style="color:#e67e22">橙</span>・<span style="color:#2980b9">青</span>・<span style="color:#27ae60">緑</span>…＝少数派のアレル（番号順。同じ色＝同じ配列）、薄い＝その列の錨を一部しか持たない（欠失）、上辺の黒＝錨でない配列の挿入（高さは bp の対数）、白＝通過はあるが錨が無い。上段の帯＝列ごとのアレルの種類数（灰 1 種→赤 多い）と行の数（高さ）。下辺 2 px にブロックの色を残す。ホバーで列の錨数・アレル数・この行のトークン範囲（塩基 MSA へ渡す範囲）
-  <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数
-</div>
-<div id="wrap"><canvas id="cv"></canvas><canvas id="ov"></canvas><div id="tip"></div></div>
+<div id="pagebar"><label>DB <select id="db"></select></label><span class="k">通過の試作ページ（主画面の Traversals パネルと同じ部品）</span></div>
+<div id="root"></div>
 <script type="module" src="/src/trav/main.ts"></script>
 </body>
 </html>

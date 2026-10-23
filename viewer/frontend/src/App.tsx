@@ -5,6 +5,7 @@ import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, 
 import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
 import BubbleMsa from './components/BubbleMsa'
 import BlockMsa from './components/BlockMsa'
+import TravPanel from './components/TravPanel'
 import type { BlockView } from './components/blockMsaRender'
 import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
@@ -989,6 +990,7 @@ export default function App() {
   const [msaHover, setMsaHover] = useState<string[] | null>(null)
   // 多解像度 MSA（共線ブロック）パネル。選択/ホバーしたブロック＝参照区間 → 表示層のノード名に解いてグラフを強調する。
   const [blkH, setBlkH] = useState(0)                                  // パネル高さ(0=閉)
+  const [trvH, setTrvH] = useState(() => (new URLSearchParams(window.location.search).get('trav') ? 360 : 0))   // 通過（Traversals）パネルの高さ(0=閉)。?trav=1 で開いて始める
   const [blkColors, setBlkColors] = useState<BlockColorMap | null>(null)   // Blocks の窓・段に合わせたノードの塗り分け（参照区間→色）
   const blkScopeKeyRef = useRef<string>('')                                 // 直近にグラフを寄せた窓・絞り込み（同じなら寄せ直さない）
   const pendingHapRef = useRef<string | null>(null)                          // パス群の一覧が届いてから切り替える行
@@ -1032,11 +1034,17 @@ export default function App() {
     if (g) { toggleRibbonGroup(g); setRibbonHidden(false) } else showHint(`パス群に「${hap}」に合うものがありません`)
   }, [pathGroups, toggleRibbonGroup, showHint])
   // Blocks の底 → 塩基レベル MSA（MSA パネル）。範囲を渡してパネルを開く
-  const [msaRangeReq, setMsaRangeReq] = useState<{ ranges: [string, number, number][]; label: string; key: number } | null>(null)
+  const [msaRangeReq, setMsaRangeReq] = useState<{ ranges: [string | number, number, number][]; label: string; key: number } | null>(null)
   const onBlockBaseMsa = useCallback((req: { ranges: [string, number, number][]; label: string }) => {
     setMsaRangeReq({ ranges: req.ranges, label: req.label, key: Date.now() })
     setMsaH(h => (h > 0 ? h : 300))
     showHint(`Blocks ${req.label} の各行（${req.ranges.length} 範囲）を塩基レベル MSA に渡しました`)
+  }, [showHint])
+  // Traversals の底 → 塩基レベル MSA。行＝通過（同じコンティグの 2 回目は ·2）。範囲は distill のパス番号で渡す（ヒト v2 は名前が重複する）
+  const onTravBaseMsa = useCallback((ranges: [number, number, number][], label: string) => {
+    setMsaRangeReq({ ranges, label, key: Date.now() })
+    setMsaH(h => (h > 0 ? h : 300))
+    showHint(`Traversals ${label} の各通過（${ranges.length} 行）を塩基レベル MSA に渡しました`)
   }, [showHint])
   // 遺伝子（参照座標）を参照コンティグ id ごとに。gene.chrom（例 chrY）と ref_contigs.name を末尾一致で合わせる
   const blkGenes = useMemo(() => {
@@ -1204,6 +1212,12 @@ export default function App() {
     const start = blkH
     makeDragHandler(delta =>
       setBlkH(Math.max(MIN_SIDE, Math.min(window.innerHeight - MIN_GRAPH, start - delta)))
+    )(e)
+  }
+  function onTrvHandleDown(e: React.MouseEvent) {
+    const start = trvH
+    makeDragHandler(delta =>
+      setTrvH(Math.max(MIN_SIDE, Math.min(window.innerHeight - MIN_GRAPH, start - delta)))
     )(e)
   }
   function onRightHandleDown(e: React.MouseEvent) {
@@ -2057,6 +2071,26 @@ export default function App() {
             }}
           >
             Blocks
+          </button>
+          <button
+            onClick={() => setTrvH(h => {
+              if (h > 0) return 0
+              showHint('Traversals: 新しい錨（ハプロタイプ単位の一意性）と通過（複数回の出現）に基づくシンテニー。上段のドラッグで範囲、拡大すると錨の列（アレル）の段、「塩基へ」で各通過を塩基レベル MSA に渡します。')
+              return 360
+            })}
+            title="通過（Traversals）パネル。<db>.trav サイドカーのある DB だけ"
+            style={{
+              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
+              border: '1px solid',
+              borderColor: trvH > 0 ? '#8e44ad' : '#adb5bd',
+              borderRadius: 4,
+              background: trvH > 0 ? '#f3e9f8' : '#f8f9fa',
+              color: trvH > 0 ? '#8e44ad' : '#495057',
+              cursor: 'pointer',
+              fontWeight: trvH > 0 ? 600 : 400,
+            }}
+          >
+            Traversals
           </button>
         </div>
       </div>
@@ -3111,6 +3145,26 @@ export default function App() {
             hapMarks={blkHapMarks}
             genes={blkGenes}
             onReady={h => { blkApiRef.current = h; if (!h) { setBlkHov(null); setBlkColors(null) } }}
+          />
+        </div>
+      )}
+
+      {/* ── Bottom panel 4: 通過（Traversals、新しい錨と通過に基づくシンテニー） ─────────────── */}
+      {trvH > 0 && (
+        <div
+          onMouseDown={onTrvHandleDown}
+          title="Drag to resize Traversals panel"
+          className="amipa-grip-row"
+          style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
+        />
+      )}
+      {trvH > 0 && (
+        <div style={{ height: trvH, flexShrink: 0, overflow: 'hidden', borderTop: '1px solid #c8cdd3', background: '#fff' }}>
+          <TravPanel
+            db={selectedDb}
+            onBaseMsa={onTravBaseMsa}
+            onVisible={onBlockBaseVisible}
+            onSelectHap={hap => onBlockSelectHap(hap, hap)}
           />
         </div>
       )}

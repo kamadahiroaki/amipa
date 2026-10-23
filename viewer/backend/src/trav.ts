@@ -31,6 +31,7 @@ export interface Trav {
   xbp: Float64Array                                   // 座標 → 累積 bp（長さ R+1）
   hapPaths: number[][]                                 // hid → pid の一覧
   dbFile: string
+  genesDb?: Database.Database | null   // <db>.genes（遺伝子レーン用。無ければ null）
   xOfDense?: Int32Array; kindOfDense?: Uint8Array; bpOfDense?: Int32Array; dist?: Distill | null   // 錨の列（travCols）用。初回に読む
 }
 
@@ -243,4 +244,54 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   const ms = Date.now() - T0; if (ms > 2000) console.log(`[trav/cols] ${rows.length} rows, read ${nread} tok (${tRead} ms), mix ${tMix} ms, total ${ms} ms`)
   return { x0, x1, ncol, ntok, nread, ms, msPre: T0 - T00, msRead: tRead, nrows: rows.length, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
     rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins) })) }
+}
+
+// ---- 遺伝子レーン: 表示範囲に掛かる通過ごとに、その株の遺伝子（<db>.genes の gene × gene_tok）を座標 x に写す ----
+// 遺伝子の x は両端のトークン（各 256 個まで）の中の錨の x の最小・最大。錨が無い遺伝子（島の中など）は通過の中の位置から補間
+function genesDbOf(t: Trav): Database.Database | null {
+  if (t.genesDb !== undefined) return t.genesDb
+  const base = path.join(getDbDir(), path.basename(t.dbFile)); const cands = [base + '.genes']
+  try { cands.push(fs.realpathSync(base) + '.genes') } catch { /* ignore */ }
+  const f = cands.find(c => { try { return fs.existsSync(c) } catch { return false } })
+  t.genesDb = f ? new Database(f, { readonly: true }) : null
+  return t.genesDb
+}
+const GENES_MAX = Number(process.env.AMIPA_TRAV_GENES_MAX) || 30_000
+export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50): any {
+  const gdb = genesDbOf(t); if (!gdb) return { error: 'この DB には .genes サイドカーが無い', genes: [] }
+  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', genes: [] }
+  const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
+  x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
+  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
+  const q = gdb.prepare('SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?')
+  const out: any[] = []; let n = 0; const T0 = Date.now()
+  // まず件数だけ数え、多すぎる範囲（全景など）はトークンを読まずに断る
+  const qn = gdb.prepare('SELECT count(*) AS n FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?')
+  const winOf = (r: TravRow): [number, number] => { const Lt = r.i1 - r.i0 + 1; const span = Math.max(1, r.x1 - r.x0); const wx0 = Math.max(x0, r.x0), wx1 = Math.min(x1, r.x1)
+    const fa = r.dir >= 0 ? (wx0 - r.x0) / span : (r.x1 - wx1) / span, fb = r.dir >= 0 ? (wx1 - r.x0) / span : (r.x1 - wx0) / span
+    const pad = Math.max(2000, 0.2 * (fb - fa) * Lt + 0.02 * Lt); return [Math.max(r.i0, Math.floor(r.i0 + fa * Lt - pad)), Math.min(r.i1 + 1, Math.ceil(r.i0 + fb * Lt + pad))] }
+  let est = 0; for (const r of rows) { const [ta, tb] = winOf(r); est += (qn.get(r.pid, ta, tb) as { n: number }).n; if (est > GENES_MAX) return { tooMany: true, n: est, max: GENES_MAX, genes: [] } }
+  const anchorX = (pi: number, a: number, b: number): [number, number] => {   // トークン [a, b) の中の錨の x の最小・最大（無ければ [-1, -1]）
+    const toks = dist.read(pi, a, b); let lo = 1e18, hi = -1
+    for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { const x = X[d]; if (x < lo) lo = x; if (x > hi) hi = x } }
+    return hi < 0 ? [-1, -1] : [lo, hi]
+  }
+  for (const r of rows) {
+    const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
+    // 窓に当たるトークン区間の見積もり（x が錨の番号に比例）。余白を広めに取り、遺伝子ごとの x で絞る
+    const Lt = r.i1 - r.i0 + 1; const span = Math.max(1, r.x1 - r.x0); const [ta, tb] = winOf(r)
+    const gs = q.all(r.pid, ta, tb) as any[]
+    for (const g of gs) {
+      if (++n > GENES_MAX) return { tooMany: true, n, max: GENES_MAX, genes: [] }
+      const s0 = Math.max(r.i0, g.s0), e0 = Math.min(r.i1 + 1, g.e0); if (e0 <= s0) continue
+      const A = anchorX(pi, s0, Math.min(e0, s0 + 256)); const B = e0 - 256 > s0 + 256 ? anchorX(pi, Math.max(s0, e0 - 256), e0) : [-1, -1]
+      let gx0 = Math.min(A[0] < 0 ? 1e18 : A[0], B[0] < 0 ? 1e18 : B[0]), gx1 = Math.max(A[1], B[1])
+      if (gx1 < 0) {   // 錨が無い: 通過の中の位置から補間
+        const f0 = (s0 - r.i0) / Lt, f1 = (e0 - r.i0) / Lt; const [u0, u1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]; gx0 = Math.round(r.x0 + u0 * span); gx1 = Math.round(r.x0 + u1 * span)
+      }
+      if (gx1 < x0 || gx0 > x1) continue
+      out.push({ gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: A[1] >= 0 || B[1] >= 0 })
+    }
+  }
+  return { x0, x1, n: out.length, ms: Date.now() - T0, genes: out }
 }

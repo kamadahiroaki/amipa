@@ -792,7 +792,7 @@ export async function fetchBlockNodes(dbFile: string, layer: number, contig: num
   return Array.isArray(j.names) ? j.names as string[] : []
 }
 // Blocks の底からの受け渡し: 各行のトークン範囲で塩基レベル MSA（bubble MSA と同じ出力）
-export async function fetchBubbleMsaRanges(dbFile: string, ranges: [string, number, number][], label: string, flank = 0, cap?: number, maxLeaves?: number): Promise<BubbleMsaResp> {
+export async function fetchBubbleMsaRanges(dbFile: string, ranges: [string | number, number, number][], label: string, flank = 0, cap?: number, maxLeaves?: number): Promise<BubbleMsaResp> {
   try {
     const res = await fetch('/api/bubble_msa/ranges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges, label, flank, ...(cap != null ? { cap } : {}), ...(maxLeaves != null ? { maxLeaves } : {}) }) })
     if (!res.ok) return { error: 'request failed (' + res.status + ')' }

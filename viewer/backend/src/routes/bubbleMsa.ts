@@ -75,7 +75,7 @@ bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
   const db = typeof b.db === 'string' ? b.db : ''
   const ranges = Array.isArray(b.ranges) ? (b.ranges as unknown[]) : []
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
-  if (!ranges.length || !ranges.every(r => Array.isArray(r) && r.length === 3 && typeof r[0] === 'string')) { res.status(400).json({ error: 'ranges must be [[path, s0, e0], ...]' }); return }
+  if (!ranges.length || !ranges.every(r => Array.isArray(r) && r.length === 3 && (typeof r[0] === 'string' || Number.isInteger(r[0])))) { res.status(400).json({ error: 'ranges must be [[path | path_index, s0, e0], ...]' }); return }   // r[0] は distill のパス名、または p_names の番号（通過パネル。ヒト v2 は名前が重複する）
   const fq = Number(b.flank); const flank = String(Number.isFinite(fq) ? Math.max(0, Math.min(12, fq)) : 0)
   const dbPath = path.join(getDbDir(), path.basename(db))
   if (!fs.existsSync(dbPath)) { res.status(404).json({ error: 'DB が見つかりません' }); return }

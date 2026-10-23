@@ -19,7 +19,7 @@ interface Props {
   sampleKeys: string[]              // 選択中のパス群キー([...ribbonSel.keys()])
   ribbonLevel: string
   // Blocks パネルの底からの受け渡し（各行のトークン範囲）。key が変わるたびに取り直す。ノード選択とは排他
-  rangeReq?: { ranges: [string, number, number][]; label: string; key: number } | null
+  rangeReq?: { ranges: [string | number, number, number][]; label: string; key: number } | null   // パス名か distill のパス番号（Traversals パネル）
 }
 
 const STYLE = `
