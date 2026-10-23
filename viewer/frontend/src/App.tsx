@@ -1047,6 +1047,14 @@ export default function App() {
   const onTravFilter = useCallback((sel: { names: string[] } | null) => {
     setTrvColors(sel && sel.names.length ? { maxSpan: 1, contigs: new Map(), db: selectedDb ?? undefined, filter: true, filterSel: { names: sel.names } } : null)
   }, [selectedDb])
+  const [trvHov, setTrvHov] = useState<Set<string> | null>(null)   // Traversals の塩基の段でホバー中のノード（マゼンタ）
+  const trvHovReq = useRef(0)
+  const onTravHover = useCallback((names: string[] | null) => {
+    const my = ++trvHovReq.current
+    if (!names || !names.length || !selectedDb) { setTrvHov(null); return }
+    const nm = names.filter(x => /^n\d+$/.test(x)); if (!nm.length) { setTrvHov(null); return }
+    void fetchBlockAncestors(selectedDb, mapLayer, nm).then(up => { if (my !== trvHovReq.current) return; setTrvHov(new Set([...nm, ...up])) })   // グラフが粗い層なら祖先も光らせる
+  }, [selectedDb, mapLayer])
   const onTravGraphRange = useCallback(() => {
     const names = graphRef.current?.getVisibleNames?.() ?? []
     if (!names.length) { showHint('グラフに見えているノードがありません'); return }
@@ -1092,7 +1100,7 @@ export default function App() {
     if (v.sync) void fetchBlockBbox(selectedDb, { names: v.names }).then(f => { if (my !== blkVisReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer) })   // グラフ連動: 見えている範囲に寄せる
   }, [selectedDb, mapLayer])
   const msaHiSet = useMemo(() => { const s0 = new Set(msaNodeSel); if (blkVis) for (const n of blkVis) s0.add(n); return s0 }, [msaNodeSel, blkVis])  // グラフ強調用（bubble MSA の選択）。ブロックは窓全体の塗り分けで見せるのでリングは出さない
-  const msaHoverSet = useMemo(() => { if (blkHov && blkHov.size) return blkHov; return (msaHover && msaHover.length ? new Set(msaHover) : null) }, [msaHover, blkHov])
+  const msaHoverSet = useMemo(() => { if (blkHov && blkHov.size) return blkHov; if (trvHov && trvHov.size) return trvHov; return (msaHover && msaHover.length ? new Set(msaHover) : null) }, [msaHover, blkHov, trvHov])
 
   useEffect(() => {
     fetch('/api/databases')
@@ -3173,7 +3181,9 @@ export default function App() {
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
             onFilter={onTravFilter}
             onGraphRange={onTravGraphRange}
-            onReady={h => { travApiRef.current = h; if (!h) setTrvColors(null) }}
+            onReady={h => { travApiRef.current = h; if (!h) { setTrvColors(null); setTrvHov(null) } }}
+            onHoverNodes={onTravHover}
+            hapMarks={blkHapMarks}
           />
         </div>
       )}
