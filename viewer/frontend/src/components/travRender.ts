@@ -878,7 +878,7 @@ async function locate(names: string[], single: boolean) {
   if (base) { base = null; $('basegrp').style.display = 'none' }
   const r = await getJson(`/api/trav/locate?db=${encodeURIComponent(db)}&names=${encodeURIComponent(names.slice(0, 2000).join(','))}`); const j = await r.json()
   const xs: number[] = ((j.nodes || []) as { x: number }[]).map(n => n.x).filter(x => x >= 0).sort((a, b) => a - b)
-  if (!xs.length) { $('info').textContent = `グラフ → パネル: 座標を持つノードが無い（錨でないノード、または別の層のノード）: ${names.slice(0, 3).join(', ')}`; return }
+  if (!xs.length) { const leaf = names.filter(n => /^n\d+$/.test(n)).length; $('info').textContent = leaf ? `グラフ → パネル: 座標を持つノードが無い（錨でないノード: ${names.slice(0, 3).join(', ')}）` : `グラフ → パネル: グラフが粗い層を描いている（${names.length} 個、例 ${names.slice(0, 2).join(', ')}）。葉の層まで拡大すると座標を引ける`; $('info').style.color = '#c0392b'; return }
   hist.push(view)
   if (single || xs.length < 4) { const x = xs[Math.floor(xs.length / 2)]; const a = root.atoms[atomAt(x)]; view = [Math.max(a.x0, x - 3000), Math.min(a.x1, x + 3000)]; located = xs.slice() }
   else { const p10 = xs[Math.floor(xs.length * 0.1)], p90 = xs[Math.min(xs.length - 1, Math.floor(xs.length * 0.9))]; const pad = Math.max(50, 0.05 * (p90 - p10)); view = [Math.max(0, p10 - pad), Math.min(root.R - 1, p90 + pad)]; located = [] }

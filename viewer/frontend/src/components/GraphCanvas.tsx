@@ -670,7 +670,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     navigateTo: (cx, cy, highlightId?, targetLayer?) =>
       navigateRef.current?.(cx, cy, highlightId, targetLayer),
     fitBounds: (minx, miny, maxx, maxy, targetLayer?) => fitBoundsRef.current?.(minx, miny, maxx, maxy, targetLayer),
-    getVisibleNames: () => visibleNamesRef.current.slice(0, 5000),
+    getVisibleNames: () => visibleNodesRef.current.map(n => n.node_name).slice(0, 5000),   // 描画のたびに更新される配列から（visibleNamesRef は編集のドラッグ時にしか入らない）
     getSelectedNodes: () => getSelectedNodesRef.current?.() ?? [],
     nodesBetween: (a, b) => nodesBetweenRef.current?.(a, b) ?? [],
     graphCounts: () => graphCountsRef.current?.() ?? { nodes: 0, edges: 0 },
