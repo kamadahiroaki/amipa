@@ -173,6 +173,47 @@ function ensureCols(t: Trav): boolean {
   t.bpOfDense = bp
   return true
 }
+// 通過 r の、窓 [x0, x1] に当たるトークン区間を distill から読む。はみ出す通過は（x が錨の番号に比例するとして）区間を見積もり、読んだ端の錨が窓の中なら広げて読み直す
+function windowTokens(t: Trav, r: TravRow, pi: number, x0: number, x1: number): { toks: Float64Array; s0: number; nread: number; tRead: number } {
+  const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
+  const Lt = r.i1 - r.i0 + 1; const span = Math.max(1, r.x1 - r.x0); let s0 = r.i0, e0 = r.i1 + 1
+  if (r.x0 < x0 || r.x1 > x1) {
+    const wx0 = Math.max(x0, r.x0), wx1 = Math.min(x1, r.x1)
+    const fa = r.dir >= 0 ? (wx0 - r.x0) / span : (r.x1 - wx1) / span, fb = r.dir >= 0 ? (wx1 - r.x0) / span : (r.x1 - wx0) / span
+    const pad = Math.max(500, 0.1 * (fb - fa) * Lt + 0.02 * Lt); s0 = Math.max(r.i0, Math.floor(r.i0 + fa * Lt - pad)); e0 = Math.min(r.i1 + 1, Math.ceil(r.i0 + fb * Lt + pad))
+  }
+  let toks: Float64Array; let nread = 0, tRead = 0
+  for (;;) {
+    const tr0 = Date.now(); toks = dist.read(pi, s0, e0); tRead += Date.now() - tr0; nread += toks.length
+    let lo = -1, hi = -1
+    for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { lo = X[d]; break } }
+    for (let k = toks.length - 1; k >= 0; k--) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { hi = X[d]; break } }
+    const cutLo = s0 > r.i0 && lo >= x0 && lo <= x1, cutHi = e0 < r.i1 + 1 && hi >= x0 && hi <= x1
+    if (!cutLo && !cutHi) break
+    const grow = Math.max(1000, e0 - s0); if (cutLo) s0 = Math.max(r.i0, s0 - grow); if (cutHi) e0 = Math.min(r.i1 + 1, e0 + grow)
+  }
+  return { toks, s0, nread, tRead }
+}
+// 窓 [x0, x1] に当たるトークンを合意の向きに歩く（dir<0 なら逆から）。錨（kind 1/2、x が窓の中）はその x で、錨でないノードは直前の錨の x で fn に渡す
+// （窓の最初の錨より前の錨でないノードは次の錨に付ける＝窓の縁をまたぐ錨の間の配列）。窓の外の錨を見たら「外」に戻り、そこから先の錨でないノードは捨てる。ti = 錨のトークン番号（錨でないときは -1）
+function forEachWindowToken(r: TravRow, toks: Float64Array, s0: number, x0: number, x1: number, X: Int32Array, K: Uint8Array, fn: (d: number, isAnchor: boolean, xa: number, ti: number) => void) {
+  const n = toks.length; const step = r.dir >= 0 ? 1 : -1; let k = r.dir >= 0 ? 0 : n - 1; let curX = -1; let pend: number[] = []
+  for (; k >= 0 && k < n; k += step) {
+    const d = toks[k]; const kd = K[d]
+    if (kd === 1 || kd === 2) {
+      const x = X[d]
+      if (x >= x0 && x <= x1) { if (pend.length) { for (const q of pend) fn(q, false, x, -1); pend = [] } curX = x; fn(d, true, x, s0 + k) }
+      else { curX = -1; pend = [] }
+    } else if (curX >= 0) fn(d, false, curX, -1)
+    else pend.push(d)
+  }
+}
+function idMapOf(t: Trav): BigInt64Array {
+  const c = (t as any).__idmap as BigInt64Array | undefined; if (c) return c
+  const im = t.db.prepare("SELECT blob FROM arrays WHERE name='id_map'").get() as { blob: Buffer } | undefined
+  const arr = im ? new BigInt64Array(im.blob.buffer.slice(im.blob.byteOffset, im.blob.byteOffset + im.blob.byteLength)) : new BigInt64Array(0)
+  ;(t as any).__idmap = arr; return arr
+}
 export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAnchors = 50): any {
   const T00 = Date.now()
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
@@ -191,44 +232,15 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   for (const r of rows) {
     // distill のパス番号: .trav の pid は distill の p_names の順（構築器が同じ順で読む）。名前で引くと重複した名前（ヒト v2 の分割された W 行）で別のパスに当たる
     const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
-    // 通過が窓からはみ出すときは、窓に当たるトークン区間を（x が錨の番号に比例するとして）補間で見積もり、読んだ端の錨が窓の中なら広げて読み直す
-    const Lt = r.i1 - r.i0 + 1; const span = Math.max(1, r.x1 - r.x0); let s0 = r.i0, e0 = r.i1 + 1
-    if (r.x0 < x0 || r.x1 > x1) {
-      const wx0 = Math.max(x0, r.x0), wx1 = Math.min(x1, r.x1)
-      const fa = r.dir >= 0 ? (wx0 - r.x0) / span : (r.x1 - wx1) / span, fb = r.dir >= 0 ? (wx1 - r.x0) / span : (r.x1 - wx0) / span
-      let pad = Math.max(500, 0.1 * (fb - fa) * Lt + 0.02 * Lt); s0 = Math.max(r.i0, Math.floor(r.i0 + fa * Lt - pad)); e0 = Math.min(r.i1 + 1, Math.ceil(r.i0 + fb * Lt + pad))
-    }
-    let toks: Float64Array
-    for (;;) {
-      const tr0 = Date.now(); toks = dist.read(pi, s0, e0); tRead += Date.now() - tr0; nread += toks.length
-      // 読んだ区間の両端で最初に出る錨が窓の中なら、窓の内容を切っているかもしれないので広げる
-      let lo = -1, hi = -1
-      for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { lo = X[d]; break } }
-      for (let k = toks.length - 1; k >= 0; k--) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { hi = X[d]; break } }
-      const cutLo = s0 > r.i0 && lo >= x0 && lo <= x1, cutHi = e0 < r.i1 + 1 && hi >= x0 && hi <= x1
-      if (!cutLo && !cutHi) break
-      const grow = Math.max(1000, e0 - s0); if (cutLo) s0 = Math.max(r.i0, s0 - grow); if (cutHi) e0 = Math.min(r.i1 + 1, e0 + grow)
-    }
-    const n = toks.length
+    const wt = windowTokens(t, r, pi, x0, x1); const toks = wt.toks, s0 = wt.s0; tRead += wt.tRead; nread += wt.nread
     const pres = new Uint8Array(ncol), cls = new Uint8Array(ncol).fill(255), ins = new Uint16Array(ncol), h1 = new Uint32Array(ncol), h2 = new Uint32Array(ncol), has = new Uint8Array(ncol); const cnt = new Uint16Array(ncol); const insb = new Float64Array(ncol)
     let tw0 = -1, tw1 = -1
-    // 合意の向きに歩く（dir<0 なら逆から）。錨でないノードは直前の（窓の中の）錨の列に付ける。窓の外の錨を見たら「外」に戻る。
-    // 窓の最初の錨より前の錨でないノードは、次の錨が窓の中ならその列に付ける（窓の縁をまたぐ錨の間の配列）
     const tm0 = Date.now()
-    const step = r.dir >= 0 ? 1 : -1; let k = r.dir >= 0 ? 0 : n - 1; let cur = -1; let pend: number[] = []
-    for (; k >= 0 && k < n; k += step) {
-      const d = toks[k]; const kd = K[d]
-      if (kd === 1 || kd === 2) {
-        const x = X[d]
-        if (x >= x0 && x <= x1) {
-          const c = Math.min(ncol - 1, Math.floor((x - x0) * ncol / W)); cur = c; cnt[c]++
-          h1[c] = Math.imul(h1[c] ^ d, 0x01000193) >>> 0; h2[c] = (Math.imul(h2[c], 0x9E3779B1) + d + 1) >>> 0; has[c] = 1
-          if (pend.length) { for (const q of pend) { h1[c] = Math.imul(h1[c] ^ q, 0x01000193) >>> 0; h2[c] = (Math.imul(h2[c], 0x9E3779B1) + q + 1) >>> 0; insb[c] += BP[q] } pend = [] }
-          const ti = s0 + k; if (tw0 < 0 || ti < tw0) tw0 = ti; if (ti > tw1) tw1 = ti
-        } else { cur = -1; pend = [] }
-      } else if (cur >= 0) { h1[cur] = Math.imul(h1[cur] ^ d, 0x01000193) >>> 0; h2[cur] = (Math.imul(h2[cur], 0x9E3779B1) + d + 1) >>> 0; insb[cur] += BP[d] }
-      else pend.push(d)
-    }
+    forEachWindowToken(r, toks, s0, x0, x1, X, K, (d, isA, xa, ti) => {
+      const c = Math.min(ncol - 1, Math.floor((xa - x0) * ncol / W)); has[c] = 1
+      h1[c] = Math.imul(h1[c] ^ d, 0x01000193) >>> 0; h2[c] = (Math.imul(h2[c], 0x9E3779B1) + d + 1) >>> 0
+      if (isA) { cnt[c]++; if (tw0 < 0 || ti < tw0) tw0 = ti; if (ti > tw1) tw1 = ti } else insb[c] += BP[d]
+    })
     tMix += Date.now() - tm0
     for (let c = 0; c < ncol; c++) { pres[c] = nanch[c] ? Math.min(255, Math.round(255 * cnt[c] / nanch[c])) : 0; ins[c] = Math.min(65535, Math.round(insb[c])) }
     outs.push({ id: r.id, pid: r.pid, hid: r.hid, dir: r.dir, copy: r.copy, tw0, tw1, pres, cls, ins, h1, h2, has })
@@ -294,4 +306,48 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50): any
     }
   }
   return { x0, x1, n: out.length, ms: Date.now() - T0, genes: out }
+}
+
+// ---- 窓のノード集合（グラフをこの範囲に絞る用）: 窓に当たる錨と、その錨に付く錨でないノードの名前（葉）。最大 max 個 ----
+export function travNodeSet(t: Trav, x0: number, x1: number, minAnchors = 50, max = 20000): any {
+  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', names: [] }
+  const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!; const idmap = idMapOf(t)
+  x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); if (x1 < x0) return { error: 'empty', names: [] }
+  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
+  let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
+  if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, names: [] }
+  const seen = new Uint8Array(X.length); const names: string[] = []; let truncated = false; const T0 = Date.now()
+  outer: for (const r of rows) {
+    const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
+    const wt = windowTokens(t, r, pi, x0, x1); let full = false
+    forEachWindowToken(r, wt.toks, wt.s0, x0, x1, X, K, (d) => { if (full || seen[d]) return; seen[d] = 1; if (names.length >= max) { truncated = true; full = true; return } names.push('n' + idmap[d - 1].toString()) })
+    if (full) break outer
+  }
+  return { x0, x1, n: names.length, truncated, ms: Date.now() - T0, names }
+}
+// ---- ノード名 → 座標（グラフ → パネル）: n<元 id> を id_map の逆引きで dense に、x_of_dense で座標に。錨でないノードは x=-1 ----
+function origIndex(t: Trav): { ids: Float64Array; order: Uint32Array } {
+  const c = (t as any).__origIdx; if (c) return c
+  const im = idMapOf(t); const n = im.length; const ids = new Float64Array(n); for (let i = 0; i < n; i++) ids[i] = Number(im[i])
+  const order = new Uint32Array(n); for (let i = 0; i < n; i++) order[i] = i
+  let sorted = true; for (let i = 1; i < n; i++) if (ids[i] < ids[i - 1]) { sorted = false; break }
+  if (!sorted) {   // (id, 添字) を 1 つの数に詰めて比較関数なしで並べる（4.8M 個で 1 s 未満。比較関数つきだと 20 s 超）。id が大きすぎて詰められないときだけ比較関数
+    let maxId = 0; for (let i = 0; i < n; i++) if (ids[i] > maxId) maxId = ids[i]
+    const SH = 8388608   // 2^23
+    if (n < SH && maxId < 536870912) { const keys = new Float64Array(n); for (let i = 0; i < n; i++) keys[i] = ids[i] * SH + i; keys.sort(); for (let k = 0; k < n; k++) order[k] = keys[k] % SH }
+    else { const arr = Array.from(order); arr.sort((a, b) => ids[a] - ids[b]); order.set(arr) }
+  }
+  const r = { ids, order }; (t as any).__origIdx = r; return r
+}
+export function travLocate(t: Trav, names: string[]): any {
+  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', nodes: [] }
+  const { ids, order } = origIndex(t); const X = t.xOfDense!, K = t.kindOfDense!
+  const nodes = names.slice(0, 5000).map(nm => {
+    const m = /^n(\d+)$/.exec(nm); if (!m) return { name: nm, x: -1, kind: -1 }
+    const v = Number(m[1]); let lo = 0, hi = order.length - 1, found = -1
+    while (lo <= hi) { const mid = (lo + hi) >> 1; const vv = ids[order[mid]]; if (vv === v) { found = order[mid]; break } if (vv < v) lo = mid + 1; else hi = mid - 1 }
+    if (found < 0) return { name: nm, x: -1, kind: -1 }
+    const d = found + 1; return { name: nm, x: X[d], kind: K[d] }
+  })
+  return { nodes, R: t.R }
 }

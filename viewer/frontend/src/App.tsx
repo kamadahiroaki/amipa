@@ -6,6 +6,7 @@ import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
 import BubbleMsa from './components/BubbleMsa'
 import BlockMsa from './components/BlockMsa'
 import TravPanel from './components/TravPanel'
+import type { TravHandle } from './components/travRender'
 import type { BlockView } from './components/blockMsaRender'
 import { matchHapToKey } from './components/blockMsaRender'
 import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
@@ -1040,11 +1041,16 @@ export default function App() {
     setMsaH(h => (h > 0 ? h : 300))
     showHint(`Blocks ${req.label} の各行（${req.ranges.length} 範囲）を塩基レベル MSA に渡しました`)
   }, [showHint])
-  // Traversals の底 → 塩基レベル MSA。行＝通過（同じコンティグの 2 回目は ·2）。範囲は distill のパス番号で渡す（ヒト v2 は名前が重複する）
-  const onTravBaseMsa = useCallback((ranges: [number, number, number][], label: string) => {
-    setMsaRangeReq({ ranges, label, key: Date.now() })
-    setMsaH(h => (h > 0 ? h : 300))
-    showHint(`Traversals ${label} の各通過（${ranges.length} 行）を塩基レベル MSA に渡しました`)
+  // Traversals パネル: グラフをその範囲のノード集合に絞る（葉の名前。GraphCanvas が /api/blocks/subgraph の POST で層に直す）、グラフ → パネル（locateNodes / openNames）
+  const travApiRef = useRef<TravHandle | null>(null)
+  const [trvColors, setTrvColors] = useState<BlockColorMap | null>(null)
+  const onTravFilter = useCallback((sel: { names: string[] } | null) => {
+    setTrvColors(sel && sel.names.length ? { maxSpan: 1, contigs: new Map(), db: selectedDb ?? undefined, filter: true, filterSel: { names: sel.names } } : null)
+  }, [selectedDb])
+  const onTravGraphRange = useCallback(() => {
+    const names = graphRef.current?.getVisibleNames?.() ?? []
+    if (!names.length) { showHint('グラフに見えているノードがありません'); return }
+    travApiRef.current?.openNames(names)
   }, [showHint])
   // 遺伝子（参照座標）を参照コンティグ id ごとに。gene.chrom（例 chrY）と ref_contigs.name を末尾一致で合わせる
   const blkGenes = useMemo(() => {
@@ -2385,7 +2391,7 @@ export default function App() {
                   floodMaxHop={floodHops}
                   msaHighlight={msaHiSet}
                   msaHoverNodes={msaHoverSet}
-                  blockColors={blkColors}
+                  blockColors={blkColors ?? trvColors}
                   onVisibleAtoms={atoms => { blkApiRef.current?.setGraphAtoms?.(atoms) }}
                   onViewportChange={(vp, layer, glyphs) => {
                     setMapViewport(vp); setMapLayer(layer)
@@ -2396,6 +2402,7 @@ export default function App() {
                   onNodesEdited={g => setPendingEdits(prev => [...prev, g])}
                   onNodeSelect={node => {
                     setSelectedNode(node)
+                    if (trvH > 0 && node && /^n\d+$/.test(node.node_name)) travApiRef.current?.locateNodes([node.node_name])   // 通過: ノード → 座標の位置へ
                     if (blkH > 0 && node) {
                       const h = blkApiRef.current
                       if (h && h.isTree && h.isTree() && h.locateNodes) h.locateNodes([node.node_name])          // 木: ノード → 葉（原子）の場所を Blocks に印
@@ -3162,9 +3169,11 @@ export default function App() {
         <div style={{ height: trvH, flexShrink: 0, overflow: 'hidden', borderTop: '1px solid #c8cdd3', background: '#fff' }}>
           <TravPanel
             db={selectedDb}
-            onBaseMsa={onTravBaseMsa}
             onVisible={onBlockBaseVisible}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
+            onFilter={onTravFilter}
+            onGraphRange={onTravGraphRange}
+            onReady={h => { travApiRef.current = h; if (!h) setTrvColors(null) }}
           />
         </div>
       )}

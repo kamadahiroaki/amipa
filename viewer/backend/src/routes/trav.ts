@@ -1,6 +1,6 @@
 // 通過サイドカー `<db>.trav` の API（試作）。GET /api/trav/root?db  /api/trav/range?db&x0&x1[&min]  /api/trav/path?db&pid
 import { Router } from 'express'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes } from '../trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate } from '../trav'
 
 export const travRouter = Router()
 
@@ -61,3 +61,18 @@ travRouter.get('/sleep', (req, res) => {
   const ms = Math.max(0, Math.min(20000, Number((req.query as Record<string, string>).ms) || 0))
   setTimeout(() => { res.type('image/gif').send(Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64')) }, ms)
 })
+
+// 窓のノード集合（葉の名前。グラフをこの範囲に絞る）: GET /api/trav/nodeset?db&x0&x1[&max][&minanch]
+travRouter.get('/trav/nodeset', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const x0 = Number(q.x0), x1 = Number(q.x1)
+  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 < x0) { res.status(400).json({ error: 'bad x0/x1' }); return }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travNodeSet(t, x0, x1, q.minanch != null ? Number(q.minanch) : 50, Math.max(100, Math.min(120000, Number(q.max) || 20000)))) } catch (err) { res.status(500).json({ error: String(err) }) }
+})
+// ノード名 → 座標（グラフ → パネル）: GET /api/trav/locate?db&names=n1,n2  /  POST {db, names:[...]}
+function runLocate(res: any, db: string, names: string[]) {
+  try { const t = loadTrav(db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travLocate(t, names)) } catch (err) { res.status(500).json({ error: String(err) }) }
+}
+travRouter.get('/trav/locate', (req, res) => { const q = req.query as Record<string, string>; if (!q.db) { res.status(400).json({ error: 'Missing db' }); return } runLocate(res, q.db, String(q.names || '').split(',').filter(x => x)) })
+travRouter.post('/trav/locate', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; if (!b.db) { res.status(400).json({ error: 'Missing db' }); return } runLocate(res, String(b.db), Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []) })

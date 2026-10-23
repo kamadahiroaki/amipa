@@ -25,10 +25,12 @@ export interface TravCallbacks {
   onBaseMsa?: (ranges: [number, number, number][], label: string) => void   // 塩基へ: [distill のパス番号, s0, e0) の列
   onVisible?: (v: { names: string[]; sync: boolean } | null) => void          // 表示範囲の錨のノード名（グラフを寄せる・強調）
   onSelectHap?: (hap: string) => void                                          // 行ラベルのクリック
+  onFilter?: (sel: { names: string[] } | null) => void                         // グラフをこの範囲に絞る（葉の名前の集合）／解除
+  onGraphRange?: () => void                                                    // 「グラフの範囲を開く」: 主画面が見えているノード名を openNames に渡す
 }
 export interface TravOpts { db: string; params?: URLSearchParams; page?: boolean }   // page: 試作ページ（window のエラー表示、説明を開いたまま、グラフ連動なし）
-export interface TravHandle { setDb(db: string): void; destroy(): void }
-const BODY = "<div class=\"tv-bar\">\n  <label>錨の床 <input id=\"tv_minanch\" type=\"number\" value=\"50\" min=\"0\" step=\"10\"></label>\n  <label>ブロック <input id=\"tv_nblk\" type=\"number\" value=\"30\" min=\"1\" max=\"500\" step=\"5\"></label>\n  <button id=\"tv_all\">全体</button><button id=\"tv_back\">戻る</button>\n  <label>並び <select id=\"tv_mode\"><option value=\"coord\">合意座標</option><option value=\"rows\">各行の並び</option></select></label>\n  <label title=\"ブロックの段と塩基の間の段。錨の列＝表示範囲を画面の列に等分し、行ごとに錨の有無（濃さ）と錨の間のアレル（色。灰＝多数派、色＝少数派のアレル番号）と挿入（上辺の黒）を出す。自動＝ブロックが 3 個以下か 200 kb 以下で切り替え\">段 <select id=\"tv_rung\"><option value=\"auto\">自動</option><option value=\"blocks\">ブロック</option><option value=\"cols\">錨の列</option></select></label>\n  <button id=\"tv_base\" disabled title=\"錨の列の段で使える\">塩基へ ↓</button>\n  <label><input id=\"tv_showlines\" type=\"checkbox\" checked> 連結線</label>\n  <label>並べ替え <select id=\"tv_order\"><option value=\"tree\">表示範囲の木</option><option value=\"name\">名前</option></select></label>\n  <label title=\"各行の片の下に、その株の遺伝子（.genes サイドカー）を置く。緑＝合意の向きに +、橙＝−、灰＝擬似。ホバーで名前・産物\"><input id=\"tv_genes\" type=\"checkbox\" checked> 遺伝子</label>\n  <label title=\"表示範囲を変えると、グラフをその範囲の錨のノードに寄せて強調する\"><input id=\"tv_sync\" type=\"checkbox\"> グラフ連動</label>\n  <label><input id=\"tv_showcopies\" type=\"checkbox\" checked> コピー</label>\n  <label><input id=\"tv_showreps\" type=\"checkbox\" checked> 反復</label>\n  <label><input id=\"tv_showbounds\" type=\"checkbox\" checked> 境界</label>\n  <button id=\"tv_lgd\" title=\"凡例・説明の表示／非表示\">説明</button>\n  <span id=\"tv_busy\" style=\"color:#c0392b;font-weight:600;display:none\">計算中…</span>\n  <span id=\"tv_info\"></span>\n</div>\n<div id=\"tv_legend\" class=\"tv-legend\"><b>上段</b> 四角＝ブロック（表示範囲を持続度の高い境界で「ブロック」個に切った区間。横幅は bp に比例、高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／灰色の覆いと「?」＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株。高さ＝持続度＝その境界を潰したときの原子の幅。大きいほど大きなブロックを分ける境界）／ダブルクリックでそのブロックに寄る\n  <b>行</b> 色＝ブロック（同じ色＝同じブロック。株間の対応）／三角＝向き／<span style=\"color:#8e44ad\">紫の枠と左向き三角、下段</span>＝コンティグの主な向きと逆（逆位）／<span style=\"color:#333\">黒の破線</span>＝転座（コンティグ上の前後の通過から座標が 2 万錨以上離れている）／各行の並び: 1 コンティグの株は主な向きで鏡にし座標最小の通過を左に回す（環状）／連結線＝bp で等間隔に標本し、隣の行の同じ場所を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）。範囲の拡大は上段のドラッグ（ホイールは無効）。拡大すると境界が増え、原子まで細かくなる。左の木＝表示範囲の UPGMA（枝の長さ＝ブロックの有無・向きの不一致率）／<span style=\"color:#7a1414\">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style=\"color:#d35400\">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分\n  <b>錨の列（ブロックと塩基の間の段）</b> 各行を画面の列（1 列＝数錨〜数百錨）に切り、<span style=\"color:#888\">灰</span>＝その列のトークン列が多数派と同じ、<span style=\"color:#e67e22\">橙</span>・<span style=\"color:#2980b9\">青</span>・<span style=\"color:#27ae60\">緑</span>…＝少数派のアレル（番号順。同じ色＝同じ配列）、薄い＝その列の錨を一部しか持たない（欠失）、上辺の黒＝錨でない配列の挿入（高さは bp の対数）、白＝通過はあるが錨が無い。上段の帯＝列ごとのアレルの種類数（灰 1 種→赤 多い）と行の数（高さ）。下辺 2 px にブロックの色を残す。ホバーで列の錨数・アレル数・この行のトークン範囲（塩基 MSA へ渡す範囲）\n  <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数\n  <b>遺伝子レーン</b> 片の下の帯＝その株の遺伝子（緑 合意の向きに +、橙 −、灰 擬似）。錨の無い遺伝子は通過の中の位置から補間\n</div>\n<div id=\"tv_wrap\" class=\"tv-wrap\"><canvas id=\"tv_cv\"></canvas><canvas id=\"tv_ov\"></canvas><div id=\"tv_tip\"></div></div>\n"
+export interface TravHandle { setDb(db: string): void; destroy(): void; locateNodes(names: string[]): void; openNames(names: string[]): void }
+const BODY = "<div class=\"tv-bar\">\n  <label>錨の床 <input id=\"tv_minanch\" type=\"number\" value=\"50\" min=\"0\" step=\"10\"></label>\n  <label>ブロック <input id=\"tv_nblk\" type=\"number\" value=\"30\" min=\"1\" max=\"500\" step=\"5\"></label>\n  <button id=\"tv_all\">全体</button><button id=\"tv_back\">戻る</button>\n  <label>並び <select id=\"tv_mode\"><option value=\"coord\">合意座標</option><option value=\"rows\">各行の並び</option></select></label>\n  <label title=\"ブロックの段と塩基の間の段。錨の列＝表示範囲を画面の列に等分し、行ごとに錨の有無（濃さ）と錨の間のアレル（色。灰＝多数派、色＝少数派のアレル番号）と挿入（上辺の黒）を出す。自動＝ブロックが 3 個以下か 200 kb 以下で切り替え\">段 <select id=\"tv_rung\"><option value=\"auto\">自動</option><option value=\"blocks\">ブロック</option><option value=\"cols\">錨の列</option></select></label>\n  <button id=\"tv_base\" disabled title=\"錨の列の段で使える\">塩基へ ↓</button><button id=\"tv_graphrange\" title=\"グラフで今見えているノードの座標の範囲（10〜90 パーセンタイル）にパネルを移す\">グラフの範囲を開く</button>\n  <label><input id=\"tv_showlines\" type=\"checkbox\" checked> 連結線</label>\n  <label>並べ替え <select id=\"tv_order\"><option value=\"tree\">表示範囲の木</option><option value=\"name\">名前</option></select></label>\n  <span id=\"tv_cutwrap\" title=\"系統樹の高さの閾値。左へ動かすほど多くの枝をまとめる（右端で解除）。まとめた枝は代表 1 株（群の中心＝他との距離の和が最小）だけを出し、行頭に +n、木には三角\"><input type=\"range\" id=\"tv_cut\" min=\"0\" max=\"100\" value=\"100\" style=\"width:90px;vertical-align:middle\"><small id=\"tv_cuttxt\" style=\"color:#666\"></small></span>\n  <label title=\"各行の片の下に、その株の遺伝子（.genes サイドカー）を置く。緑＝合意の向きに +、橙＝−、灰＝擬似。ホバーで名前・産物\"><input id=\"tv_genes\" type=\"checkbox\" checked> 遺伝子</label>\n  <label title=\"表示範囲を変えると、グラフをその範囲の錨のノードに寄せて強調する\"><input id=\"tv_sync\" type=\"checkbox\"> グラフ連動</label>\n  <label title=\"グラフに、この表示範囲に属するノード（錨と、錨の間の錨でないノード）だけを描く。範囲外へ繋がる辺は切れ端になる。ノードが 2 万を超える範囲では先頭 2 万個だけ\"><input id=\"tv_gfilter\" type=\"checkbox\"> グラフを絞る</label>\n  <label><input id=\"tv_showcopies\" type=\"checkbox\" checked> コピー</label>\n  <label><input id=\"tv_showreps\" type=\"checkbox\" checked> 反復</label>\n  <label><input id=\"tv_showbounds\" type=\"checkbox\" checked> 境界</label>\n  <button id=\"tv_lgd\" title=\"凡例・説明の表示／非表示\">説明</button>\n  <span id=\"tv_busy\" style=\"color:#c0392b;font-weight:600;display:none\">計算中…</span>\n  <span id=\"tv_info\"></span>\n</div>\n<div id=\"tv_legend\" class=\"tv-legend\"><b>上段</b> 四角＝ブロック（表示範囲を持続度の高い境界で「ブロック」個に切った区間。横幅は bp に比例、高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／灰色の覆いと「?」＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株。高さ＝持続度＝その境界を潰したときの原子の幅。大きいほど大きなブロックを分ける境界）／ダブルクリックでそのブロックに寄る\n  <b>行</b> 色＝ブロック（同じ色＝同じブロック。株間の対応）／三角＝向き／<span style=\"color:#8e44ad\">紫の枠と左向き三角、下段</span>＝コンティグの主な向きと逆（逆位）／<span style=\"color:#333\">黒の破線</span>＝転座（コンティグ上の前後の通過から座標が 2 万錨以上離れている）／各行の並び: 1 コンティグの株は主な向きで鏡にし座標最小の通過を左に回す（環状）／連結線＝bp で等間隔に標本し、隣の行の同じ場所を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）。範囲の拡大は上段のドラッグ（ホイールは無効）。拡大すると境界が増え、原子まで細かくなる。左の木＝表示範囲の UPGMA（枝の長さ＝ブロックの有無・向きの不一致率）／<span style=\"color:#7a1414\">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style=\"color:#d35400\">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分\n  <b>錨の列（ブロックと塩基の間の段）</b> 各行を画面の列（1 列＝数錨〜数百錨）に切り、<span style=\"color:#888\">灰</span>＝その列のトークン列が多数派と同じ、<span style=\"color:#e67e22\">橙</span>・<span style=\"color:#2980b9\">青</span>・<span style=\"color:#27ae60\">緑</span>…＝少数派のアレル（番号順。同じ色＝同じ配列）、薄い＝その列の錨を一部しか持たない（欠失）、上辺の黒＝錨でない配列の挿入（高さは bp の対数）、白＝通過はあるが錨が無い。上段の帯＝列ごとのアレルの種類数（灰 1 種→赤 多い）と行の数（高さ）。下辺 2 px にブロックの色を残す。ホバーで列の錨数・アレル数・この行のトークン範囲（塩基 MSA へ渡す範囲）\n  <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数\n  <b>遺伝子レーン</b> 片の下の帯＝その株の遺伝子（緑 合意の向きに +、橙 −、灰 擬似）。錨の無い遺伝子は通過の中の位置から補間\n</div>\n<div id=\"tv_wrap\" class=\"tv-wrap\"><canvas id=\"tv_cv\"></canvas><canvas id=\"tv_ov\"></canvas><div id=\"tv_tip\"></div></div>\n"
 const CSS = ".tvpanel { display:flex; flex-direction:column; height:100%; font:12px/1.4 system-ui, sans-serif; color:#222; background:#fafafa; }\n.tvpanel .tv-bar { display:flex; gap:10px; align-items:center; padding:4px 10px; background:#fff; border-bottom:1px solid #ddd; flex-wrap:wrap; flex-shrink:0; }\n.tvpanel .tv-bar label { color:#555; } .tvpanel .tv-bar input[type=number] { width:70px; } .tvpanel button { font:inherit; }\n.tvpanel #tv_info { color:#444; margin-left:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60vw; }\n.tvpanel .tv-legend { font-size:11px; color:#444; padding:4px 10px; border-bottom:1px solid #e5e5e5; background:#fdfdfd; line-height:1.5; flex-shrink:0; } .tvpanel .tv-legend b { margin-right:4px; }\n.tvpanel .tv-wrap { position:relative; flex:1; min-height:0; overflow:auto; } .tvpanel canvas { display:block; } .tvpanel #tv_ov { position:absolute; left:0; top:0; pointer-events:none; }\n.tvpanel #tv_tip { position:fixed; pointer-events:none; background:rgba(30,30,30,.92); color:#fff; padding:4px 7px; border-radius:3px; font-size:11px; display:none; max-width:420px; white-space:pre; z-index:9; }"
 function injectStyle() { if (document.getElementById('tv-style')) return; const st = document.createElement('style'); st.id = 'tv-style'; st.textContent = CSS; document.head.appendChild(st) }
 
@@ -46,12 +48,15 @@ let TOP = 70; const TREEW = 70, LAB = 150 + TREEW, BLK = 8; let ROW = 13   // �
 let db = '', root: Root | null = null, view: [number, number] = [0, 1], hist: [number, number][] = []
 let rows: Trav[] = [], copies: Copy[] = [], reps: Rep[] = [], perHap: Record<string, number> = {}, loading = 0
 let hapOrder: number[] = [], baseOrder: number[] = [], atomStats: AtomStat[] = [], refTrav: Trav[] = []
-type Clade = { leaves: number[]; size: number; h: number; kids: Clade[] }
+type Clade = { leaves: number[]; size: number; h: number; kids: Clade[]; rep?: number; collapsed?: boolean }
 let treeRoot: Clade | null = null   // 表示範囲の木（描画用）
 let atomCum: number[] = []        // 原子 i の開始 bp（root.atoms の順）
 let blocks: Block[] = []           // 今の表示範囲のブロック
 let cols: Cols | null = null, colsNote = ''   // 錨の列（今の表示範囲）
 let genes: Gene[] = [], genesNote = ''      // 遺伝子レーン（今の表示範囲、通過ごと）
+let treeCut: number | null = null          // 系統樹のまとめ: 併合の高さがこれ（根の高さに対する割合）以下の枝を代表 1 株に（null＝まとめない）
+let groupOf = new Map<number, number[]>()  // 代表 hid → まとめた枝の hid 一覧
+let located: number[] = []                 // グラフから来た座標（縦線の印）
 const showGenes = () => ($('genes') as HTMLInputElement).checked
 const rungSel = () => ($('rung') as HTMLSelectElement).value
 // 段の自動切替: ブロックが 3 個以下（表示範囲が原子の中〜数個）か 200 kb 以下なら錨の列
@@ -146,6 +151,13 @@ async function loadRange() {
       if (jg.tooMany) genesNote = `遺伝子: 多すぎる（${fmt(jg.n)} > ${fmt(jg.max)}。範囲を狭める）`; else if (jg.error) genesNote = `遺伝子: ${jg.error}`; else genes = jg.genes as Gene[]
       if (genesNote) $('info').textContent += ' | ' + genesNote; else $('info').textContent += ` | 遺伝子 ${fmt(genes.length)}`
     }
+    if (cb.onFilter && ($('gfilter') as HTMLInputElement).checked) {   // グラフを絞る: 表示範囲のノード（葉）の名前の集合を主画面へ
+      const rf = await getJson(`/api/trav/nodeset?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}&max=20000`)
+      if (my !== loading) return
+      const jf = await rf.json()
+      if (jf.tooBig || jf.error) { $('info').textContent += ` | グラフを絞る: ${jf.error || '範囲が広すぎる'}`; cb.onFilter(null) }
+      else { cb.onFilter({ names: jf.names as string[] }); if (jf.truncated) $('info').textContent += ` | グラフを絞る: ノード ${fmt(jf.n)} で打ち切り` }
+    }
     if (cb.onVisible && ($('sync') as HTMLInputElement).checked) {   // グラフ連動: 表示範囲の錨のノード名を主画面へ（寄せる・強調）
       const rn = await getJson(`/api/trav/nodes?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&max=1500`)
       if (my !== loading) return
@@ -194,7 +206,18 @@ function treeOrder(): number[] {
     clusters.push(merged); for (let k = 0; k < dist.length; k++) dist[k].push(nd[k]); dist.push(nd.concat([0]))
   }
   treeRoot = clusters[0]; const mapLeaf = (c: Clade) => { c.leaves = c.leaves.map(i => ids[i]); c.kids.forEach(mapLeaf) }; mapLeaf(treeRoot)
-  return treeRoot.leaves
+  // 系統樹のまとめ: 併合の高さが閾値以下の枝（最上位のもの）を代表 1 株に。代表＝枝の中で他との距離の和が最小の株
+  groupOf = new Map()
+  if (treeCut == null) return treeRoot.leaves
+  const idxOf = new Map(ids.map((h, i) => [h, i])); const cutH = treeCut * Math.max(1e-9, treeRoot.h); const reps: number[] = []
+  const visit = (c: Clade) => {
+    if (!c.kids.length || c.h <= cutH) {
+      let rep = c.leaves[0]
+      if (c.leaves.length > 1) { let best = Infinity; for (const a of c.leaves) { let sum = 0; for (const b of c.leaves) sum += D[idxOf.get(a)!][idxOf.get(b)!]; if (sum < best) { best = sum; rep = a } } }
+      c.rep = rep; c.collapsed = c.leaves.length > 1; reps.push(rep); groupOf.set(rep, c.leaves.slice())
+    } else c.kids.forEach(visit)
+  }
+  visit(treeRoot); return reps
 }
 
 // ---- 描画 ----
@@ -288,7 +311,7 @@ function drawCore() {
     const y = TOP + k * ROW; const hap = root!.haps[hid]
     g.fillStyle = k % 2 ? '#f2f2f2' : '#fafafa'; g.fillRect(0, y, W, ROW)
     const n = perHap[hid] || 0; const oneBlk = blocks.length === 1
-    g.fillStyle = oneBlk && n >= 2 ? '#b03a2e' : '#333'; g.font = '11px system-ui'; g.fillText(`${hap.hap}${hap.nexcl ? ` +${hap.nexcl}冗長` : ''}${oneBlk && n >= 2 ? ` ×${n}` : (n > 1 ? ` (${n})` : '')}`, TREEW + 4, y + 10)
+    g.fillStyle = oneBlk && n >= 2 ? '#b03a2e' : '#333'; g.font = '11px system-ui'; const grp = groupOf.get(hid); g.fillText(`${hap.hap}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}${hap.nexcl ? ` +${hap.nexcl}冗長` : ''}${oneBlk && n >= 2 ? ` ×${n}` : (n > 1 ? ` (${n})` : '')}`, TREEW + 4, y + 10)
     const pcs = piecesOf.get(hid) || []
     for (const p of pcs) {
       const px0 = Math.max(LAB, Math.min(p.px0, p.px1)), px1 = Math.min(W, Math.max(p.px0, p.px1)); const w = Math.max(1, px1 - px0); const yy = y + 2, hh = BLK
@@ -320,16 +343,23 @@ function drawCore() {
   if (treeRoot && ($('order') as HTMLSelectElement).value === 'tree') {   // 系統樹: 根が左、葉が右。枝の長さは不一致率
     const rowOf = new Map(hapOrder.map((h, k) => [h, k])); const hmax = Math.max(1e-9, treeRoot.h); g.strokeStyle = '#444'; g.lineWidth = 1
     const xOfH = (h: number) => 4 + (1 - Math.sqrt(Math.max(0, h) / hmax)) * (TREEW - 8)   // 近い株の併合が 0 付近に集まるので平方根で広げる
-    const walk = (c: Clade): number => {   // 返り値はこのクレードの中心 y（子の中心の平均）。葉は行の中心
+    const walk = (c: Clade): number => {   // 返り値はこのクレードの中心 y（子の中心の平均）。葉（まとめた枝も）は行の中心
       const x = xOfH(c.h)
-      if (!c.kids.length) { const y = TOP + rowOf.get(c.leaves[0])! * ROW + 2 + BLK / 2; g.beginPath(); g.moveTo(x, y); g.lineTo(TREEW - 2, y); g.stroke(); return y }
+      if (!c.kids.length || c.collapsed) {
+        const y = TOP + rowOf.get(c.rep ?? c.leaves[0])! * ROW + 2 + BLK / 2; g.beginPath(); g.moveTo(x, y); g.lineTo(TREEW - 2, y); g.stroke()
+        if (c.collapsed) { g.fillStyle = '#c0392b'; g.beginPath(); g.moveTo(x, y); g.lineTo(TREEW - 2, y - 3); g.lineTo(TREEW - 2, y + 3); g.fill(); g.fillStyle = '#333' }   // まとめた枝＝三角
+        return y
+      }
       const ys = c.kids.map(walk)
       g.beginPath(); g.moveTo(x, Math.min(...ys)); g.lineTo(x, Math.max(...ys)); g.stroke()
       c.kids.forEach((k, i) => { const xk = xOfH(k.h); g.beginPath(); g.moveTo(x, ys[i]); g.lineTo(xk, ys[i]); g.stroke() })
       return ys.reduce((t, v) => t + v, 0) / ys.length
     }
     walk(treeRoot)
-  }
+    if (treeCut != null) { const xc = xOfH(treeCut * hmax); g.strokeStyle = 'rgba(192,57,43,.6)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(xc, TOP); g.lineTo(xc, TOP + hapOrder.length * ROW); g.stroke(); g.setLineDash([]) }   // まとめの閾値
+    $('cuttxt').textContent = `${hapOrder.length}/${root.H} 行`
+  } else $('cuttxt').textContent = ''
+  if (located.length) { g.strokeStyle = 'rgba(255,20,147,.85)'; g.lineWidth = 1.5; for (const x of located) { if (x < v0 || x > v1) continue; const px = X(x); g.beginPath(); g.moveTo(px, TOP - 12); g.lineTo(px, TOP + hapOrder.length * ROW); g.stroke() } g.lineWidth = 1 }   // グラフから来たノードの座標
   if (sel) { g.fillStyle = 'rgba(52,152,219,.15)'; g.fillRect(sel[0], 0, sel[1] - sel[0], H); g.fillStyle = '#c0392b'; g.font = '12px system-ui'; g.fillText('計算中…', sel[0] + 4, 14) }
   // 連結線: bp で等間隔に標本し、隣の行でその座標を含む片の中の位置を結ぶ
   if (mode === 'rows' && ($('showlines') as HTMLInputElement).checked) {
@@ -413,11 +443,27 @@ $('order').addEventListener('change', () => { hapOrder = ($('order') as HTMLSele
 $('rung').addEventListener('change', () => { if (rungSel() !== 'blocks' && !cols) loadRange(); else draw() })
 $('genes').addEventListener('change', () => { if (showGenes() && !genes.length) loadRange(); else draw() })
 $('sync').addEventListener('change', () => { if (($('sync') as HTMLInputElement).checked) loadRange() })
+$('gfilter').addEventListener('change', () => { if (($('gfilter') as HTMLInputElement).checked) loadRange(); else cb.onFilter?.(null) })
+$('cut').addEventListener('input', () => { const v = Number(($('cut') as HTMLInputElement).value); treeCut = v >= 100 ? null : Math.pow(1 - v / 100, 2); if (($('order') as HTMLSelectElement).value === 'tree') { hapOrder = treeOrder(); draw() } })   // 棒の位置は木の横軸（平方根の尺度）
+$('graphrange').addEventListener('click', () => { if (cb.onGraphRange) cb.onGraphRange(); else $('info').textContent = 'グラフの範囲を開く: 主画面でだけ使える' })
 $('lgd').addEventListener('click', () => { const l = $('legend'); l.style.display = l.style.display === 'none' ? '' : 'none'; draw() })
 window.addEventListener('resize', draw)
-for (const [k, id] of [['mode', 'mode'], ['order', 'order'], ['nblk', 'nblk'], ['minanch', 'minanch'], ['rung', 'rung']] as [string, string][]) { const v = PARAMS.get(k); if (v != null) ($(id) as HTMLInputElement).value = v }
+for (const [k, id] of [['mode', 'mode'], ['order', 'order'], ['nblk', 'nblk'], ['minanch', 'minanch'], ['rung', 'rung'], ['cut', 'cut']] as [string, string][]) { const v = PARAMS.get(k); if (v != null) ($(id) as HTMLInputElement).value = v }
+for (const k of ['genes', 'sync', 'gfilter', 'showlines', 'showreps', 'showcopies', 'showbounds']) { const v = PARAMS.get(k); if (v != null) ($(k) as HTMLInputElement).checked = v === '1' }   // URL で再現できるように（撮影用）
+{ const v = Number(($('cut') as HTMLInputElement).value); treeCut = v >= 100 ? null : Math.pow(1 - v / 100, 2) }
 db = opts.db; if (!opts.page) { ($('sync') as HTMLInputElement).checked = true; $('legend').style.display = 'none' }
 loadRoot()
-return { setDb(d: string) { db = d; loadRoot() }, destroy() { loading++; window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
+// グラフ → パネル: ノード名を座標に直し、1 個なら前後 3,000 錨（原子の中）に寄る。多数（見えている範囲）なら 10〜90 パーセンタイルの範囲へ
+async function locate(names: string[], single: boolean) {
+  if (!root || !names.length) return
+  const r = await getJson(`/api/trav/locate?db=${encodeURIComponent(db)}&names=${encodeURIComponent(names.slice(0, 2000).join(','))}`); const j = await r.json()
+  const xs: number[] = ((j.nodes || []) as { x: number }[]).map(n => n.x).filter(x => x >= 0).sort((a, b) => a - b)
+  if (!xs.length) { $('info').textContent = `グラフ → パネル: 座標を持つノードが無い（錨でないノード、または別の層のノード）: ${names.slice(0, 3).join(', ')}`; return }
+  hist.push(view)
+  if (single || xs.length < 4) { const x = xs[Math.floor(xs.length / 2)]; const a = root.atoms[atomAt(x)]; view = [Math.max(a.x0, x - 3000), Math.min(a.x1, x + 3000)]; located = xs.slice() }
+  else { const p10 = xs[Math.floor(xs.length * 0.1)], p90 = xs[Math.min(xs.length - 1, Math.floor(xs.length * 0.9))]; const pad = Math.max(50, 0.05 * (p90 - p10)); view = [Math.max(0, p10 - pad), Math.min(root.R - 1, p90 + pad)]; located = [] }
+  loadRange()
+}
+return { setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, destroy() { loading++; window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
 
 }
