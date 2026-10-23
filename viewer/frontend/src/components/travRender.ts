@@ -231,7 +231,10 @@ async function openBase(ranges: [number, number, number][], label: string) {
   $('busy').style.display = 'none'
   if (d.error || !d.cols || !d.rows || !d.cols.length) { $('info').textContent = `塩基の段: ${d.error || '列が無い'}`; $('info').style.color = '#c0392b'; return }
   const hidOf = new Map(root.haps.map(h => [h.hap, h.hid])); const rowsOf = new Map<number, number[]>()
-  d.rows.forEach((r, mi) => { const nm = r.label.replace(/ ·\d+$/, ''); const hid = hidOf.get(nm); if (hid == null) return; if (!rowsOf.has(hid)) rowsOf.set(hid, []); rowsOf.get(hid)!.push(mi) })
+  const bySample = new Map<string, number[]>(); for (const h of root.haps) { const sm = h.hap.split('#')[0]; if (!bySample.has(sm)) bySample.set(sm, []); bySample.get(sm)!.push(h.hid) }
+  d.rows.forEach((r, mi) => { const nm = r.label.replace(/ ·\d+$/, ''); let hid = hidOf.get(nm)
+    if (hid == null) { const sm = (r.path || nm).split('#')[0]; const c = bySample.get(sm); if (c && c.length === 1) hid = c[0] }   // 参照は 'GRCh38#chr22'（パスが sample#contig の 2 区切り）で .trav の 'GRCh38#0' と合わない → サンプルで引く
+    if (hid == null) return; if (!rowsOf.has(hid)) rowsOf.set(hid, []); rowsOf.get(hid)!.push(mi) })
   const byNode = new Map<string, number[]>(); d.cols.forEach((c, i) => { for (const nm of (c.nodes || [])) { const a = byNode.get(nm); if (a) a.push(i); else byNode.set(nm, [i]) } })
   baseGenesReq = ++baseGenesSeq
   const inv = d.rows.map(r => { const st = new Set<number>(); for (const n of (r.inv || [])) for (const i of (byNode.get(n) || [])) st.add(i); return st })
@@ -629,7 +632,8 @@ function drawCore() {
       if (useCols && cols) {   // 錨の列の段: 片の中を列のセルで塗り、ブロックの色は下辺 2 px に残す
         g.fillStyle = '#fff'; g.fillRect(px0, yy, w, hh - 2); g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, 1)`; g.fillRect(px0, yy + hh - 2, w, 2)
         const cr = cols.byId.get(p.tr.id); if (cr) drawCells(cr, p, px0, px1, yy, hh - 2, mode)
-      } else { g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, ${p.tr.copy >= 1 ? .55 : 1})`; g.fillRect(px0, yy, w, hh) }
+      } else { g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, ${p.tr.copy >= 1 ? .55 : 1})`; g.fillRect(px0, yy, w, hh)
+        if (cols) { const cr = cols.byId.get(p.tr.id); if (cr) drawGaps(cr, p, px0, px1, yy, hh, mode) } }   // 欠失（錨の無い連なり）を白い切れ目で
       if (w >= 3) { g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1; g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1) }   // ブロック境界の枠
       if (mode === 'rows' && !p.fwd) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(px0, yy + hh - 2, w, 2) }   // 各行の並びで読む向きと逆（逆位）は下辺を暗く
       if ((p.tr.k || 1) >= 2 && w >= 4) { g.save(); g.beginPath(); g.rect(px0, yy, w, hh); g.clip(); g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 1; for (let xx = px0 - hh; xx < px1; xx += 5) { g.beginPath(); g.moveTo(xx, yy + hh); g.lineTo(xx + hh, yy); g.stroke() } g.restore() }   // 繰り返し通過＝斜線
@@ -740,6 +744,16 @@ function pxInPiece(p: Piece, xa: number, xb: number, mode: string): [number, num
   if (mode === 'coord') { const a = X(xa), b = X(xb); return [Math.min(a, b), Math.max(a, b)] }
   const span = Math.max(1, p.c1 + 1 - p.c0); const fa = (xa - p.c0) / span, fb = (xb - p.c0) / span; const L = p.px1 - p.px0
   const a = p.fwd ? p.px0 + fa * L : p.px0 + (1 - fb) * L, b = p.fwd ? p.px0 + fb * L : p.px0 + (1 - fa) * L; return [Math.min(a, b), Math.max(a, b)]
+}
+// ブロックの段の切れ目: 錨の列の pres が 0 の列が 20 列以上続く所（＝その株が持たない配列、欠失）を白く抜く。通過は J（2,000 錨）未満の跳びでは切れないので、片の色だけでは欠失が見えない
+function drawGaps(cr: ColRow, p: Piece, px0: number, px1: number, yy: number, hh: number, mode: string) {
+  const C = cols!; const Wc = C.x1 - C.x0 + 1
+  const c0 = Math.max(0, Math.floor((p.c0 - C.x0) * C.ncol / Wc)), c1 = Math.min(C.ncol - 1, Math.floor((p.c1 - C.x0) * C.ncol / Wc))
+  let run0 = -1
+  for (let c = c0; c <= c1 + 1; c++) { const zero = c <= c1 && cr.cls[c] !== 255 && cr.pres[c] === 0 && C.nanch[c] > 0
+    if (zero) { if (run0 < 0) run0 = c; continue }
+    if (run0 >= 0) { const n = c - run0; if (n >= 20) { const xa = Math.max(p.c0, C.x0 + run0 * Wc / C.ncol), xb = Math.min(p.c1 + 1, C.x0 + c * Wc / C.ncol); const [pa, pb] = pxInPiece(p, xa, xb, mode); const a = Math.max(px0, pa), b = Math.min(px1, pb); if (b > a) { g.fillStyle = '#fff'; g.fillRect(a, yy + 1, b - a, hh - 2); g.strokeStyle = 'rgba(192,57,43,.8)'; g.lineWidth = 1; g.setLineDash([2, 2]); g.strokeRect(a + .5, yy + 1.5, Math.max(1, b - a - 1), hh - 3); g.setLineDash([]) } } run0 = -1 }
+  }
 }
 // 錨の列のセル: 片（ブロック × 通過）の座標区間に掛かる列を、合意座標モードは X()、各行の並びは片の中の比例で置く。濃さ＝錨の有無、色＝アレル番号、上辺の黒＝挿入 bp（対数）
 // 粗い段（1 列が 20 錨超）では、少数派の色をアレル番号でなく「そのアレルを持つ行の割合」で塗る（橙＝多くが持つ少数派 → 赤＝稀）。細かい段では同じ色＝同じ配列
