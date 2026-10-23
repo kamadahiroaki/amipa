@@ -751,7 +751,7 @@ function drawGaps(cr: ColRow, p: Piece, px0: number, px1: number, yy: number, hh
   const C = cols!; const Wc = C.x1 - C.x0 + 1
   const c0 = Math.max(0, Math.floor((p.c0 - C.x0) * C.ncol / Wc)), c1 = Math.min(C.ncol - 1, Math.floor((p.c1 - C.x0) * C.ncol / Wc))
   let run0 = -1
-  for (let c = c0; c <= c1 + 1; c++) { const zero = c <= c1 && cr.cls[c] !== 255 && cr.pres[c] === 0 && C.nanch[c] > 0
+  for (let c = c0; c <= c1 + 1; c++) { const zero = c <= c1 && cr.pres[c] === 0 && C.nanch[c] > 0   // 片の中で錨を 1 つも持たない列（cls 255 ＝その列に掛からない、も欠失）
     if (zero) { if (run0 < 0) run0 = c; continue }
     if (run0 >= 0) { const n = c - run0; if (n >= 20) { const xa = Math.max(p.c0, C.x0 + run0 * Wc / C.ncol), xb = Math.min(p.c1 + 1, C.x0 + c * Wc / C.ncol); const [pa, pb] = pxInPiece(p, xa, xb, mode); const a = Math.max(px0, pa), b = Math.min(px1, pb); if (b > a) { g.fillStyle = '#fff'; g.fillRect(a, yy + 1, b - a, hh - 2); g.strokeStyle = 'rgba(192,57,43,.8)'; g.lineWidth = 1; g.setLineDash([2, 2]); g.strokeRect(a + .5, yy + 1.5, Math.max(1, b - a - 1), hh - 3); g.setLineDash([]) } } run0 = -1 }
   }
