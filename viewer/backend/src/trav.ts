@@ -284,11 +284,13 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50): any
     const fa = r.dir >= 0 ? (wx0 - r.x0) / span : (r.x1 - wx1) / span, fb = r.dir >= 0 ? (wx1 - r.x0) / span : (r.x1 - wx0) / span
     const pad = Math.max(2000, 0.2 * (fb - fa) * Lt + 0.02 * Lt); return [Math.max(r.i0, Math.floor(r.i0 + fa * Lt - pad)), Math.min(r.i1 + 1, Math.ceil(r.i0 + fb * Lt + pad))] }
   let est = 0; for (const r of rows) { const [ta, tb] = winOf(r); est += (qn.get(r.pid, ta, tb) as { n: number }).n; if (est > GENES_MAX) return { tooMany: true, n: est, max: GENES_MAX, genes: [] } }
-  const anchorX = (pi: number, a: number, b: number): [number, number] => {   // トークン [a, b) の中の錨の x の最小・最大（無ければ [-1, -1]）
+  // トークン [a, b) の中の錨: x の最小・最大と錨の dense id（オルソログ群＝ノード共有の材料）
+  const anchorsIn = (pi: number, a: number, b: number, acc: number[]): [number, number] => {
     const toks = dist.read(pi, a, b); let lo = 1e18, hi = -1
-    for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { const x = X[d]; if (x < lo) lo = x; if (x > hi) hi = x } }
+    for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { const x = X[d]; if (x < lo) lo = x; if (x > hi) hi = x; acc.push(d) } }
     return hi < 0 ? [-1, -1] : [lo, hi]
   }
+  const geneAnch: number[][] = []   // 遺伝子ごとの錨（両端 1,500 トークンまで）
   for (const r of rows) {
     const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
     // 窓に当たるトークン区間の見積もり（x が錨の番号に比例）。余白を広めに取り、遺伝子ごとの x で絞る
@@ -297,16 +299,28 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50): any
     for (const g of gs) {
       if (++n > GENES_MAX) return { tooMany: true, n, max: GENES_MAX, genes: [] }
       const s0 = Math.max(r.i0, g.s0), e0 = Math.min(r.i1 + 1, g.e0); if (e0 <= s0) continue
-      const A = anchorX(pi, s0, Math.min(e0, s0 + 256)); const B = e0 - 256 > s0 + 256 ? anchorX(pi, Math.max(s0, e0 - 256), e0) : [-1, -1]
+      const acc: number[] = []; const A = anchorsIn(pi, s0, Math.min(e0, s0 + 1500), acc); const B = e0 - 1500 > s0 + 1500 ? anchorsIn(pi, Math.max(s0, e0 - 1500), e0, acc) : [-1, -1]
       let gx0 = Math.min(A[0] < 0 ? 1e18 : A[0], B[0] < 0 ? 1e18 : B[0]), gx1 = Math.max(A[1], B[1])
       if (gx1 < 0) {   // 錨が無い: 通過の中の位置から補間
         const f0 = (s0 - r.i0) / Lt, f1 = (e0 - r.i0) / Lt; const [u0, u1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]; gx0 = Math.round(r.x0 + u0 * span); gx1 = Math.round(r.x0 + u1 * span)
       }
       if (gx1 < x0 || gx0 > x1) continue
-      out.push({ gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: A[1] >= 0 || B[1] >= 0 })
+      out.push({ gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: A[1] >= 0 || B[1] >= 0, og: -1 })
+      geneAnch.push(acc)
     }
   }
-  return { x0, x1, n: out.length, ms: Date.now() - T0, genes: out }
+  // オルソログ群: 同じ種類（タンパク質コード＋擬似／RNA／その他）の遺伝子で、錨（ノード）を 2 個以上、または小さい方の 10% 以上共有するものを結ぶ（連結成分）
+  const kindOf = (g: any) => (g.pseudo || /pseudo/i.test(g.type)) ? 'cds' : /^(cds|gene|mrna|protein_coding|protein-coding)$/i.test(g.type) ? 'cds' : /rna/i.test(g.type) ? 'rna' : 'other'
+  const par = out.map((_, i) => i); const find = (i: number): number => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i] } return i }
+  const byNode = new Map<number, number[]>(); out.forEach((g, i) => { for (const d of geneAnch[i]) { const a = byNode.get(d); if (a) a.push(i); else byNode.set(d, [i]) } })
+  const shared = new Map<string, number>()   // "i:j" → 共有する錨の数
+  for (const lst of byNode.values()) { if (lst.length < 2 || lst.length > 400) continue; for (let a = 0; a < lst.length; a++) for (let b = a + 1; b < lst.length; b++) { const i = lst[a], j = lst[b]; if (i === j || out[i].hid === out[j].hid && out[i].tr === out[j].tr) continue; const key = i < j ? i + ':' + j : j + ':' + i; shared.set(key, (shared.get(key) || 0) + 1) } }
+  for (const [key, n] of shared) { const [i, j] = key.split(':').map(Number); if (kindOf(out[i]) !== kindOf(out[j])) continue; const minA = Math.min(geneAnch[i].length, geneAnch[j].length); if (n >= 2 || n >= 0.1 * minA) { const a = find(i), b = find(j); if (a !== b) par[a] = b } }
+  const groups = new Map<number, { og: number; x0: number; x1: number; n: number; haps: Set<number>; names: Map<string, number>; fwd: number; npseudo: number; kind: string; members: number[] }>()
+  out.forEach((g, i) => { const r = find(i); let G = groups.get(r); if (!G) { G = { og: groups.size, x0: g.x0, x1: g.x1, n: 0, haps: new Set(), names: new Map(), fwd: 0, npseudo: 0, kind: kindOf(g), members: [] }; groups.set(r, G) }
+    G.x0 = Math.min(G.x0, g.x0); G.x1 = Math.max(G.x1, g.x1); G.n++; G.haps.add(g.hid); if (g.name) G.names.set(g.name, (G.names.get(g.name) || 0) + 1); if (g.fwd) G.fwd++; if (g.pseudo) G.npseudo++; G.members.push(g.gid); g.og = G.og })
+  const ogs = [...groups.values()].map(G => ({ og: G.og, x0: G.x0, x1: G.x1, n: G.n, nhap: G.haps.size, name: [...G.names.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '', fwd: G.fwd, npseudo: G.npseudo, kind: G.kind })).sort((a, b) => a.x0 - b.x0)
+  return { x0, x1, n: out.length, ms: Date.now() - T0, genes: out, groups: ogs }
 }
 
 // ---- 窓のノード集合（グラフをこの範囲に絞る用）: 窓に当たる錨と、その錨に付く錨でないノードの名前（葉）。最大 max 個 ----
