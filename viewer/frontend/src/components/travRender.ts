@@ -216,6 +216,7 @@ async function openBase(ranges: [number, number, number][], label: string) {
   const inv = d.rows.map(r => { const st = new Set<number>(); for (const n of (r.inv || [])) for (const i of (byNode.get(n) || [])) st.add(i); return st })
   const ri = d.rows.findIndex(r => r.isref)
   base = { M: d, cols: d.cols, rows: d.rows, groups: baseGroups(d.cols, d.rows), label, z: null, sx: 0, rowsOf, lines: [], inv, refRow: ri >= 0 ? ri : (d.rows.length ? 0 : null), blk: new Map(), items: [], xs: new Float64Array(0), colItem: new Int32Array(0), cw: 0, zEff: 0, fullW: 0, vOnly: false, autoVar: false, hoverCi: null }
+  { const bz = Number(PARAMS.get('bz')); if (bz > 0) base.z = bz }   // URL で倍率まで再現（撮影用）
   $('basegrp').style.display = ''; $('info').style.color = ''; draw()
 }
 function closeBase() { if (!base) return; base = null; $('basegrp').style.display = 'none'; $('bscroll').style.display = 'none'; sendHover(null); draw(); if (cb.onVisible) loadRange() }
