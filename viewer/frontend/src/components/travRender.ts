@@ -20,6 +20,7 @@ type Cols = { x0: number; x1: number; ncol: number; ntok: number; nanch: Uint16A
 const CLS_COL = ['#c9ced2', '#e67e22', '#2980b9', '#27ae60', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#7f8c8d']   // アレル番号 → 色（0 多数派は灰）
 const u8 = (b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)); const u16 = (b: string) => { const a = u8(b); return new Uint16Array(a.buffer, a.byteOffset, a.byteLength >> 1) }
 
+import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/client'
 type Gene = { gid: number; pid: number; hid: number; tr: number; x0: number; x1: number; s0: number; e0: number; start: number; end: number; strand: string; fwd: boolean; type: string; name: string; locus: string; product: string; pseudo: boolean; anchored: boolean }
 export interface TravCallbacks {
   onBaseMsa?: (ranges: [number, number, number][], label: string) => void   // 塩基へ: [distill のパス番号, s0, e0) の列
@@ -30,7 +31,7 @@ export interface TravCallbacks {
 }
 export interface TravOpts { db: string; params?: URLSearchParams; page?: boolean }   // page: 試作ページ（window のエラー表示、説明を開いたまま、グラフ連動なし）
 export interface TravHandle { setDb(db: string): void; destroy(): void; locateNodes(names: string[]): void; openNames(names: string[]): void }
-const BODY = "<div class=\"tv-bar\">\n  <label>錨の床 <input id=\"tv_minanch\" type=\"number\" value=\"50\" min=\"0\" step=\"10\"></label>\n  <label>ブロック <input id=\"tv_nblk\" type=\"number\" value=\"30\" min=\"1\" max=\"500\" step=\"5\"></label>\n  <button id=\"tv_all\">全体</button><button id=\"tv_back\">戻る</button>\n  <label>並び <select id=\"tv_mode\"><option value=\"coord\">合意座標</option><option value=\"rows\">各行の並び</option></select></label>\n  <label title=\"ブロックの段と塩基の間の段。錨の列＝表示範囲を画面の列に等分し、行ごとに錨の有無（濃さ）と錨の間のアレル（色。灰＝多数派、色＝少数派のアレル番号）と挿入（上辺の黒）を出す。自動＝ブロックが 3 個以下か 200 kb 以下で切り替え\">段 <select id=\"tv_rung\"><option value=\"auto\">自動</option><option value=\"blocks\">ブロック</option><option value=\"cols\">錨の列</option></select></label>\n  <button id=\"tv_base\" disabled title=\"錨の列の段で使える\">塩基へ ↓</button><button id=\"tv_graphrange\" title=\"グラフで今見えているノードの座標の範囲（10〜90 パーセンタイル）にパネルを移す\">グラフの範囲を開く</button>\n  <label><input id=\"tv_showlines\" type=\"checkbox\" checked> 連結線</label>\n  <label>並べ替え <select id=\"tv_order\"><option value=\"tree\">表示範囲の木</option><option value=\"name\">名前</option></select></label>\n  <span id=\"tv_cutwrap\" title=\"系統樹の高さの閾値。左へ動かすほど多くの枝をまとめる（右端で解除）。まとめた枝は代表 1 株（群の中心＝他との距離の和が最小）だけを出し、行頭に +n、木には三角\"><input type=\"range\" id=\"tv_cut\" min=\"0\" max=\"100\" value=\"100\" style=\"width:90px;vertical-align:middle\"><small id=\"tv_cuttxt\" style=\"color:#666\"></small></span>\n  <label title=\"各行の片の下に、その株の遺伝子（.genes サイドカー）を置く。緑＝合意の向きに +、橙＝−、灰＝擬似。ホバーで名前・産物\"><input id=\"tv_genes\" type=\"checkbox\" checked> 遺伝子</label>\n  <label title=\"表示範囲を変えると、グラフをその範囲の錨のノードに寄せて強調する\"><input id=\"tv_sync\" type=\"checkbox\"> グラフ連動</label>\n  <label title=\"グラフに、この表示範囲に属するノード（錨と、錨の間の錨でないノード）だけを描く。範囲外へ繋がる辺は切れ端になる。ノードが 2 万を超える範囲では先頭 2 万個だけ\"><input id=\"tv_gfilter\" type=\"checkbox\"> グラフを絞る</label>\n  <label><input id=\"tv_showcopies\" type=\"checkbox\" checked> コピー</label>\n  <label><input id=\"tv_showreps\" type=\"checkbox\" checked> 反復</label>\n  <label><input id=\"tv_showbounds\" type=\"checkbox\" checked> 境界</label>\n  <button id=\"tv_lgd\" title=\"凡例・説明の表示／非表示\">説明</button>\n  <span id=\"tv_busy\" style=\"color:#c0392b;font-weight:600;display:none\">計算中…</span>\n  <span id=\"tv_info\"></span>\n</div>\n<div id=\"tv_legend\" class=\"tv-legend\"><b>上段</b> 四角＝ブロック（表示範囲を持続度の高い境界で「ブロック」個に切った区間。横幅は bp に比例、高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／灰色の覆いと「?」＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株。高さ＝持続度＝その境界を潰したときの原子の幅。大きいほど大きなブロックを分ける境界）／ダブルクリックでそのブロックに寄る\n  <b>行</b> 色＝ブロック（同じ色＝同じブロック。株間の対応）／三角＝向き／<span style=\"color:#8e44ad\">紫の枠と左向き三角、下段</span>＝コンティグの主な向きと逆（逆位）／<span style=\"color:#333\">黒の破線</span>＝転座（コンティグ上の前後の通過から座標が 2 万錨以上離れている）／各行の並び: 1 コンティグの株は主な向きで鏡にし座標最小の通過を左に回す（環状）／連結線＝bp で等間隔に標本し、隣の行の同じ場所を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）。範囲の拡大は上段のドラッグ（ホイールは無効）。拡大すると境界が増え、原子まで細かくなる。左の木＝表示範囲の UPGMA（枝の長さ＝ブロックの有無・向きの不一致率）／<span style=\"color:#7a1414\">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style=\"color:#d35400\">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分\n  <b>錨の列（ブロックと塩基の間の段）</b> 各行を画面の列（1 列＝数錨〜数百錨）に切り、<span style=\"color:#888\">灰</span>＝その列のトークン列が多数派と同じ、<span style=\"color:#e67e22\">橙</span>・<span style=\"color:#2980b9\">青</span>・<span style=\"color:#27ae60\">緑</span>…＝少数派のアレル（番号順。同じ色＝同じ配列）、薄い＝その列の錨を一部しか持たない（欠失）、上辺の黒＝錨でない配列の挿入（高さは bp の対数）、白＝通過はあるが錨が無い。上段の帯＝列ごとのアレルの種類数（灰 1 種→赤 多い）と行の数（高さ）。下辺 2 px にブロックの色を残す。ホバーで列の錨数・アレル数・この行のトークン範囲（塩基 MSA へ渡す範囲）\n  <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数\n  <b>遺伝子レーン</b> 片の下の帯＝その株の遺伝子（緑 合意の向きに +、橙 −、灰 擬似）。錨の無い遺伝子は通過の中の位置から補間\n</div>\n<div id=\"tv_wrap\" class=\"tv-wrap\"><canvas id=\"tv_cv\"></canvas><canvas id=\"tv_ov\"></canvas><div id=\"tv_tip\"></div></div>\n"
+const BODY = "<div class=\"tv-bar\">\n  <label>錨の床 <input id=\"tv_minanch\" type=\"number\" value=\"50\" min=\"0\" step=\"10\"></label>\n  <label>ブロック <input id=\"tv_nblk\" type=\"number\" value=\"30\" min=\"1\" max=\"500\" step=\"5\"></label>\n  <button id=\"tv_all\">全体</button><button id=\"tv_back\">戻る</button>\n  <label>並び <select id=\"tv_mode\"><option value=\"coord\">合意座標</option><option value=\"rows\">各行の並び</option></select></label>\n  <label title=\"ブロックの段と塩基の間の段。錨の列＝表示範囲を画面の列に等分し、行ごとに錨の有無（濃さ）と錨の間のアレル（色。灰＝多数派、色＝少数派のアレル番号）と挿入（上辺の黒）を出す。自動＝ブロックが 3 個以下か 200 kb 以下で切り替え\">段 <select id=\"tv_rung\"><option value=\"auto\">自動</option><option value=\"blocks\">ブロック</option><option value=\"cols\">錨の列</option></select></label>\n  <button id=\"tv_base\" disabled title=\"錨の列の段で使える\">塩基へ ↓</button><button id=\"tv_graphrange\" title=\"グラフで今見えているノードの座標の範囲（10〜90 パーセンタイル）にパネルを移す\">グラフの範囲を開く</button>\n  <span id=\"tv_basegrp\" style=\"display:none\"><button id=\"tv_bclose\" title=\"塩基の段を閉じて、ブロック／錨の列に戻る\">↑ 戻る</button> <span style=\"color:#555\">倍率</span><button id=\"tv_zout\" title=\"縮小（Ctrl+ホイール下）\">−</button><button id=\"tv_zin\" title=\"拡大（Ctrl+ホイール上。格子のダブルクリックは 2 段）\">＋</button><button id=\"tv_zfit\" title=\"窓全体を画面幅に（俯瞰）\">全体</button><button id=\"tv_zbase\" title=\"文字が読める 7 px/塩基まで一気に拡大\">塩基</button><span id=\"tv_ztxt\" style=\"color:#666\"></span> <label title=\"比較の基準。多数派＝列ごとの最頻の塩基、参照＝参照パスの行（無ければ先頭の行）。列見出しの下段に出る\">基準 <select id=\"tv_cmp\"><option value=\"major\">多数派</option><option value=\"ref\">参照</option></select></label><label title=\"基準と同じ塩基を · で省き、違う塩基だけ色で出す\"><input id=\"tv_bdiff\" type=\"checkbox\" checked> 一致を省く</label><label title=\"行で塩基か有無が違う群（ノード）だけを並べる。群が画面幅より多いときは自動\"><input id=\"tv_bvar\" type=\"checkbox\"> 変異のある群だけ</label></span>\n  <label><input id=\"tv_showlines\" type=\"checkbox\" checked> 連結線</label>\n  <label>並べ替え <select id=\"tv_order\"><option value=\"tree\">表示範囲の木</option><option value=\"name\">名前</option></select></label>\n  <span id=\"tv_cutwrap\" title=\"系統樹の高さの閾値。左へ動かすほど多くの枝をまとめる（右端で解除）。まとめた枝は代表 1 株（群の中心＝他との距離の和が最小）だけを出し、行頭に +n、木には三角\"><input type=\"range\" id=\"tv_cut\" min=\"0\" max=\"100\" value=\"100\" style=\"width:90px;vertical-align:middle\"><small id=\"tv_cuttxt\" style=\"color:#666\"></small></span>\n  <label title=\"各行の片の下に、その株の遺伝子（.genes サイドカー）を置く。緑＝合意の向きに +、橙＝−、灰＝擬似。ホバーで名前・産物\"><input id=\"tv_genes\" type=\"checkbox\" checked> 遺伝子</label>\n  <label title=\"表示範囲を変えると、グラフをその範囲の錨のノードに寄せて強調する\"><input id=\"tv_sync\" type=\"checkbox\"> グラフ連動</label>\n  <label title=\"グラフに、この表示範囲に属するノード（錨と、錨の間の錨でないノード）だけを描く。範囲外へ繋がる辺は切れ端になる。ノードが 2 万を超える範囲では先頭 2 万個だけ\"><input id=\"tv_gfilter\" type=\"checkbox\"> グラフを絞る</label>\n  <label><input id=\"tv_showcopies\" type=\"checkbox\" checked> コピー</label>\n  <label><input id=\"tv_showreps\" type=\"checkbox\" checked> 反復</label>\n  <label><input id=\"tv_showbounds\" type=\"checkbox\" checked> 境界</label>\n  <button id=\"tv_lgd\" title=\"凡例・説明の表示／非表示\">説明</button>\n  <span id=\"tv_busy\" style=\"color:#c0392b;font-weight:600;display:none\">計算中…</span>\n  <span id=\"tv_info\"></span>\n</div>\n<div id=\"tv_legend\" class=\"tv-legend\"><b>上段</b> 四角＝ブロック（表示範囲を持続度の高い境界で「ブロック」個に切った区間。横幅は bp に比例、高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／灰色の覆いと「?」＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株。高さ＝持続度＝その境界を潰したときの原子の幅。大きいほど大きなブロックを分ける境界）／ダブルクリックでそのブロックに寄る\n  <b>行</b> 色＝ブロック（同じ色＝同じブロック。株間の対応）／三角＝向き／<span style=\"color:#8e44ad\">紫の枠と左向き三角、下段</span>＝コンティグの主な向きと逆（逆位）／<span style=\"color:#333\">黒の破線</span>＝転座（コンティグ上の前後の通過から座標が 2 万錨以上離れている）／各行の並び: 1 コンティグの株は主な向きで鏡にし座標最小の通過を左に回す（環状）／連結線＝bp で等間隔に標本し、隣の行の同じ場所を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）。範囲の拡大は上段のドラッグ（ホイールは無効）。拡大すると境界が増え、原子まで細かくなる。左の木＝表示範囲の UPGMA（枝の長さ＝ブロックの有無・向きの不一致率）／<span style=\"color:#7a1414\">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style=\"color:#d35400\">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分\n  <b>錨の列（ブロックと塩基の間の段）</b> 各行を画面の列（1 列＝数錨〜数百錨）に切り、<span style=\"color:#888\">灰</span>＝その列のトークン列が多数派と同じ、<span style=\"color:#e67e22\">橙</span>・<span style=\"color:#2980b9\">青</span>・<span style=\"color:#27ae60\">緑</span>…＝少数派のアレル（番号順。同じ色＝同じ配列）、薄い＝その列の錨を一部しか持たない（欠失）、上辺の黒＝錨でない配列の挿入（高さは bp の対数）、白＝通過はあるが錨が無い。上段の帯＝列ごとのアレルの種類数（灰 1 種→赤 多い）と行の数（高さ）。下辺 2 px にブロックの色を残す。ホバーで列の錨数・アレル数・この行のトークン範囲（塩基 MSA へ渡す範囲）\n  <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数\n  <b>遺伝子レーン</b> 片の下の帯＝その株の遺伝子。<span style=\"color:#2e8b57\">緑</span>＝タンパク質をコードする遺伝子で合意の向きに +、<span style=\"color:#e67e22\">橙</span>＝同 −、<span style=\"color:#6c5ce7\">紫</span>＝RNA 遺伝子（lncRNA・tRNA・rRNA…。濃い＝+、薄い＝−）、<span style=\"color:#9a9a9a\">灰</span>＝擬似遺伝子。三角＝向き。重なる遺伝子（反対鎖の lncRNA など）は下の段に分ける。幅があれば名前を書く。錨の無い遺伝子は通過の中の位置から補間\n  <b>塩基の段</b> 「塩基へ」で各通過の窓の中の配列を列（ノード＝群）に並べる（Blocks と同じ）。入った直後は画面に収まる俯瞰（群を 1 区画、行の色＝アレル。灰＝基準と同じ）。拡大すると塩基のセル、7 px/塩基で文字。「一致を省く」は基準（多数派か参照）と同じ塩基を · に。列見出し: 上段＝ノードの箱（名前・bp。上の青緑の線＝排他アレルを重ねた群）、下段＝基準の配列、底＝参照座標の錨（青緑）・行間で違う（橙）。Ctrl+ホイール＝拡大縮小、ホイール／ドラッグ＝横に動かす、列見出しのドラッグ＝その範囲を画面幅に。セルの上の紫＝逆向きに通ったノード（逆相補で表示）\n</div>\n<div id=\"tv_wrap\" class=\"tv-wrap\"><canvas id=\"tv_cv\"></canvas><canvas id=\"tv_ov\"></canvas><div id=\"tv_tip\"></div></div>\n"
 const CSS = ".tvpanel { display:flex; flex-direction:column; height:100%; font:12px/1.4 system-ui, sans-serif; color:#222; background:#fafafa; }\n.tvpanel .tv-bar { display:flex; gap:10px; align-items:center; padding:4px 10px; background:#fff; border-bottom:1px solid #ddd; flex-wrap:wrap; flex-shrink:0; }\n.tvpanel .tv-bar label { color:#555; } .tvpanel .tv-bar input[type=number] { width:70px; } .tvpanel button { font:inherit; }\n.tvpanel #tv_info { color:#444; margin-left:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60vw; }\n.tvpanel .tv-legend { font-size:11px; color:#444; padding:4px 10px; border-bottom:1px solid #e5e5e5; background:#fdfdfd; line-height:1.5; flex-shrink:0; } .tvpanel .tv-legend b { margin-right:4px; }\n.tvpanel .tv-wrap { position:relative; flex:1; min-height:0; overflow:auto; } .tvpanel canvas { display:block; } .tvpanel #tv_ov { position:absolute; left:0; top:0; pointer-events:none; }\n.tvpanel #tv_tip { position:fixed; pointer-events:none; background:rgba(30,30,30,.92); color:#fff; padding:4px 7px; border-radius:3px; font-size:11px; display:none; max-width:420px; white-space:pre; z-index:9; }"
 function injectStyle() { if (document.getElementById('tv-style')) return; const st = document.createElement('style'); st.id = 'tv-style'; st.textContent = CSS; document.head.appendChild(st) }
 
@@ -58,6 +59,20 @@ let treeCut: number | null = null          // 系統樹のまとめ: 併合の�
 let groupOf = new Map<number, number[]>()  // 代表 hid → まとめた枝の hid 一覧
 let located: number[] = []                 // グラフから来た座標（縦線の印）
 let baseAuto = false                       // ?base=1 で一度だけ塩基へを押す
+// ---- 塩基の段（Blocks の塩基の段と同じ見え方。README 改訂 117 のズーム軸）----
+type BGroup = { g: number; from: number; to: number; nodes: string[]; rb?: number | null; hasEll: boolean; n: number; bp: number; variant: boolean; x0: number; x1: number }
+type BItem = { kind: 'col'; ci: number; g: number } | { kind: 'blk'; ci0: number; ci1: number; n: number; g: number; w: number }
+type BaseState = { M: BubbleMsaResp; cols: MsaCol[]; rows: MsaRow[]; groups: BGroup[]; label: string; z: number | null; sx: number; rowsOf: Map<number, number[]>; lines: { hid: number; mi: number }[]
+  inv: Set<number>[]; refRow: number | null; major?: string[]; blk: Map<number, { per: number[]; n: number; counts: number[] }>; items: BItem[]; xs: Float64Array; colItem: Int32Array; cw: number; zEff: number; fullW: number; vOnly: boolean; autoVar: boolean; hoverCi: number | null }
+let base: BaseState | null = null
+const BASE_COLORS: Record<string, [string, string]> = { A: ['#ffffff', '#2e8b57'], C: ['#ffffff', '#2f6fb3'], G: ['#1b1b1b', '#e0a800'], T: ['#ffffff', '#c9302c'], N: ['#ffffff', '#6b7480'] }   // [文字, 塗り]
+const SITES_COLORS = ['#c9ced8', '#2f6fb3', '#e08a1e', '#3a9d5d', '#8a5cd6', '#c9302c', '#17a2b8', '#a0522d']
+const Z_LADDER = [0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5, 7, 10, 14]; const BASE_CELL_Z = 3, BASE_LETTER_Z = 7
+let rowTop: number[] = [], rowHgt: number[] = []   // 行の上端と高さ（遺伝子レーンの段数は行ごとに違う）
+function rowAt(y: number): number { let lo = 0, hi = rowTop.length - 1; if (!rowTop.length || y < rowTop[0]) return -1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (rowTop[m] <= y) lo = m; else hi = m - 1 } return y < rowTop[lo] + rowHgt[lo] ? lo : -1 }
+const rowsBottom = () => rowTop.length ? rowTop[rowTop.length - 1] + rowHgt[rowTop.length - 1] : TOP
+let geneLanesByHid = new Map<number, Map<number, number>>()   // hid → (gid → 段)。段数は行ごと（重なる遺伝子を分ける。最大 3）
+const GLH = 10                              // 遺伝子レーン 1 段の高さ
 const showGenes = () => ($('genes') as HTMLInputElement).checked
 const rungSel = () => ($('rung') as HTMLSelectElement).value
 // 段の自動切替: ブロックが 3 個以下（表示範囲が原子の中〜数個）か 200 kb 以下なら錨の列
@@ -151,6 +166,7 @@ async function loadRange() {
       if (my !== loading) return
       const jg = await rg.json()
       if (jg.tooMany) genesNote = `遺伝子: 多すぎる（${fmt(jg.n)} > ${fmt(jg.max)}。範囲を狭める）`; else if (jg.error) genesNote = `遺伝子: ${jg.error}`; else genes = jg.genes as Gene[]
+      geneLanesByHid = new Map(); { const byHid = new Map<number, Gene[]>(); for (const gn of genes) { if (!byHid.has(gn.hid)) byHid.set(gn.hid, []); byHid.get(gn.hid)!.push(gn) } for (const [hid, gs] of byHid) geneLanesByHid.set(hid, geneLanes(gs)) }
       if (genesNote) $('info').textContent += ' | ' + genesNote; else $('info').textContent += ` | 遺伝子 ${fmt(genes.length)}`
     }
     if (cb.onFilter && ($('gfilter') as HTMLInputElement).checked) {   // グラフを絞る: 表示範囲のノード（葉）の名前の集合を主画面へ
@@ -180,8 +196,133 @@ function updateBase() {
 $('base').addEventListener('click', () => {
   if (!root || !cols) return
   const ranges = cols.rows.filter(r => r.tw0 >= 0).map(r => [r.pid, r.tw0, r.tw1 + 1] as [number, number, number]); const label = `通過 ${fmt(Math.floor(view[0]))}–${fmt(Math.ceil(view[1]))}`
-  if (cb.onBaseMsa) cb.onBaseMsa(ranges, label); else $('info').textContent = `塩基へ: ${ranges.length} 行を渡す（主画面の Traversals パネルで開く）`
+  void openBase(ranges, label); cb.onBaseMsa?.(ranges, label)
 })
+// ---- 塩基の段 ----
+async function openBase(ranges: [number, number, number][], label: string) {
+  if (!root) return
+  const my = ++loading; $('busy').style.display = 'inline'
+  const d = await fetchBubbleMsaRanges(db, ranges, label, 0, 0, 3000)   // cap 0＝畳まない（画面側で畳む）、葉の上限 3,000
+  if (my !== loading) return
+  $('busy').style.display = 'none'
+  if (d.error || !d.cols || !d.rows || !d.cols.length) { $('info').textContent = `塩基の段: ${d.error || '列が無い'}`; $('info').style.color = '#c0392b'; return }
+  const hidOf = new Map(root.haps.map(h => [h.hap, h.hid])); const rowsOf = new Map<number, number[]>()
+  d.rows.forEach((r, mi) => { const nm = r.label.replace(/ ·\d+$/, ''); const hid = hidOf.get(nm); if (hid == null) return; if (!rowsOf.has(hid)) rowsOf.set(hid, []); rowsOf.get(hid)!.push(mi) })
+  const byNode = new Map<string, number[]>(); d.cols.forEach((c, i) => { for (const nm of (c.nodes || [])) { const a = byNode.get(nm); if (a) a.push(i); else byNode.set(nm, [i]) } })
+  const inv = d.rows.map(r => { const st = new Set<number>(); for (const n of (r.inv || [])) for (const i of (byNode.get(n) || [])) st.add(i); return st })
+  const ri = d.rows.findIndex(r => r.isref)
+  base = { M: d, cols: d.cols, rows: d.rows, groups: baseGroups(d.cols), label, z: null, sx: 0, rowsOf, lines: [], inv, refRow: ri >= 0 ? ri : (d.rows.length ? 0 : null), blk: new Map(), items: [], xs: new Float64Array(0), colItem: new Int32Array(0), cw: 0, zEff: 0, fullW: 0, vOnly: false, autoVar: false, hoverCi: null }
+  $('basegrp').style.display = ''; $('info').style.color = ''; draw()
+}
+function closeBase() { if (!base) return; base = null; $('basegrp').style.display = 'none'; draw(); if (cb.onVisible) loadRange() }
+function baseGroups(cols: MsaCol[]): BGroup[] {
+  const groups: BGroup[] = []
+  cols.forEach((c, i) => { const last = groups[groups.length - 1]; if (last && last.g === c.g) last.to = i; else groups.push({ g: c.g, from: i, to: i, nodes: c.nodes, rb: c.rb, hasEll: false, n: 1, bp: 1, variant: false, x0: 0, x1: 0 }) })
+  for (const gr of groups) { const cs = cols.slice(gr.from, gr.to + 1); const ell = cs.find(c => c.kind === 'ell'); gr.hasEll = !!ell; gr.n = gr.to - gr.from + 1; gr.bp = ell ? ((ell as any).bp || gr.n) : gr.n; gr.variant = cs.some(c => c.variant) || gr.nodes.length > 1 }
+  return groups
+}
+const baseGroupWidth = (gr: BGroup, z: number, gmin: number) => (z >= BASE_CELL_Z && !gr.hasEll) ? gr.n * Math.floor(z) : Math.max(gmin, z * gr.n)
+function baseFitZ(groups: BGroup[], W: number) { let lo = 0, hi = 14; for (let it = 0; it < 40; it++) { const m = (lo + hi) / 2; let sum = 0; for (const gr of groups) sum += baseGroupWidth(gr, m, 1); if (sum <= W) lo = m; else hi = m } return lo }
+// 配置: 見せる群（変異のある群だけ: 手動か、全群が 1 px ずつでも入らないときは自動）、z（無ければ画面に収まる最大）、項目（セルの列か 1 区画）、x 位置
+function baseLayout(W: number) {
+  const B = base!; const groups = B.groups; const bvar = ($('bvar') as HTMLInputElement).checked
+  const varG = groups.filter(gr => gr.variant); const autoVar = !bvar && groups.length > W && varG.length <= W; const vOnly = bvar || autoVar; const shown = vOnly ? varG : groups
+  let gmin = 1; let z = B.z; if (z == null) { z = baseFitZ(shown, W); if (shown.length * gmin > W) { z = 0; gmin = W / Math.max(1, shown.length) } }
+  const cw = z >= BASE_CELL_Z ? Math.floor(z) : 0; const items: BItem[] = []
+  for (const gr of shown) { if (cw && !gr.hasEll) { for (let i = gr.from; i <= gr.to; i++) items.push({ kind: 'col', ci: i, g: gr.g }) } else items.push({ kind: 'blk', ci0: gr.from, ci1: gr.to, n: gr.bp, g: gr.g, w: baseGroupWidth(gr, z, gmin) }) }
+  const xs = new Float64Array(items.length + 1); let x = 0; const colItem = new Int32Array(B.cols.length).fill(-1)
+  items.forEach((it, k) => { xs[k] = x; x += (it.kind === 'blk' ? it.w : cw); if (it.kind === 'col') colItem[it.ci] = k; else for (let i = it.ci0; i <= it.ci1; i++) colItem[i] = k }); xs[items.length] = x
+  const gx = new Map<number, { x0: number; x1: number }>(); items.forEach((it, k) => { const e = gx.get(it.g) || { x0: xs[k], x1: xs[k + 1] }; e.x1 = xs[k + 1]; gx.set(it.g, e) }); for (const gr of groups) { const e = gx.get(gr.g); gr.x0 = e ? e.x0 : 0; gr.x1 = e ? e.x1 : 0 }
+  B.items = items; B.xs = xs; B.colItem = colItem; B.cw = cw; B.zEff = z; B.fullW = x; B.vOnly = vOnly; B.autoVar = autoVar
+  B.sx = Math.max(0, Math.min(B.sx, Math.max(0, B.fullW - W)))
+  $('ztxt').textContent = (z >= BASE_LETTER_Z ? `${cw} px/塩基（文字）` : z >= BASE_CELL_Z ? `${cw} px/塩基` : z > 0 ? `俯瞰 ${z.toFixed(2)} px/塩基` : '俯瞰（群 1 px 未満）') + (vOnly ? (autoVar ? ' · 変異のある群だけ（自動）' : ' · 変異のある群だけ') : '') + ` · 列 ${fmt(B.cols.length)} ノード ${fmt(groups.length)}`
+  ;($('zbase') as HTMLButtonElement).disabled = z >= BASE_LETTER_Z
+}
+// 比較の基準: 多数派（列ごとの最頻）か参照パスの行（無ければ先頭の行）
+function baseCmpSeq(): { seq: string[] | string | null; row: number | null } {
+  const B = base!
+  if (($('cmp') as HTMLSelectElement).value === 'major') { if (!B.major) { const n = B.cols.length; const out = new Array<string>(n).fill('-'); for (let i = 0; i < n; i++) { const cnt = new Map<string, number>(); for (const r of B.rows) { const ch = r.seq[i]; if (!ch || ch === '-' || ch === '~' || ch === '.') continue; cnt.set(ch, (cnt.get(ch) || 0) + 1) } let best = '-', bn = 0; for (const [ch, c] of cnt) if (c > bn) { bn = c; best = ch } out[i] = best } B.major = out } return { seq: B.major, row: null } }
+  const rr = B.refRow != null ? B.rows[B.refRow] : null; return rr ? { seq: rr.seq, row: B.refRow } : { seq: null, row: null }
+}
+const baseFontPx = (cw: number, h: number) => Math.max(0, Math.min(13, h - 2, Math.floor(cw / 0.62)))
+// 区画（畳んだ群）の中でのこの行のアレル番号（0 ＝多数派、持たない行は −1）
+function baseBlkAllele(it: { ci0: number; ci1: number }, mi: number): number {
+  const B = base!; let e = B.blk.get(it.ci0)
+  if (!e) { const cnt = new Map<string, number>(); const keys: string[] = []; for (const r of B.rows) { const k = r.seq.slice(it.ci0, it.ci1 + 1).replace(/[-.]/g, ''); keys.push(k); if (k) cnt.set(k, (cnt.get(k) || 0) + 1) }
+    const order = [...cnt.entries()].sort((u, v) => v[1] - u[1] || (u[0] < v[0] ? -1 : 1)).map(([k]) => k); const idx = new Map(order.map((k, i) => [k, i])); e = { per: keys.map(k => (k ? idx.get(k)! : -1)), n: order.length, counts: order.map(k => cnt.get(k)!) }; B.blk.set(it.ci0, e) }
+  return mi < e.per.length ? e.per[mi] : -1
+}
+const baseBlkCmp = (it: { ci0: number; ci1: number }) => { const c = baseCmpSeq(); return c.row != null ? baseBlkAllele(it, c.row) : 0 }
+function baseItemAt(px: number): number | null { const xs = base!.xs; if (xs.length < 2 || px < xs[0] || px >= xs[xs.length - 1]) return null; let lo = 0, hi = xs.length - 2; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (xs[m] <= px) lo = m; else hi = m - 1 } return lo }
+function baseVisible(W: number): [number, number] { const B = base!; const xs = B.xs; const n = B.items.length; if (!n) return [0, -1]; let lo = 0, hi = n; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m + 1] <= B.sx) lo = m + 1; else hi = m } const k0 = lo; hi = n; while (lo < hi) { const m = (lo + hi) >> 1; if (xs[m] < B.sx + W) lo = m + 1; else hi = m } return [k0, lo - 1] }
+function baseSetZoom(z: number | null, anchorPx: number | null) {
+  const B = base!; const W = bodyPx(); const ax = anchorPx != null ? anchorPx : W / 2; const k = baseItemAt(ax + B.sx); const ciBase = k != null ? (B.items[k].kind === 'col' ? (B.items[k] as any).ci : (B.items[k] as any).ci0) : Math.floor(B.cols.length / 2)
+  B.z = z; baseLayout(W); const kk = B.colItem[ciBase]; if (kk >= 0) B.sx = Math.max(0, Math.min(B.xs[kk] - ax, Math.max(0, B.fullW - W))); draw()
+}
+function baseZoomStep(dir: number, anchorPx: number | null) {
+  const z = base!.zEff; let nz: number | null
+  if (dir > 0) { nz = Z_LADDER.find(v => v > z + 1e-9) ?? Z_LADDER[Z_LADDER.length - 1]; if (dir > 1) { const i = Z_LADDER.indexOf(nz); nz = Z_LADDER[Math.min(Z_LADDER.length - 1, i + dir - 1)] } }
+  else { const below = Z_LADDER.filter(v => v < z - 1e-9); nz = below.length ? below[below.length - 1] : null }
+  if (nz === z) return; baseSetZoom(nz, anchorPx)
+}
+function baseZoomToCols(i0: number, i1: number) { const B = base!; const W = bodyPx(); const groups = (B.vOnly ? B.groups.filter(gr => gr.variant) : B.groups).filter(gr => gr.to >= i0 && gr.from <= i1); if (!groups.length) return; let z = baseFitZ(groups, W); if (z >= BASE_LETTER_Z) z = Math.min(14, Math.floor(z)); else if (z >= BASE_CELL_Z) z = Math.floor(z); B.z = z; baseLayout(W); const k = B.colItem[i0]; if (k >= 0) B.sx = Math.max(0, Math.min(B.xs[k], Math.max(0, B.fullW - W))); draw() }
+let baseVisKey = ''
+function baseEmitVisible(W: number) {
+  if (!cb.onVisible || !base || !($('sync') as HTMLInputElement).checked) return
+  const [k0, k1] = baseVisible(W); if (k1 < k0) return; const set = new Set<string>(); for (let k = k0; k <= k1; k++) { const it = base.items[k]; const c = base.cols[it.kind === 'col' ? it.ci : it.ci0]; for (const n of (c.nodes || [])) set.add(n) }
+  let names = [...set]; if (names.length > 600) { const step = names.length / 600; names = Array.from({ length: 600 }, (_, i) => names[Math.floor(i * step)]) }
+  const key = `${k0}:${k1}:${names.length}`; if (key === baseVisKey) return; baseVisKey = key; cb.onVisible({ names, sync: true })
+}
+// 描画（塩基の段）: 上段＝ノードの箱と基準の配列、行＝通過（木の順、同じ株の ·2 は続けて）、セル＝塩基（基準と同じなら ·）、区画＝アレル色
+function drawBaseCore() {
+  const B = base!; const W = cv.parentElement!.clientWidth; TOP = 70; ROW = 15
+  B.lines = []; for (const hid of hapOrder) for (const mi of (B.rowsOf.get(hid) || [])) B.lines.push({ hid, mi })
+  rowTop = B.lines.map((_, k) => TOP + k * ROW); rowHgt = B.lines.map(() => ROW); const H = TOP + B.lines.length * ROW + 20
+  cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio; cv.style.width = W + 'px'; cv.style.height = H + 'px'; g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
+  ov.width = cv.width; ov.height = cv.height; ov.style.width = cv.style.width; ov.style.height = cv.style.height; og.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
+  g.fillStyle = '#fafafa'; g.fillRect(0, 0, W, H)
+  const Wb = W - LAB - 4; baseLayout(Wb)
+  const cmp = baseCmpSeq(); const cw = B.cw; const [k0, k1] = baseVisible(Wb)
+  g.fillStyle = '#666'; g.font = '10px system-ui'; g.fillText(`塩基の段 ${B.label} · 行 ${B.lines.length}（通過）· 基準 ${cmp.row != null ? ('参照 ' + B.rows[cmp.row].label) : '多数派'}`, LAB + 2, TOP - 2)
+  g.save(); g.beginPath(); g.rect(LAB, 0, W - LAB, H); g.clip(); g.translate(LAB - B.sx, 0)
+  // 上段: ノードの箱（8..24）、基準の配列（26..52）、底の印（54..57）
+  B.groups.forEach((gr, k) => { if (gr.x1 <= gr.x0 || gr.x1 < B.sx || gr.x0 > B.sx + Wb) return; const w = gr.x1 - gr.x0; g.fillStyle = k % 2 ? '#e7ecf0' : '#eef2f5'; g.fillRect(gr.x0, 8, w, 16); g.fillStyle = '#d3dbe1'; g.fillRect(gr.x0, 8, 1, 16); g.fillRect(gr.x1 - 1, 8, 1, 16)
+    if (gr.nodes.length > 1) { g.fillStyle = '#0d9488'; g.fillRect(gr.x0, 8, w, 3) }
+    const nm = gr.nodes[0] + (gr.nodes.length > 1 ? '+' + (gr.nodes.length - 1) : ''); const bp = fmt(gr.bp) + ' bp'; const label = w >= 118 ? `${nm} · ${bp}` : (w >= 62 ? nm : (w >= 40 ? bp : ''))
+    if (label) { g.fillStyle = '#1b2530'; g.font = '10px ui-monospace, monospace'; g.textAlign = 'left'; g.fillText(label, gr.x0 + 4, 20) }
+    if (gr.rb) { g.fillStyle = '#0d9488'; g.fillRect(gr.x0, 54, w, 2) }
+    if (gr.variant) { g.fillStyle = '#d98200'; g.fillRect(gr.x0 + 1, 56, Math.max(1, w - 2), 3) } })
+  if (cmp.seq) { const y = 26, h = 26; const fpx = baseFontPx(cw, h); g.font = `bold ${fpx}px ui-monospace, monospace`; g.textAlign = 'center'; g.textBaseline = 'middle'
+    for (let k = k0; k <= k1; k++) { const it = B.items[k]; const x = B.xs[k], w = B.xs[k + 1] - B.xs[k] - (cw >= 8 ? 1 : 0)
+      if (it.kind === 'blk') { const a = baseBlkCmp(it); g.fillStyle = a >= 0 ? SITES_COLORS[Math.min(a, SITES_COLORS.length - 1)] : '#eef2f5'; g.fillRect(x, y + 1, w, h - 2); if (w >= 26) { g.fillStyle = a >= 0 ? '#fff' : '#64707c'; g.font = `bold ${Math.min(fpx, 10)}px ui-monospace, monospace`; g.fillText(fmtBpShort(it.n), x + w / 2, y + h / 2 + 1); g.font = `bold ${fpx}px ui-monospace, monospace` } continue }
+      const ch = cmp.seq[it.ci]; if (!ch || ch === '-' || ch === '.') { g.fillStyle = '#eef2f5'; g.fillRect(x, y + 1, w, h - 2); continue } if (ch === '~') { g.fillStyle = '#d3dbe1'; g.fillRect(x, y + 1, w, h - 2); continue }
+      const col = BASE_COLORS[ch.toUpperCase()] || BASE_COLORS.N; g.fillStyle = col[1]; g.fillRect(x, y, w, h); if (cw >= 5 && fpx >= 8) { g.fillStyle = col[0]; g.fillText(ch, x + w / 2, y + h / 2 + 1) } }
+    g.textBaseline = 'alphabetic'; g.textAlign = 'left' }
+  // 行
+  const hcell = ROW - 2; const fpx = baseFontPx(cw, hcell); const letters = cw >= 5 && fpx >= 8; const diff = ($('bdiff') as HTMLInputElement).checked
+  B.lines.forEach((ln, k) => { const y = TOP + k * ROW + 1, h = hcell; const row = B.rows[ln.mi]; const inv = B.inv[ln.mi]
+    g.fillStyle = k % 2 ? 'rgba(0,0,0,.03)' : 'rgba(0,0,0,0)'; g.fillRect(B.sx, y - 1, Wb, ROW)
+    g.font = `bold ${fpx}px ui-monospace, monospace`; g.textAlign = 'center'; g.textBaseline = 'middle'
+    for (let kk = k0; kk <= k1; kk++) { const it = B.items[kk]; const x = B.xs[kk], w = B.xs[kk + 1] - B.xs[kk] - (cw >= 8 ? 1 : 0)
+      if (it.kind === 'blk') { const a = baseBlkAllele(it, ln.mi); if (a < 0) continue; const same = diff && baseBlkCmp(it) === a; g.fillStyle = same ? '#e7ecf0' : SITES_COLORS[Math.min(a, SITES_COLORS.length - 1)]; g.fillRect(x, y + 1, w, h - 2)
+        if (inv.size) for (let i = it.ci0; i <= it.ci1; i++) if (inv.has(i)) { g.fillStyle = '#7c3aed'; g.fillRect(x, y, w, 2); break } continue }
+      const ch = row.seq[it.ci]; if (ch === '-' || ch === undefined) continue
+      if (ch === '.') { g.fillStyle = '#e7ecf0'; g.fillRect(x + Math.max(0, w / 2 - 1), y + h / 2 - 1, Math.min(2, w), 2); continue }
+      if (ch === '~') { g.fillStyle = '#d3dbe1'; g.fillRect(x, y + 2, w, h - 4); continue }
+      if (diff && cmp.seq && cmp.seq[it.ci] === ch) { g.fillStyle = '#e7ecf0'; g.fillRect(x, y, w, h); if (letters) { g.fillStyle = '#64707c'; g.fillText('·', x + w / 2, y + h / 2 + 1) } continue }
+      const col = BASE_COLORS[ch.toUpperCase()] || BASE_COLORS.N; g.fillStyle = col[1]; g.fillRect(x, y, w, h); if (letters) { g.fillStyle = col[0]; g.fillText(ch, x + w / 2, y + h / 2 + 1) }
+      if (inv.has(it.ci)) { g.fillStyle = '#7c3aed'; g.fillRect(x, y, w, 2) } }
+    g.textAlign = 'left'; g.textBaseline = 'alphabetic' })
+  if (B.hoverCi != null && B.colItem[B.hoverCi] >= 0) { const kk = B.colItem[B.hoverCi]; g.fillStyle = 'rgba(13,148,136,.10)'; g.fillRect(B.xs[kk], 0, B.xs[kk + 1] - B.xs[kk], H) }
+  g.restore()
+  // 行ラベル・木
+  B.lines.forEach((ln, k) => { const y = TOP + k * ROW; const row = B.rows[ln.mi]; const grp = groupOf.get(ln.hid); g.fillStyle = row.isref ? '#7a4b00' : '#333'; g.font = '11px system-ui'; g.fillText(`${row.label}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}  ${row.strand}`, TREEW + 4, y + 10) })
+  const rowOf = new Map<number, number>(); B.lines.forEach((ln, k) => { if (!rowOf.has(ln.hid)) rowOf.set(ln.hid, k) })
+  drawTree(rowOf)
+  if (B.fullW > Wb) { const sw = Math.max(20, Wb * Wb / B.fullW); const sx0 = LAB + (B.sx / B.fullW) * Wb; g.fillStyle = 'rgba(0,0,0,.15)'; g.fillRect(LAB, H - 8, Wb, 6); g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(sx0, H - 8, sw, 6) }   // 横の位置の目安
+  baseEmitVisible(Wb)
+}
+const fmtBpShort = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n)
 // ---- 表示範囲の木（UPGMA）: ブロックごとの状態（無し/順/逆/両方）の bp 重み不一致率 ----
 function treeOrder(): number[] {
   treeRoot = null
@@ -227,9 +368,12 @@ type Piece = { blk: number; px0: number; px1: number; tr: Trav; inv: boolean; di
 let lastPieces = new Map<number, Piece[]>()
 function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
 function drawCore() {
+  if (base && root) { drawBaseCore(); return }
   const useCols = !!cols && wantCols(); TOP = useCols ? 88 : 70
-  const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = (mode === 'rows' ? 22 : 15) + (genes.length && showGenes() ? 8 : 0)   // 遺伝子レーンの分
-  const H = TOP + (root ? hapOrder.length * ROW : 0) + 20
+  const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 22 : 15
+  // 行の高さ: 遺伝子レーンのある行だけ段数ぶん高く（3 + 10 × 段）
+  rowTop = []; rowHgt = []; { let yy = TOP; const gOn = genes.length > 0 && showGenes(); for (const hid of (root ? hapOrder : [])) { let nl = 0; if (gOn) { const m = geneLanesByHid.get(hid); if (m) for (const L of m.values()) nl = Math.max(nl, L + 1) } const h = ROW + (nl ? 3 + GLH * nl : 0); rowTop.push(yy); rowHgt.push(h); yy += h } }
+  const H = rowsBottom() + 20
   cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio; cv.style.width = W + 'px'; cv.style.height = H + 'px'; g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
   ov.width = cv.width; ov.height = cv.height; ov.style.width = cv.style.width; ov.style.height = cv.style.height; og.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
   g.fillStyle = '#fafafa'; g.fillRect(0, 0, W, H)
@@ -310,8 +454,8 @@ function drawCore() {
   lastPieces = piecesOf
   const genesByTr = new Map<number, Gene[]>(); if (genes.length && showGenes()) for (const gn of genes) { if (!genesByTr.has(gn.tr)) genesByTr.set(gn.tr, []); genesByTr.get(gn.tr)!.push(gn) }
   hapOrder.forEach((hid, k) => {
-    const y = TOP + k * ROW; const hap = root!.haps[hid]
-    g.fillStyle = k % 2 ? '#f2f2f2' : '#fafafa'; g.fillRect(0, y, W, ROW)
+    const y = rowTop[k]; const hap = root!.haps[hid]
+    g.fillStyle = k % 2 ? '#f2f2f2' : '#fafafa'; g.fillRect(0, y, W, rowHgt[k])
     const n = perHap[hid] || 0; const oneBlk = blocks.length === 1
     g.fillStyle = oneBlk && n >= 2 ? '#b03a2e' : '#333'; g.font = '11px system-ui'; const grp = groupOf.get(hid); g.fillText(`${hap.hap}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}${hap.nexcl ? ` +${hap.nexcl}冗長` : ''}${oneBlk && n >= 2 ? ` ×${n}` : (n > 1 ? ` (${n})` : '')}`, TREEW + 4, y + 10)
     const pcs = piecesOf.get(hid) || []
@@ -334,49 +478,72 @@ function drawCore() {
       if (!ps[0].inv) { g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, yy); g.lineTo(hi - 1, yy + hh / 2); g.lineTo(hi - 6, yy + hh) } else { g.moveTo(lo + 6, yy); g.lineTo(lo + 1, yy + hh / 2); g.lineTo(lo + 6, yy + hh) } g.fill() }
       if (r.copy >= 1 && hi - lo > 40) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
     }
-    if (genesByTr.size) for (const p of pcs) for (const gn of (genesByTr.get(p.tr.id) || [])) {   // 遺伝子レーン: 片の下。緑＝合意の向きに +、橙＝−、灰＝擬似
-      if (gn.x1 < p.c0 || gn.x0 > p.c1) continue
-      const [pa, pb] = pxInPiece(p, Math.max(p.c0, gn.x0), Math.min(p.c1 + 1, gn.x1 + 1), mode); const a = Math.max(LAB, pa), b = Math.min(W, pb); if (b < a) continue
-      g.fillStyle = gn.pseudo ? '#9a9a9a' : (gn.fwd ? '#2e8b57' : '#e67e22'); g.fillRect(a, y + 2 + BLK + 2, Math.max(1, b - a), 5)
+    if (genesByTr.size) {   // 遺伝子レーン: 片の下。種類 × 向きの色、重なりは段に分ける、三角＝向き、幅があれば名前
+      const mine: Gene[] = []; for (const p of pcs) for (const gn of (genesByTr.get(p.tr.id) || [])) if (gn.x1 >= p.c0 && gn.x0 <= p.c1) mine.push(gn)
+      const lanes = geneLanesByHid.get(hid) || geneLanes(mine); const drawn = new Set<number>()
+      for (const p of pcs) for (const gn of (genesByTr.get(p.tr.id) || [])) {
+        if (gn.x1 < p.c0 || gn.x0 > p.c1) continue
+        const [pa, pb] = pxInPiece(p, Math.max(p.c0, gn.x0), Math.min(p.c1 + 1, gn.x1 + 1), mode); const a = Math.max(LAB, pa), b = Math.min(W, pb); if (b < a) continue
+        const L = lanes.get(gn.gid) || 0; const yy0 = y + 2 + BLK + 3 + L * GLH; const w = Math.max(1, b - a); const col = geneColor(gn)
+        g.fillStyle = col; g.fillRect(a, yy0, w, GLH - 1)
+        const right = (p.fwd ? gn.fwd : !gn.fwd)   // 画面上の向き（各行の並びで片が鏡なら反転）
+        if (w >= 12) { g.fillStyle = 'rgba(255,255,255,.9)'; g.beginPath(); if (right) { g.moveTo(b - 5, yy0 + 1); g.lineTo(b - 1, yy0 + (GLH - 1) / 2); g.lineTo(b - 5, yy0 + GLH - 2) } else { g.moveTo(a + 5, yy0 + 1); g.lineTo(a + 1, yy0 + (GLH - 1) / 2); g.lineTo(a + 5, yy0 + GLH - 2) } g.fill() }
+        if (!drawn.has(gn.gid)) { const nm = gn.name || gn.locus || ''; g.font = '8.5px system-ui'; const tw = g.measureText(nm).width; if (nm && w >= tw + 12) { g.fillStyle = geneKind(gn) === 'pseudo' ? '#222' : '#fff'; g.fillText(nm, a + (right ? 3 : 7), yy0 + GLH - 3); drawn.add(gn.gid) } }
+      }
     }
     if (($('showreps') as HTMLInputElement).checked && mode === 'coord') for (const c of (rpByHap.get(hid) || [])) { const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.fillStyle = 'rgba(120,20,20,.9)'; g.fillRect(px0, y + 1, Math.max(1, px1 - px0), 2) }
     if (($('showcopies') as HTMLInputElement).checked && mode === 'coord') for (const c of (cpByHap.get(hid) || [])) { const px0 = Math.max(LAB, X(c.x0)), px1 = Math.min(W, X(c.x1 + 1)); g.strokeStyle = '#c0392b'; g.lineWidth = 2; g.beginPath(); g.moveTo(px0, y + BLK + 3); g.lineTo(px1, y + BLK + 3); g.stroke() }
   })
-  if (treeRoot && ($('order') as HTMLSelectElement).value === 'tree') {   // 系統樹: 根が左、葉が右。枝の長さは不一致率
-    const rowOf = new Map(hapOrder.map((h, k) => [h, k])); const hmax = Math.max(1e-9, treeRoot.h); g.strokeStyle = '#444'; g.lineWidth = 1
+  drawTree(new Map(hapOrder.map((h, k) => [h, k])))
+  if (located.length) { g.strokeStyle = 'rgba(255,20,147,.85)'; g.lineWidth = 1.5; for (const x of located) { if (x < v0 || x > v1) continue; const px = X(x); g.beginPath(); g.moveTo(px, TOP - 12); g.lineTo(px, rowsBottom()); g.stroke() } g.lineWidth = 1 }   // グラフから来たノードの座標
+  if (sel) { g.fillStyle = 'rgba(52,152,219,.15)'; g.fillRect(sel[0], 0, sel[1] - sel[0], H); g.fillStyle = '#c0392b'; g.font = '12px system-ui'; g.fillText('計算中…', sel[0] + 4, 14) }
+  drawLines(mode, W)
+}
+// 系統樹: 根が左、葉が右。枝の長さは不一致率。rowOf = hid → 行番号（塩基の段では同じ株の最初の行）
+function drawTree(rowOf: Map<number, number>) {
+  if (!root) return
+  if (treeRoot && ($('order') as HTMLSelectElement).value === 'tree') {
+    const hmax = Math.max(1e-9, treeRoot.h); g.strokeStyle = '#444'; g.lineWidth = 1
     const xOfH = (h: number) => 4 + (1 - Math.sqrt(Math.max(0, h) / hmax)) * (TREEW - 8)   // 近い株の併合が 0 付近に集まるので平方根で広げる
     const walk = (c: Clade): number => {   // 返り値はこのクレードの中心 y（子の中心の平均）。葉（まとめた枝も）は行の中心
       const x = xOfH(c.h)
       if (!c.kids.length || c.collapsed) {
-        const y = TOP + rowOf.get(c.rep ?? c.leaves[0])! * ROW + 2 + BLK / 2; g.beginPath(); g.moveTo(x, y); g.lineTo(TREEW - 2, y); g.stroke()
+        const k = rowOf.get(c.rep ?? c.leaves[0]); if (k == null) return -1
+        const y = rowTop[k] + 2 + BLK / 2; g.beginPath(); g.moveTo(x, y); g.lineTo(TREEW - 2, y); g.stroke()
         if (c.collapsed) { g.fillStyle = '#c0392b'; g.beginPath(); g.moveTo(x, y); g.lineTo(TREEW - 2, y - 3); g.lineTo(TREEW - 2, y + 3); g.fill(); g.fillStyle = '#333' }   // まとめた枝＝三角
         return y
       }
-      const ys = c.kids.map(walk)
+      const ys0 = c.kids.map(walk); const ys = ys0.filter(v => v >= 0); if (!ys.length) return -1   // 塩基の段で行の無い株（範囲に無い）は飛ばす
       g.beginPath(); g.moveTo(x, Math.min(...ys)); g.lineTo(x, Math.max(...ys)); g.stroke()
-      c.kids.forEach((k, i) => { const xk = xOfH(k.h); g.beginPath(); g.moveTo(x, ys[i]); g.lineTo(xk, ys[i]); g.stroke() })
+      c.kids.forEach((k, i) => { if (ys0[i] < 0) return; const xk = xOfH(k.h); g.beginPath(); g.moveTo(x, ys0[i]); g.lineTo(xk, ys0[i]); g.stroke() })
       return ys.reduce((t, v) => t + v, 0) / ys.length
     }
     walk(treeRoot)
-    if (treeCut != null) { const xc = xOfH(treeCut * hmax); g.strokeStyle = 'rgba(192,57,43,.6)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(xc, TOP); g.lineTo(xc, TOP + hapOrder.length * ROW); g.stroke(); g.setLineDash([]) }   // まとめの閾値
+    if (treeCut != null) { const xc = xOfH(treeCut * hmax); g.strokeStyle = 'rgba(192,57,43,.6)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(xc, TOP); g.lineTo(xc, rowsBottom()); g.stroke(); g.setLineDash([]) }   // まとめの閾値
     $('cuttxt').textContent = `${hapOrder.length}/${root.H} 行`
   } else $('cuttxt').textContent = ''
-  if (located.length) { g.strokeStyle = 'rgba(255,20,147,.85)'; g.lineWidth = 1.5; for (const x of located) { if (x < v0 || x > v1) continue; const px = X(x); g.beginPath(); g.moveTo(px, TOP - 12); g.lineTo(px, TOP + hapOrder.length * ROW); g.stroke() } g.lineWidth = 1 }   // グラフから来たノードの座標
-  if (sel) { g.fillStyle = 'rgba(52,152,219,.15)'; g.fillRect(sel[0], 0, sel[1] - sel[0], H); g.fillStyle = '#c0392b'; g.font = '12px system-ui'; g.fillText('計算中…', sel[0] + 4, 14) }
-  // 連結線: bp で等間隔に標本し、隣の行でその座標を含む片の中の位置を結ぶ
+}
+// 連結線: bp で等間隔に標本し、隣の行でその座標を含む片の中の位置を結ぶ
+function drawLines(mode: string, W: number) {
+  if (!root) return
   if (mode === 'rows' && ($('showlines') as HTMLInputElement).checked) {
     g.lineWidth = 1; const nS = Math.max(8, Math.floor((W - LAB) / 12)); const xsS: number[] = []; for (let k = 0; k < nS; k++) xsS.push(xOfPx(LAB + (k + 0.5) / nS * (W - LAB)))
     const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { if (x < p.c0 || x > p.c1 + 1) continue; const f = (x - p.c0) / Math.max(1, p.c1 + 1 - p.c0); out.push(p.px0 + (p.fwd ? f : 1 - f) * (p.px1 - p.px0)) } return out }
     for (let k = 0; k + 1 < hapOrder.length; k++) {
-      const A = piecesOf.get(hapOrder[k]) || [], B = piecesOf.get(hapOrder[k + 1]) || []; const yA = TOP + k * ROW + 2 + BLK, yB = TOP + (k + 1) * ROW + 2
+      const A = lastPieces.get(hapOrder[k]) || [], B = lastPieces.get(hapOrder[k + 1]) || []; const yA = rowTop[k] + 2 + BLK, yB = rowTop[k + 1] + 2
       for (const x of xsS) {
         const pa = posIn(A, x), pb = posIn(B, x); if (!pa.length || !pb.length) continue
-        g.strokeStyle = `hsla(${hue(blockAt(x))}, 60%, 40%, ${useCols ? .12 : (pa.length * pb.length > 1 ? .7 : .4)})`   // 錨の列の段ではセルの邪魔にならないよう薄く
+        g.strokeStyle = `hsla(${hue(blockAt(x))}, 60%, 40%, ${(!!cols && wantCols()) ? .12 : (pa.length * pb.length > 1 ? .7 : .4)})`   // 錨の列の段ではセルの邪魔にならないよう薄く
         for (const xa of pa) for (const xb of pb) { if (xa < LAB || xb < LAB) continue; g.beginPath(); g.moveTo(xa, yA); g.lineTo(xb, yB); g.stroke() }
       }
     }
   }
 }
+// 遺伝子の種類: タンパク質をコードする（cds）／RNA 遺伝子／擬似／その他。色は種類 × 向き
+const geneKind = (gn: Gene): 'cds' | 'rna' | 'pseudo' | 'other' => (gn.pseudo || /pseudo/i.test(gn.type)) ? 'pseudo' : /^(cds|gene|mrna|protein_coding|protein-coding)$/i.test(gn.type) ? 'cds' : /rna/i.test(gn.type) ? 'rna' : 'other'
+const geneColor = (gn: Gene) => { const k = geneKind(gn); return k === 'pseudo' ? '#9a9a9a' : k === 'cds' ? (gn.fwd ? '#2e8b57' : '#e67e22') : k === 'rna' ? (gn.fwd ? '#6c5ce7' : '#b89be0') : '#5d6d7e' }
+// 行ごとに重なる遺伝子を段に分ける（x0 の順に、終わりが x0 より手前の段へ。最大 3 段、溢れは最後の段）
+function geneLanes(gs: Gene[]): Map<number, number> { const out = new Map<number, number>(); const ends: number[] = []; for (const gn of gs.slice().sort((a, b) => a.x0 - b.x0 || b.x1 - a.x1)) { let L = ends.findIndex(e => e < gn.x0); if (L < 0) { if (ends.length < 3) { L = ends.length; ends.push(gn.x1) } else { L = 2; ends[2] = Math.max(ends[2], gn.x1) } } else ends[L] = gn.x1; out.set(gn.gid, L) } return out }
 // 片の中の座標区間 [xa, xb) → 画面の px（合意座標は X()、各行の並びは片の中の比例。向きが逆なら鏡）
 function pxInPiece(p: Piece, xa: number, xb: number, mode: string): [number, number] {
   if (mode === 'coord') { const a = X(xa), b = X(xb); return [Math.min(a, b), Math.max(a, b)] }
@@ -400,15 +567,23 @@ function drawCells(cr: ColRow, p: Piece, px0: number, px1: number, yy: number, h
 }
 // ---- 操作 ----
 let drag: [number, number] | null = null; let sel: [number, number] | null = null
+let bDrag: { x: number; sx: number; moved: boolean } | null = null
 cv.addEventListener('mousedown', e => {
+  if (base) {   // 塩基の段: 上段のドラッグ＝その範囲を画面幅に、行のドラッグ＝横に動かす
+    if (e.offsetX < LAB) return
+    if (e.offsetY < TOP) { drag = [e.offsetX, e.offsetX]; return }
+    bDrag = { x: e.offsetX, sx: base.sx, moved: false }; return
+  }
   const inRows = ($('mode') as HTMLSelectElement).value === 'rows'
   if (e.offsetX > LAB && (!inRows || e.offsetY < TOP)) { drag = [e.offsetX, e.offsetX]; return }
-  if (root && e.offsetX >= TREEW && e.offsetX < LAB && e.offsetY >= TOP) { const k = Math.floor((e.offsetY - TOP) / ROW); if (k >= 0 && k < hapOrder.length) cb.onSelectHap?.(root.haps[hapOrder[k]].hap) }   // 行ラベル → 主画面のパス群の選択
+  if (root && e.offsetX >= TREEW && e.offsetX < LAB && e.offsetY >= TOP) { const k = rowAt(e.offsetY); if (k >= 0 && k < hapOrder.length) cb.onSelectHap?.(root.haps[hapOrder[k]].hap) }   // 行ラベル → 主画面のパス群の選択
 })
 cv.addEventListener('mousemove', e => {
+  if (bDrag && base) { const dx = e.offsetX - bDrag.x; if (Math.abs(dx) > 2) bDrag.moved = true; base.sx = Math.max(0, Math.min(bDrag.sx - dx, Math.max(0, base.fullW - bodyPx() + 4))); draw(); return }
+  if (base) { baseHover(e); return }
   if (drag) { drag[1] = e.offsetX; og.clearRect(0, 0, ov.width, ov.height); og.fillStyle = 'rgba(52,152,219,.2)'; og.fillRect(Math.min(drag[0], drag[1]), 0, Math.abs(drag[1] - drag[0]), ov.height); return }
   if (!root) return
-  const k = Math.floor((e.offsetY - TOP) / ROW); const x = xOfPx(e.offsetX)
+  const k = rowAt(e.offsetY); const x = xOfPx(e.offsetX)
   if (e.offsetY < TOP && e.offsetX >= LAB) {
     const b = blocks[blockAt(x)]; if (!b) { tip.style.display = 'none'; return }
     const multi: string[] = []; for (let a = b.a0; a <= b.a1; a++) { const st = atomStats[a]; if (!st || st.tangled) continue; for (const [h, n] of Object.entries(st.counts)) if (n >= 2) multi.push(`${root!.haps[Number(h)].hap} ×${n}`) }
@@ -425,7 +600,7 @@ cv.addEventListener('mousemove', e => {
   const lines = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}`).concat(rhit.map(r => `反復（この株で 2 回以上出るノードの連なり） トークン ${fmt(r.i0)}–${fmt(r.i1)}  ${fmtbp(r.bp)}`))
   let xx = x   // カーソルの座標（各行の並びでは片の中の比例から）
   if (inRows) { const p = (lastPieces.get(hid) || []).find(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX); if (p) { const f = (e.offsetX - Math.min(p.px0, p.px1)) / Math.max(1, Math.abs(p.px1 - p.px0)); xx = p.c0 + (p.fwd ? f : 1 - f) * (p.c1 + 1 - p.c0) } }
-  if (genes.length && showGenes()) for (const gn of genes.filter(gn => gn.hid === hid && gn.x0 <= xx && gn.x1 >= xx).slice(0, 6)) lines.push(`遺伝子 ${gn.name || gn.locus || ('#' + gn.gid)}${gn.pseudo ? '（擬似）' : ''}  ${gn.type} ${gn.strand}${gn.fwd ? '' : '（合意と逆向き）'}  ${fmtbp(gn.end - gn.start + 1)}  ${gn.product || ''}${gn.anchored ? '' : '  [錨なし: 位置は補間]'}`)
+  if (genes.length && showGenes()) for (const gn of genes.filter(gn => gn.hid === hid && gn.x0 <= xx && gn.x1 >= xx).slice(0, 6)) lines.push(`遺伝子 ${gn.name || gn.locus || ('#' + gn.gid)}${gn.pseudo ? '（擬似）' : ''}  ${gn.type}${geneKind(gn) === 'rna' ? '（RNA 遺伝子）' : ''} 鎖 ${gn.strand}${gn.fwd ? '' : '（合意と逆向き）'}  ${fmtbp(gn.end - gn.start + 1)}  コンティグ ${fmt(gn.start)}–${fmt(gn.end)}  ${gn.product || ''}${gn.anchored ? '' : '  [錨なし: 位置は補間]'}`)
   if (cols && wantCols()) {   // 錨の列: カーソルの列と、この行のアレル・錨の有無・挿入・窓の中のトークン範囲（塩基 MSA へ渡す範囲）
     const C = cols; const Wc = C.x1 - C.x0 + 1
     const c = Math.max(0, Math.min(C.ncol - 1, Math.floor((xx - C.x0) * C.ncol / Wc))); const xa = Math.floor(C.x0 + c * Wc / C.ncol), xb = Math.floor(C.x0 + (c + 1) * Wc / C.ncol) - 1
@@ -434,11 +609,38 @@ cv.addEventListener('mousemove', e => {
   }
   tip.textContent = lines.join('\n')
 })
-const onWinUp = () => { if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; og.clearRect(0, 0, ov.width, ov.height); if (b - a < 4) return; hist.push(view); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; draw(); loadRange() }; window.addEventListener('mouseup', onWinUp)
-cv.addEventListener('dblclick', e => { if (!root) return; hist.push(view); if (e.offsetY < TOP && e.offsetX >= LAB) { const b = blocks[blockAt(xOfPx(e.offsetX))]; view = b ? [b.x0, b.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
-cv.addEventListener('wheel', e => { if (true) return; if (!root || e.offsetX < LAB) return; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (!inRows || e.offsetY >= TOP) return; /* ホイールの拡大縮小は無効（ドラッグで） */ e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root!.R - 1, n1)]; draw(); scheduleRange() }, { passive: false })
-$('all').addEventListener('click', () => { if (!root) return; hist.push(view); view = [0, root.R - 1]; loadRange() })
-$('back').addEventListener('click', () => { const v = hist.pop(); if (v) { view = v; loadRange() } })
+const onWinUp = () => {
+  if (bDrag) { bDrag = null; return }
+  if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; og.clearRect(0, 0, ov.width, ov.height); if (b - a < 4) return
+  if (base) { const k0 = baseItemAt(a - LAB + base.sx), k1 = baseItemAt(b - LAB + base.sx); if (k0 == null || k1 == null) return; const i0 = base.items[k0].kind === 'col' ? (base.items[k0] as any).ci : (base.items[k0] as any).ci0, i1 = base.items[k1].kind === 'col' ? (base.items[k1] as any).ci : (base.items[k1] as any).ci1; baseZoomToCols(i0, i1); return }
+  hist.push(view); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; draw(); loadRange() }; window.addEventListener('mouseup', onWinUp)
+cv.addEventListener('dblclick', e => { if (!root) return; if (base) { if (e.offsetX >= LAB) baseZoomStep(2, e.offsetX - LAB); return } hist.push(view); if (e.offsetY < TOP && e.offsetX >= LAB) { const b = blocks[blockAt(xOfPx(e.offsetX))]; view = b ? [b.x0, b.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
+cv.addEventListener('wheel', e => {
+  if (base && e.offsetX >= LAB) {   // 塩基の段: Ctrl＋ホイール＝拡大縮小、ホイール＝横に動かす
+    e.preventDefault(); if (e.ctrlKey || e.metaKey) baseZoomStep(e.deltaY < 0 ? 1 : -1, e.offsetX - LAB)
+    else { const d = (Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY); base.sx = Math.max(0, Math.min(base.sx + d, Math.max(0, base.fullW - bodyPx() + 4))); draw() }
+    return
+  }
+  if (true) return; if (!root || e.offsetX < LAB) return; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'; if (!inRows || e.offsetY >= TOP) return; /* ホイールの拡大縮小は無効（ドラッグで） */ e.preventDefault(); const x = xOfPx(e.offsetX); const f = e.deltaY > 0 ? 1.25 : 0.8; const n0 = x - (x - view[0]) * f, n1 = x + (view[1] - x) * f; hist.push(view); view = [Math.max(0, n0), Math.min(root!.R - 1, n1)]; draw(); scheduleRange() }, { passive: false })
+$('all').addEventListener('click', () => { if (!root) return; if (base) closeBase(); hist.push(view); view = [0, root.R - 1]; loadRange() })
+$('back').addEventListener('click', () => { if (base) { closeBase(); return } const v = hist.pop(); if (v) { view = v; loadRange() } })
+$('bclose').addEventListener('click', closeBase)
+$('zout').addEventListener('click', () => { if (base) baseZoomStep(-1, null) }); $('zin').addEventListener('click', () => { if (base) baseZoomStep(1, null) })
+$('zfit').addEventListener('click', () => { if (base) { base.sx = 0; baseSetZoom(null, null) } }); $('zbase').addEventListener('click', () => { if (base) baseSetZoom(BASE_LETTER_Z, null) })
+for (const id of ['cmp', 'bdiff', 'bvar']) $(id).addEventListener('change', () => { if (base) { if (id === 'bvar') base.sx = 0; draw() } })
+// 塩基の段のホバー: 列（ノード・bp・位置）とその行の塩基・アレル
+function baseHover(e: MouseEvent) {
+  const B = base!; if (e.offsetX < LAB) { tip.style.display = 'none'; B.hoverCi = null; return }
+  const px = e.offsetX - LAB + B.sx; const k = baseItemAt(px); if (k == null) { tip.style.display = 'none'; if (B.hoverCi != null) { B.hoverCi = null; draw() } return }
+  const it = B.items[k]; const ci = it.kind === 'col' ? it.ci : it.ci0; const gr = B.groups.find(gr => gr.g === it.g); const lines: string[] = []
+  if (gr) lines.push(`ノード ${gr.nodes.join(' / ')}  ${fmt(gr.bp)} bp  列 ${fmt(gr.from)}–${fmt(gr.to)}${gr.rb ? `  参照 bp ${fmt(gr.rb)}` : ''}${gr.variant ? '  行間で違う' : ''}`)
+  const kr = rowAt(e.offsetY)
+  if (kr >= 0 && kr < B.lines.length) { const ln = B.lines[kr]; const row = B.rows[ln.mi]
+    if (it.kind === 'blk') { const a = baseBlkAllele(it, ln.mi); const e2 = B.blk.get(it.ci0)!; lines.push(`${row.label}  アレル ${a < 0 ? '無し' : `#${a + 1}（${e2.counts[a]} 行）`}`) }
+    else { const ch = row.seq[it.ci]; const cmp = baseCmpSeq(); lines.push(`${row.label}  塩基 ${ch === '-' ? '欠失' : ch === '.' ? '範囲の外' : ch === '~' ? '読んでいない' : ch}${cmp.seq && cmp.seq[it.ci] && cmp.seq[it.ci] !== ch ? `（基準 ${cmp.seq[it.ci]}）` : ''}${B.inv[ln.mi].has(it.ci) ? '  逆向きに通過（逆相補）' : ''}`) } }
+  tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'; tip.textContent = lines.join('\n')
+  if (B.hoverCi !== ci) { B.hoverCi = ci; draw() }
+}
 $('minanch').addEventListener('change', () => { loadAtoms().then(loadRange) }); $('nblk').addEventListener('change', () => { blocks = makeBlocks(); if (($('order') as HTMLSelectElement).value === 'tree') hapOrder = treeOrder(); draw() })
 for (const id of ['showcopies', 'showbounds', 'showreps', 'mode', 'showlines']) $(id).addEventListener('change', draw)
 $('order').addEventListener('change', () => { hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : baseOrder.slice(); draw() })
@@ -458,6 +660,7 @@ loadRoot()
 // グラフ → パネル: ノード名を座標に直し、1 個なら前後 3,000 錨（原子の中）に寄る。多数（見えている範囲）なら 10〜90 パーセンタイルの範囲へ
 async function locate(names: string[], single: boolean) {
   if (!root || !names.length) return
+  if (base) { base = null; $('basegrp').style.display = 'none' }
   const r = await getJson(`/api/trav/locate?db=${encodeURIComponent(db)}&names=${encodeURIComponent(names.slice(0, 2000).join(','))}`); const j = await r.json()
   const xs: number[] = ((j.nodes || []) as { x: number }[]).map(n => n.x).filter(x => x >= 0).sort((a, b) => a - b)
   if (!xs.length) { $('info').textContent = `グラフ → パネル: 座標を持つノードが無い（錨でないノード、または別の層のノード）: ${names.slice(0, 3).join(', ')}`; return }
