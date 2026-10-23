@@ -19,7 +19,7 @@ export default function TravPanel({ db, onBaseMsa, onVisible, onSelectHap }: Pro
   useEffect(() => {
     hRef.current?.destroy(); hRef.current = null
     if (!db || !rootRef.current) return
-    hRef.current = mountTrav(rootRef.current, { db }, {
+    hRef.current = mountTrav(rootRef.current, { db, params: new URLSearchParams(window.location.search) }, {   // ?view=a-b&mode=…&sync=1 を主画面でも受ける（撮影・再現用）
       onBaseMsa: (r, l) => cbRef.current.onBaseMsa?.(r, l),
       onVisible: v => cbRef.current.onVisible?.(v),
       onSelectHap: h => cbRef.current.onSelectHap?.(h),

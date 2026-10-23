@@ -417,6 +417,8 @@ $('lgd').addEventListener('click', () => { const l = $('legend'); l.style.displa
 window.addEventListener('resize', draw)
 for (const [k, id] of [['mode', 'mode'], ['order', 'order'], ['nblk', 'nblk'], ['minanch', 'minanch'], ['rung', 'rung']] as [string, string][]) { const v = PARAMS.get(k); if (v != null) ($(id) as HTMLInputElement).value = v }
 db = opts.db; if (!opts.page) { ($('sync') as HTMLInputElement).checked = true; $('legend').style.display = 'none' }
+// 撮影用（?shot=ms）: load をその分遅らせる画像を置く（headless firefox は load の直後に撮るので、非同期の読み込みを待たせる。同期 XHR は Firefox 140 のモジュール内で止まった）
+if (PARAMS.get('shot')) { const im = document.createElement('img'); im.src = `/api/sleep?ms=${Math.max(0, Math.min(20000, Number(PARAMS.get('shot')) || 8000))}`; im.style.cssText = 'position:absolute;left:-9px;top:-9px;width:1px;height:1px'; host.appendChild(im) }
 loadRoot()
 return { setDb(d: string) { db = d; loadRoot() }, destroy() { loading++; window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
 
