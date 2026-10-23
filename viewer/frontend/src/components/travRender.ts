@@ -8,19 +8,20 @@
 type Atom = { id: number; x0: number; x1: number; bp: number; nhap: number }
 type Bound = { x: number; support: number; persistence: number }
 type Hap = { hid: number; hap: string; ncontig: number; nexcl: number; bp: number }
-type Trav = { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number; bp0?: number }
+type Trav = { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number; bp0?: number; k?: number; members?: Trav[] }   // k, members = 同じ場所を繰り返し通る通過をまとめた片
 type Copy = { id: number; pid: number; hid: number; x0: number; x1: number; ia0: number; ia1: number; ib0: number; ib1: number; bpa: number; bpb: number }
 type Rep = { id: number; pid: number; hid: number; i0: number; i1: number; bp: number; x0: number; x1: number }
 type AtomStat = { id: number; nhap: number; nhap2: number; tangled?: boolean; counts: Record<string, number> }
 type Root = { meta: any; H: number; R: number; total_bp: number; haps: Hap[]; atoms: Atom[]; bounds: Bound[] }
 type Block = { id: number; x0: number; x1: number; bp: number; a0: number; a1: number; nhap: number; nhap2: number; tangled: boolean }
 // 錨の列（ブロックと塩基の間の段）: /api/trav/cols。列＝表示範囲を画面幅で等分した座標区間。行＝通過。pres 錨の有無（0–255）、cls アレル番号（0 多数派、255 掛からない）、ins 挿入 bp
-type ColRow = { id: number; pid: number; hid: number; dir: number; copy: number; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array }
+type ColRow = { id: number; pid: number; hid: number; dir: number; copy: number; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; frq: Uint8Array }
 type Cols = { x0: number; x1: number; ncol: number; ntok: number; nanch: Uint16Array; ncls: Uint8Array; nrow: Uint16Array; major: Uint16Array; rows: ColRow[]; byId: Map<number, ColRow> }
 const CLS_COL = ['#c9ced2', '#e67e22', '#2980b9', '#27ae60', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#7f8c8d']   // アレル番号 → 色（0 多数派は灰）
 const u8 = (b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)); const u16 = (b: string) => { const a = u8(b); return new Uint16Array(a.buffer, a.byteOffset, a.byteLength >> 1) }
 
 import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/client'
+import { matchHapToKey } from './blockMsaRender'
 type Gene = { gid: number; pid: number; hid: number; tr: number; x0: number; x1: number; s0: number; e0: number; start: number; end: number; strand: string; fwd: boolean; type: string; name: string; locus: string; product: string; pseudo: boolean; anchored: boolean }
 export interface TravCallbacks {
   onBaseMsa?: (ranges: [number, number, number][], label: string) => void   // 塩基へ: [distill のパス番号, s0, e0) の列
@@ -32,7 +33,7 @@ export interface TravCallbacks {
 }
 export interface TravOpts { db: string; params?: URLSearchParams; page?: boolean }   // page: 試作ページ（window のエラー表示、説明を開いたまま、グラフ連動なし）
 export interface TravHandle { setDb(db: string): void; destroy(): void; locateNodes(names: string[]): void; openNames(names: string[]): void; setHapMarks(m: Map<string, string>): void }
-const BODY = "<div class=\"tv-bar\">\n  <label>錨の床 <input id=\"tv_minanch\" type=\"number\" value=\"50\" min=\"0\" step=\"10\"></label>\n  <label>ブロック <input id=\"tv_nblk\" type=\"number\" value=\"30\" min=\"1\" max=\"500\" step=\"5\"></label>\n  <button id=\"tv_all\">全体</button><button id=\"tv_back\">戻る</button>\n  <label>並び <select id=\"tv_mode\"><option value=\"coord\">合意座標</option><option value=\"rows\">各行の並び</option></select></label>\n  <label title=\"ブロックの段と塩基の間の段。錨の列＝表示範囲を画面の列に等分し、行ごとに錨の有無（濃さ）と錨の間のアレル（色。灰＝多数派、色＝少数派のアレル番号）と挿入（上辺の黒）を出す。自動＝ブロックが 3 個以下か 200 kb 以下で切り替え\">段 <select id=\"tv_rung\"><option value=\"auto\">自動</option><option value=\"blocks\">ブロック</option><option value=\"cols\">錨の列</option></select></label>\n  <button id=\"tv_base\" disabled title=\"錨の列の段で使える\">塩基へ ↓</button><button id=\"tv_graphrange\" title=\"グラフで今見えているノードの座標の範囲（10〜90 パーセンタイル）にパネルを移す\">グラフの範囲を開く</button>\n  <span id=\"tv_basegrp\" style=\"display:none\"><button id=\"tv_bclose\" title=\"塩基の段を閉じて、ブロック／錨の列に戻る\">↑ 戻る</button> <span style=\"color:#555\">倍率</span><button id=\"tv_zout\" title=\"縮小（Ctrl+ホイール下）\">−</button><button id=\"tv_zin\" title=\"拡大（Ctrl+ホイール上。格子のダブルクリックは 2 段）\">＋</button><button id=\"tv_zfit\" title=\"窓全体を画面幅に（俯瞰）\">全体</button><button id=\"tv_zbase\" title=\"文字が読める 7 px/塩基まで一気に拡大\">塩基</button><span id=\"tv_ztxt\" style=\"color:#666\"></span> <label title=\"比較の基準。多数派＝列ごとの最頻の塩基、参照＝参照パスの行（無ければ先頭の行）。列見出しの下段に出る\">基準 <select id=\"tv_cmp\"><option value=\"major\">多数派</option><option value=\"ref\">参照</option></select></label><label title=\"基準と同じ塩基を · で省き、違う塩基だけ色で出す\"><input id=\"tv_bdiff\" type=\"checkbox\" checked> 一致を省く</label><label title=\"行で塩基か有無が違う群（ノード）だけを並べる。群が画面幅より多いときは自動\"><input id=\"tv_bvar\" type=\"checkbox\"> 変異のある群だけ</label><label title=\"変異が無く全行が持つノード（群）は、拡大しても幅 28 px の区画に畳む（長さは列見出しの下段に）。全株共通の大きなノードの塩基を全部出しても情報が無いため\"><input id=\"tv_bfold\" type=\"checkbox\" checked> 変異の無い群を畳む</label></span>\n  <label><input id=\"tv_showlines\" type=\"checkbox\" checked> 連結線</label>\n  <label>並べ替え <select id=\"tv_order\"><option value=\"tree\">表示範囲の木</option><option value=\"name\">名前</option></select></label>\n  <span id=\"tv_cutwrap\" title=\"系統樹の高さの閾値。左へ動かすほど多くの枝をまとめる（右端で解除）。まとめた枝は代表 1 株（群の中心＝他との距離の和が最小）だけを出し、行頭に +n、木には三角\"><input type=\"range\" id=\"tv_cut\" min=\"0\" max=\"100\" value=\"100\" style=\"width:90px;vertical-align:middle\"><small id=\"tv_cuttxt\" style=\"color:#666\"></small></span>\n  <label title=\"各行の片の下に、その株の遺伝子（.genes サイドカー）を置く。緑＝合意の向きに +、橙＝−、灰＝擬似。ホバーで名前・産物\"><input id=\"tv_genes\" type=\"checkbox\" checked> 遺伝子</label>\n  <label title=\"表示範囲を変えると、グラフをその範囲の錨のノードに寄せて強調する\"><input id=\"tv_sync\" type=\"checkbox\"> グラフ連動</label>\n  <label title=\"グラフに、この表示範囲に属するノード（錨と、錨の間の錨でないノード）だけを描く。範囲外へ繋がる辺は切れ端になる。ノードが 2 万を超える範囲では先頭 2 万個だけ\"><input id=\"tv_gfilter\" type=\"checkbox\"> グラフを絞る</label>\n  <label><input id=\"tv_showcopies\" type=\"checkbox\" checked> コピー</label>\n  <label><input id=\"tv_showreps\" type=\"checkbox\" checked> 反復</label>\n  <label><input id=\"tv_showbounds\" type=\"checkbox\" checked> 境界</label>\n  <button id=\"tv_lgd\" title=\"凡例・説明の表示／非表示\">説明</button>\n  <span id=\"tv_busy\" style=\"color:#c0392b;font-weight:600;display:none\">計算中…</span>\n  <span id=\"tv_info\"></span>\n</div>\n<div id=\"tv_legend\" class=\"tv-legend\"><b>上段</b> 四角＝ブロック（表示範囲を持続度の高い境界で「ブロック」個に切った区間。横幅は bp に比例、高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／灰色の覆いと「?」＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株。高さ＝持続度＝その境界を潰したときの原子の幅。大きいほど大きなブロックを分ける境界）／ダブルクリックでそのブロックに寄る\n  <b>行</b> 色＝ブロック（同じ色＝同じブロック。株間の対応）／三角＝向き／<span style=\"color:#8e44ad\">紫の枠と左向き三角、下段</span>＝コンティグの主な向きと逆（逆位）／<span style=\"color:#333\">黒の破線</span>＝転座（コンティグ上の前後の通過から座標が 2 万錨以上離れている）／各行の並び: 1 コンティグの株は主な向きで鏡にし座標最小の通過を左に回す（環状）／連結線＝bp で等間隔に標本し、隣の行の同じ場所を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）。範囲の拡大は上段のドラッグ（ホイールは無効）。拡大すると境界が増え、原子まで細かくなる。左の木＝表示範囲の UPGMA（枝の長さ＝ブロックの有無・向きの不一致率）／<span style=\"color:#7a1414\">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style=\"color:#d35400\">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分\n  <b>錨の列（ブロックと塩基の間の段）</b> 各行を画面の列（1 列＝数錨〜数百錨）に切り、<span style=\"color:#888\">灰</span>＝その列のトークン列が多数派と同じ、<span style=\"color:#e67e22\">橙</span>・<span style=\"color:#2980b9\">青</span>・<span style=\"color:#27ae60\">緑</span>…＝少数派のアレル（番号順。同じ色＝同じ配列）、薄い＝その列の錨を一部しか持たない（欠失）、上辺の黒＝錨でない配列の挿入（高さは bp の対数）、白＝通過はあるが錨が無い。上段の帯＝列ごとのアレルの種類数（灰 1 種→赤 多い）と行の数（高さ）。下辺 2 px にブロックの色を残す。ホバーで列の錨数・アレル数・この行のトークン範囲（塩基 MSA へ渡す範囲）\n  <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数\n  <b>遺伝子レーン</b> 片の下の帯＝その株の遺伝子。<span style=\"color:#2e8b57\">緑</span>＝タンパク質をコードする遺伝子で合意の向きに +、<span style=\"color:#e67e22\">橙</span>＝同 −、<span style=\"color:#6c5ce7\">紫</span>＝RNA 遺伝子（lncRNA・tRNA・rRNA…。濃い＝+、薄い＝−）、<span style=\"color:#9a9a9a\">灰</span>＝擬似遺伝子。三角＝向き。重なる遺伝子（反対鎖の lncRNA など）は下の段に分ける。幅があれば名前を書く。錨の無い遺伝子は通過の中の位置から補間\n  <b>塩基の段</b> 「塩基へ」で各通過の窓の中の配列を列（ノード＝群）に並べる（Blocks と同じ）。入った直後は画面に収まる俯瞰（群を 1 区画、行の色＝アレル。灰＝基準と同じ）。拡大すると塩基のセル、7 px/塩基で文字。「一致を省く」は基準（多数派か参照）と同じ塩基を · に。列見出し: 上段＝ノードの箱（名前・bp。上の青緑の線＝排他アレルを重ねた群）、下段＝基準の配列、底＝参照座標の錨（青緑）・行間で違う（橙）。Ctrl+ホイール＝拡大縮小、ホイール／ドラッグ＝横に動かす、列見出しのドラッグ＝その範囲を画面幅に。セルの上の紫＝逆向きに通ったノード（逆相補で表示）\n</div>\n<div id=\"tv_wrap\" class=\"tv-wrap\"><canvas id=\"tv_cv\"></canvas><canvas id=\"tv_ov\"></canvas><div id=\"tv_bscroll\" title=\"塩基の段の横スクロール（格子のドラッグ、ホイールでも動く）\"><div></div></div><div id=\"tv_tip\"></div></div>\n"
+const BODY = "<div class=\"tv-bar\">\n  <label>錨の床 <input id=\"tv_minanch\" type=\"number\" value=\"50\" min=\"0\" step=\"10\"></label>\n  <label>ブロック <input id=\"tv_nblk\" type=\"number\" value=\"30\" min=\"1\" max=\"500\" step=\"5\"></label>\n  <button id=\"tv_all\">全体</button><button id=\"tv_back\">戻る</button>\n  <label>並び <select id=\"tv_mode\"><option value=\"coord\">合意座標</option><option value=\"rows\">各行の並び</option></select></label>\n  <label title=\"ブロックの段と塩基の間の段。錨の列＝表示範囲を画面の列に等分し、行ごとに錨の有無（濃さ）と錨の間のアレル（色。灰＝多数派、色＝少数派のアレル番号）と挿入（上辺の黒）を出す。自動＝ブロックが 3 個以下か 200 kb 以下で切り替え\">段 <select id=\"tv_rung\"><option value=\"auto\">自動</option><option value=\"blocks\">ブロック</option><option value=\"cols\">錨の列</option></select></label>\n  <button id=\"tv_base\" disabled title=\"錨の列の段で使える\">塩基へ ↓</button><button id=\"tv_graphrange\" title=\"グラフで今見えているノードの座標の範囲（10〜90 パーセンタイル）にパネルを移す\">グラフの範囲を開く</button>\n  <span id=\"tv_basegrp\" style=\"display:none\"><button id=\"tv_bclose\" title=\"塩基の段を閉じて、ブロック／錨の列に戻る\">↑ 戻る</button> <span style=\"color:#555\">倍率</span><button id=\"tv_zout\" title=\"縮小（Ctrl+ホイール下）\">−</button><button id=\"tv_zin\" title=\"拡大（Ctrl+ホイール上。格子のダブルクリックは 2 段）\">＋</button><button id=\"tv_zfit\" title=\"窓全体を画面幅に（俯瞰）\">全体</button><button id=\"tv_zbase\" title=\"文字が読める 7 px/塩基まで一気に拡大\">塩基</button><span id=\"tv_ztxt\" style=\"color:#666\"></span> <label title=\"比較の基準。多数派＝列ごとの最頻の塩基、参照＝参照パスの行（無ければ先頭の行）。列見出しの下段に出る\">基準 <select id=\"tv_cmp\"><option value=\"major\">多数派</option><option value=\"ref\">参照</option></select></label><label title=\"基準と同じ塩基を · で省き、違う塩基だけ色で出す\"><input id=\"tv_bdiff\" type=\"checkbox\" checked> 一致を省く</label><label title=\"行で塩基か有無が違う群（ノード）だけを並べる。群が画面幅より多いときは自動\"><input id=\"tv_bvar\" type=\"checkbox\"> 変異のある群だけ</label><label title=\"変異が無く全行が持つノード（群）は、拡大しても幅 28 px の区画に畳む（長さは列見出しの下段に）。全株共通の大きなノードの塩基を全部出しても情報が無いため\"><input id=\"tv_bfold\" type=\"checkbox\" checked> 変異の無い群を畳む</label></span>\n  <label><input id=\"tv_showlines\" type=\"checkbox\" checked> 連結線</label>\n  <label>並べ替え <select id=\"tv_order\"><option value=\"tree\">表示範囲の木</option><option value=\"name\">名前</option></select></label>\n  <span id=\"tv_cutwrap\" title=\"系統樹の高さの閾値。左へ動かすほど多くの枝をまとめる（右端で解除）。まとめた枝は代表 1 株（群の中心＝他との距離の和が最小）だけを出し、行頭に +n、木には三角\"><input type=\"range\" id=\"tv_cut\" min=\"0\" max=\"100\" value=\"100\" style=\"width:90px;vertical-align:middle\"><small id=\"tv_cuttxt\" style=\"color:#666\"></small></span>\n  <label title=\"各行の片の下に、その株の遺伝子（.genes サイドカー）を置く。緑＝合意の向きに +、橙＝−、灰＝擬似。ホバーで名前・産物\"><input id=\"tv_genes\" type=\"checkbox\" checked> 遺伝子</label>\n  <label title=\"表示範囲を変えると、グラフをその範囲の錨のノードに寄せて強調する\"><input id=\"tv_sync\" type=\"checkbox\"> グラフ連動</label>\n  <label title=\"グラフに、この表示範囲に属するノード（錨と、錨の間の錨でないノード）だけを描く。範囲外へ繋がる辺は切れ端になる。ノードが 2 万を超える範囲では先頭 2 万個だけ\"><input id=\"tv_gfilter\" type=\"checkbox\"> グラフを絞る</label>\n  <label><input id=\"tv_showcopies\" type=\"checkbox\" checked> コピー</label>\n  <label><input id=\"tv_showreps\" type=\"checkbox\" checked> 反復</label>\n  <label><input id=\"tv_showbounds\" type=\"checkbox\" checked> 境界</label>\n  <button id=\"tv_lgd\" title=\"凡例・説明の表示／非表示\">説明</button>\n  <span id=\"tv_busy\" style=\"color:#c0392b;font-weight:600;display:none\">計算中…</span>\n  <span id=\"tv_info\"></span>\n</div>\n<div id=\"tv_legend\" class=\"tv-legend\"><b>上段</b> 四角＝ブロック（表示範囲を持続度の高い境界で「ブロック」個に切った区間。横幅は bp に比例、高さ＝通るハプロタイプの割合、色は番号）／赤い帯＝反復の裏付けつきで 2 回以上通る株がある／灰色の覆いと「?」＝もつれ（順序が線形にならない領域、×n は数えない）／縦線＝境界（赤 支持 ≥50%・灰 ≥2 株・薄灰 1 株。高さ＝持続度＝その境界を潰したときの原子の幅。大きいほど大きなブロックを分ける境界）／ダブルクリックでそのブロックに寄る\n  <b>行</b> 色＝ブロック（同じ色＝同じブロック。株間の対応）／三角＝向き／<span style=\"color:#8e44ad\">紫の枠と左向き三角、下段</span>＝コンティグの主な向きと逆（逆位）／<span style=\"color:#333\">黒の破線</span>＝転座（コンティグ上の前後の通過から座標が 2 万錨以上離れている）／各行の並び: 1 コンティグの株は主な向きで鏡にし座標最小の通過を左に回す（環状）／連結線＝bp で等間隔に標本し、隣の行の同じ場所を結ぶ（交差＝逆位・転座、無い＝持たない、二又＝重複）。範囲の拡大は上段のドラッグ（ホイールは無効）。拡大すると境界が増え、原子まで細かくなる。左の木＝表示範囲の UPGMA（枝の長さ＝ブロックの有無・向きの不一致率）／<span style=\"color:#7a1414\">上辺の濃い赤</span>＝反復（その株で 2 回以上出るノードの連なり＝重複の本体）／<span style=\"color:#d35400\">薄いオレンジ ·n</span>＝座標の再訪（同じコンティグの別の通過と座標が重なる。弱い指標）／下辺の赤＝再訪の重なり部分\n  <b>錨の列（ブロックと塩基の間の段）</b> 各行を画面の列（1 列＝数錨〜数百錨）に切り、<span style=\"color:#888\">灰</span>＝その列のトークン列が多数派と同じ、<span style=\"color:#e67e22\">橙</span>・<span style=\"color:#2980b9\">青</span>・<span style=\"color:#27ae60\">緑</span>…＝少数派のアレル（番号順。同じ色＝同じ配列）、薄い＝その列の錨を一部しか持たない（欠失）、上辺の黒＝錨でない配列の挿入（高さは bp の対数）、白＝通過はあるが錨が無い。上段の帯＝列ごとのアレルの種類数（灰 1 種→赤 多い）と行の数（高さ）。下辺 2 px にブロックの色を残す。ホバーで列の錨数・アレル数・この行のトークン範囲（塩基 MSA へ渡す範囲）\n  <b>繰り返し通過</b> 同じコンティグが同じ場所を続けて何度も通る（タンデム反復・もつれ）通過は 1 片にまとめ、斜線と ×k（回数）。ホバーで各回の座標と向き。粗い錨の列（1 列が 20 錨超）では少数派の色＝そのアレルを持つ行の割合（橙 多い → 赤 稀）\n  <b>行頭</b> +n冗長＝丸ごと別コンティグに含まれるコンティグ数／×n＝表示が 1 原子に収まるときの通過回数／(n)＝表示範囲内の通過数\n  <b>遺伝子レーン</b> 片の下の帯＝その株の遺伝子。<span style=\"color:#2e8b57\">緑</span>＝タンパク質をコードする遺伝子で合意の向きに +、<span style=\"color:#e67e22\">橙</span>＝同 −、<span style=\"color:#6c5ce7\">紫</span>＝RNA 遺伝子（lncRNA・tRNA・rRNA…。濃い＝+、薄い＝−）、<span style=\"color:#9a9a9a\">灰</span>＝擬似遺伝子。三角＝向き。重なる遺伝子（反対鎖の lncRNA など）は下の段に分ける。幅があれば名前を書く。錨の無い遺伝子は通過の中の位置から補間\n  <b>塩基の段</b> 「塩基へ」で各通過の窓の中の配列を列（ノード＝群）に並べる（Blocks と同じ）。入った直後は画面に収まる俯瞰（群を 1 区画、行の色＝アレル。灰＝基準と同じ）。拡大すると塩基のセル、7 px/塩基で文字。「一致を省く」は基準（多数派か参照）と同じ塩基を · に。列見出し: 上段＝ノードの箱（名前・bp。上の青緑の線＝排他アレルを重ねた群）、下段＝基準の配列、底＝参照座標の錨（青緑）・行間で違う（橙）。Ctrl+ホイール＝拡大縮小、ホイール／ドラッグ＝横に動かす、列見出しのドラッグ＝その範囲を画面幅に。セルの上の紫＝逆向きに通ったノード（逆相補で表示）\n</div>\n<div id=\"tv_wrap\" class=\"tv-wrap\"><canvas id=\"tv_cv\"></canvas><canvas id=\"tv_ov\"></canvas><div id=\"tv_bscroll\" title=\"塩基の段の横スクロール（格子のドラッグ、ホイールでも動く）\"><div></div></div><div id=\"tv_tip\"></div></div>\n"
 const CSS = ".tvpanel { display:flex; flex-direction:column; height:100%; font:12px/1.4 system-ui, sans-serif; color:#222; background:#fafafa; }\n.tvpanel .tv-bar { display:flex; gap:10px; align-items:center; padding:4px 10px; background:#fff; border-bottom:1px solid #ddd; flex-wrap:wrap; flex-shrink:0; }\n.tvpanel .tv-bar label { color:#555; } .tvpanel .tv-bar input[type=number] { width:70px; } .tvpanel button { font:inherit; }\n.tvpanel #tv_info { color:#444; margin-left:auto; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:60vw; }\n.tvpanel .tv-legend { font-size:11px; color:#444; padding:4px 10px; border-bottom:1px solid #e5e5e5; background:#fdfdfd; line-height:1.5; flex-shrink:0; } .tvpanel .tv-legend b { margin-right:4px; }\n.tvpanel .tv-wrap { position:relative; flex:1; min-height:0; overflow:auto; } .tvpanel canvas { display:block; } .tvpanel #tv_ov { position:absolute; left:0; top:0; pointer-events:none; }\n.tvpanel #tv_tip { position:fixed; pointer-events:none; background:rgba(30,30,30,.92); color:#fff; padding:4px 7px; border-radius:3px; font-size:11px; display:none; max-width:420px; white-space:pre; z-index:9; }\n.tvpanel #tv_bscroll { display:none; position:sticky; bottom:0; left:0; height:14px; overflow-x:scroll; overflow-y:hidden; background:#fff; border-top:1px solid #ddd; z-index:3; } .tvpanel #tv_bscroll > div { height:1px; }"
 function injectStyle() { if (document.getElementById('tv-style')) return; const st = document.createElement('style'); st.id = 'tv-style'; st.textContent = CSS; document.head.appendChild(st) }
 
@@ -62,6 +63,8 @@ let located: number[] = []                 // グラフから来た座標（縦�
 let baseAuto = false                       // ?base=1 で一度だけ塩基へを押す
 let hapMarks = new Map<string, string>()   // 主画面で選択中のパス群（ハプロタイプ名 → 色）。行ラベルの前に丸
 let lastHoverNodes = ''                    // 塩基の段でグラフに送ったホバーのノード（同じなら送らない）
+// 主画面のパス群の鍵（サンプル／ハプロタイプ／コンティグの粒度）とハプロタイプ名の照合は Blocks と同じ規則（接頭辞）
+const markOf = (hap: string): string | undefined => { if (!hapMarks.size) return undefined; const d = hapMarks.get(hap); if (d) return d; const k = matchHapToKey(hap, hapMarks.keys()); return k ? hapMarks.get(k) : undefined }
 const FOLD_W = 28                          // 変異の無い群を畳んだときの幅
 // ---- 塩基の段（Blocks の塩基の段と同じ見え方。README 改訂 117 のズーム軸）----
 type BGroup = { g: number; from: number; to: number; nodes: string[]; rb?: number | null; hasEll: boolean; n: number; bp: number; variant: boolean; foldable: boolean; x0: number; x1: number }
@@ -157,7 +160,7 @@ async function loadRange() {
       const jc = await rc.json()
       if (jc.tooBig) colsNote = `錨の列: 範囲が広すぎる（トークン ${fmt(jc.ntok)} > ${fmt(jc.max)}）`
       else if (jc.error) colsNote = `錨の列: ${jc.error}`
-      else { const rc2: ColRow[] = (jc.rows as any[]).map(r => ({ ...r, pres: u8(r.pres), cls: u8(r.cls), ins: u16(r.ins) })); cols = { x0: jc.x0, x1: jc.x1, ncol: jc.ncol, ntok: jc.ntok, nanch: u16(jc.cols.nanch), ncls: u8(jc.cols.ncls), nrow: u16(jc.cols.nrow), major: u16(jc.cols.major), rows: rc2, byId: new Map(rc2.map(r => [r.id, r])) } }
+      else { const rc2: ColRow[] = (jc.rows as any[]).map(r => ({ ...r, pres: u8(r.pres), cls: u8(r.cls), ins: u16(r.ins), frq: r.frq ? u8(r.frq) : new Uint8Array(0) })); cols = { x0: jc.x0, x1: jc.x1, ncol: jc.ncol, ntok: jc.ntok, nanch: u16(jc.cols.nanch), ncls: u8(jc.cols.ncls), nrow: u16(jc.cols.nrow), major: u16(jc.cols.major), rows: rc2, byId: new Map(rc2.map(r => [r.id, r])) } }
       $('info').textContent = (colsNote ? colsNote : `錨の列 ${fmt(jc.ncol)} 列（トークン ${fmt(jc.nread)}・${fmt(jc.ms)} ms）`) + ' | ' + $('info').textContent
       if (cols && ($('order') as HTMLSelectElement).value === 'tree') hapOrder = treeOrder()   // 木を錨の列（アレル）で作り直す
     }
@@ -326,7 +329,7 @@ function drawBaseCore() {
   if (B.hoverCi != null && B.colItem[B.hoverCi] >= 0) { const kk = B.colItem[B.hoverCi]; g.fillStyle = 'rgba(13,148,136,.10)'; g.fillRect(B.xs[kk], 0, B.xs[kk + 1] - B.xs[kk], H) }
   g.restore()
   // 行ラベル・木
-  B.lines.forEach((ln, k) => { const y = TOP + k * ROW; const row = B.rows[ln.mi]; const grp = groupOf.get(ln.hid); const mk = hapMarks.get(root!.haps[ln.hid].hap); if (mk) { g.fillStyle = mk; g.beginPath(); g.arc(TREEW + 7, y + 7, 3.5, 0, Math.PI * 2); g.fill() } g.fillStyle = row.isref ? '#7a4b00' : '#333'; g.font = '11px system-ui'; g.fillText(`${row.label}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}  ${row.strand}`, TREEW + (mk ? 13 : 4), y + 10) })
+  B.lines.forEach((ln, k) => { const y = TOP + k * ROW; const row = B.rows[ln.mi]; const grp = groupOf.get(ln.hid); const mk = markOf(root!.haps[ln.hid].hap); if (mk) { g.fillStyle = mk; g.beginPath(); g.arc(TREEW + 7, y + 7, 3.5, 0, Math.PI * 2); g.fill() } g.fillStyle = row.isref ? '#7a4b00' : '#333'; g.font = '11px system-ui'; g.fillText(`${row.label}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}  ${row.strand}`, TREEW + (mk ? 13 : 4), y + 10) })
   const rowOf = new Map<number, number>(); B.lines.forEach((ln, k) => { if (!rowOf.has(ln.hid)) rowOf.set(ln.hid, k) })
   drawTree(rowOf)
   baseScrollSync(Wb)
@@ -381,7 +384,7 @@ function treeOrder(): number[] {
 
 // ---- 描画 ----
 type Piece = { blk: number; px0: number; px1: number; tr: Trav; inv: boolean; disp: boolean; fwd: boolean; c0: number; c1: number }
-let lastPieces = new Map<number, Piece[]>()
+let lastPieces = new Map<number, Piece[]>(); let mrowsByHap = new Map<number, Trav[]>()   // 表示用（繰り返し通過をまとめた通過）
 function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
 function drawCore() {
   if (base && root) { drawBaseCore(); return }
@@ -419,7 +422,8 @@ function drawCore() {
   g.fillStyle = '#666'; g.font = '10px system-ui'; g.fillText(`${fmtbp(bpOfX(v0))}  x ${fmt(Math.floor(v0))} ${refPos(v0)}`, LAB + 2, TOP - 2); const tt = `${refPos(v1)} x ${fmt(Math.ceil(v1))}  ${fmtbp(bpOfX(v1 + 1))}`; g.fillText(tt, W - g.measureText(tt).width - 4, TOP - 2)
 
   // 行: 通過をブロックごとの片に割る。合意座標モードは片をその座標の位置に、各行の並びモードはコンティグの順に詰める
-  const byHap = new Map<number, Trav[]>(); for (const r of rows) { if (!byHap.has(r.hid)) byHap.set(r.hid, []); byHap.get(r.hid)!.push(r) }
+  const byHap = new Map<number, Trav[]>(); for (const r of mergePasses(rows)) { if (!byHap.has(r.hid)) byHap.set(r.hid, []); byHap.get(r.hid)!.push(r) }
+  mrowsByHap = byHap
   const cpByHap = new Map<number, Copy[]>(); for (const c of copies) { if (!cpByHap.has(c.hid)) cpByHap.set(c.hid, []); cpByHap.get(c.hid)!.push(c) }
   const rpByHap = new Map<number, Rep[]>(); for (const c of reps) { if (!rpByHap.has(c.hid)) rpByHap.set(c.hid, []); rpByHap.get(c.hid)!.push(c) }
   const piecesOf = new Map<number, Piece[]>(); const fullView = v0 <= 0 && v1 >= root.R - 2
@@ -473,7 +477,7 @@ function drawCore() {
     const y = rowTop[k]; const hap = root!.haps[hid]
     g.fillStyle = k % 2 ? '#f2f2f2' : '#fafafa'; g.fillRect(0, y, W, rowHgt[k])
     const n = perHap[hid] || 0; const oneBlk = blocks.length === 1
-    const grp = groupOf.get(hid); const mk = hapMarks.get(hap.hap); if (mk) { g.fillStyle = mk; g.beginPath(); g.arc(TREEW + 7, y + 7, 3.5, 0, Math.PI * 2); g.fill() }   // 主画面で選択中のパス群の丸
+    const grp = groupOf.get(hid); const mk = markOf(hap.hap); if (mk) { g.fillStyle = mk; g.beginPath(); g.arc(TREEW + 7, y + 7, 3.5, 0, Math.PI * 2); g.fill() }   // 主画面で選択中のパス群の丸
     g.fillStyle = oneBlk && n >= 2 ? '#b03a2e' : '#333'; g.font = '11px system-ui'; g.fillText(`${hap.hap}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}${hap.nexcl ? ` +${hap.nexcl}冗長` : ''}${oneBlk && n >= 2 ? ` ×${n}` : (n > 1 ? ` (${n})` : '')}`, TREEW + (mk ? 13 : 4), y + 10)
     const pcs = piecesOf.get(hid) || []
     for (const p of pcs) {
@@ -485,6 +489,7 @@ function drawCore() {
       } else { g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, ${p.tr.copy >= 1 ? .55 : 1})`; g.fillRect(px0, yy, w, hh) }
       if (w >= 3) { g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1; g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1) }   // ブロック境界の枠
       if (mode === 'rows' && !p.fwd) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(px0, yy + hh - 2, w, 2) }   // 各行の並びで読む向きと逆（逆位）は下辺を暗く
+      if ((p.tr.k || 1) >= 2 && w >= 4) { g.save(); g.beginPath(); g.rect(px0, yy, w, hh); g.clip(); g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 1; for (let xx = px0 - hh; xx < px1; xx += 5) { g.beginPath(); g.moveTo(xx, yy + hh); g.lineTo(xx + hh, yy); g.stroke() } g.restore() }   // 繰り返し通過＝斜線
       if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 2; g.strokeRect(px0 + 1, yy + 1, Math.max(1, w - 2), hh - 2); if (w > 10) { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(px0 + 7, yy + 1); g.lineTo(px0 + 2, yy + hh / 2); g.lineTo(px0 + 7, yy + hh - 1); g.fill() } }
       else if (p.disp) { g.strokeStyle = '#333'; g.lineWidth = 1; g.setLineDash([3, 2]); g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1); g.setLineDash([]) }   // 転座（多数派の位置と違う所にある片）は各行の並びでも破線で
     }
@@ -493,7 +498,8 @@ function drawCore() {
       const lo = Math.max(LAB, Math.min(...ps.map(p => Math.min(p.px0, p.px1)))), hi = Math.min(W, Math.max(...ps.map(p => Math.max(p.px0, p.px1)))); if (hi - lo < 24) continue
       const fwd = ps[0].fwd; const yy = y + 2, hh = BLK
       if (!ps[0].inv) { g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, yy); g.lineTo(hi - 1, yy + hh / 2); g.lineTo(hi - 6, yy + hh) } else { g.moveTo(lo + 6, yy); g.lineTo(lo + 1, yy + hh / 2); g.lineTo(lo + 6, yy + hh) } g.fill() }
-      if (r.copy >= 1 && hi - lo > 40) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
+      if ((r.k || 1) >= 2 && hi - lo > 18) { g.fillStyle = '#fff'; g.font = 'bold 9px system-ui'; const t = '×' + r.k; const tw = g.measureText(t).width; g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(lo + (hi - lo) / 2 - tw / 2 - 2, y + 1, tw + 4, 9); g.fillStyle = '#fff'; g.fillText(t, lo + (hi - lo) / 2 - tw / 2, y + 9) }   // 繰り返し通過の回数
+      else if (r.copy >= 1 && hi - lo > 40) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
     }
     if (genesByTr.size) {   // 遺伝子レーン: 片の下。種類 × 向きの色、重なりは段に分ける、三角＝向き、幅があれば名前
       const mine: Gene[] = []; for (const p of pcs) for (const gn of (genesByTr.get(p.tr.id) || [])) if (gn.x1 >= p.c0 && gn.x0 <= p.c1) mine.push(gn)
@@ -561,6 +567,26 @@ const geneKind = (gn: Gene): 'cds' | 'rna' | 'pseudo' | 'other' => (gn.pseudo ||
 const geneColor = (gn: Gene) => { const k = geneKind(gn); return k === 'pseudo' ? '#9a9a9a' : k === 'cds' ? (gn.fwd ? '#2e8b57' : '#e67e22') : k === 'rna' ? (gn.fwd ? '#6c5ce7' : '#b89be0') : '#5d6d7e' }
 // 行ごとに重なる遺伝子を段に分ける（x0 の順に、終わりが x0 より手前の段へ。最大 3 段、溢れは最後の段）
 function geneLanes(gs: Gene[]): Map<number, number> { const out = new Map<number, number>(); const ends: number[] = []; for (const gn of gs.slice().sort((a, b) => a.x0 - b.x0 || b.x1 - a.x1)) { let L = ends.findIndex(e => e < gn.x0); if (L < 0) { if (ends.length < 3) { L = ends.length; ends.push(gn.x1) } else { L = 2; ends[2] = Math.max(ends[2], gn.x1) } } else ends[L] = gn.x1; out.set(gn.gid, L) } return out }
+// 同じコンティグの連続する通過で座標の範囲が重なるもの（同じ場所を繰り返し通る＝タンデム反復・もつれ）は 1 つの片にまとめ、回数 k を付ける
+// （ヒト chr22 短腕の原子 344–347 では 78 株が 500 座標を 6 回ずつ交互の向きで通り、片ごとに描くと全行が再編成に見えた）
+function mergePasses(ts: Trav[]): Trav[] {
+  const byPid = new Map<number, Trav[]>(); for (const r of ts) { if (!byPid.has(r.pid)) byPid.set(r.pid, []); byPid.get(r.pid)!.push(r) }
+  const out: Trav[] = []
+  for (const trs of byPid.values()) {
+    trs.sort((a, b) => a.i0 - b.i0); let cur: Trav | null = null
+    for (const r of trs) {
+      if (cur) { const c: Trav = cur; const ov = Math.min(c.x1, r.x1) - Math.max(c.x0, r.x0) + 1
+        if (ov >= 0.5 * Math.min(c.x1 - c.x0 + 1, r.x1 - r.x0 + 1)) {
+          const mem: Trav[] = [...(c.members || [c]), r].sort((a, b) => b.nanch - a.nanch); const main: Trav = mem[0]   // 代表＝錨の多い通過（id・向き）
+          const merged: Trav = { ...c, id: main.id, dir: main.dir, x0: Math.min(c.x0, r.x0), x1: Math.max(c.x1, r.x1), i1: Math.max(c.i1, r.i1), nanch: c.nanch + r.nanch, bp: c.bp + r.bp, k: (c.k || 1) + 1, members: mem }
+          cur = merged; continue }
+        out.push(c) }
+      cur = { ...r, k: 1, members: [r] }
+    }
+    if (cur) out.push(cur)
+  }
+  return out
+}
 // 片の中の座標区間 [xa, xb) → 画面の px（合意座標は X()、各行の並びは片の中の比例。向きが逆なら鏡）
 function pxInPiece(p: Piece, xa: number, xb: number, mode: string): [number, number] {
   if (mode === 'coord') { const a = X(xa), b = X(xb); return [Math.min(a, b), Math.max(a, b)] }
@@ -568,8 +594,10 @@ function pxInPiece(p: Piece, xa: number, xb: number, mode: string): [number, num
   const a = p.fwd ? p.px0 + fa * L : p.px0 + (1 - fb) * L, b = p.fwd ? p.px0 + fb * L : p.px0 + (1 - fa) * L; return [Math.min(a, b), Math.max(a, b)]
 }
 // 錨の列のセル: 片（ブロック × 通過）の座標区間に掛かる列を、合意座標モードは X()、各行の並びは片の中の比例で置く。濃さ＝錨の有無、色＝アレル番号、上辺の黒＝挿入 bp（対数）
+// 粗い段（1 列が 20 錨超）では、少数派の色をアレル番号でなく「そのアレルを持つ行の割合」で塗る（橙＝多くが持つ少数派 → 赤＝稀）。細かい段では同じ色＝同じ配列
+const rarityColor = (f: number) => `hsl(${Math.round(30 * f)}, 85%, ${Math.round(42 + 18 * f)}%)`
 function drawCells(cr: ColRow, p: Piece, px0: number, px1: number, yy: number, hh: number, mode: string) {
-  const C = cols!; const Wc = C.x1 - C.x0 + 1; const span = Math.max(1, p.c1 + 1 - p.c0)
+  const C = cols!; const Wc = C.x1 - C.x0 + 1; const span = Math.max(1, p.c1 + 1 - p.c0); const coarse = Wc / C.ncol > 20
   const c0 = Math.max(0, Math.floor((p.c0 - C.x0) * C.ncol / Wc)), c1 = Math.min(C.ncol - 1, Math.floor((p.c1 - C.x0) * C.ncol / Wc))
   for (let c = c0; c <= c1; c++) {
     const k = cr.cls[c]; if (k === 255) continue
@@ -578,7 +606,7 @@ function drawCells(cr: ColRow, p: Piece, px0: number, px1: number, yy: number, h
     if (mode === 'coord') { pa = X(xa); pb = X(xb) }
     else { const fa = (xa - p.c0) / span, fb = (xb - p.c0) / span; const L = p.px1 - p.px0; if (p.fwd) { pa = p.px0 + fa * L; pb = p.px0 + fb * L } else { pa = p.px0 + (1 - fb) * L; pb = p.px0 + (1 - fa) * L } }
     const a = Math.max(px0, Math.min(pa, pb)), b = Math.min(px1, Math.max(pa, pb)); if (b < a) continue; const wc = Math.max(1, b - a)
-    g.globalAlpha = 0.3 + 0.7 * (cr.pres[c] / 255); g.fillStyle = CLS_COL[Math.min(k, CLS_COL.length - 1)]; g.fillRect(a, yy, wc, hh); g.globalAlpha = 1
+    g.globalAlpha = 0.3 + 0.7 * (cr.pres[c] / 255); g.fillStyle = (k > 0 && coarse && cr.frq.length) ? rarityColor(cr.frq[c] / 255) : CLS_COL[Math.min(k, CLS_COL.length - 1)]; g.fillRect(a, yy, wc, hh); g.globalAlpha = 1
     const ins = cr.ins[c]; if (ins > 0) { const ih = Math.min(hh, 1 + 1.5 * Math.log10(1 + ins)); g.fillStyle = 'rgba(20,20,20,.85)'; g.fillRect(a, yy, wc, ih) }
   }
 }
@@ -610,11 +638,11 @@ cv.addEventListener('mousemove', e => {
   }
   if (k < 0 || k >= hapOrder.length || e.offsetX < LAB) { tip.style.display = 'none'; return }
   const hid = hapOrder[k]; const inRows = ($('mode') as HTMLSelectElement).value === 'rows'
-  const hit = inRows ? (lastPieces.get(hid) || []).filter(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX).map(p => p.tr).filter((v, i, a) => a.indexOf(v) === i) : rows.filter(r => r.hid === hid && r.x0 <= x && r.x1 >= x)
+  const hit = inRows ? (lastPieces.get(hid) || []).filter(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX).map(p => p.tr).filter((v, i, a) => a.indexOf(v) === i) : (mrowsByHap.get(hid) || []).filter(r => r.hid === hid && r.x0 <= x && r.x1 >= x)
   const rhit = inRows ? [] : reps.filter(r => r.hid === hid && r.x0 <= x && r.x1 >= x)
   if (!hit.length && !rhit.length) { tip.style.display = 'none'; return }
   tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
-  const lines = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}`).concat(rhit.map(r => `反復（この株で 2 回以上出るノードの連なり） トークン ${fmt(r.i0)}–${fmt(r.i1)}  ${fmtbp(r.bp)}`))
+  const lines = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}${(r.k || 1) >= 2 ? `\n  同じ場所を ${r.k} 回通る（まとめた通過）: ` + r.members!.map(m => `${m.dir >= 0 ? '→' : '←'}${fmt(m.x0)}–${fmt(m.x1)} 錨${fmt(m.nanch)}`).join(', ') : ''}`).concat(rhit.map(r => `反復（この株で 2 回以上出るノードの連なり） トークン ${fmt(r.i0)}–${fmt(r.i1)}  ${fmtbp(r.bp)}`))
   let xx = x   // カーソルの座標（各行の並びでは片の中の比例から）
   if (inRows) { const p = (lastPieces.get(hid) || []).find(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX); if (p) { const f = (e.offsetX - Math.min(p.px0, p.px1)) / Math.max(1, Math.abs(p.px1 - p.px0)); xx = p.c0 + (p.fwd ? f : 1 - f) * (p.c1 + 1 - p.c0) } }
   if (genes.length && showGenes()) for (const gn of genes.filter(gn => gn.hid === hid && gn.x0 <= xx && gn.x1 >= xx).slice(0, 6)) lines.push(`遺伝子 ${gn.name || gn.locus || ('#' + gn.gid)}${gn.pseudo ? '（擬似）' : ''}  ${gn.type}${geneKind(gn) === 'rna' ? '（RNA 遺伝子）' : ''} 鎖 ${gn.strand}${gn.fwd ? '' : '（合意と逆向き）'}  ${fmtbp(gn.end - gn.start + 1)}  コンティグ ${fmt(gn.start)}–${fmt(gn.end)}  ${gn.product || ''}${gn.anchored ? '' : '  [錨なし: 位置は補間]'}`)

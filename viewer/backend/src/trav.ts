@@ -226,7 +226,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, x0, x1 }
   const colOf = (x: number) => Math.min(ncol - 1, Math.floor((x - x0) * ncol / W))
   const nanch = new Uint16Array(ncol); for (let c = 0; c < ncol; c++) { const a = Math.ceil(c * W / ncol), b = Math.ceil((c + 1) * W / ncol); nanch[c] = Math.min(65535, Math.max(0, b - a)) }
-  type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array }
+  type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array; frq: Uint8Array }
   const outs: RowOut[] = []
   const T0 = Date.now(); let tRead = 0, tMix = 0, nread = 0
   for (const r of rows) {
@@ -243,19 +243,20 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
     })
     tMix += Date.now() - tm0
     for (let c = 0; c < ncol; c++) { pres[c] = nanch[c] ? Math.min(255, Math.round(255 * cnt[c] / nanch[c])) : 0; ins[c] = Math.min(65535, Math.round(insb[c])) }
-    outs.push({ id: r.id, pid: r.pid, hid: r.hid, dir: r.dir, copy: r.copy, tw0, tw1, pres, cls, ins, h1, h2, has })
+    outs.push({ id: r.id, pid: r.pid, hid: r.hid, dir: r.dir, copy: r.copy, tw0, tw1, pres, cls, ins, h1, h2, has, frq: new Uint8Array(ncol) })
   }
   // 列ごとにトークン列（ハッシュ）の種類を数え、多い順に番号を振る
   const ncls = new Uint8Array(ncol), nrow = new Uint16Array(ncol), major = new Uint16Array(ncol)
   for (let c = 0; c < ncol; c++) {
     const m = new Map<string, number>(); for (const o of outs) if (o.has[c]) { const key = o.h1[c] + ':' + o.h2[c]; m.set(key, (m.get(key) || 0) + 1) }
     const ranked = [...m.entries()].sort((a, b) => b[1] - a[1]); const idx = new Map(ranked.map((e, i) => [e[0], i]))
-    for (const o of outs) if (o.has[c]) o.cls[c] = Math.min(254, idx.get(o.h1[c] + ':' + o.h2[c])!)
+    const tot = ranked.reduce((a, e) => a + e[1], 0)
+    for (const o of outs) if (o.has[c]) { const key = o.h1[c] + ':' + o.h2[c]; o.cls[c] = Math.min(254, idx.get(key)!); o.frq[c] = Math.min(255, Math.round(255 * (m.get(key) || 0) / Math.max(1, tot))) }   // frq = この行のアレルを持つ行の割合（粗い段の塗り）
     ncls[c] = Math.min(255, ranked.length); nrow[c] = m.size ? ranked.reduce((a, e) => a + e[1], 0) : 0; major[c] = ranked.length ? ranked[0][1] : 0
   }
   const ms = Date.now() - T0; if (ms > 2000) console.log(`[trav/cols] ${rows.length} rows, read ${nread} tok (${tRead} ms), mix ${tMix} ms, total ${ms} ms`)
   return { x0, x1, ncol, ntok, nread, ms, msPre: T0 - T00, msRead: tRead, nrows: rows.length, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
-    rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins) })) }
+    rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins), frq: b64(o.frq) })) }
 }
 
 // ---- 遺伝子レーン: 表示範囲に掛かる通過ごとに、その株の遺伝子（<db>.genes の gene × gene_tok）を座標 x に写す ----
