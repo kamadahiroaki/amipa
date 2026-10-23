@@ -1,6 +1,6 @@
 // 通過サイドカー `<db>.trav` の API（試作）。GET /api/trav/root?db  /api/trav/range?db&x0&x1[&min]  /api/trav/path?db&pid
 import { Router } from 'express'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate } from '../trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene } from '../trav'
 
 export const travRouter = Router()
 
@@ -76,3 +76,10 @@ function runLocate(res: any, db: string, names: string[]) {
 }
 travRouter.get('/trav/locate', (req, res) => { const q = req.query as Record<string, string>; if (!q.db) { res.status(400).json({ error: 'Missing db' }); return } runLocate(res, q.db, String(q.names || '').split(',').filter(x => x)) })
 travRouter.post('/trav/locate', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; if (!b.db) { res.status(400).json({ error: 'Missing db' }); return } runLocate(res, String(b.db), Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []) })
+
+// 遺伝子名の検索: GET /api/trav/findgene?db&q[&limit]
+travRouter.get('/trav/findgene', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travFindGene(t, String(q.q || ''), Math.max(1, Math.min(300, Number(q.limit) || 60)))) } catch (err) { res.status(500).json({ error: String(err) }) }
+})

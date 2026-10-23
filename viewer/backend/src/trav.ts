@@ -385,3 +385,21 @@ export function travLocate(t: Trav, names: string[]): any {
   })
   return { nodes, R: t.R }
 }
+
+// ---- 遺伝子名の検索（Traversals パネルの検索欄）: 名前・locus の前方一致、産物の部分一致。見つかった遺伝子ごとに座標（両端 1,500 トークンの錨の x）----
+export function travFindGene(t: Trav, q: string, limit = 60): any {
+  const gdb = genesDbOf(t); if (!gdb) return { error: 'この DB には .genes サイドカーが無い', hits: [] }
+  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', hits: [] }
+  const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
+  const qq = q.trim(); if (!qq) return { hits: [] }
+  const rows = gdb.prepare("SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.name LIKE ? COLLATE NOCASE OR g.locus LIKE ? COLLATE NOCASE OR g.product LIKE ? COLLATE NOCASE ORDER BY (g.name LIKE ? COLLATE NOCASE) DESC, g.name, g.pid LIMIT ?")
+    .all(qq + '%', qq + '%', '%' + qq + '%', qq + '%', limit) as any[]
+  const hidOf = new Map(t.paths.map(p => [p.pid, p.hid])); const T0 = Date.now()
+  const hits = rows.map(g => {
+    const pi = (dist.names[g.pid] === t.paths[g.pid].path) ? g.pid : dist.pidx.get(t.paths[g.pid].path); let x0 = -1, x1 = -1
+    if (pi != null) { const rd = (a: number, b: number) => { const toks = dist.read(pi, a, b); for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { const x = X[d]; if (x0 < 0 || x < x0) x0 = x; if (x > x1) x1 = x } } }
+      rd(g.s0, Math.min(g.e0, g.s0 + 1500)); if (g.e0 - 1500 > g.s0 + 1500) rd(Math.max(g.s0, g.e0 - 1500), g.e0) }
+    return { gid: g.gid, pid: g.pid, hid: hidOf.get(g.pid), hap: t.haps[hidOf.get(g.pid) ?? 0], path: t.paths[g.pid].path, start: g.start, end: g.end, strand: g.strand, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, x0, x1 }
+  })
+  return { q: qq, n: hits.length, truncated: rows.length >= limit, ms: Date.now() - T0, hits }
+}
