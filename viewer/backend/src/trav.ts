@@ -277,7 +277,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
   const q = gdb.prepare('SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?')
-  const qch = gdb.prepare("SELECT f.type, f.phase, f.strand, t.s0, t.e0, t.so, t.eo FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds','exon','five_prime_UTR','three_prime_UTR','UTR') ORDER BY t.s0")   // 子（エキソン・CDS・UTR）のトークン範囲と読み枠
+  const qch = gdb.prepare("SELECT f.type, f.phase, f.strand, f.parent, f.start, f.end, t.s0, t.e0, t.so, t.eo FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds','exon','five_prime_UTR','three_prime_UTR','UTR') ORDER BY t.s0")   // 子（エキソン・CDS・UTR）のトークン範囲と読み枠
   const idmapG = withNodes ? idMapOf(t) : null
   const out: any[] = []; let n = 0; const T0 = Date.now()
   // まず件数だけ数え、多すぎる範囲（全景など）はトークンを読まずに断る
@@ -313,12 +313,15 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
         const L = Math.max(1, g.e0 - g.s0); const span2 = gx1 - gx0; const rev = r.dir < 0
         const toX = (tok: number) => { const f = Math.max(0, Math.min(1, (tok - g.s0) / L)); return rev ? gx1 - f * span2 : gx0 + f * span2 }
         const per = new Map<string, [number, number][]>()
-        const chs = qch.all(g.gid) as { type: string; phase: string; strand: string; s0: number; e0: number; so: number; eo: number }[]
+        const chs = qch.all(g.gid) as { type: string; phase: string; strand: string; parent: number | null; start: number; end: number; s0: number; e0: number; so: number; eo: number }[]
         for (const c of chs) { const kind = /cds/i.test(c.type) ? 'cds' : /utr/i.test(c.type) ? 'utr' : 'exon'; const a = toX(c.s0), b = toX(c.e0); const lo = Math.round(Math.min(a, b)), hi = Math.round(Math.max(a, b)); if (!per.has(kind)) per.set(kind, []); per.get(kind)!.push([lo, hi]) }
         // 塩基の段用: 遺伝子（と CDS の片）のトークンのノード名。窓に当たる分だけ（通過のトークン区間の中）、1 遺伝子 6,000 個まで
         if (withNodes && idmapG && out.length < 300) {
           const ta = Math.max(s0, g.s0), tb = Math.min(e0, g.e0); const toks = dist.read(pi, ta, Math.min(tb, ta + 6000)); const names: string[] = []; for (let k = 0; k < toks.length; k++) names.push('n' + idmapG[toks[k] - 1].toString())
-          const cds = chs.filter(c => /cds/i.test(c.type)).map(c => ({ s0: Math.max(ta, c.s0), e0: Math.min(ta + toks.length, c.e0), phase: Number(c.phase) || 0, strand: c.strand, so: c.so, eo: c.eo })).filter(c => c.e0 > c.s0).map(c => ({ names: names.slice(c.s0 - ta, c.e0 - ta), phase: c.phase, strand: c.strand, so: c.so, eo: c.eo, first: c.s0 === g.s0 }))
+          // CDS の片は転写産物 1 本（親 parent ごとに合計 bp が最大のもの）に絞る。GENCODE は転写産物が複数あり、混ぜると読み枠が壊れて全行が変異・終止になる（APOBEC3B は 4 転写産物 28 片）
+          const byParent = new Map<string, { len: number; parts: typeof chs }>(); for (const c of chs) { if (!/cds/i.test(c.type)) continue; const k = c.parent == null ? '' : String(c.parent); const e = byParent.get(k) || { len: 0, parts: [] }; e.len += Math.max(0, c.end - c.start + 1); e.parts.push(c); byParent.set(k, e) }
+          let bestP: typeof chs = []; let bestLen = -1; for (const e of byParent.values()) if (e.len > bestLen) { bestLen = e.len; bestP = e.parts }
+          const cds = bestP.map(c => ({ s0: Math.max(ta, c.s0), e0: Math.min(ta + toks.length, c.e0), phase: Number(c.phase) || 0, strand: c.strand, so: c.so, eo: c.eo, gs0: c.s0 })).filter(c => c.e0 > c.s0).map(c => ({ names: names.slice(c.s0 - ta, c.e0 - ta), phase: c.phase, strand: c.strand, so: c.so, eo: c.eo, first: c.gs0 === g.s0 }))
           const exon = chs.filter(c => !/cds/i.test(c.type) && !/utr/i.test(c.type)).map(c => names.slice(Math.max(ta, c.s0) - ta, Math.min(ta + toks.length, c.e0) - ta))
           nodesOut = { names, cds, exon, t0: ta, t1: Math.min(tb, ta + 6000) }
         }
