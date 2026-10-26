@@ -1048,16 +1048,17 @@ export default function App() {
     setTrvColors(sel && sel.names.length ? { maxSpan: 1, contigs: new Map(), db: selectedDb ?? undefined, filter: true, filterSel: { names: sel.names } } : null)
   }, [selectedDb])
   // Traversals の表示範囲: 範囲のノード（葉の名前）→ 表示している層の名前に直して、範囲外を薄灰（hide なら非表示）、範囲内はブロックの色で塗る、寄せる
-  const [trvRange, setTrvRange] = useState<{ names: string[]; colors: number[] | null; fit: boolean; hide: boolean } | null>(null)
+  const [trvRange, setTrvRange] = useState<{ names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null>(null)
   const trvRangeReq = useRef(0)
-  const onTravRange = useCallback((v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean } | null) => {
-    setTrvRange(v)
-    if (v && v.fit && selectedDb) { const my = ++trvRangeReq.current; void fetchBlockBbox(selectedDb, { names: v.names.slice(0, 5000) }).then(f => { if (my !== trvRangeReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer) }) }
+  const onTravRange = useCallback((v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null) => {
+    if (v && v.direct && !v.names.length && v.fitNames) { /* 塗りは前のまま（見えているノードが 0 の瞬間）。寄せるだけ */ } else setTrvRange(v)
+    const fn = v?.fitNames; if (fn && fn.length && selectedDb) { const my = ++trvRangeReq.current; void fetchBlockBbox(selectedDb, { names: fn.slice(0, 5000) }).then(f => { if (my !== trvRangeReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer) }) }
   }, [selectedDb])
   const trvNodeColors = useMemo(() => { const m = new Map<string, number>(); if (trvRange && trvRange.colors) trvRange.names.forEach((n, i) => { const c = trvRange.colors![i]; if (c != null && c >= 0) m.set(n, c) }); return m }, [trvRange])
   useEffect(() => {   // 範囲の葉の名前 → 表示している層の名前（/api/blocks/subgraph の名前だけ）。層が変わるたびに引き直す
     if (!trvRange || !selectedDb) { setTrvColors(null); return }
     if (trvRange.hide) { setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, filter: true, filterSel: { names: trvRange.names } }); return }
+    if (trvRange.direct) { setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) }); return }   // 名前はグラフが描いている層のものなのでそのまま
     let live = true
     fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: selectedDb, layer: mapLayer, names: trvRange.names, namesOnly: true }) })
       .then(r => r.json()).then(j => { if (!live) return; const names: string[] = Array.isArray(j?.names) ? j.names : trvRange.names; setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set([...names, ...trvRange.names]) }) })

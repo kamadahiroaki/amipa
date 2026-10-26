@@ -15,7 +15,7 @@ interface Props {
   onReady?: (h: TravHandle | null) => void
   onHoverNodes?: (names: string[] | null) => void   // 塩基の段でホバーしたノード（グラフで強調）
   hapMarks?: Map<string, string>                    // 主画面で選択中のパス群（ハプロタイプ名 → 色）→ 行ラベルの丸
-  onRange?: (v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean } | null) => void   // 表示範囲のノードと色（グラフを寄せる・塗る・範囲外を薄灰か非表示）
+  onRange?: (v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null) => void   // 表示範囲のノードと色（塗る・範囲外を薄灰か非表示・fitNames があれば寄せる）
   getVisibleNames?: () => string[]                  // グラフに見えているノード名（広い範囲の塗り分け）
 }
 export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange, getVisibleNames }: Props) {

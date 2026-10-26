@@ -382,15 +382,17 @@ export function travLocate(t: Trav, names: string[]): any {
   // スーパーノード（上の層の名前）: super 表（super_build.py が足す。子孫の葉のうち bp 合計が最大の派閥の x）
   const hasSuper = (() => { const c = (t as any).__hasSuper; if (c != null) return c; const r = t.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='super'").get() as { n: number }; (t as any).__hasSuper = r.n > 0; return r.n > 0 })()
   const qs = hasSuper ? t.db.prepare('SELECT x, frac, bp, xmin, xmax FROM super WHERE name = ?') : null
+  // 錨でない葉の座標（x_fill: 同じパスで直前の錨の x の bp 多数決。xfill_build.py が足す）
+  const XF: Int32Array | null = (() => { const c = (t as any).__xfill; if (c !== undefined) return c; const r = t.db.prepare("SELECT blob FROM arrays WHERE name='x_fill'").get() as { blob: Buffer } | undefined; const v = r ? new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)) : null; (t as any).__xfill = v; return v })()
   const nodes = names.slice(0, 5000).map(nm => {
     const m = /^n(\d+)$/.exec(nm)
     if (!m) { const r = qs ? (qs.get(nm) as { x: number; frac: number; bp: number; xmin: number; xmax: number } | undefined) : undefined; return r ? { name: nm, x: r.x, kind: -2, frac: r.frac, bp: r.bp, xmin: r.xmin, xmax: r.xmax } : { name: nm, x: -1, kind: -1 } }
     const v = Number(m[1]); let lo = 0, hi = order.length - 1, found = -1
     while (lo <= hi) { const mid = (lo + hi) >> 1; const vv = ids[order[mid]]; if (vv === v) { found = order[mid]; break } if (vv < v) lo = mid + 1; else hi = mid - 1 }
     if (found < 0) return { name: nm, x: -1, kind: -1 }
-    const d = found + 1; return { name: nm, x: X[d], kind: K[d] }
+    const d = found + 1; if (X[d] >= 0) return { name: nm, x: X[d], kind: K[d] }; if (XF && XF[d] >= 0) return { name: nm, x: XF[d], kind: 6 }; return { name: nm, x: -1, kind: K[d] }   // kind 6 ＝ 錨でない葉に直前の錨の座標を与えたもの
   })
-  return { nodes, R: t.R, hasSuper }
+  return { nodes, R: t.R, hasSuper, hasFill: !!XF }
 }
 
 // ---- 遺伝子名の検索（Traversals パネルの検索欄）: 名前・locus の前方一致、産物の部分一致。見つかった遺伝子ごとに座標（両端 1,500 トークンの錨の x）----
