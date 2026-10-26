@@ -205,14 +205,18 @@ async function loadRange() {
     const syncOn = ($('sync') as HTMLInputElement).checked, hideOn = ($('gfilter') as HTMLInputElement).checked; const fitNow = syncOn && userMoved; userMoved = false
     if (cb.onRange && (syncOn || hideOn)) {
       // 塗り分けは常に「グラフに見えているノード」を座標に引く（葉・錨でない葉・スーパーノードのどれでも）。範囲のノード集合は、非表示（絞る）と寄せる先にだけ使う
-      let setNames: string[] | null = null
-      if (hideOn || fitNow) {
+      let setNames: string[] | null = null; let fitNames: string[] | undefined
+      if (fitNow) {   // 寄せる先: 範囲全体から座標で等間隔に標本した錨（範囲のノード集合は株ごと・位置順で先頭に偏り、広い範囲では最初のブロック付近だけに寄っていた）
+        const rn = await getJson(`/api/trav/nodes?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&max=1500`); if (my !== loading) return
+        const jn = await rn.json(); fitNames = (jn.names || []) as string[]
+      }
+      if (hideOn) {
         const rf = await getJson(`/api/trav/nodeset?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}&max=20000`)
         if (my !== loading) return
         const jf = await rf.json(); if (!(jf.tooBig || jf.error)) { setNames = jf.names as string[]; if (jf.truncated) $('info').textContent += ` | 範囲のノード ${fmt(jf.n)} で打ち切り` } else if (hideOn) $('info').textContent += ` | グラフを絞る: ${jf.error || '範囲が広すぎる'}`
       }
-      if (hideOn && setNames) { rangeMode = 'set'; cb.onRange({ names: setNames, colors: null, fit: false, hide: true, fitNames: fitNow ? setNames : undefined }) }
-      else { rangeMode = 'locate'; await rangeByLocate(my, fitNow ? (setNames || undefined) : undefined) }
+      if (hideOn && setNames) { rangeMode = 'set'; cb.onRange({ names: setNames, colors: null, fit: false, hide: true, fitNames }) }
+      else { rangeMode = 'locate'; await rangeByLocate(my, fitNames) }
     } else if (cb.onRange) { rangeMode = 'none'; cb.onRange(null) }
   } catch (e) { showErr('range', e) }
   $('busy').style.display = 'none'; draw()
