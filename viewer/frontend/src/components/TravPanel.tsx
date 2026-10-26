@@ -16,12 +16,13 @@ interface Props {
   onHoverNodes?: (names: string[] | null) => void   // 塩基の段でホバーしたノード（グラフで強調）
   hapMarks?: Map<string, string>                    // 主画面で選択中のパス群（ハプロタイプ名 → 色）→ 行ラベルの丸
   onRange?: (v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean } | null) => void   // 表示範囲のノードと色（グラフを寄せる・塗る・範囲外を薄灰か非表示）
+  getVisibleNames?: () => string[]                  // グラフに見えているノード名（広い範囲の塗り分け）
 }
-export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange }: Props) {
+export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange, getVisibleNames }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const hRef = useRef<TravHandle | null>(null)
-  const cbRef = useRef({ onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange })
-  useEffect(() => { cbRef.current = { onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange } }, [onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange])
+  const cbRef = useRef({ onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames })
+  useEffect(() => { cbRef.current = { onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames } }, [onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames])
   useEffect(() => { hRef.current?.setHapMarks(hapMarks ?? new Map()) }, [hapMarks])
   useEffect(() => {
     hRef.current?.destroy(); hRef.current = null; cbRef.current.onReady?.(null)
@@ -33,6 +34,7 @@ export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGrap
       onGraphRange: () => cbRef.current.onGraphRange?.(),
       onHoverNodes: names => cbRef.current.onHoverNodes?.(names),
       onRange: v => cbRef.current.onRange?.(v),
+      getVisibleNames: () => cbRef.current.getVisibleNames?.() ?? [],
     })
     hRef.current.setHapMarks(hapMarks ?? new Map())
     cbRef.current.onReady?.(hRef.current)

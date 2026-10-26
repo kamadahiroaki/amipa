@@ -2434,7 +2434,7 @@ export default function App() {
                   nodeColors={trvNodeColors.size ? new Map([...activeNodeColors, ...trvNodeColors]) : activeNodeColors}
                   onVisibleAtoms={atoms => { blkApiRef.current?.setGraphAtoms?.(atoms) }}
                   onViewportChange={(vp, layer, glyphs) => {
-                    setMapViewport(vp); setMapLayer(layer)
+                    setMapViewport(vp); setMapLayer(layer); travApiRef.current?.graphMoved?.()   // Traversals: 広い範囲の塗り分けは見えているノードで引き直す
                     if (glyphs !== undefined) setMapGlyphs(glyphs)
                   }}
                   onHeavyView={glyphs => setHeavyModal(prev => prev ?? glyphs)}
@@ -3210,6 +3210,7 @@ export default function App() {
           <TravPanel
             db={selectedDb}
             onRange={onTravRange}
+            getVisibleNames={() => graphRef.current?.getVisibleNames?.() ?? []}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
             onGraphRange={onTravGraphRange}
             onReady={h => { travApiRef.current = h; if (!h) { setTrvRange(null); setTrvColors(null); setTrvHov(null) } }}
