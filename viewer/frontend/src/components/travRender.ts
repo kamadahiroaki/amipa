@@ -8,19 +8,19 @@
 type Atom = { id: number; x0: number; x1: number; bp: number; nhap: number }
 type Bound = { x: number; support: number; persistence: number }
 type Hap = { hid: number; hap: string; ncontig: number; nexcl: number; bp: number }
-type Trav = { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number; bp0?: number; rep?: boolean; k?: number; members?: Trav[] }   // k, members = 同じ場所を繰り返し通る通過をまとめた片
+type Trav = { id: number; pid: number; hid: number; i0: number; i1: number; x0: number; x1: number; dir: number; copy: number; nanch: number; bp: number; bp0?: number; rep?: boolean; trim?: [number, number]; ox0?: number; ox1?: number; k?: number; members?: Trav[] }   // k, members = 同じ場所を繰り返し通る通過をまとめた片
 type Copy = { id: number; pid: number; hid: number; x0: number; x1: number; ia0: number; ia1: number; ib0: number; ib1: number; bpa: number; bpb: number }
 type Rep = { id: number; pid: number; hid: number; i0: number; i1: number; bp: number; x0: number; x1: number }
 type AtomStat = { id: number; nhap: number; nhap2: number; tangled?: boolean; counts: Record<string, number> }
 type Root = { meta: any; H: number; R: number; total_bp: number; haps: Hap[]; atoms: Atom[]; bounds: Bound[] }
 type Block = { id: number; x0: number; x1: number; bp: number; a0: number; a1: number; nhap: number; nhap2: number; tangled: boolean }
 // 錨の列（ブロックと塩基の間の段）: /api/trav/cols。列＝表示範囲を画面幅で等分した座標区間。行＝通過。pres 錨の有無（0–255）、cls アレル番号（0 多数派、255 掛からない）、ins 挿入 bp
-type ColRow = { id: number; pid: number; hid: number; dir: number; copy: number; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; frq: Uint8Array }
+type ColRow = { id: number; pid: number; hid: number; dir: number; copy: number; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; frq: Uint8Array; bpc: Uint32Array }   // bpc = 列ごとのこの行のトークンの bp（各行の並びの幅）
 type Cols = { x0: number; x1: number; ncol: number; ntok: number; nanch: Uint16Array; ncls: Uint8Array; nrow: Uint16Array; major: Uint16Array; rows: ColRow[]; byId: Map<number, ColRow> }
 const CLS_COL = ['#c9ced2', '#e67e22', '#2980b9', '#27ae60', '#8e44ad', '#c0392b', '#16a085', '#d35400', '#7f8c8d']   // アレル番号 → 色（0 多数派は灰）
 // 色相 → 24 bit の整数（グラフのノード色）
 function hslToInt(h: number, sPct: number, lPct: number): number { const sat = sPct / 100, l = lPct / 100; const c = (1 - Math.abs(2 * l - 1)) * sat; const hp = (h % 360) / 60; const x = c * (1 - Math.abs(hp % 2 - 1)); let r = 0, g2 = 0, b = 0; if (hp < 1) { r = c; g2 = x } else if (hp < 2) { r = x; g2 = c } else if (hp < 3) { g2 = c; b = x } else if (hp < 4) { g2 = x; b = c } else if (hp < 5) { r = x; b = c } else { r = c; b = x } const m = l - c / 2; const R = Math.round((r + m) * 255), G = Math.round((g2 + m) * 255), B = Math.round((b + m) * 255); return (R << 16) | (G << 8) | B }
-const u8 = (b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)); const u16 = (b: string) => { const a = u8(b); return new Uint16Array(a.buffer, a.byteOffset, a.byteLength >> 1) }
+const u8 = (b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)); const u16 = (b: string) => { const a = u8(b); return new Uint16Array(a.buffer, a.byteOffset, a.byteLength >> 1) }; const u32 = (b: string) => { const a = u8(b); return new Uint32Array(a.buffer, a.byteOffset, a.byteLength >> 2) }
 
 import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/client'
 import { matchHapToKey } from './blockMsaRender'
@@ -174,6 +174,8 @@ async function loadRange() {
     const r = await getJson(`/api/trav/range?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}`)
     if (my !== loading) return
     const j = await r.json(); rows = j.trav; copies = j.copies; reps = j.reps || []; perHap = j.perHap; sel = null; $('info').style.color = ''
+    // 反復でない重なり（backend の trim）: 錨を持たない側の通過からその区間を除く。残る側が 2 つに割れたら広い方（ε で吸われた端の数錨は捨てる）
+    for (const t of rows as Trav[]) { if (!t.trim) continue; const [a, b] = t.trim; t.ox0 = t.x0; t.ox1 = t.x1; const lo = a - t.x0, hi = t.x1 - b; if (lo >= hi) t.x1 = Math.max(t.x0, a - 1); else t.x0 = Math.min(t.x1, b + 1) }
     blocks = makeBlocks()
     hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : baseOrder.slice()
     const nh2 = Object.values(perHap).filter(n => (n as number) >= 2).length
@@ -187,7 +189,7 @@ async function loadRange() {
       const jc = await rc.json()
       if (jc.tooBig) colsNote = `錨の列: 範囲が広すぎる（トークン ${fmt(jc.ntok)} > ${fmt(jc.max)}）`
       else if (jc.error) colsNote = `錨の列: ${jc.error}`
-      else { const rc2: ColRow[] = (jc.rows as any[]).map(r => ({ ...r, pres: u8(r.pres), cls: u8(r.cls), ins: u16(r.ins), frq: r.frq ? u8(r.frq) : new Uint8Array(0) })); cols = { x0: jc.x0, x1: jc.x1, ncol: jc.ncol, ntok: jc.ntok, nanch: u16(jc.cols.nanch), ncls: u8(jc.cols.ncls), nrow: u16(jc.cols.nrow), major: u16(jc.cols.major), rows: rc2, byId: new Map(rc2.map(r => [r.id, r])) } }
+      else { const rc2: ColRow[] = (jc.rows as any[]).map(r => ({ ...r, pres: u8(r.pres), cls: u8(r.cls), ins: u16(r.ins), frq: r.frq ? u8(r.frq) : new Uint8Array(0), bpc: r.bpc ? u32(r.bpc) : new Uint32Array(0) })); cols = { x0: jc.x0, x1: jc.x1, ncol: jc.ncol, ntok: jc.ntok, nanch: u16(jc.cols.nanch), ncls: u8(jc.cols.ncls), nrow: u16(jc.cols.nrow), major: u16(jc.cols.major), rows: rc2, byId: new Map(rc2.map(r => [r.id, r])) } }
       $('info').textContent = (colsNote ? colsNote : `錨の列 ${fmt(jc.ncol)} 列（トークン ${fmt(jc.nread)}・${fmt(jc.ms)} ms）`) + ' | ' + $('info').textContent
       if (cols && ($('order') as HTMLSelectElement).value === 'tree') hapOrder = treeOrder()   // 木を錨の列（アレル）で作り直す
     }
@@ -546,7 +548,7 @@ function treeOrder(): number[] {
   const visit = (c: Clade) => {
     if (!c.kids.length || c.h <= cutH) {
       let rep = c.leaves[0]
-      if (c.leaves.length > 1) { let best = Infinity; for (const a of c.leaves) { let sum = 0; for (const b of c.leaves) sum += D[idxOf.get(a)!][idxOf.get(b)!]; if (sum < best) { best = sum; rep = a } } }
+      if (c.leaves.length > 1) { const cand = c.leaves.filter(h => (perHap[h] || 0) > 0); const pool = cand.length ? cand : c.leaves; rep = pool[0]; let best = Infinity; for (const a of pool) { let sum = 0; for (const b of c.leaves) sum += D[idxOf.get(a)!][idxOf.get(b)!]; if (sum < best) { best = sum; rep = a } } }   // 代表はこの範囲に通過を持つ株から（持たない株が代表になると行が空）
       c.rep = rep; c.collapsed = c.leaves.length > 1; reps.push(rep); groupOf.set(rep, c.leaves.slice())
     } else c.kids.forEach(visit)
   }
@@ -611,6 +613,7 @@ function drawCore() {
   const cpByHap = new Map<number, Copy[]>(); for (const c of copies) { if (!cpByHap.has(c.hid)) cpByHap.set(c.hid, []); cpByHap.get(c.hid)!.push(c) }
   const rpByHap = new Map<number, Rep[]>(); for (const c of reps) { if (!rpByHap.has(c.hid)) rpByHap.set(c.hid, []); rpByHap.get(c.hid)!.push(c) }
   const piecesOf = new Map<number, Piece[]>(); const fullView = v0 <= 0 && v1 >= root.R - 2
+  type Deferred = { hid: number; raw: { blk: number; tr: Trav; c0: number; c1: number; key: number; wbp: number; fwd: boolean }[]; gapBp: number; pcs: Piece[]; inv: Set<Trav>; disp: Set<Trav>; span: number }; const deferred: Deferred[] = []
   for (const hid of hapOrder) {
     const ts = byHap.get(hid) || []
     // コンティグごとの主な向き（錨数で重み）と、コンティグ内の順が合意と合わない通過（転座: 最長単調部分列から外れるもの）
@@ -634,7 +637,7 @@ function drawCore() {
       const c0 = Math.max(b.x0, r.x0), c1 = Math.min(b.x1, r.x1); const Lx = Math.max(1, r.x1 - r.x0 + 1); const f0 = (c0 - r.x0) / Lx, f1 = (c1 + 1 - r.x0) / Lx
       const [q0, q1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]; const bpA = (r.bp0 ?? 0) + q0 * r.bp, bpB = (r.bp0 ?? 0) + q1 * r.bp   // コンティグ上の bp 区間（格納向き）
       const mir = domOf.get(r.pid)! < 0; const key = mir ? -bpB : bpA   // 読む向き（主な向き）に並ぶ鍵
-      raw.push({ blk: bi, tr: r, c0, c1, key, wbp: Math.max(1, bpB - bpA), fwd: (r.dir >= 0) !== mir })
+      raw.push({ blk: bi, tr: r, c0, c1, key, wbp: pieceBp(r, c0, c1) ?? Math.max(1, bpB - bpA), fwd: (r.dir >= 0) !== mir })
     }
     const pcs: Piece[] = []
     if (mode === 'coord') { for (const q of raw) pcs.push({ blk: q.blk, px0: X(q.c0), px1: X(q.c1 + 1), tr: q.tr, inv: inv.has(q.tr), disp: disp.has(q.tr), fwd: !inv.has(q.tr), c0: q.c0, c1: q.c1 }) }   // 向きはコンティグの主な向きに対する相対
@@ -645,15 +648,20 @@ function drawCore() {
         const big = raw.filter(q => q.tr.nanch >= 1000); const start = (big.length ? big : raw).reduce((m, q) => q.c0 < m.c0 ? q : m, (big.length ? big : raw)[0]); const k = raw.indexOf(start)
         raw.push(...raw.splice(0, k))
       }
-      const total = raw.reduce((t, q) => t + q.wbp, 0) + 1; const gapBp = total * 0.004; let cum = 0, lastPid = -1
-      const scale = (W - LAB) / (total + gapBp * Math.max(0, pids.length - 1))
-      for (const q of raw) {
-        if (lastPid >= 0 && q.tr.pid !== lastPid) cum += gapBp
-        lastPid = q.tr.pid; const px0 = LAB + cum * scale; cum += q.wbp; const px1 = LAB + cum * scale
-        pcs.push({ blk: q.blk, px0, px1, tr: q.tr, inv: inv.has(q.tr), disp: disp.has(q.tr), fwd: q.fwd, c0: q.c0, c1: q.c1 })
-      }
+      // 横の尺度は全行で共通（最長の行が幅いっぱい）。行ごとに幅いっぱいへ引き伸ばすと、欠失で短い行だけ尺度が変わり連結線が全部斜めになる（2026-10-26）
+      const total = raw.reduce((t, q) => t + q.wbp, 0) + 1; const gapBp = total * 0.004
+      deferred.push({ hid, raw, gapBp, pcs, inv, disp, span: total + gapBp * Math.max(0, pids.length - 1) })
     }
     piecesOf.set(hid, pcs)
+  }
+  if (deferred.length) {
+    const scale = (W - LAB) / Math.max(1, ...deferred.map(d => d.span))
+    for (const d of deferred) { let cum = 0, lastPid = -1
+      for (const q of d.raw) {
+        if (lastPid >= 0 && q.tr.pid !== lastPid) cum += d.gapBp
+        lastPid = q.tr.pid; const px0 = LAB + cum * scale; cum += q.wbp; const px1 = LAB + cum * scale
+        d.pcs.push({ blk: q.blk, px0, px1, tr: q.tr, inv: d.inv.has(q.tr), disp: d.disp.has(q.tr), fwd: q.fwd, c0: q.c0, c1: q.c1 })
+      } }
   }
   lastPieces = piecesOf
   const genesByTr = new Map<number, Gene[]>(); if (genes.length && showGenes()) for (const gn of genes) { if (!genesByTr.has(gn.tr)) genesByTr.set(gn.tr, []); genesByTr.get(gn.tr)!.push(gn) }
@@ -676,7 +684,7 @@ function drawCore() {
       if (w >= 3) { g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1; g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1) }   // ブロック境界の枠
       if (mode === 'rows' && !p.fwd) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(px0, yy + hh - 2, w, 2) }   // 各行の並びで読む向きと逆（逆位）は下辺を暗く
       if ((p.tr.k || 1) >= 2 && w >= 4) { g.save(); g.beginPath(); g.rect(px0, yy, w, hh); g.clip(); g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 1; for (let xx = px0 - hh; xx < px1; xx += 5) { g.beginPath(); g.moveTo(xx, yy + hh); g.lineTo(xx + hh, yy); g.stroke() } g.restore() }   // 繰り返し通過＝斜線
-      if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 2; g.strokeRect(px0 + 1, yy + 1, Math.max(1, w - 2), hh - 2); if (w > 10) { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(px0 + 7, yy + 1); g.lineTo(px0 + 2, yy + hh / 2); g.lineTo(px0 + 7, yy + hh - 1); g.fill() } }
+      if (p.inv) { g.strokeStyle = '#8e44ad'; g.lineWidth = 1; g.strokeRect(px0 + .5, yy + .5, Math.max(1, w - 1), hh - 1); if (w > 10) { g.fillStyle = '#fff'; g.beginPath(); g.moveTo(px0 + 7, yy + 1); g.lineTo(px0 + 2, yy + hh / 2); g.lineTo(px0 + 7, yy + hh - 1); g.fill() } }   // 逆位: 細い紫の枠（ブロックの色は残す）と左向きの三角
       else if (p.disp) { g.strokeStyle = '#333'; g.lineWidth = 1; g.setLineDash([3, 2]); g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1); g.setLineDash([]) }   // 転座（多数派の位置と違う所にある片）は各行の並びでも破線で
     }
     for (const r of byHap.get(hid) || []) {   // 通過ごとに向きの三角（右端または左端）とコピー番号
@@ -760,6 +768,16 @@ const geneColor = (gn: Gene) => { const k = geneKind(gn); return k === 'pseudo' 
 function geneLanes(gs: Gene[]): Map<number, number> { const out = new Map<number, number>(); const ends: number[] = []; for (const gn of gs.slice().sort((a, b) => a.x0 - b.x0 || b.x1 - a.x1)) { let L = ends.findIndex(e => e < gn.x0); if (L < 0) { if (ends.length < 3) { L = ends.length; ends.push(gn.x1) } else { L = 2; ends[2] = Math.max(ends[2], gn.x1) } } else ends[L] = gn.x1; out.set(gn.gid, L) } return out }
 // 同じコンティグの連続する通過で座標の範囲が重なるもの（同じ場所を繰り返し通る＝タンデム反復・もつれ）は 1 つの片にまとめ、回数 k を付ける
 // （ヒト chr22 短腕の原子 344–347 では 78 株が 500 座標を 6 回ずつ交互の向きで通り、片ごとに描くと全行が再編成に見えた）
+// 片の幅（bp）: 錨の列が読めていれば、片の x 区間に掛かる列ごとに「その株のトークンの bp（錨も錨でないノードも）」を足す（＝その株が実際に持つ配列の長さ）。
+// 無ければ通過全体の平均 bp/x × 区間。平均だと短い逆位の通過（局所の実 bp）と長い両側の通過（ゲノム平均）で同じブロックの幅が数倍違い、各行の並びで逆位の株だけ
+// ブロックが短く描かれて連結線が乱れた（DDTL、2026-10-26）。錨の有無×合意 bp では、アレルの多い区間で錨を持たない株が短く見えた
+function pieceBp(r: Trav, c0: number, c1: number): number | null {
+  if (!cols) return null; const cr = cols.byId.get(r.id); if (!cr || !cr.bpc.length) return null
+  const C = cols; const Wc = C.x1 - C.x0 + 1; const cw = Wc / C.ncol; const k0 = Math.max(0, Math.floor((c0 - C.x0) / cw)), k1 = Math.min(C.ncol - 1, Math.floor((c1 - C.x0) / cw)); if (k1 < k0) return null
+  let bp = 0
+  for (let k = k0; k <= k1; k++) { const xa = C.x0 + k * cw, xb = xa + cw; const f = Math.max(0, Math.min(xb, c1 + 1) - Math.max(xa, c0)) / cw; bp += cr.bpc[k] * f }   // 端の列は片が覆う割合だけ
+  return Math.max(1, Math.round(bp))
+}
 function mergePasses(ts: Trav[]): Trav[] {
   const byPid = new Map<number, Trav[]>(); for (const r of ts) { if (!byPid.has(r.pid)) byPid.set(r.pid, []); byPid.get(r.pid)!.push(r) }
   const out: Trav[] = []

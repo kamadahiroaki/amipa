@@ -232,6 +232,9 @@ function markRepeats(t: Trav, rows: TravRow[]): void {
         const nr = anchorsIn(r, a, b); let ng = 0; if (nr >= need) for (const m of members) { ng += anchorsIn(m, a, b); if (ng >= need) break }
         const rep = nr >= need && ng >= need; (r as any).rep = rep
         if (rep) { gx0 = Math.min(gx0, r.x0); gx1 = Math.max(gx1, r.x1); members.push(r); continue }
+        // 反復でない重なり（逆位の片・接合部の乱れ）: 重なりの中に錨を持たない側の x 範囲からその区間を除く（trim）。通過の x0/x1 は錨の最小・最大なので、
+        // ε で吸われた 1〜2 個の錨のせいで両側の通過が反転ブロックの座標まで食い込み、各行の並びで同じブロックが 2 度描かれて連結線が乱れた（DDTL）
+        if (nr < need) (r as any).trim = [a, b]; else if (ng < need) (members[members.length - 1] as any).trim = [a, b]
       }
       gx0 = r.x0; gx1 = r.x1; members = [r]
     }
@@ -256,24 +259,25 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, x0, x1 }
   const colOf = (x: number) => Math.min(ncol - 1, Math.floor((x - x0) * ncol / W))
   const nanch = new Uint16Array(ncol); for (let c = 0; c < ncol; c++) { const a = Math.ceil(c * W / ncol), b = Math.ceil((c + 1) * W / ncol); nanch[c] = Math.min(65535, Math.max(0, b - a)) }
-  type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; rep?: boolean; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array; frq: Uint8Array }
+  type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; rep?: boolean; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; bpc: Uint32Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array; frq: Uint8Array }
   const outs: RowOut[] = []
   const T0 = Date.now(); let tRead = 0, tMix = 0, nread = 0
   for (const r of rows) {
     // distill のパス番号: .trav の pid は distill の p_names の順（構築器が同じ順で読む）。名前で引くと重複した名前（ヒト v2 の分割された W 行）で別のパスに当たる
     const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
     const wt = windowTokens(t, r, pi, x0, x1); const toks = wt.toks, s0 = wt.s0; tRead += wt.tRead; nread += wt.nread
-    const pres = new Uint8Array(ncol), cls = new Uint8Array(ncol).fill(255), ins = new Uint16Array(ncol), h1 = new Uint32Array(ncol), h2 = new Uint32Array(ncol), has = new Uint8Array(ncol); const cnt = new Uint16Array(ncol); const insb = new Float64Array(ncol)
+    const pres = new Uint8Array(ncol), cls = new Uint8Array(ncol).fill(255), ins = new Uint16Array(ncol), h1 = new Uint32Array(ncol), h2 = new Uint32Array(ncol), has = new Uint8Array(ncol); const cnt = new Uint16Array(ncol); const insb = new Float64Array(ncol); const bpcf = new Float64Array(ncol)   // bpcf = この行のトークンの bp の合計（錨も錨でないノードも。各行の並びの幅）
     let tw0 = -1, tw1 = -1
     const tm0 = Date.now()
     forEachWindowToken(r, toks, s0, x0, x1, X, K, (d, isA, xa, ti) => {
       const c = Math.min(ncol - 1, Math.floor((xa - x0) * ncol / W)); has[c] = 1
       h1[c] = Math.imul(h1[c] ^ d, 0x01000193) >>> 0; h2[c] = (Math.imul(h2[c], 0x9E3779B1) + d + 1) >>> 0
+      bpcf[c] += BP[d]
       if (isA) { cnt[c]++; if (tw0 < 0 || ti < tw0) tw0 = ti; if (ti > tw1) tw1 = ti } else insb[c] += BP[d]
     })
     tMix += Date.now() - tm0
-    for (let c = 0; c < ncol; c++) { pres[c] = nanch[c] ? Math.min(255, Math.round(255 * cnt[c] / nanch[c])) : 0; ins[c] = Math.min(65535, Math.round(insb[c])) }
-    outs.push({ id: r.id, pid: r.pid, hid: r.hid, dir: r.dir, copy: r.copy, rep: (r as any).rep, tw0, tw1, pres, cls, ins, h1, h2, has, frq: new Uint8Array(ncol) })
+    const bpc = new Uint32Array(ncol); for (let c = 0; c < ncol; c++) { pres[c] = nanch[c] ? Math.min(255, Math.round(255 * cnt[c] / nanch[c])) : 0; ins[c] = Math.min(65535, Math.round(insb[c])); bpc[c] = Math.min(0xffffffff, Math.round(bpcf[c])) }
+    outs.push({ id: r.id, pid: r.pid, hid: r.hid, dir: r.dir, copy: r.copy, rep: (r as any).rep, tw0, tw1, pres, cls, ins, bpc, h1, h2, has, frq: new Uint8Array(ncol) })
   }
   // 列ごとにトークン列（ハッシュ）の種類を数え、多い順に番号を振る
   const ncls = new Uint8Array(ncol), nrow = new Uint16Array(ncol), major = new Uint16Array(ncol)
@@ -286,7 +290,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   }
   const ms = Date.now() - T0; if (ms > 2000) console.log(`[trav/cols] ${rows.length} rows, read ${nread} tok (${tRead} ms), mix ${tMix} ms, total ${ms} ms`)
   return { x0, x1, ncol, ntok, nread, ms, msPre: T0 - T00, msRead: tRead, nrows: rows.length, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
-    rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, rep: o.rep, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins), frq: b64(o.frq) })) }
+    rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, rep: o.rep, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins), bpc: b64(o.bpc), frq: b64(o.frq) })) }
 }
 
 // ---- 遺伝子レーン: 表示範囲に掛かる通過ごとに、その株の遺伝子（<db>.genes の gene × gene_tok）を座標 x に写す ----
