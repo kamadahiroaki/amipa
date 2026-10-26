@@ -553,7 +553,10 @@ function drawCore() {
   const useCols = !!cols && wantCols(); const ogOn = ogroups.length > 0 && showGenes(); TOP = (useCols ? 88 : 70) + (ogOn ? OGH + 2 : 0)
   const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 22 : 15
   // 行の高さ: 遺伝子レーンのある行だけ段数ぶん高く（3 + 10 × 段）
-  rowTop = []; rowHgt = []; { let yy = TOP; const gOn = genes.length > 0 && showGenes(); for (const hid of (root ? hapOrder : [])) { let nl = 0; if (gOn) { const m = geneLanesByHid.get(hid); if (m) for (const L of m.values()) nl = Math.max(nl, L + 1) } const h = ROW + (nl ? 3 + GLH * nl : 0); rowTop.push(yy); rowHgt.push(h); yy += h } }
+  // 繰り返し通過（同じ場所を k 回）: 錨の列の段では k 段の小行に分けて各回のセルを出す（塩基の段の ·2 の行に対応）。ブロックの段は 1 片 ×k のまま
+  const mergedByHap = new Map<number, Trav[]>(); for (const r of mergePasses(rows)) { if (!mergedByHap.has(r.hid)) mergedByHap.set(r.hid, []); mergedByHap.get(r.hid)!.push(r) }
+  const passK = new Map<number, number>(); if (useCols) for (const [hid, ts] of mergedByHap) { let k = 1; for (const r of ts) if ((r.k || 1) > k && r.x1 >= view[0] && r.x0 <= view[1]) k = r.k!; passK.set(hid, k) }
+  rowTop = []; rowHgt = []; { let yy = TOP; const gOn = genes.length > 0 && showGenes(); for (const hid of (root ? hapOrder : [])) { let nl = 0; if (gOn) { const m = geneLanesByHid.get(hid); if (m) for (const L of m.values()) nl = Math.max(nl, L + 1) } const h = ROW + ((passK.get(hid) || 1) - 1) * (BLK + 1) + (nl ? 3 + GLH * nl : 0); rowTop.push(yy); rowHgt.push(h); yy += h } }
   const H = rowsBottom() + 20
   cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio; cv.style.width = W + 'px'; cv.style.height = H + 'px'; g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
   ov.width = cv.width; ov.height = cv.height; ov.style.width = cv.style.width; ov.style.height = cv.style.height; og.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0)
@@ -593,7 +596,7 @@ function drawCore() {
   g.fillStyle = '#666'; g.font = '10px system-ui'; g.fillText(`${fmtbp(bpOfX(v0))}  x ${fmt(Math.floor(v0))} ${refPos(v0)}`, LAB + 2, TOP - 2); const tt = `${refPos(v1)} x ${fmt(Math.ceil(v1))}  ${fmtbp(bpOfX(v1 + 1))}`; g.fillText(tt, W - g.measureText(tt).width - 4, TOP - 2)
 
   // 行: 通過をブロックごとの片に割る。合意座標モードは片をその座標の位置に、各行の並びモードはコンティグの順に詰める
-  const byHap = new Map<number, Trav[]>(); for (const r of mergePasses(rows)) { if (!byHap.has(r.hid)) byHap.set(r.hid, []); byHap.get(r.hid)!.push(r) }
+  const byHap = mergedByHap
   mrowsByHap = byHap
   const cpByHap = new Map<number, Copy[]>(); for (const c of copies) { if (!cpByHap.has(c.hid)) cpByHap.set(c.hid, []); cpByHap.get(c.hid)!.push(c) }
   const rpByHap = new Map<number, Rep[]>(); for (const c of reps) { if (!rpByHap.has(c.hid)) rpByHap.set(c.hid, []); rpByHap.get(c.hid)!.push(c) }
@@ -654,9 +657,10 @@ function drawCore() {
     for (const p of pcs) {
       const px0 = Math.max(LAB, Math.min(p.px0, p.px1)), px1 = Math.min(W, Math.max(p.px0, p.px1)); const w = Math.max(1, px1 - px0); const yy = y + 2, hh = BLK
       // 片の中は合意の向きに明→暗。画面上で左が合意の先頭なら明→暗、逆（逆位・逆鎖）なら暗→明
-      if (useCols && cols) {   // 錨の列の段: 片の中を列のセルで塗り、ブロックの色は下辺 2 px に残す
-        g.fillStyle = '#fff'; g.fillRect(px0, yy, w, hh - 2); g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, 1)`; g.fillRect(px0, yy + hh - 2, w, 2)
-        const cr = cols.byId.get(p.tr.id); if (cr) drawCells(cr, p, px0, px1, yy, hh - 2, mode)
+      if (useCols && cols) {   // 錨の列の段: 片の中を列のセルで塗り、ブロックの色は下辺 2 px に残す。同じ場所を k 回通る片は各回を小行に（コンティグ上の順）
+        const mem = (p.tr.members && p.tr.members.length > 1) ? p.tr.members.slice().sort((a, b) => a.i0 - b.i0) : [p.tr]; const kAll = passK.get(hid) || 1
+        g.fillStyle = '#fff'; g.fillRect(px0, yy, w, hh + (kAll - 1) * (BLK + 1) - 2); g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, 1)`; g.fillRect(px0, yy + hh + (kAll - 1) * (BLK + 1) - 2, w, 2)
+        const C2 = cols; mem.forEach((mtr, j) => { const cr = C2.byId.get(mtr.id); const y2 = yy + j * (BLK + 1); if (cr) drawCells(cr, p, px0, px1, y2, hh - 2, mode); if (mem.length > 1 && w > 14) { g.fillStyle = 'rgba(0,0,0,.55)'; g.font = 'bold 8px system-ui'; g.fillText('·' + (j + 1), px0 + 2, y2 + 7) } })
       } else { g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, ${p.tr.copy >= 1 ? .55 : 1})`; g.fillRect(px0, yy, w, hh)
         if (cols) { const cr = cols.byId.get(p.tr.id); if (cr) drawGaps(cr, p, px0, px1, yy, hh, mode) } }   // 欠失（錨の無い連なり）を白い切れ目で
       if (w >= 3) { g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1; g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1) }   // ブロック境界の枠
@@ -670,7 +674,7 @@ function drawCore() {
       const lo = Math.max(LAB, Math.min(...ps.map(p => Math.min(p.px0, p.px1)))), hi = Math.min(W, Math.max(...ps.map(p => Math.max(p.px0, p.px1)))); if (hi - lo < 24) continue
       const fwd = ps[0].fwd; const yy = y + 2, hh = BLK
       if (!ps[0].inv) { g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, yy); g.lineTo(hi - 1, yy + hh / 2); g.lineTo(hi - 6, yy + hh) } else { g.moveTo(lo + 6, yy); g.lineTo(lo + 1, yy + hh / 2); g.lineTo(lo + 6, yy + hh) } g.fill() }
-      if ((r.k || 1) >= 2 && hi - lo > 18) { g.fillStyle = '#fff'; g.font = 'bold 9px system-ui'; const t = '×' + r.k; const tw = g.measureText(t).width; g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(lo + (hi - lo) / 2 - tw / 2 - 2, y + 1, tw + 4, 9); g.fillStyle = '#fff'; g.fillText(t, lo + (hi - lo) / 2 - tw / 2, y + 9) }   // 繰り返し通過の回数
+      if ((r.k || 1) >= 2 && hi - lo > 18 && !(useCols && cols)) { g.fillStyle = '#fff'; g.font = 'bold 9px system-ui'; const t = '×' + r.k; const tw = g.measureText(t).width; g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(lo + (hi - lo) / 2 - tw / 2 - 2, y + 1, tw + 4, 9); g.fillStyle = '#fff'; g.fillText(t, lo + (hi - lo) / 2 - tw / 2, y + 9) }   // 繰り返し通過の回数
       else if (r.copy >= 1 && hi - lo > 40) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
     }
     if (genesByTr.size) {   // 遺伝子レーン: 片の下。種類 × 向きの色、重なりは段に分ける、三角＝向き、幅があれば名前
@@ -679,7 +683,7 @@ function drawCore() {
       for (const p of pcs) for (const gn of (genesByTr.get(p.tr.id) || [])) {
         if (gn.x1 < p.c0 || gn.x0 > p.c1) continue
         const [pa, pb] = pxInPiece(p, Math.max(p.c0, gn.x0), Math.min(p.c1 + 1, gn.x1 + 1), mode); const a = Math.max(LAB, pa), b = Math.min(W, pb); if (b < a) continue
-        const L = lanes.get(gn.gid) || 0; const yy0 = y + 2 + BLK + 3 + L * GLH; const w = Math.max(1, b - a); const col = geneColor(gn)
+        const L = lanes.get(gn.gid) || 0; const yy0 = y + 2 + BLK + 3 + ((passK.get(hid) || 1) - 1) * (BLK + 1) + L * GLH; const w = Math.max(1, b - a); const col = geneColor(gn)
         const hasEx = gn.ch && gn.ch.some(c => c[0] === 'exon' || c[0] === 'utr')
         if (hasEx) {   // 子がある: イントロン＝細い線、エキソン＝低い箱、UTR＝さらに低く、CDS＝全高
           g.fillStyle = col; g.fillRect(a, yy0 + Math.floor((GLH - 1) / 2) - 1, w, 2)
