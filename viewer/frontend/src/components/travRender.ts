@@ -937,7 +937,9 @@ loadRoot()
 async function locate(names: string[], single: boolean) {
   if (!root || !names.length) return
   if (base) { base = null; $('basegrp').style.display = 'none' }
-  const r = await getJson(`/api/trav/locate?db=${encodeURIComponent(db)}&names=${encodeURIComponent(names.slice(0, 2000).join(','))}`); const j = await r.json()
+  // POST で送る（GET だと 2,000 個の名前で URL が長すぎて失敗し、広い範囲の「グラフの範囲を開く」が黙って効かなかった）
+  let j: any
+  try { const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: names.slice(0, 5000) }) }); j = await r.json() } catch (e) { $('info').textContent = `グラフ → パネル: 座標の問い合わせに失敗 ${String(e)}`; $('info').style.color = '#c0392b'; return }
   const xs: number[] = ((j.nodes || []) as { x: number }[]).map(n => n.x).filter(x => x >= 0).sort((a, b) => a - b)
   if (!xs.length) { const leaf = names.filter(n => /^n\d+$/.test(n)).length; $('info').textContent = leaf ? `グラフ → パネル: 座標を持つノードが無い（錨でないノード: ${names.slice(0, 3).join(', ')}）` : `グラフ → パネル: グラフが粗い層を描いている（${names.length} 個、例 ${names.slice(0, 2).join(', ')}）。葉の層まで拡大すると座標を引ける`; $('info').style.color = '#c0392b'; return }
   hist.push(view); userMoved = true
