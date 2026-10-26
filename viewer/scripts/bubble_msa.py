@@ -144,13 +144,14 @@ def main():
         except Exception as e:
             die("stdin の JSON を読めません: " + str(e))
         name2pi = {nm: i for i, nm in enumerate(p_names)}
-        RNG = {}
+        RNG = {}; RDIR = {}                              # RDIR[pi] = コンティグの主な向き（+1/−1。通過パネルが錨数で重み付けして渡す。行の表示の向きに使う）
         for r in (req.get("ranges") or []):
             # r[0] はパス名か、distill の p_names の番号（通過パネルは番号で渡す。ヒト chr20-22 v2 は分割された W 行の名前が重複する）
             pi = int(r[0]) if isinstance(r[0], int) and 0 <= int(r[0]) < len(p_names) else name2pi.get(str(r[0]))
             if pi is None: continue
             n_ = int(p_off[pi + 1]) - int(p_off[pi]); s0 = max(0, min(n_, int(r[1]))); e0 = max(s0, min(n_, int(r[2])))
             if e0 > s0: RNG.setdefault(pi, []).append((s0, e0))
+            if len(r) > 3 and r[3] is not None and int(r[3]) != 0: RDIR[pi] = 1 if int(r[3]) > 0 else -1
         if not RNG:
             die("範囲が空です（パス名が distill と一致しません）")
         # 行の範囲を、窓に出るノード（全行の範囲の和）まで延ばす（2026-10-19）。行ごとの範囲は「窓の列に入るトークンの最初〜最後」なので、
@@ -184,6 +185,22 @@ def main():
             if not grew: break
             parts = [np.asarray(p_tok[int(p_off[pi]) + s0:int(p_off[pi]) + e0]) for pi, rs in RNG.items() for s0, e0 in rs]
             Sall = np.unique(np.concatenate(parts))
+        # 同じパスの範囲が（元から、または延長の結果）重なる・接するなら 1 つに併合する（2026-10-26）。逆位で 3 本に割れた通過や、接合部で x が少し戻って
+        # 2 本になった通過は延長後に同じトークン区間を指すので、別々に出すと中身が同一の行が 2〜3 本並んだ（DDTL の ·1 ·2 ·3、FAM230F の ·1 ·2）。
+        # 離れた反復（別の場所の 2 回目の通過）は重ならないので別の行のまま。併合した区間の中の再訪（タンデム反復）は runs_of で分ける
+        for pi, rs in RNG.items():
+            out_ = []
+            for s0, e0 in sorted(rs):
+                if out_ and s0 <= out_[-1][1] + 2: out_[-1] = (out_[-1][0], max(out_[-1][1], e0))
+                else: out_.append((s0, e0))
+            # 併合できなかった同じパスの範囲（間に窓の外のトークンが挟まる）が JOIN トークン以内なら 1 行に繋ぐ（間は読まず、継ぎ目を brk に記す）。
+            # 逆位の切れ目が窓の中にあると、窓の中の材料がコンティグ上で 2 か所に分かれる（左の両側配列と、反転ブロックのうち窓に入る部分。DDTL の n76458271–312）。
+            # 離れた 2 回目（ecoli 原子 365 は 455k トークン先）は繋がない。RNG[pi] は以後「範囲の組（1 行）」のリスト
+            JOIN = 20000; grp_ = []
+            for s0, e0 in out_:
+                if grp_ and s0 - grp_[-1][-1][1] <= JOIN: grp_[-1].append((s0, e0))
+                else: grp_.append([(s0, e0)])
+            RNG[pi] = grp_
         label = args.label or str(req.get("label") or "Blocks")
     elif not sel_nodes:
         die("ノードが指定されていません")
@@ -240,7 +257,8 @@ def main():
         Sdense = set()
         for pi, rs in RNG.items():
             a = int(p_off[pi])
-            for s0, e0 in rs: Sdense.update(int(t) for t in np.unique(np.asarray(p_tok[a + s0:a + e0])))
+            for grp in rs:
+                for s0, e0 in grp: Sdense.update(int(t) for t in np.unique(np.asarray(p_tok[a + s0:a + e0])))   # RNG[pi] は範囲の組のリスト
         if len(Sdense) > MAX_LEAVES:
             die("この範囲は葉が %d 個あり、塩基レベル MSA の上限 %d を超えます。Blocks でさらに内側へ降りてください。" % (len(Sdense), MAX_LEAVES))
         leaves = sorted({nname(t) for t in Sdense}, key=lambda n: int(n[1:]))
@@ -317,25 +335,43 @@ def main():
     # ★ 走査量の事前見積り。WG は 1 contig が chr 級(数百万〜千万 token)なので、絞り込みを
     #   忘れて全 hap を選ぶと p_tok を数 GB 読んで timeout する。読む前に p_off の差分で判定して
     #   「絞ってください」と返す(黙って 30s 待たせない)。
-    ntok = int(sum(e0 - s0 for pi in pis for s0, e0 in RNG[pi])) if RNG is not None else int(sum(int(p_off[pi + 1]) - int(p_off[pi]) for pi in pis))
+    ntok = int(sum(e0 - s0 for pi in pis for grp in RNG[pi] for s0, e0 in grp)) if RNG is not None else int(sum(int(p_off[pi + 1]) - int(p_off[pi]) for pi in pis))
     if ntok > args.max_tokens:
         die("走査対象が大きすぎます(%d contig / %.1fM token)。対象サンプル/ハプロタイプを絞ってください。"
             % (len(pis), ntok / 1e6))
 
     # --- 各触れ contig を distill から slice し、S 内極大 run を抽出 ---
-    RUNFLAGS = {}
+    RUNFLAGS = {}; RUNBRK = {}
     def runs_of(pi):
         a, b = int(p_off[pi]), int(p_off[pi + 1])
         if b <= a:
             return []
         if RNG is not None:
             # 与えた範囲だけを読み、前後 flank 分の文脈を付けて 1 範囲 = 1 通過にする（S の判定はしない）
-            out = []; fl = []
-            for s0, e0 in RNG[pi]:
-                lo = max(0, s0 - args.flank); hi = min(b - a, e0 + args.flank)
-                tk = np.asarray(p_tok[a + lo:a + hi]); oo = np.asarray(p_ori[a + lo:a + hi])
-                out.append(([int(x) for x in tk], [int(x) for x in oo])); fl.append((lo == 0, hi == b - a))   # コンティグの端に届いたか（歩きの向き）
-            RUNFLAGS[pi] = fl
+            out = []; fl = []; bk = []
+            for grp in RNG[pi]:
+                # 範囲の組を 1 本のトークン列に繋ぐ（間のトークンは読まない）。継ぎ目 brks = [(列の中の位置, 飛ばしたトークン数)]
+                tk = []; oo = []; brks = []
+                for gi, (s0, e0) in enumerate(grp):
+                    lo = max(0, s0 - args.flank) if gi == 0 else s0; hi = min(b - a, e0 + args.flank) if gi == len(grp) - 1 else e0
+                    if gi > 0: brks.append((len(tk), s0 - grp[gi - 1][1]))
+                    tk += [int(x) for x in np.asarray(p_tok[a + lo:a + hi])]; oo += [int(x) for x in np.asarray(p_ori[a + lo:a + hi])]
+                lo0 = max(0, grp[0][0] - args.flank); hi1 = min(b - a, grp[-1][1] + args.flank)
+                # 繋いだ範囲の中で同じノードを再訪していれば、そこで行を分ける（タンデム反復の 2 回目＝·2。2026-10-26）。1〜2 個の再訪（小さな戻り）では
+                # 分けず、続く 16 トークンのうち 8 個以上が既出のときだけ本物の 2 回目とみなす。逆位（向きが変わるだけで再訪は無い）は 1 行のまま
+                cuts = [0]; seen = set(); k = 0
+                while k < len(tk):
+                    t_ = tk[k]
+                    if t_ in seen:
+                        look = tk[k:k + 16]
+                        if sum(1 for q in look if q in seen) >= min(8, len(look)): cuts.append(k); seen = set()
+                    seen.add(t_); k += 1
+                cuts.append(len(tk))
+                for ca, cb in zip(cuts, cuts[1:]):
+                    if cb <= ca: continue
+                    out.append((tk[ca:cb], oo[ca:cb])); fl.append((lo0 == 0 and ca == 0, hi1 == b - a and cb == len(tk)))   # コンティグの端に届いたか（歩きの向き）
+                    bk.append([(i - ca, n) for i, n in brks if ca < i < cb])
+            RUNFLAGS[pi] = fl; RUNBRK[pi] = bk
             return out
         tk = np.asarray(p_tok[a:b])
         # ★ token ごとの `int(t) in Sdense`(Python ループ)は WG の chr 級 contig で数秒/contig
@@ -387,7 +423,8 @@ def main():
         rr = runs_of(pi)
         for k, (ids, ors) in enumerate(rr):
             fl_ = RUNFLAGS.get(pi); fl_ = fl_[k] if fl_ and k < len(fl_) else (False, False)
-            runs.append(dict(samp=samp, lab=lab, ctg=ctg, path=full, isref=isref, ids=ids, ors=ors,
+            bk_ = RUNBRK.get(pi); bk_ = bk_[k] if bk_ and k < len(bk_) else []
+            runs.append(dict(samp=samp, lab=lab, ctg=ctg, path=full, isref=isref, ids=ids, ors=ors, pi=pi, brk=bk_,
                              k=(0 if len(rr) == 1 else k + 1), cend=fl_))
             if len(runs) >= MAX_ROWS:
                 break
@@ -465,6 +502,14 @@ def main():
             t = int(np.sign(np.diff(np.asarray(sh, np.int64))).sum()) if len(sh) >= 2 else 0
             if t == 0 and btrend != 0: t = ctrend(sq) * (1 if btrend > 0 else -1)
             if t < 0: p[3] = not p[3]
+        # 通過パネルからコンティグの主な向き（錨数の重み付き）が来ていればそれを優先する（2026-10-26）。窓が反転ブロックに偏ると bp 多数決も
+        # 共有ノードの並びも反転ブロックの向きに引かれ、両側配列の方が「逆向き」に見えた（DDTL の狭い窓）。参照の向きを基準に、無ければ合意の向き
+        refdir = RDIR.get(pre[bi][0].get("pi")) if RNG is not None else None
+        if RNG is not None:
+            for p in pre:
+                d = RDIR.get(p[0].get("pi"))
+                if d is None: continue
+                p[3] = (d != refdir) if refdir is not None else (d < 0)
     for r, nodes, ors, rev in pre:
         cells, inv = {}, []
         for n, o in zip(nodes, ors):
@@ -476,9 +521,28 @@ def main():
             else: rc_votes[n] = rc_votes.get(n, 0) - 1
             cells[n] = s
         ce = r.get("cend", (False, False))
+        brk_ = [[nodes[i - 1], nodes[i], int(n_)] for i, n_ in r.get("brk", []) if 0 < i < len(nodes)]   # 継ぎ目: [前のノード, 後のノード, 飛ばしたトークン数]
         raw.append(dict(samp=r["samp"], label=r["label"], path=r["path"],
                         strand=("-" if rev else "+"), cells=cells, inv=inv, ends=([ce[1], ce[0]] if rev else [ce[0], ce[1]]),   # 表示の左端・右端がコンティグの端か
-                        nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"]))
+                        nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"], brk=brk_))
+
+    # 逆位の見せ方（2026-10-26）: 行の向きと逆に通ったノード（inv）が連なり（行の並びで隣り合う inv ノードの合計 ≥ 10 bp、または 4 bp 以上の 1 ノード）なら、
+    # 列の多数の向き（rc_votes）の文字列で出す＝同じノードなら他の行と同じ文字になり、位置ごとの比較で偽のミスマッチが出ない（DDTL の 2.95 kb 逆位）。inv の印（紫の帯）は残す。
+    # 孤立した 3 bp 以下の inv ノードはそのまま逆相補で出す（向きで実現した SNP: chrY n81087900 の T/A）。行が順向きでも列の多数が逆相補なら多数に合わせる
+    for r in raw:
+        invset = set(r["inv"]); seqn = r["seq"]; norm_nodes = set(); i = 0
+        while i < len(seqn):
+            if seqn[i] not in invset: i += 1; continue
+            j = i
+            while j < len(seqn) and seqn[j] in invset: j += 1
+            run = seqn[i:j]
+            if sum(len(seqleaf.get(n, "")) for n in run) >= 10 or any(len(seqleaf.get(n, "")) > 3 for n in run): norm_nodes.update(run)
+            i = j
+        for n in norm_nodes:
+            s_ = seqleaf.get(n)
+            if s_ is not None: r["cells"][n] = rc(s_) if rc_votes.get(n, 0) > 0 else s_
+        for n in list(r["cells"]):
+            if n not in invset and rc_votes.get(n, 0) > 0 and len(seqleaf.get(n, "")) > 3: r["cells"][n] = rc(seqleaf[n])
 
     # --- 固定幅列。★同じサイトの排他アレルは「アレル群」として **1 ブロック**にまとめる。
     #   旧実装は「id 隣接・等長・排他のペア」だけを統合していたので、3 アレル以上の site(G/A/C)や
@@ -620,7 +684,7 @@ def main():
         w = max((len(seqleaf.get(n, "")) for n in g), default=0)
         if w == 0:
             continue
-        meta = dict(nodes=g, rb=rb)
+        meta = dict(nodes=g, rb=rb, nl=w)   # nl = 群の幅（＝ノードの bp。窓の端で列が切られても、画面側が鏡像の位置を正しく求められるように）
         def soffs(k):   # 列 k（表示の向き）→ 各ノードの格納向きのオフセット（ノードより先なら -1）。逆相補で表示しているノードは L-1-k
             out = []
             for n in g:
@@ -680,7 +744,7 @@ def main():
     if max_cols and b - a > max_cols: b = a + max_cols
     cols = cols[a:b]
     for r in raw: r["seq"] = r["seq"][a:b]
-    # 変異フラグ(トリム後)
+    # 変異フラグ(トリム後)。逆位のノードの文字は上で列の多数の向きに揃えてあるので、同じノードなら変異にならない（DDTL の n76458304 で 82 列中 66 列が偽の変異になった 2026-10-26）
     for ci, c in enumerate(cols):
         vals = set(r["seq"][ci] for r in raw); vals.discard("~"); vals.discard(".")
         c["variant"] = bool(c.get("variant")) or (len(vals) > 1)
@@ -710,10 +774,10 @@ def main():
     out = dict(name=label, bp=(min(anc)[0] if anc else None), refname=refname,
                nrow=len(raw), nallele=len(uniq),
                scan=dict(leaves=len(leaves), contigs=len(pis), tokens=ntok),   # 走査コストの実測(診断用)
-               cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so") if k in c} for c in cols],
+               cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
-                      "inv": r["inv"], "ends": r.get("ends", [False, False])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
+                      "inv": r["inv"], "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
     print(json.dumps(out))
 
 if __name__ == "__main__":

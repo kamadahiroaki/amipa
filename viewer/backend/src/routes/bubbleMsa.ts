@@ -68,14 +68,14 @@ bubbleMsaRouter.get('/bubble_msa', (req, res) => {
 })
 
 // Blocks パネルの底からの受け渡し: 各行（パス）のトークン範囲を stdin の JSON で渡し、その範囲の塩基レベル MSA を返す。
-//   POST /api/bubble_msa/ranges  body {db, ranges:[[path, s0, e0], …], label, flank}
+//   POST /api/bubble_msa/ranges  body {db, ranges:[[path, s0, e0, dir?], …], label, flank}   dir（任意）＝コンティグの主な向き ±1（行の表示の向き）
 //   S（列）は範囲内のトークンの葉集合、行は与えたパスの範囲だけ。葉の上限は maxLeaves（既定 400、ここで 12,000 まで。画面は 1 遺伝子分〜を一度に出す）。
 bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>
   const db = typeof b.db === 'string' ? b.db : ''
   const ranges = Array.isArray(b.ranges) ? (b.ranges as unknown[]) : []
   if (!db) { res.status(400).json({ error: 'Missing db' }); return }
-  if (!ranges.length || !ranges.every(r => Array.isArray(r) && r.length === 3 && (typeof r[0] === 'string' || Number.isInteger(r[0])))) { res.status(400).json({ error: 'ranges must be [[path | path_index, s0, e0], ...]' }); return }   // r[0] は distill のパス名、または p_names の番号（通過パネル。ヒト v2 は名前が重複する）
+  if (!ranges.length || !ranges.every(r => Array.isArray(r) && (r.length === 3 || r.length === 4) && (typeof r[0] === 'string' || Number.isInteger(r[0])))) { res.status(400).json({ error: 'ranges must be [[path | path_index, s0, e0, dir?], ...]' }); return }   // r[0] は distill のパス名、r[3]（任意）はコンティグの主な向き ±1、または p_names の番号（通過パネル。ヒト v2 は名前が重複する）
   const fq = Number(b.flank); const flank = String(Number.isFinite(fq) ? Math.max(0, Math.min(12, fq)) : 0)
   const dbPath = path.join(getDbDir(), path.basename(db))
   if (!fs.existsSync(dbPath)) { res.status(404).json({ error: 'DB が見つかりません' }); return }

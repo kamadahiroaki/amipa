@@ -748,8 +748,11 @@ export interface MsaCol {
   variant?: boolean         // 行間で塩基が食い違う列
   off?: number
   bp?: number               // ell 列: 畳んだノードの bp 長
+  nl?: number               // 群の幅＝ノードの bp（窓の端で列が切られても鏡像の位置を求められるように）
+  so?: number[]             // 列の各ノードの格納向きのオフセット（逆相補で並べたノードは L-1-off）
 }
 export interface MsaRow {
+  brk?: [string, string, number][]   // 継ぎ目: [前のノード, 後のノード, 間に飛ばしたトークン数]（同じコンティグの離れた範囲を 1 行に繋いだ所）
   samp: string              // sample 名(並び/グルーピング用)
   label: string             // 表示ラベル `sample#hap`(同一パスの複数通過は ·2, ·3)
   path: string              // 元のパス名(tooltip 用)
@@ -792,7 +795,7 @@ export async function fetchBlockNodes(dbFile: string, layer: number, contig: num
   return Array.isArray(j.names) ? j.names as string[] : []
 }
 // Blocks の底からの受け渡し: 各行のトークン範囲で塩基レベル MSA（bubble MSA と同じ出力）
-export async function fetchBubbleMsaRanges(dbFile: string, ranges: [string | number, number, number][], label: string, flank = 0, cap?: number, maxLeaves?: number): Promise<BubbleMsaResp> {
+export async function fetchBubbleMsaRanges(dbFile: string, ranges: (string | number)[][], label: string, flank = 0, cap?: number, maxLeaves?: number): Promise<BubbleMsaResp> {
   try {
     const res = await fetch('/api/bubble_msa/ranges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges, label, flank, ...(cap != null ? { cap } : {}), ...(maxLeaves != null ? { maxLeaves } : {}) }) })
     if (!res.ok) return { error: 'request failed (' + res.status + ')' }

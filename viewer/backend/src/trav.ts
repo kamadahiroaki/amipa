@@ -72,6 +72,7 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid, i0').all(x1, x0) as TravRow[]
   const mo = opts.minOverlap ?? 0; const ma = opts.minAnchors ?? 0   // 錨が少ない断片（硬い領域のかけら）は既定で出さない。ヒト v2 は 50 錨未満が 8,964 本で、x≈1.52M の 1 か所に 5,298 本集中
   const out = rows.filter(r => r.nanch >= ma && (mo <= 0 || Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo))
+  try { markRepeats(t, out) } catch (e) { console.warn('[trav/range] markRepeats', e) }
   const copies = t.db.prepare('SELECT id, pid, hid, x0, x1, ia0, ia1, ib0, ib1, bpa, bpb FROM copies WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid').all(x1, x0) as CopyRow[]
   const perHap: Record<number, number> = {}
   for (const r of out) perHap[r.hid] = (perHap[r.hid] || 0) + 1
@@ -208,6 +209,34 @@ function forEachWindowToken(r: TravRow, toks: Float64Array, s0: number, x0: numb
     else pend.push(d)
   }
 }
+// 同じコンティグの通過どうしの x の重なりが「同じ座標の再訪（反復＝×k）」か「向きの変わり目・接合部の乱れ（1 回の通過が割れただけ）」かを、
+// 重なりの中の錨の数で判定して rep に書く（2026-10-26）。逆位の片は隣の通過の x 範囲に収まるが、隣の通過はその範囲に錨を持たない（DDTL: 17 錨 対 121 錨）。
+// 反復は両方が重なりの中に錨を持つ（ecoli 原子 365: 198 錨の 2 回目）。判定の読みは 1 要求あたり 400 回まで。それを超えた分と distill が無いときは重なりだけで true（従来）
+function markRepeats(t: Trav, rows: TravRow[]): void {
+  const ok = ensureCols(t); const byPid = new Map<number, TravRow[]>(); let budget = 400
+  for (const r of rows) { (r as any).rep = undefined; if (!byPid.has(r.pid)) byPid.set(r.pid, []); byPid.get(r.pid)!.push(r) }
+  const anchorsIn = (r: TravRow, a: number, b: number): number => {
+    if (!ok || budget <= 0) return Infinity
+    const pi = (t.dist!.names[r.pid] === t.paths[r.pid].path) ? r.pid : t.dist!.pidx.get(t.paths[r.pid].path); if (pi == null) return Infinity
+    budget--; const wt = windowTokens(t, r, pi, a, b); let n = 0
+    forEachWindowToken(r, wt.toks, wt.s0, a, b, t.xOfDense!, t.kindOfDense!, (_d, isA) => { if (isA) n++ })
+    return n }
+  for (const trs of byPid.values()) {
+    if (trs.length < 2) continue
+    trs.sort((p, q) => p.i0 - q.i0)
+    let gx0 = trs[0].x0, gx1 = trs[0].x1, members: TravRow[] = [trs[0]]
+    for (let i = 1; i < trs.length; i++) { const r = trs[i]
+      const ov = Math.min(gx1, r.x1) - Math.max(gx0, r.x0) + 1
+      if (ov >= 0.5 * Math.min(gx1 - gx0 + 1, r.x1 - r.x0 + 1)) {
+        const a = Math.max(gx0, r.x0), b = Math.min(gx1, r.x1); const need = 10
+        const nr = anchorsIn(r, a, b); let ng = 0; if (nr >= need) for (const m of members) { ng += anchorsIn(m, a, b); if (ng >= need) break }
+        const rep = nr >= need && ng >= need; (r as any).rep = rep
+        if (rep) { gx0 = Math.min(gx0, r.x0); gx1 = Math.max(gx1, r.x1); members.push(r); continue }
+      }
+      gx0 = r.x0; gx1 = r.x1; members = [r]
+    }
+  }
+}
 function idMapOf(t: Trav): BigInt64Array {
   const c = (t as any).__idmap as BigInt64Array | undefined; if (c) return c
   const im = t.db.prepare("SELECT blob FROM arrays WHERE name='id_map'").get() as { blob: Buffer } | undefined
@@ -221,12 +250,13 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); const W = x1 - x0 + 1; if (W <= 0) return { error: 'empty' }
   ncol = Math.max(1, Math.min(W, Math.floor(ncol) || 1))
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
+  try { markRepeats(t, rows) } catch (e) { console.warn('[trav/cols] markRepeats', e) }
   // 読む量の見積もり: 通過のうち窓に掛かる割合（x が錨の番号に比例するとして）× トークン数 ＋ 余白。ヒトは 1 通過が 100 万トークンなので全長で数えると小さな窓でも断ってしまう
   let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
   if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, x0, x1 }
   const colOf = (x: number) => Math.min(ncol - 1, Math.floor((x - x0) * ncol / W))
   const nanch = new Uint16Array(ncol); for (let c = 0; c < ncol; c++) { const a = Math.ceil(c * W / ncol), b = Math.ceil((c + 1) * W / ncol); nanch[c] = Math.min(65535, Math.max(0, b - a)) }
-  type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array; frq: Uint8Array }
+  type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; rep?: boolean; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array; frq: Uint8Array }
   const outs: RowOut[] = []
   const T0 = Date.now(); let tRead = 0, tMix = 0, nread = 0
   for (const r of rows) {
@@ -243,7 +273,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
     })
     tMix += Date.now() - tm0
     for (let c = 0; c < ncol; c++) { pres[c] = nanch[c] ? Math.min(255, Math.round(255 * cnt[c] / nanch[c])) : 0; ins[c] = Math.min(65535, Math.round(insb[c])) }
-    outs.push({ id: r.id, pid: r.pid, hid: r.hid, dir: r.dir, copy: r.copy, tw0, tw1, pres, cls, ins, h1, h2, has, frq: new Uint8Array(ncol) })
+    outs.push({ id: r.id, pid: r.pid, hid: r.hid, dir: r.dir, copy: r.copy, rep: (r as any).rep, tw0, tw1, pres, cls, ins, h1, h2, has, frq: new Uint8Array(ncol) })
   }
   // 列ごとにトークン列（ハッシュ）の種類を数え、多い順に番号を振る
   const ncls = new Uint8Array(ncol), nrow = new Uint16Array(ncol), major = new Uint16Array(ncol)
@@ -256,7 +286,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   }
   const ms = Date.now() - T0; if (ms > 2000) console.log(`[trav/cols] ${rows.length} rows, read ${nread} tok (${tRead} ms), mix ${tMix} ms, total ${ms} ms`)
   return { x0, x1, ncol, ntok, nread, ms, msPre: T0 - T00, msRead: tRead, nrows: rows.length, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
-    rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins), frq: b64(o.frq) })) }
+    rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, rep: o.rep, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins), frq: b64(o.frq) })) }
 }
 
 // ---- 遺伝子レーン: 表示範囲に掛かる通過ごとに、その株の遺伝子（<db>.genes の gene × gene_tok）を座標 x に写す ----
