@@ -1052,7 +1052,8 @@ export default function App() {
   const trvRangeReq = useRef(0)
   const onTravRange = useCallback((v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null) => {
     if (v && v.direct && !v.names.length && v.fitNames) { /* 塗りは前のまま（見えているノードが 0 の瞬間）。寄せるだけ */ } else setTrvRange(v)
-    const fn = v?.fitNames; if (fn && fn.length && selectedDb) { const my = ++trvRangeReq.current; void fetchBlockBbox(selectedDb, { names: fn.slice(0, 5000) }).then(f => { if (my !== trvRangeReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer) }) }
+    // 寄せる: 外接箱がちょうど収まる倍率で（層は倍率から自動）。/blocks/bbox は名前指定だと layer を常に最深（葉）で返すので、それを渡すと箱の中心の最深層＝何も無い所に寄ってしまう
+    const fn = v?.fitNames; if (fn && fn.length && selectedDb) { const my = ++trvRangeReq.current; void fetchBlockBbox(selectedDb, { names: fn.slice(0, 5000) }).then(f => { if (my !== trvRangeReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy) }) }
   }, [selectedDb])
   const trvNodeColors = useMemo(() => { const m = new Map<string, number>(); if (trvRange && trvRange.colors) trvRange.names.forEach((n, i) => { const c = trvRange.colors![i]; if (c != null && c >= 0) m.set(n, c) }); return m }, [trvRange])
   useEffect(() => {   // 範囲の葉の名前 → 表示している層の名前（/api/blocks/subgraph の名前だけ）。層が変わるたびに引き直す
