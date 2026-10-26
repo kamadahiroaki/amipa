@@ -940,11 +940,19 @@ async function locate(names: string[], single: boolean) {
   // POST で送る（GET だと 2,000 個の名前で URL が長すぎて失敗し、広い範囲の「グラフの範囲を開く」が黙って効かなかった）
   let j: any
   try { const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: names.slice(0, 5000) }) }); j = await r.json() } catch (e) { $('info').textContent = `グラフ → パネル: 座標の問い合わせに失敗 ${String(e)}`; $('info').style.color = '#c0392b'; return }
-  const xs: number[] = ((j.nodes || []) as { x: number }[]).map(n => n.x).filter(x => x >= 0).sort((a, b) => a - b)
+  // 座標を持つノードだけ。張りの広いスーパーノード（派閥が過半でない frac < 0.5）は場所を決めないので外す
+  const xs: number[] = ((j.nodes || []) as { x: number; kind: number; frac?: number }[]).filter(n => n.x >= 0 && !(n.kind === -2 && (n.frac ?? 1) < 0.5)).map(n => n.x).sort((a, b) => a - b)
   if (!xs.length) { const leaf = names.filter(n => /^n\d+$/.test(n)).length; $('info').textContent = leaf ? `グラフ → パネル: 座標を持つノードが無い（錨でないノード: ${names.slice(0, 3).join(', ')}）` : `グラフ → パネル: グラフが粗い層を描いている（${names.length} 個、例 ${names.slice(0, 2).join(', ')}）。葉の層まで拡大すると座標を引ける`; $('info').style.color = '#c0392b'; return }
   hist.push(view); userMoved = true
   if (single || xs.length < 4) { const x = xs[Math.floor(xs.length / 2)]; const a = root.atoms[atomAt(x)]; view = [Math.max(a.x0, x - 3000), Math.min(a.x1, x + 3000)]; located = xs.slice() }
-  else { const p10 = xs[Math.floor(xs.length * 0.1)], p90 = xs[Math.min(xs.length - 1, Math.floor(xs.length * 0.9))]; const pad = Math.max(50, 0.05 * (p90 - p10)); view = [Math.max(0, p10 - pad), Math.min(root.R - 1, p90 + pad)]; located = [] }
+  else {
+    // 見えているノードは 1 か所とは限らない（レイアウトで近くても座標が離れたノードが混ざる）→ 座標の隙間（R の 0.5% 以上）で連なりに分け、最も多くのノードが属する連なりを開く
+    const G = Math.max(2000, Math.round(root.R * 0.005)); const runs: [number, number, number][] = []; let s0 = 0
+    for (let i = 1; i <= xs.length; i++) { if (i === xs.length || xs[i] - xs[i - 1] > G) { runs.push([xs[s0], xs[i - 1], i - s0]); s0 = i } }
+    runs.sort((a, b) => b[2] - a[2]); const [r0, r1, cnt] = runs[0]; const pad = Math.max(50, 0.05 * (r1 - r0 + 1))
+    view = [Math.max(0, Math.floor(r0 - pad)), Math.min(root.R - 1, Math.ceil(r1 + pad))]; located = []
+    if (runs.length > 1) setTimeout(() => { $('info').textContent += ` | グラフの範囲: 見えているノードは ${runs.length} か所に分かれ、最大の連なり（${cnt}/${xs.length} 個）を開いた` }, 600)
+  }
   loadRange()
 }
 return { setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; draw() }, graphMoved() { if (rangeMode !== 'locate' || base) return; if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading) }, 500) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { loading++; window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
