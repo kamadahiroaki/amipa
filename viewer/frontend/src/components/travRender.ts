@@ -563,7 +563,7 @@ function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
 function drawCore() {
   if (base && root) { drawBaseCore(); return }
   const useCols = !!cols && wantCols(); const ogOn = ogroups.length > 0 && showGenes(); TOP = (useCols ? 88 : 70) + (ogOn ? OGH + 2 : 0)
-  const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 22 : 15
+  const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 36 : 15   // 各行の並び: 行間 28 px（試行 10-27。以前 22＝行間 14 px）
   // 行の高さ: 遺伝子レーンのある行だけ段数ぶん高く（3 + 10 × 段）
   // 繰り返し通過（同じ場所を k 回）: 錨の列の段では k 段の小行に分けて各回のセルを出す（塩基の段の ·2 の行に対応）。ブロックの段は 1 片 ×k のまま
   const mergedByHap = new Map<number, Trav[]>(); for (const r of mergePasses(rows)) { if (!mergedByHap.has(r.hid)) mergedByHap.set(r.hid, []); mergedByHap.get(r.hid)!.push(r) }
@@ -750,7 +750,9 @@ function drawLines(mode: string, W: number) {
   if (!root) return
   if (mode === 'rows' && ($('showlines') as HTMLInputElement).checked) {
     g.lineWidth = 1; const nS = Math.max(8, Math.floor((W - LAB) / 12)); const xsS: number[] = []; for (let k = 0; k < nS; k++) xsS.push(xOfPx(LAB + (k + 0.5) / nS * (W - LAB)))
-    const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { if (x < p.c0 || x > p.c1 + 1) continue; const f = (x - p.c0) / Math.max(1, p.c1 + 1 - p.c0); out.push(p.px0 + (p.fwd ? f : 1 - f) * (p.px1 - p.px0)) } return out }
+    // その行がその座標に錨を持たない（欠失）なら線を出さない。出すと欠けたブロックの位置（幅 0 の片）に線が一点へ集まった
+    const C3 = cols; const lacks = (p: Piece, x: number): boolean => { if (!C3) return false; const cr = C3.byId.get(p.tr.id); if (!cr) return false; const k = Math.floor((x - C3.x0) * C3.ncol / (C3.x1 - C3.x0 + 1)); return k >= 0 && k < C3.ncol && C3.nanch[k] > 0 && cr.pres[k] === 0 }
+    const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { if (x < p.c0 || x > p.c1 + 1 || lacks(p, x)) continue; const f = (x - p.c0) / Math.max(1, p.c1 + 1 - p.c0); out.push(p.px0 + (p.fwd ? f : 1 - f) * (p.px1 - p.px0)) } return out }
     for (let k = 0; k + 1 < hapOrder.length; k++) {
       const A = lastPieces.get(hapOrder[k]) || [], B = lastPieces.get(hapOrder[k + 1]) || []; const yA = rowTop[k] + 2 + BLK, yB = rowTop[k + 1] + 2
       for (const x of xsS) {
