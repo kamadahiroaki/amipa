@@ -310,7 +310,8 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
   const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
-  const q = gdb.prepare('SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?')
+  const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')   // 参照の注釈を写した遺伝子（genes_project.py）: proj＝元の gid、frac＝一致率
+  const q = gdb.prepare(`SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0${hasProj ? ', g.proj, g.frac' : ''} FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?`)
   const qch = gdb.prepare("SELECT f.type, f.phase, f.strand, f.parent, f.start, f.end, t.s0, t.e0, t.so, t.eo FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds','exon','five_prime_UTR','three_prime_UTR','UTR') ORDER BY t.s0")   // 子（エキソン・CDS・UTR）のトークン範囲と読み枠
   const idmapG = withNodes ? idMapOf(t) : null
   const out: any[] = []; let n = 0; const T0 = Date.now()
@@ -361,7 +362,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
         }
         if (per.size) { ch = []; for (const [kind, iv] of per) { iv.sort((u, v) => u[0] - v[0]); let cur: [number, number] | null = null; for (const [lo, hi] of iv) { if (cur && lo <= cur[1] + 1) cur[1] = Math.max(cur[1], hi); else { if (cur) ch.push([kind, cur[0], cur[1]]); cur = [lo, hi] } } if (cur) ch.push([kind, cur[0], cur[1]]) } }
       }
-      out.push({ gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: A[1] >= 0 || B[1] >= 0, og: -1, ch, nodes: nodesOut })
+      out.push({ proj: g.proj ?? null, frac: g.frac ?? 1, gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: A[1] >= 0 || B[1] >= 0, og: -1, ch, nodes: nodesOut })
       geneAnch.push(acc)
     }
   }
@@ -375,8 +376,22 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
   const groups = new Map<number, { og: number; x0: number; x1: number; n: number; haps: Set<number>; names: Map<string, number>; fwd: number; npseudo: number; kind: string; members: number[] }>()
   out.forEach((g, i) => { const r = find(i); let G = groups.get(r); if (!G) { G = { og: groups.size, x0: g.x0, x1: g.x1, n: 0, haps: new Set(), names: new Map(), fwd: 0, npseudo: 0, kind: kindOf(g), members: [] }; groups.set(r, G) }
     G.x0 = Math.min(G.x0, g.x0); G.x1 = Math.max(G.x1, g.x1); G.n++; G.haps.add(g.hid); if (g.name) G.names.set(g.name, (G.names.get(g.name) || 0) + 1); if (g.fwd) G.fwd++; if (g.pseudo) G.npseudo++; G.members.push(g.gid); g.og = G.og })
-  const ogs = [...groups.values()].map(G => ({ og: G.og, x0: G.x0, x1: G.x1, n: G.n, nhap: G.haps.size, name: [...G.names.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '', fwd: G.fwd, npseudo: G.npseudo, kind: G.kind })).sort((a, b) => a.x0 - b.x0)
-  return { x0, x1, n: out.length, ms: Date.now() - T0, genes: out, groups: ogs }
+  // 有無とコピー数（10-27）: 群の座標範囲を通る株（通過が掛かる株）ごとに、その群の遺伝子の数と最大の一致率。通らない株は「範囲外」で数えない
+  // 参照を写した注釈（proj）があるときは、群でなく「元の遺伝子」ごとに数える（群は重なる別の遺伝子を結ぶので、POLR2F と SOX10 が 1 群になり全株 2 コピーに見えた）
+  const srcOf = (g: any) => hasProj ? (g.proj ?? g.gid) : null
+  const presOf = (G: { x0: number; x1: number; members: number[]; src?: number | null }) => { const per = new Map<number, { n: number; f: number }>(); const memSet = new Set(G.members)
+    const seenG = new Set<number>(); for (const g of out) if ((G.src != null ? srcOf(g) === G.src : memSet.has(g.gid)) && !seenG.has(g.gid)) { seenG.add(g.gid); const e = per.get(g.hid) || { n: 0, f: 0 }; e.n++; e.f = Math.max(e.f, g.frac ?? 1); per.set(g.hid, e) }   // 同じ遺伝子が 2 本の通過に掛かると 2 回出るので gid で数える
+    const cover = new Set<number>(); for (const r of rows) if (r.x0 <= G.x1 && r.x1 >= G.x0) cover.add(r.hid)
+    let n0 = 0, n1 = 0, n2 = 0, part = 0; const absent: number[] = [], multi: number[] = [], partial: number[] = []
+    for (const h of cover) { const e = per.get(h); if (!e) { n0++; absent.push(h) } else { if (e.n >= 2) { n2++; multi.push(h) } else n1++; if (e.f < 0.8) { part++; partial.push(h) } } }
+    return { cover: cover.size, n0, n1, n2, part, absent, multi, partial } }
+  // 群の代表の元遺伝子＝群の名前を持つ参照の遺伝子（無ければ群の最初）
+  const srcRep = (G: { members: number[]; names: Map<string, number> }) => { if (!hasProj) return null; const nm = [...G.names.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]; const ms = new Set(G.members); const g = out.find(x => ms.has(x.gid) && x.name === nm) || out.find(x => ms.has(x.gid)); return g ? srcOf(g) : null }
+  const srcList: any[] = []
+  if (hasProj) { const bySrc = new Map<number, any>(); for (const g of out) { const k = srcOf(g); if (k == null) continue; const e = bySrc.get(k); if (!e) bySrc.set(k, { src: k, name: g.name || g.locus || '', type: g.type, x0: g.x0, x1: g.x1, members: [g.gid] }); else { e.x0 = Math.min(e.x0, g.x0); e.x1 = Math.max(e.x1, g.x1); e.members.push(g.gid) } }
+    for (const e of bySrc.values()) { const P = presOf(e); if (P.n0 || P.n2 || P.part) srcList.push({ name: e.name, type: e.type, x0: e.x0, x1: e.x1, pres: P }) } }
+  const ogs = [...groups.values()].map(G => ({ pres: presOf({ ...G, src: srcRep(G) }), og: G.og, x0: G.x0, x1: G.x1, n: G.n, nhap: G.haps.size, name: [...G.names.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '', fwd: G.fwd, npseudo: G.npseudo, kind: G.kind })).sort((a, b) => a.x0 - b.x0)
+  return { x0, x1, n: out.length, ms: Date.now() - T0, genes: out, groups: ogs, srcPres: hasProj ? srcList : null }
 }
 
 // ---- 窓のノード集合（グラフをこの範囲に絞る用）: 窓に当たる錨と、その錨に付く錨でないノードの名前（葉）。最大 max 個 ----
