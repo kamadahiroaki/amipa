@@ -669,11 +669,17 @@ function drawCore() {
     // 列の幅＝そのブロックの片の bp の中央値（10-27: 最大だと、一部の株だけが長い挿入を持つブロックで他の全株に大きな空白ができた。長い片は列からはみ出し、後ろが右へずれる）
     const colW = new Float64Array(blocks.length); { const per: number[][] = blocks.map(() => []); for (const d of deferred) for (const q of d.raw) per[q.blk].push(q.wbp)
       per.forEach((a, i) => { if (!a.length) return; a.sort((u, v) => u - v); colW[i] = a[a.length >> 1] }) }
-    const placed = deferred.map(d => { let cur = 0, lastPid = -1, lastCol = -1; const xs: number[] = []; const have = new Set(d.raw.map(q => q.blk))
-      for (const q of d.raw) {
+    // 合意の順に進む片＝その株の片の並びの中で、ブロック番号の最長非減少部分列（LIS）に入る片（10-27: 以前は「直前までの最大より後ろ」で、
+    // 先頭近くに右端のブロックの片が 1 つあるだけで以降の全部が「戻る片」扱いになり、列に揃わず左に詰まった）
+    const lisOf = (bs: number[]): Set<number> => { const tails: number[] = [], tailIdx: number[] = [], prev = new Int32Array(bs.length).fill(-1)
+      for (let i = 0; i < bs.length; i++) { let lo = 0, hi = tails.length; while (lo < hi) { const m = (lo + hi) >> 1; if (tails[m] <= bs[i]) lo = m + 1; else hi = m }
+        if (lo > 0) prev[i] = tailIdx[lo - 1]; tails[lo] = bs[i]; tailIdx[lo] = i }
+      const out = new Set<number>(); let k = tails.length ? tailIdx[tails.length - 1] : -1; while (k >= 0) { out.add(k); k = prev[k] } return out }
+    const placed = deferred.map(d => { let cur = 0, lastPid = -1, lastCol = -1; const xs: number[] = []; const have = new Set(d.raw.map(q => q.blk)); const inLis = lisOf(d.raw.map(q => q.blk)); let qi = -1
+      for (const q of d.raw) { qi++
         // コンティグの変わり目に隙間は足さない（10-27: 0.4% の隙間で後ろのブロックが右に少しずれた。変わり目は片の端の三角で分かる）
         lastPid = q.tr.pid; const b = blocks[q.blk]
-        if (q.blk > lastCol) { for (let k = lastCol + 1; k < q.blk; k++) if (!have.has(k)) cur += colW[k]
+        if (inLis.has(qi) && q.blk > lastCol) { for (let k = lastCol + 1; k < q.blk; k++) if (!have.has(k)) cur += colW[k]
           // ブロックの途中から始まる片（欠失がブロックの途中まで掛かる）は、列の中の位置（始まりの割合 × 列幅）から置き、占める幅も残りの割合だけにする
           const Lb = Math.max(1, b.x1 + 1 - b.x0); const fr = Math.max(0, Math.min(1, (q.c0 - b.x0) / Lb)); const cov = Math.max(0, Math.min(1 - fr, (q.c1 + 1 - q.c0) / Lb))
           const x = cur + fr * colW[q.blk]; xs.push(x); cur = x + Math.max(q.wbp, colW[q.blk] * cov); lastCol = q.blk }
