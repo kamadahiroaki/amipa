@@ -1078,7 +1078,9 @@ function renderGpres() {
   const el = $('gptab'); if (el.style.display === 'none' || !root) return
   const base0: { name: string; x0: number; x1: number; pres?: Pres; og?: number }[] = srcPres ? srcPres : ogroups
   const rowsG = base0.filter(o => o.pres && o.pres.cover && (o.pres.n0 || o.pres.n2 || o.pres.part)).sort((a, b) => (b.pres!.n0 + b.pres!.n2 + b.pres!.part) - (a.pres!.n0 + a.pres!.n2 + a.pres!.part))
-  if (!ogroups.length) { el.textContent = genesNote || '遺伝子が無い（「遺伝子」を入れ、範囲を狭める）'; return }
+  if (!showGenes()) { el.textContent = '「遺伝子」が切れている。入れると一覧を作る'; return }
+  if (!ogroups.length) { el.textContent = genesNote ? `${genesNote}（一覧は遺伝子を読める範囲で作る。数 Mb 以下に狭める）` : '遺伝子を読み込み中、またはこの範囲に遺伝子が無い'; return }
+  if (!rowsG.length) { el.textContent = `表示範囲の${srcPres ? '遺伝子' : '遺伝子群'} ${(srcPres ? new Set(genes.map(g => (g as any).proj ?? g.gid)).size : ogroups.length).toLocaleString()} 個は、範囲を通る全株で 1 コピーずつ（有無・コピー数の違いは無い）`; return }
   const esc = (t: string) => t.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
   const hn = (hs: number[]) => esc(hs.slice(0, 8).map(h => root!.haps[h].hap).join(', ') + (hs.length > 8 ? ` ほか ${hs.length - 8}` : ''))
   el.innerHTML = `<div style="color:#555;margin-bottom:2px">表示範囲の${srcPres ? '遺伝子（参照の注釈を各株に写したもの）' : '遺伝子群'}のうち、株によって有無・コピー数が違うもの ${rowsG.length} 個（違いの大きい順）</div>` +
