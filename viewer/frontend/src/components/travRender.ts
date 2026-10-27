@@ -667,13 +667,14 @@ function drawCore() {
     //    max(実 bp, 列幅 × 片が覆う座標の割合)（ブロックの一部が欠けた片も列の幅を保つ＝後ろがずれない）
     //  ・順が戻る片（逆位・転座・重複）＝直前の片のすぐ右に詰める（空きを作らない。そのぶん後ろは右へずれるが、全長は欠失の無い株と同程度）
     const colW = new Float64Array(blocks.length); for (const d of deferred) for (const q of d.raw) colW[q.blk] = Math.max(colW[q.blk], q.wbp)
-    const gapBp = colW.reduce((a, b) => a + b, 0) * 0.004
     const placed = deferred.map(d => { let cur = 0, lastPid = -1, lastCol = -1; const xs: number[] = []; const have = new Set(d.raw.map(q => q.blk))
       for (const q of d.raw) {
-        if (lastPid >= 0 && q.tr.pid !== lastPid) cur += gapBp
+        // コンティグの変わり目に隙間は足さない（10-27: 0.4% の隙間で後ろのブロックが右に少しずれた。変わり目は片の端の三角で分かる）
         lastPid = q.tr.pid; const b = blocks[q.blk]
         if (q.blk > lastCol) { for (let k = lastCol + 1; k < q.blk; k++) if (!have.has(k)) cur += colW[k]
-          const cov = Math.max(0, Math.min(1, (q.c1 + 1 - q.c0) / Math.max(1, b.x1 + 1 - b.x0))); xs.push(cur); cur += Math.max(q.wbp, colW[q.blk] * cov); lastCol = q.blk }
+          // ブロックの途中から始まる片（欠失がブロックの途中まで掛かる）は、列の中の位置（始まりの割合 × 列幅）から置き、占める幅も残りの割合だけにする
+          const Lb = Math.max(1, b.x1 + 1 - b.x0); const fr = Math.max(0, Math.min(1, (q.c0 - b.x0) / Lb)); const cov = Math.max(0, Math.min(1 - fr, (q.c1 + 1 - q.c0) / Lb))
+          const x = cur + fr * colW[q.blk]; xs.push(x); cur = x + Math.max(q.wbp, colW[q.blk] * cov); lastCol = q.blk }
         else { xs.push(cur); cur += q.wbp } }
       return { d, xs, end: cur } })
     const scale = (W - LAB) / Math.max(1, ...placed.map(p => p.end))
@@ -710,7 +711,7 @@ function drawCore() {
       const fwd = ps[0].fwd; const yy = y + 2, hh = BLK
       if (!ps[0].inv) { g.fillStyle = 'rgba(255,255,255,.95)'; g.beginPath(); if (fwd) { g.moveTo(hi - 6, yy); g.lineTo(hi - 1, yy + hh / 2); g.lineTo(hi - 6, yy + hh) } else { g.moveTo(lo + 6, yy); g.lineTo(lo + 1, yy + hh / 2); g.lineTo(lo + 6, yy + hh) } g.fill() }
       if ((r.k || 1) >= 2 && hi - lo > 18 && !(useCols && cols)) { g.fillStyle = '#fff'; g.font = 'bold 9px system-ui'; const t = '×' + r.k; const tw = g.measureText(t).width; g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(lo + (hi - lo) / 2 - tw / 2 - 2, y + 1, tw + 4, 9); g.fillStyle = '#fff'; g.fillText(t, lo + (hi - lo) / 2 - tw / 2, y + 9) }   // 繰り返し通過の回数
-      else if (r.copy >= 1 && hi - lo > 40) { g.fillStyle = '#7a3b00'; g.font = '9px system-ui'; g.fillText('·' + r.copy, lo + 2, y + 9) }
+      // コピー番号（·n）の表示はやめた（10-27: 判定がゆるく、小さな断片が重なるだけで付いた。薄塗りと同じ理由）
     }
     if (genesByTr.size) {   // 遺伝子レーン: 片の下。種類 × 向きの色、重なりは段に分ける、三角＝向き、幅があれば名前
       const mine: Gene[] = []; for (const p of pcs) for (const gn of (genesByTr.get(p.tr.id) || [])) if (gn.x1 >= p.c0 && gn.x0 <= p.c1) mine.push(gn)
