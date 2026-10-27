@@ -882,7 +882,8 @@ cv.addEventListener('mousedown', e => {
     bDrag = { x: e.offsetX, sx: base.sx, moved: false }; return
   }
   const inRows = ($('mode') as HTMLSelectElement).value === 'rows'
-  if (e.offsetX > LAB && (!inRows || e.offsetY < TOP)) { drag = [e.offsetX, e.offsetX]; return }
+  if (e.offsetX > LAB && e.offsetY < TOP) { drag = [e.offsetX, e.offsetX]; return }   // 範囲指定はスケールバー（上段）で始めたときだけ（10-27）
+  void inRows
   if (root && e.offsetX >= TREEW && e.offsetX < LAB && e.offsetY >= TOP) { const k = rowAt(e.offsetY); if (k >= 0 && k < hapOrder.length) cb.onSelectHap?.(root.haps[hapOrder[k]].hap) }   // 行ラベル → 主画面のパス群の選択
 })
 cv.addEventListener('mousemove', e => {
@@ -923,9 +924,10 @@ cv.addEventListener('mousemove', e => {
   }
   tip.textContent = lines.join('\n')
 })
-const onWinUp = () => {
+const onWinUp = (e: MouseEvent) => {
   if (bDrag) { bDrag = null; return }
   if (!drag) return; const [a, b] = [Math.min(...drag), Math.max(...drag)]; drag = null; og.clearRect(0, 0, ov.width, ov.height)
+  { const r = cv.getBoundingClientRect(); const y = e.clientY - r.top, x = e.clientX - r.left; if (y < 0 || y >= TOP || x < LAB || x > r.width) return }   // スケールバーの外で離したら取り消し（10-27）
   if (b - a < 4) { if (base) { const k = baseItemAt(a - LAB + base.sx); if (k != null && base.items[k].kind === 'col') { const ci = (base.items[k] as any).ci as number; const i = base.sortCi.indexOf(ci); if (i >= 0) base.sortCi.splice(i, 1); else base.sortCi.push(ci); draw() } else if (k != null) { const it = base.items[k] as any; const ci = it.ci0 as number; const i = base.sortCi.indexOf(ci); if (i >= 0) base.sortCi.splice(i, 1); else base.sortCi.push(ci); draw() } } return }
   if (base) { const k0 = baseItemAt(a - LAB + base.sx), k1 = baseItemAt(b - LAB + base.sx); if (k0 == null || k1 == null) return; const i0 = base.items[k0].kind === 'col' ? (base.items[k0] as any).ci : (base.items[k0] as any).ci0, i1 = base.items[k1].kind === 'col' ? (base.items[k1] as any).ci : (base.items[k1] as any).ci1; baseZoomToCols(i0, i1); return }
   hist.push(view); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; userMoved = true; draw(); loadRange() }; window.addEventListener('mouseup', onWinUp)
