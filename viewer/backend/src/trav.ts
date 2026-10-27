@@ -346,7 +346,14 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
       let ch: [string, number, number][] | undefined; let nodesOut: any
       if (rows.length <= 400 && n <= 5000) {
         const L = Math.max(1, g.e0 - g.s0); const span2 = gx1 - gx0; const rev = r.dir < 0
-        const toX = (tok: number) => { const f = Math.max(0, Math.min(1, (tok - g.s0) / L)); return rev ? gx1 - f * span2 : gx0 + f * span2 }
+        // 子の位置は、遺伝子のトークンを読んで各トークンの錨の座標（錨でなければ直前の錨、前に無ければ次の錨）で引く（10-27: トークン数の比例だと、
+        // 株固有の挿入・欠失のある遺伝子でエキソンが別の座標に描かれ、欠失した株の空白の中にエキソンが出た。FAM227A の 5.6 kb の挿入）
+        const propX = (tok: number) => { const f = Math.max(0, Math.min(1, (tok - g.s0) / L)); return rev ? gx1 - f * span2 : gx0 + f * span2 }
+        let xAt: Float64Array | null = null
+        if (L <= 200000) { const tk = dist.read(pi, g.s0, g.e0); xAt = new Float64Array(tk.length).fill(-1); let last = -1
+          for (let k = 0; k < tk.length; k++) { const d = tk[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) last = X[d]; xAt[k] = last }
+          let nxt = -1; for (let k = tk.length - 1; k >= 0; k--) { if (xAt[k] >= 0 && (k === 0 || xAt[k] !== xAt[k - 1] || nxt < 0)) { /* keep */ } if (xAt[k] < 0) xAt[k] = nxt; else nxt = xAt[k] } }
+        const toX = (tok: number) => { if (xAt) { const k = Math.max(0, Math.min(xAt.length - 1, tok - g.s0)); if (xAt[k] >= 0) return xAt[k] } return propX(tok) }
         const per = new Map<string, [number, number][]>()
         const chs = qch.all(g.gid) as { type: string; phase: string; strand: string; parent: number | null; start: number; end: number; s0: number; e0: number; so: number; eo: number }[]
         for (const c of chs) { const kind = /cds/i.test(c.type) ? 'cds' : /utr/i.test(c.type) ? 'utr' : 'exon'; const a = toX(c.s0), b = toX(c.e0); const lo = Math.round(Math.min(a, b)), hi = Math.round(Math.max(a, b)); if (!per.has(kind)) per.set(kind, []); per.get(kind)!.push([lo, hi]) }
