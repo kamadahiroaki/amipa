@@ -662,13 +662,21 @@ function drawCore() {
     piecesOf.set(hid, pcs)
   }
   if (deferred.length) {
-    const scale = (W - LAB) / Math.max(1, ...deferred.map(d => d.span))
-    for (const d of deferred) { let cum = 0, lastPid = -1
+    // ブロックの列に揃える（10-27）: 並びは各株のコンティグ上の順のまま、各片は「自分のブロックの列の位置」と「直前の片の右端」の右側に置く。
+    // 列の幅＝そのブロックの片の最大 bp。合意の順どおりの株は列に揃い（欠失＝列が空く、後ろはずれない）、逆位・転座・重複で順が戻る片は
+    // 直前の片のすぐ右に置かれるので、順の違いはその株の並びとリボンの交差で見える
+    const colW = new Float64Array(blocks.length); for (const d of deferred) for (const q of d.raw) colW[q.blk] = Math.max(colW[q.blk], q.wbp)
+    const colX = new Float64Array(blocks.length + 1); for (let i = 0; i < blocks.length; i++) colX[i + 1] = colX[i] + colW[i]
+    const gapBp = colX[blocks.length] * 0.004
+    const placed = deferred.map(d => { let cur = 0, lastPid = -1; const xs: number[] = []
       for (const q of d.raw) {
-        if (lastPid >= 0 && q.tr.pid !== lastPid) cum += d.gapBp
-        lastPid = q.tr.pid; const px0 = LAB + cum * scale; cum += q.wbp; const px1 = LAB + cum * scale
-        d.pcs.push({ blk: q.blk, px0, px1, tr: q.tr, inv: d.inv.has(q.tr), disp: d.disp.has(q.tr), fwd: q.fwd, c0: q.c0, c1: q.c1 })
-      } }
+        if (lastPid >= 0 && q.tr.pid !== lastPid) cur += gapBp
+        lastPid = q.tr.pid; const b = blocks[q.blk]; const fr = Math.max(0, Math.min(1, (q.c0 - b.x0) / Math.max(1, b.x1 + 1 - b.x0)))
+        const want = colX[q.blk] + fr * colW[q.blk]; const x = Math.max(cur, want); xs.push(x); cur = x + q.wbp }
+      return { d, xs, end: cur } })
+    const scale = (W - LAB) / Math.max(1, ...placed.map(p => p.end))
+    for (const { d, xs } of placed) d.raw.forEach((q, i) => { const px0 = LAB + xs[i] * scale, px1 = LAB + (xs[i] + q.wbp) * scale
+      d.pcs.push({ blk: q.blk, px0, px1, tr: q.tr, inv: d.inv.has(q.tr), disp: d.disp.has(q.tr), fwd: q.fwd, c0: q.c0, c1: q.c1 }) })
   }
   lastPieces = piecesOf
   const genesByTr = new Map<number, Gene[]>(); if (genes.length && showGenes()) for (const gn of genes) { if (!genesByTr.has(gn.tr)) genesByTr.set(gn.tr, []); genesByTr.get(gn.tr)!.push(gn) }
@@ -767,6 +775,7 @@ function drawLines(mode: string, W: number) {
       const A = lastPieces.get(hapOrder[k]) || [], B = lastPieces.get(hapOrder[k + 1]) || []; const yA = rowTop[k] + 2 + BLK, yB = rowTop[k + 1] + 2
       for (const pa of A) for (const pb of B) {
         if (pa.blk !== pb.blk) continue
+        if (Math.abs(pa.px1 - pa.px0) < 2 || Math.abs(pb.px1 - pb.px0) < 2) continue   // ほぼ丸ごと欠けた片（幅 2 px 未満）には結ばない（一点に集まる三角になった）
         const lo = Math.max(pa.c0, pb.c0), hi = Math.min(pa.c1, pb.c1); if (hi < lo) continue
         const runs: [number, number][] = []   // 両方が錨を持つ列の連なり（錨の列が無ければ区間全体）。短い切れ目（3 列以下）は繋ぐ
         if (C3) { const Wc = C3.x1 - C3.x0 + 1; const k0 = Math.max(0, colOfX(lo)), k1 = Math.min(C3.ncol - 1, colOfX(hi)); let r0 = -1, miss = 0
