@@ -679,16 +679,41 @@ function drawCore() {
         if (lo > 0) prev[i] = tailIdx[lo - 1]; tails[lo] = bs[i]; tailIdx[lo] = i }
       const out = new Set<number>(); let k = tails.length ? tailIdx[tails.length - 1] : -1; while (k >= 0) { out.add(k); k = prev[k] } return out }
     const placed = deferred.map(d => { let cur = 0, lastPid = -1, lastCol = -1, blkStart = 0; const xs: number[] = []; const have = new Set(d.raw.map(q => q.blk)); const inLis = lisOf(d.raw.map(q => q.blk)); let qi = -1
+      // 局所的な並べ替え（10-27）: 片の並びを「ここより前のブロック番号の最大 < ここから後の最小」の所で区切り（区間に分けると整列できる最小単位）、
+      // 区間の中が入れ替わっていて、その範囲が 8 ブロック以下なら、空きを作らずその場で並びだけ変える（区間の列幅の合計の中に、株の順で詰める）
+      const bl = d.raw.map(q => q.blk); try { const w = window as any; w.__travSeq = w.__travSeq || {}; w.__travSeq[root!.haps[d.hid].hap] = d.raw.map(q => [q.blk, q.tr.pid, Math.round(q.wbp)]); w.__travColW = Array.from(colW) } catch { /* 試験用 */ }
+      // 遠い外れ片（LIS に入らず、直前の LIS の片のブロックから 8 ブロック超離れた片＝転座・環状の起点など）は区切りの計算から除く（入れると全体が 1 区間になり局所の入れ替えが見つからない）
+      const far = new Uint8Array(bl.length); { let prevL = -1; for (let k = 0; k < bl.length; k++) { if (inLis.has(k)) { prevL = bl[k]; continue } if (prevL < 0 || Math.abs(bl[k] - prevL) > 8) far[k] = 1 } }
+      const idx = bl.map((_, k) => k).filter(k => !far[k]); const sufMin = new Array<number>(idx.length + 1).fill(Infinity); for (let k = idx.length - 1; k >= 0; k--) sufMin[k] = Math.min(sufMin[k + 1], bl[idx[k]])
+      const localEnd = new Int32Array(bl.length).fill(-1); { let st = 0, mx = -1; for (let k = 0; k < idx.length; k++) { mx = Math.max(mx, bl[idx[k]]); if (mx < sufMin[k + 1] || k === idx.length - 1) {
+        let lo = Infinity; let sorted = true; for (let j = st; j <= k; j++) { lo = Math.min(lo, bl[idx[j]]); if (j > st && bl[idx[j]] < bl[idx[j - 1]]) sorted = false }
+        const contiguous = idx[k] - idx[st] === k - st   // 区間の中に遠い外れ片が挟まっていない
+        if (!sorted && k > st && mx - lo <= 8 && contiguous) localEnd[idx[st]] = idx[k]; st = k + 1; mx = -1 } } }
+      // ブロックの中の始まりの位置: ブロックの先頭から片の始まりまでのうち、この株のどの片にも覆われない長さ（＝欠失）だけ。別のコンティグの片が覆う部分は空けない
+      // （10-27: コンティグの順でブロックの後半が先に来た株で、ブロックの前半の分の空白ができた。HG03492#1 のブロック 9）
+      const ivByBlk = new Map<number, [number, number][]>(); for (const q of d.raw) { if (!ivByBlk.has(q.blk)) ivByBlk.set(q.blk, []); ivByBlk.get(q.blk)!.push([q.c0, q.c1 + 1]) }
+      const uncoveredBefore = (k: number): number => { const q = d.raw[k]; const b = blocks[q.blk]; const a0 = b.x0, a1 = q.c0; if (a1 <= a0) return 0
+        const iv = (ivByBlk.get(q.blk) || []).map(([u, v]) => [Math.max(u, a0), Math.min(v, a1)] as [number, number]).filter(([u, v]) => v > u).sort((x, y) => x[0] - y[0]); let cov = 0, e = a0
+        for (const [u, v] of iv) { if (v <= e) continue; cov += v - Math.max(u, e); e = v } return (a1 - a0) - cov }
+      let skipTo = -1
       for (const q of d.raw) { qi++
+        if (qi <= skipTo) continue
+        if (localEnd[qi] >= 0) { const e = localEnd[qi]; let lo = Infinity, hi = -1; for (let j = qi; j <= e; j++) { lo = Math.min(lo, bl[j]); hi = Math.max(hi, bl[j]) }
+          for (let k = lastCol + 1; k < lo; k++) if (!have.has(k)) cur += colW[k]
+          let span = 0; for (let k = Math.max(lo, lastCol + 1); k <= hi; k++) if (have.has(k)) span += colW[k];   // 直前までに置いた列（lastCol 以下）は数えない（二重に空いた）
+           let sum = 0; const x0 = cur
+          for (let j = qi; j <= e; j++) { xs.push(x0 + sum); sum += d.raw[j].wbp }
+          cur = x0 + Math.max(sum, span); lastCol = hi; blkStart = cur; lastPid = d.raw[e].tr.pid; skipTo = e; continue }
         // コンティグの変わり目に隙間は足さない（10-27: 0.4% の隙間で後ろのブロックが右に少しずれた。変わり目は片の端の三角で分かる）
         lastPid = q.tr.pid; const b = blocks[q.blk]
         if (inLis.has(qi) && q.blk >= lastCol) {
           if (q.blk > lastCol) { for (let k = lastCol + 1; k < q.blk; k++) if (!have.has(k)) cur += colW[k]; blkStart = cur }
           // ブロックの途中から始まる片（欠失がブロックの途中まで掛かる、1 つのブロックを複数の通過が分けて持つ）は、列の中の位置（始まりの割合 × 列幅）から置き、
           // 占める幅も覆う割合だけにする（10-27: 同じブロックの 2 本目以降を詰めて足していたので、全ゲノムで行が列の合計の 1.6 倍に伸びた）
-          const Lb = Math.max(1, b.x1 + 1 - b.x0); const fr = Math.max(0, Math.min(1, (q.c0 - b.x0) / Lb)); const cov = Math.max(0, Math.min(1 - fr, (q.c1 + 1 - q.c0) / Lb))
+          const Lb = Math.max(1, b.x1 + 1 - b.x0); const fr = Math.max(0, Math.min(1, uncoveredBefore(qi) / Lb)); const cov = Math.max(0, Math.min(1 - fr, (q.c1 + 1 - q.c0) / Lb))
           const x = Math.max(cur, blkStart + fr * colW[q.blk]); xs.push(x); cur = x + Math.max(q.wbp, colW[q.blk] * cov); lastCol = q.blk }
         else { xs.push(cur); cur += q.wbp } }
+      try { const w = window as any; w.__travXs = w.__travXs || {}; w.__travXs[root!.haps[d.hid].hap] = xs.map(Math.round) } catch { /* 試験用 */ }
       return { d, xs, end: cur } })
     const scale = (W - LAB) / Math.max(1, ...placed.map(p => p.end))
     { const cp = new Float64Array(blocks.length + 1); let acc = 0; for (let i = 0; i < blocks.length; i++) { cp[i] = LAB + acc * scale; acc += colW[i] } cp[blocks.length] = LAB + acc * scale
