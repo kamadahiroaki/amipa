@@ -516,14 +516,21 @@ function treeOrder(): number[] {
   const H = root.haps.length, nb = blocks.length
   const ids = baseOrder.slice(); const n = ids.length; const D: number[][] = Array.from({ length: n }, () => new Array(n).fill(0))
   if (base) {   // 塩基の段: 変異のある列（行で塩基が違う列）の塩基の不一致率（ハミング）。株の代表は最初の行。両方が塩基を持つ列だけ数える
-    const B = base; const vcols: number[] = []; for (let c = 0; c < B.cols.length; c++) if (B.cols[c].variant) vcols.push(c)
-    const seqOf = (hid: number): string | null => { const ms = B.rowsOf.get(hid); return ms && ms.length ? (B.norm[ms[0]] || B.rows[ms[0]].seq) : null }
-    const seqs = ids.map(seqOf)
-    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const a = seqs[i], b = seqs[j]; if (!a || !b) { D[i][j] = D[j][i] = 1; continue } let diff = 0, both = 0
-      for (const c of vcols) { const x = a[c], y = b[c]; if (!x || !y || x === '-' || y === '-' || x === '.' || y === '.' || x === '~' || y === '~') continue; both++; if (x !== y) diff++ } D[i][j] = D[j][i] = both ? diff / both : 1 }
+    // 向き（10-27）: 逆向きに通った列（inv）も「塩基が違う」と同じく 1 列として数える（逆位の株どうしがまとまるように）。対象の列＝変異のある列 ∪ どれかの行が逆向きの列
+    const B = base; const anyInv = new Uint8Array(B.cols.length); for (const st of B.inv) for (const c of st) anyInv[c] = 1
+    const vcols: number[] = []; for (let c = 0; c < B.cols.length; c++) if (B.cols[c].variant || anyInv[c]) vcols.push(c)
+    const miOf = (hid: number): number => { const ms = B.rowsOf.get(hid); return ms && ms.length ? ms[0] : -1 }
+    const mis = ids.map(miOf)
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const mi = mis[i], mj = mis[j]; if (mi < 0 || mj < 0) { D[i][j] = D[j][i] = 1; continue }
+      const a = B.norm[mi] || B.rows[mi].seq, b = B.norm[mj] || B.rows[mj].seq, ia = B.inv[mi], ib = B.inv[mj]; let diff = 0, both = 0
+      for (const c of vcols) { const x = a[c], y = b[c]; if (!x || !y || x === '-' || y === '-' || x === '.' || y === '.' || x === '~' || y === '~') continue; both++; if (x !== y || ia.has(c) !== ib.has(c)) diff++ } D[i][j] = D[j][i] = both ? diff / both : 1 }
   } else if (cols && wantCols()) {   // 錨の列の段: ハプロタイプごとの列のアレル番号（複数の通過は先のもの）。距離＝両方が持つ列のうちアレルが違う列の割合
-    const C = cols; const st = new Int16Array(H * C.ncol).fill(-1)
-    for (const r of C.rows) { const base = r.hid * C.ncol; for (let c = 0; c < C.ncol; c++) { const k = r.cls[c]; if (k !== 255 && st[base + c] < 0) st[base + c] = k } }
+    // 向き（10-27）: 列の状態＝アレル番号 ＋ 向き（その通過がコンティグの主な向きと逆なら +1000）。同じ株の複数の通過は、その列の錨が多い方を採る
+    // （以前は先の通過。逆位の片と両側の通過が同じ列に掛かると、錨の無い両側の方を拾って逆位が消えた）
+    const C = cols; const st = new Int16Array(H * C.ncol).fill(-1); const bestP = new Uint8Array(H * C.ncol)
+    const domC = new Map<number, number>(); for (const r of rows) domC.set(r.pid, (domC.get(r.pid) || 0) + r.dir * r.nanch)
+    for (const r of C.rows) { const base = r.hid * C.ncol; const invd = ((domC.get(r.pid) ?? r.dir) >= 0 ? 1 : -1) !== (r.dir >= 0 ? 1 : -1)
+      for (let c = 0; c < C.ncol; c++) { const k = r.cls[c]; if (k === 255) continue; if (st[base + c] < 0 || r.pres[c] > bestP[base + c]) { st[base + c] = k + (invd ? 1000 : 0); bestP[base + c] = r.pres[c] } } }
     for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { let diff = 0, both = 0; const bi = ids[i] * C.ncol, bj = ids[j] * C.ncol; for (let c = 0; c < C.ncol; c++) { const a = st[bi + c], b = st[bj + c]; if (a >= 0 && b >= 0) { both++; if (a !== b) diff++ } } D[i][j] = D[j][i] = both ? diff / both : 1 }
   } else {   // ブロックの段: ブロックごとの状態（無し/順/逆/両方）の bp 重み不一致率
     const state = new Uint8Array(H * nb)
