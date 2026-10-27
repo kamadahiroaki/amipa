@@ -666,7 +666,9 @@ function drawCore() {
     //  ・合意の順に進む片（直前に進んだブロックより後ろ）＝その間の「この株がどこにも持たないブロック」の列幅だけ空けてから置き、片が占める幅は
     //    max(実 bp, 列幅 × 片が覆う座標の割合)（ブロックの一部が欠けた片も列の幅を保つ＝後ろがずれない）
     //  ・順が戻る片（逆位・転座・重複）＝直前の片のすぐ右に詰める（空きを作らない。そのぶん後ろは右へずれるが、全長は欠失の無い株と同程度）
-    const colW = new Float64Array(blocks.length); for (const d of deferred) for (const q of d.raw) colW[q.blk] = Math.max(colW[q.blk], q.wbp)
+    // 列の幅＝そのブロックの片の bp の中央値（10-27: 最大だと、一部の株だけが長い挿入を持つブロックで他の全株に大きな空白ができた。長い片は列からはみ出し、後ろが右へずれる）
+    const colW = new Float64Array(blocks.length); { const per: number[][] = blocks.map(() => []); for (const d of deferred) for (const q of d.raw) per[q.blk].push(q.wbp)
+      per.forEach((a, i) => { if (!a.length) return; a.sort((u, v) => u - v); colW[i] = a[a.length >> 1] }) }
     const placed = deferred.map(d => { let cur = 0, lastPid = -1, lastCol = -1; const xs: number[] = []; const have = new Set(d.raw.map(q => q.blk))
       for (const q of d.raw) {
         // コンティグの変わり目に隙間は足さない（10-27: 0.4% の隙間で後ろのブロックが右に少しずれた。変わり目は片の端の三角で分かる）
