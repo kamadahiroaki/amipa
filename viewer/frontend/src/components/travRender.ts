@@ -684,7 +684,7 @@ function drawCore() {
       // 片の中は合意の向きに明→暗。画面上で左が合意の先頭なら明→暗、逆（逆位・逆鎖）なら暗→明
       if (useCols && cols) {   // 錨の列の段: 片の中を列のセルで塗り、ブロックの色は下辺 2 px に残す。同じ場所を k 回通る片は各回を小行に（コンティグ上の順）
         const mem = (p.tr.members && p.tr.members.length > 1) ? p.tr.members.slice().sort((a, b) => a.i0 - b.i0) : [p.tr]; const kAll = passK.get(hid) || 1
-        g.fillStyle = '#fff'; g.fillRect(px0, yy, w, hh + (kAll - 1) * (BLK + 1) - 2); g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, 1)`; g.fillRect(px0, yy + hh + (kAll - 1) * (BLK + 1) - 2, w, 2)
+        g.fillStyle = '#fff'; g.fillRect(px0, yy, w, hh + (kAll - 1) * (BLK + 1) - 2); g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, 1)`; g.fillRect(px0, yy + hh + (kAll - 1) * (BLK + 1) - 3, w, 3)
         const C2 = cols; mem.forEach((mtr, j) => { const cr = C2.byId.get(mtr.id); const y2 = yy + j * (BLK + 1); if (cr) drawCells(cr, p, px0, px1, y2, hh - 2, mode); if (mem.length > 1 && w > 14) { g.fillStyle = 'rgba(0,0,0,.55)'; g.font = 'bold 8px system-ui'; g.fillText('·' + (j + 1), px0 + 2, y2 + 7) } })
       } else { g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, 1)`; g.fillRect(px0, yy, w, hh)   // コピーの薄塗りはやめた（10-27: 小さな断片が重なるだけで通過全体が薄くなり意味が無かった）
         if (cols) { const cr = cols.byId.get(p.tr.id); if (cr) drawGaps(cr, p, px0, px1, yy, hh, mode) } }   // 欠失（錨の無い連なり）を白い切れ目で
@@ -852,8 +852,8 @@ function drawCells(cr: ColRow, p: Piece, px0: number, px1: number, yy: number, h
     else { const fa = (xa - p.c0) / span, fb = (xb - p.c0) / span; const L = p.px1 - p.px0; if (p.fwd) { pa = p.px0 + fa * L; pb = p.px0 + fb * L } else { pa = p.px0 + (1 - fb) * L; pb = p.px0 + (1 - fa) * L } }
     const a = Math.max(px0, Math.min(pa, pb)), b = Math.min(px1, Math.max(pa, pb)); if (b < a) continue; const wc = Math.max(1, b - a)
     // 粗い段: 多数派＝灰、この行だけのアレル＝ごく薄い灰（ヒトの数 kb の列は全行が別アレルになり、番号の色では真っ赤になる）、2 行以上が共有する少数派＝持つ行の割合の色
-    let fill = CLS_COL[Math.min(k, CLS_COL.length - 1)]
-    if (k > 0 && coarse && cr.frq.length) { const nr = Math.max(1, C.nrow[c]); const cnt = Math.round(cr.frq[c] / 255 * nr); fill = cnt <= 1 ? '#ececec' : shareColor(cnt, nr) }
+    let fill = k === 0 ? `hsl(${hue(p.blk)}, 45%, 78%)` : CLS_COL[Math.min(k, CLS_COL.length - 1)]   // 多数派＝ブロックの色の淡色（10-27: 灰だとブロックの順が読めなかった）
+    if (k > 0 && coarse && cr.frq.length) { const nr = Math.max(1, C.nrow[c]); const cnt = Math.round(cr.frq[c] / 255 * nr); fill = cnt <= 1 ? '#f4f4f4' : shareColor(cnt, nr) }
     g.globalAlpha = 0.3 + 0.7 * (cr.pres[c] / 255); g.fillStyle = fill; g.fillRect(a, yy, wc, hh); g.globalAlpha = 1
     const ins = cr.ins[c]; if (ins > 0) { const ih = Math.min(hh, 1 + 1.5 * Math.log10(1 + ins)); g.fillStyle = 'rgba(20,20,20,.85)'; g.fillRect(a, yy, wc, ih) }
   }
