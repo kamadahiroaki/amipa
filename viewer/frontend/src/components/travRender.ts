@@ -662,17 +662,19 @@ function drawCore() {
     piecesOf.set(hid, pcs)
   }
   if (deferred.length) {
-    // ブロックの列に揃える（10-27）: 並びは各株のコンティグ上の順のまま、各片は「自分のブロックの列の位置」と「直前の片の右端」の右側に置く。
-    // 列の幅＝そのブロックの片の最大 bp。合意の順どおりの株は列に揃い（欠失＝列が空く、後ろはずれない）、逆位・転座・重複で順が戻る片は
-    // 直前の片のすぐ右に置かれるので、順の違いはその株の並びとリボンの交差で見える
+    // ブロックの列に揃える（10-27 改）: 並びは各株のコンティグ上の順のまま。空ける場所は欠失だけにする:
+    //  ・合意の順に進む片（直前に進んだブロックより後ろ）＝その間の「この株がどこにも持たないブロック」の列幅だけ空けてから置き、片が占める幅は
+    //    max(実 bp, 列幅 × 片が覆う座標の割合)（ブロックの一部が欠けた片も列の幅を保つ＝後ろがずれない）
+    //  ・順が戻る片（逆位・転座・重複）＝直前の片のすぐ右に詰める（空きを作らない。そのぶん後ろは右へずれるが、全長は欠失の無い株と同程度）
     const colW = new Float64Array(blocks.length); for (const d of deferred) for (const q of d.raw) colW[q.blk] = Math.max(colW[q.blk], q.wbp)
-    const colX = new Float64Array(blocks.length + 1); for (let i = 0; i < blocks.length; i++) colX[i + 1] = colX[i] + colW[i]
-    const gapBp = colX[blocks.length] * 0.004
-    const placed = deferred.map(d => { let cur = 0, lastPid = -1; const xs: number[] = []
+    const gapBp = colW.reduce((a, b) => a + b, 0) * 0.004
+    const placed = deferred.map(d => { let cur = 0, lastPid = -1, lastCol = -1; const xs: number[] = []; const have = new Set(d.raw.map(q => q.blk))
       for (const q of d.raw) {
         if (lastPid >= 0 && q.tr.pid !== lastPid) cur += gapBp
-        lastPid = q.tr.pid; const b = blocks[q.blk]; const fr = Math.max(0, Math.min(1, (q.c0 - b.x0) / Math.max(1, b.x1 + 1 - b.x0)))
-        const want = colX[q.blk] + fr * colW[q.blk]; const x = Math.max(cur, want); xs.push(x); cur = x + q.wbp }
+        lastPid = q.tr.pid; const b = blocks[q.blk]
+        if (q.blk > lastCol) { for (let k = lastCol + 1; k < q.blk; k++) if (!have.has(k)) cur += colW[k]
+          const cov = Math.max(0, Math.min(1, (q.c1 + 1 - q.c0) / Math.max(1, b.x1 + 1 - b.x0))); xs.push(cur); cur += Math.max(q.wbp, colW[q.blk] * cov); lastCol = q.blk }
+        else { xs.push(cur); cur += q.wbp } }
       return { d, xs, end: cur } })
     const scale = (W - LAB) / Math.max(1, ...placed.map(p => p.end))
     for (const { d, xs } of placed) d.raw.forEach((q, i) => { const px0 = LAB + xs[i] * scale, px1 = LAB + (xs[i] + q.wbp) * scale
