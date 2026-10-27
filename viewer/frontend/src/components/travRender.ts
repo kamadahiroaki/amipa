@@ -564,6 +564,7 @@ function treeOrder(): number[] {
 
 // ---- 描画 ----
 type Piece = { blk: number; px0: number; px1: number; tr: Trav; inv: boolean; disp: boolean; fwd: boolean; c0: number; c1: number }
+let rowColPx: Float64Array | null = null   // 各行の並びの列の画面位置（上段の描画用）
 let lastPieces = new Map<number, Piece[]>(); let mrowsByHap = new Map<number, Trav[]>()   // 表示用（繰り返し通過をまとめた通過）
 let ogHits: { o: OGroup; pa: number; pb: number }[] = []   // 見出しの遺伝子トラックの当たり
 function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
@@ -583,13 +584,14 @@ function drawCore() {
   if (!root) return
   const [v0, v1] = view; const BB = TOP - (useCols ? 30 : 12) - (ogOn ? OGH + 2 : 0)   // ブロックの帯の底（錨の列の帯・遺伝子トラックを出すときはその上）
   // 上段: ブロック（色は番号、高さは通るハプロタイプの割合）、×n の赤い帯、もつれの縦縞、境界（支持と持続度）
-  for (const b of blocks) {
-    const px0 = Math.max(LAB, X(b.x0)), px1 = Math.min(W, X(b.x1 + 1)); const h = 8 + 30 * Math.min(1, b.nhap / root.H)
+  const rcp = (mode === 'rows' && rowColPx && rowColPx.length === blocks.length + 1) ? rowColPx : null   // 各行の並び: 上段のブロックを行の列の位置に描く（行と上段の幅を揃える）
+  const RT = root; blocks.forEach((b, bi) => {
+    const px0 = rcp ? rcp[bi] : Math.max(LAB, X(b.x0)), px1 = rcp ? Math.max(rcp[bi] + 1, rcp[bi + 1]) : Math.min(W, X(b.x1 + 1)); const h = 8 + 30 * Math.min(1, b.nhap / RT.H)
     g.fillStyle = `hsla(${hue(b.id)}, 70%, 50%, .85)`; g.fillRect(px0, BB - h, Math.max(1, px1 - px0), h); g.strokeStyle = 'rgba(0,0,0,.5)'; g.lineWidth = 1; g.strokeRect(px0 + .5, BB - h + .5, Math.max(1, px1 - px0) - 1, h - 1)
     if (b.nhap2 > 0) { g.fillStyle = 'rgba(192,57,43,.9)'; g.fillRect(px0, BB, Math.max(1, px1 - px0), 3) }
     if (b.tangled) { g.fillStyle = 'rgba(120,120,120,.45)'; g.fillRect(px0, BB - h, Math.max(1, px1 - px0), h); if (px1 - px0 > 10) { g.fillStyle = '#fff'; g.font = 'bold 11px system-ui'; g.fillText('?', (px0 + px1) / 2 - 3, BB - h / 2 + 4) } }
-    if (px1 - px0 > 44) { g.fillStyle = '#333'; g.font = '10px system-ui'; g.fillText(`${fmtbp(b.bp)} ${b.nhap}/${root.H}${b.nhap2 ? ` ×${b.nhap2}` : ''}`, px0 + 2, BB - 2 - h) }
-  }
+    if (px1 - px0 > 44) { g.fillStyle = '#333'; g.font = '10px system-ui'; g.fillText(`${fmtbp(b.bp)} ${b.nhap}/${RT.H}${b.nhap2 ? ` ×${b.nhap2}` : ''}`, px0 + 2, BB - 2 - h) }
+  })
   if (useCols && cols) {   // 錨の列の帯: 列ごとのアレルの種類数（灰 1 種 → 橙 → 赤）、高さ＝その列に掛かる行の数
     const C = cols; const Wc = C.x1 - C.x0 + 1; const SY0 = TOP - 24 - (ogOn ? OGH + 2 : 0), SH = 10; let maxrow = 1; for (let c = 0; c < C.ncol; c++) if (C.nrow[c] > maxrow) maxrow = C.nrow[c]
     for (let c = 0; c < C.ncol; c++) {
@@ -667,7 +669,8 @@ function drawCore() {
     //    max(実 bp, 列幅 × 片が覆う座標の割合)（ブロックの一部が欠けた片も列の幅を保つ＝後ろがずれない）
     //  ・順が戻る片（逆位・転座・重複）＝直前の片のすぐ右に詰める（空きを作らない。そのぶん後ろは右へずれるが、全長は欠失の無い株と同程度）
     // 列の幅＝そのブロックの片の bp の中央値（10-27: 最大だと、一部の株だけが長い挿入を持つブロックで他の全株に大きな空白ができた。長い片は列からはみ出し、後ろが右へずれる）
-    const colW = new Float64Array(blocks.length); { const per: number[][] = blocks.map(() => []); for (const d of deferred) for (const q of d.raw) per[q.blk].push(q.wbp)
+    // 列の幅は「株ごとにそのブロックに持つ bp の合計」の中央値（10-27: 片ごとの中央値だと、1 ブロックを複数の通過で持つ株の片が小さく数えられ、列が狭すぎて行が上段の 1.5 倍に伸びた）
+    const colW = new Float64Array(blocks.length); { const per: number[][] = blocks.map(() => []); for (const d of deferred) { const sum = new Map<number, number>(); for (const q of d.raw) sum.set(q.blk, (sum.get(q.blk) || 0) + q.wbp); for (const [k, v] of sum) per[k].push(v) }
       per.forEach((a, i) => { if (!a.length) return; a.sort((u, v) => u - v); colW[i] = a[a.length >> 1] }) }
     // 合意の順に進む片＝その株の片の並びの中で、ブロック番号の最長非減少部分列（LIS）に入る片（10-27: 以前は「直前までの最大より後ろ」で、
     // 先頭近くに右端のブロックの片が 1 つあるだけで以降の全部が「戻る片」扱いになり、列に揃わず左に詰まった）
@@ -675,17 +678,21 @@ function drawCore() {
       for (let i = 0; i < bs.length; i++) { let lo = 0, hi = tails.length; while (lo < hi) { const m = (lo + hi) >> 1; if (tails[m] <= bs[i]) lo = m + 1; else hi = m }
         if (lo > 0) prev[i] = tailIdx[lo - 1]; tails[lo] = bs[i]; tailIdx[lo] = i }
       const out = new Set<number>(); let k = tails.length ? tailIdx[tails.length - 1] : -1; while (k >= 0) { out.add(k); k = prev[k] } return out }
-    const placed = deferred.map(d => { let cur = 0, lastPid = -1, lastCol = -1; const xs: number[] = []; const have = new Set(d.raw.map(q => q.blk)); const inLis = lisOf(d.raw.map(q => q.blk)); let qi = -1
+    const placed = deferred.map(d => { let cur = 0, lastPid = -1, lastCol = -1, blkStart = 0; const xs: number[] = []; const have = new Set(d.raw.map(q => q.blk)); const inLis = lisOf(d.raw.map(q => q.blk)); let qi = -1
       for (const q of d.raw) { qi++
         // コンティグの変わり目に隙間は足さない（10-27: 0.4% の隙間で後ろのブロックが右に少しずれた。変わり目は片の端の三角で分かる）
         lastPid = q.tr.pid; const b = blocks[q.blk]
-        if (inLis.has(qi) && q.blk > lastCol) { for (let k = lastCol + 1; k < q.blk; k++) if (!have.has(k)) cur += colW[k]
-          // ブロックの途中から始まる片（欠失がブロックの途中まで掛かる）は、列の中の位置（始まりの割合 × 列幅）から置き、占める幅も残りの割合だけにする
+        if (inLis.has(qi) && q.blk >= lastCol) {
+          if (q.blk > lastCol) { for (let k = lastCol + 1; k < q.blk; k++) if (!have.has(k)) cur += colW[k]; blkStart = cur }
+          // ブロックの途中から始まる片（欠失がブロックの途中まで掛かる、1 つのブロックを複数の通過が分けて持つ）は、列の中の位置（始まりの割合 × 列幅）から置き、
+          // 占める幅も覆う割合だけにする（10-27: 同じブロックの 2 本目以降を詰めて足していたので、全ゲノムで行が列の合計の 1.6 倍に伸びた）
           const Lb = Math.max(1, b.x1 + 1 - b.x0); const fr = Math.max(0, Math.min(1, (q.c0 - b.x0) / Lb)); const cov = Math.max(0, Math.min(1 - fr, (q.c1 + 1 - q.c0) / Lb))
-          const x = cur + fr * colW[q.blk]; xs.push(x); cur = x + Math.max(q.wbp, colW[q.blk] * cov); lastCol = q.blk }
+          const x = Math.max(cur, blkStart + fr * colW[q.blk]); xs.push(x); cur = x + Math.max(q.wbp, colW[q.blk] * cov); lastCol = q.blk }
         else { xs.push(cur); cur += q.wbp } }
       return { d, xs, end: cur } })
     const scale = (W - LAB) / Math.max(1, ...placed.map(p => p.end))
+    { const cp = new Float64Array(blocks.length + 1); let acc = 0; for (let i = 0; i < blocks.length; i++) { cp[i] = LAB + acc * scale; acc += colW[i] } cp[blocks.length] = LAB + acc * scale
+      const changed = !rowColPx || rowColPx.length !== cp.length || cp.some((v, i) => Math.abs(v - rowColPx![i]) > 0.5); rowColPx = cp; if (changed) requestAnimationFrame(() => draw()) }
     for (const { d, xs } of placed) d.raw.forEach((q, i) => { const px0 = LAB + xs[i] * scale, px1 = LAB + (xs[i] + q.wbp) * scale
       d.pcs.push({ blk: q.blk, px0, px1, tr: q.tr, inv: d.inv.has(q.tr), disp: d.disp.has(q.tr), fwd: q.fwd, c0: q.c0, c1: q.c1 }) })
   }
