@@ -1,6 +1,11 @@
+import path from 'path'
+import { getDbDir } from '../db'
+import { amipaScript } from '../pyenv'
+import { runScript } from '../pyRunner'
+import { distillFor } from './bubbleMsa'
 // 通過サイドカー `<db>.trav` の API（試作）。GET /api/trav/root?db  /api/trav/range?db&x0&x1[&min]  /api/trav/path?db&pid
 import { Router } from 'express'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene } from '../trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, genesPathOf } from '../trav'
 
 export const travRouter = Router()
 
@@ -82,4 +87,19 @@ travRouter.get('/trav/findgene', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travFindGene(t, String(q.q || ''), Math.max(1, Math.min(300, Number(q.limit) || 60)))) } catch (err) { res.status(500).json({ error: String(err) }) }
+})
+
+travRouter.get('/trav/genedensity', (req, res) => {
+  const q = req.query as Record<string, string>; if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travGeneDensity(t, Number(q.x0) || 0, Number(q.x1) || 1e12, Number(q.nbin) || 300, q.minanch != null ? Number(q.minanch) : 50)) } catch (err) { res.status(500).json({ error: String(err) }) }
+})
+// 機能喪失の目安（5）: 遺伝子（写しを含む）ごとに CDS を株の配列から組み立てて翻訳し、参照と比べる（scripts/gene_lof.py を常駐の python で）
+travRouter.post('/trav/genelof', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>; const db = typeof b.db === 'string' ? b.db : ''; const gids = Array.isArray(b.gids) ? (b.gids as unknown[]).filter(x => Number.isInteger(x)).slice(0, 5000) : []
+  if (!db || !gids.length) { res.status(400).json({ error: 'db と gids が要る' }); return }
+  const t = loadTrav(db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return }
+  const dbPath = path.join(getDbDir(), path.basename(db)); const distill = distillFor(dbPath); const gp = genesPathOf(t)
+  if (!distill || !gp) { res.json({ error: 'distill か .genes が無い' }); return }
+  runScript(amipaScript('gene_lof.py'), ['--db', dbPath, '--distill', distill, '--genes', gp], JSON.stringify({ gids }), 60000).then(r => {
+    if (!r.ok) { res.json({ error: '失敗: ' + r.err.slice(-300) }); return } try { res.json(JSON.parse(r.out)) } catch (e) { res.json({ error: String(e) }) } }).catch(e => res.json({ error: String(e?.message ?? e) }))
 })

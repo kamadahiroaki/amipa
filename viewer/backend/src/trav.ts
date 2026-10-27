@@ -295,6 +295,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
 
 // ---- 遺伝子レーン: 表示範囲に掛かる通過ごとに、その株の遺伝子（<db>.genes の gene × gene_tok）を座標 x に写す ----
 // 遺伝子の x は両端のトークン（各 256 個まで）の中の錨の x の最小・最大。錨が無い遺伝子（島の中など）は通過の中の位置から補間
+export function genesPathOf(t: Trav): string | null { const base = path.join(getDbDir(), path.basename(t.dbFile)); const cands = [base + '.genes']; try { cands.push(fs.realpathSync(base) + '.genes') } catch { /* ignore */ } return cands.find(c => { try { return fs.existsSync(c) } catch { return false } }) || null }
 function genesDbOf(t: Trav): Database.Database | null {
   if (t.genesDb !== undefined) return t.genesDb
   const base = path.join(getDbDir(), path.basename(t.dbFile)); const cands = [base + '.genes']
@@ -344,7 +345,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
       if (gx1 < x0 || gx0 > x1) continue
       // 子（エキソン・CDS・UTR）: 遺伝子のトークン範囲の中の位置を座標に比例で写す（転写産物が複数なら種類ごとに併合）。遺伝子が多い範囲（5,000 超）では省く
       let ch: [string, number, number][] | undefined; let nodesOut: any
-      if (rows.length <= 400 && n <= 5000) {
+      if (rows.length <= 400 && n <= 20000) {
         const L = Math.max(1, g.e0 - g.s0); const span2 = gx1 - gx0; const rev = r.dir < 0
         // 子の位置は、遺伝子のトークンを読んで各トークンの錨の座標（錨でなければ直前の錨、前に無ければ次の錨）で引く（10-27: トークン数の比例だと、
         // 株固有の挿入・欠失のある遺伝子でエキソンが別の座標に描かれ、欠失した株の空白の中にエキソンが出た。FAM227A の 5.6 kb の挿入）
@@ -397,7 +398,15 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
   const srcList: any[] = []
   if (hasProj) { const bySrc = new Map<number, any>(); for (const g of out) { const k = srcOf(g); if (k == null) continue; const e = bySrc.get(k); if (!e) bySrc.set(k, { src: k, name: g.name || g.locus || '', type: g.type, x0: g.x0, x1: g.x1, members: [g.gid] }); else { e.x0 = Math.min(e.x0, g.x0); e.x1 = Math.max(e.x1, g.x1); e.members.push(g.gid) } }
     for (const e of bySrc.values()) { const P = presOf(e); if (P.n0 || P.n2 || P.part) srcList.push({ name: e.name, type: e.type, x0: e.x0, x1: e.x1, pres: P }) } }
-  const ogs = [...groups.values()].map(G => ({ pres: presOf({ ...G, src: srcRep(G) }), og: G.og, x0: G.x0, x1: G.x1, n: G.n, nhap: G.haps.size, name: [...G.names.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '', fwd: G.fwd, npseudo: G.npseudo, kind: G.kind })).sort((a, b) => a.x0 - b.x0)
+  // 旁系（4）: 1 群に別の元遺伝子（名前）が 2 つ以上あり、かつ同じ株の同じ通過にそれらが並ぶ（＝別の座位が錨の共有で結ばれた）とき、その名前を para に
+  //   重なり合う遺伝子（POLR2F と SOX10 のように同じ座位で重なる）は旁系でない: 同じ通過の上で座標が重ならない別名の組があるときだけ
+  const paraOf = (G: { members: number[] }) => { const ms = new Set(G.members); const byTr = new Map<number, any[]>()
+    for (const g of out) if (ms.has(g.gid) && (g.name || g.locus)) { if (!byTr.has(g.tr)) byTr.set(g.tr, []); byTr.get(g.tr)!.push(g) }
+    const names = new Set<string>()
+    for (const gs of byTr.values()) for (let i = 0; i < gs.length; i++) for (let j = i + 1; j < gs.length; j++) { const A = gs[i], B = gs[j]; const na = A.name || A.locus, nb = B.name || B.locus
+      if (na !== nb && (A.x1 < B.x0 || B.x1 < A.x0)) { names.add(na); names.add(nb) } }
+    return names.size >= 2 ? [...names].slice(0, 6) : null }
+  const ogs = [...groups.values()].map(G => ({ para: paraOf(G), pres: presOf({ ...G, src: srcRep(G) }), og: G.og, x0: G.x0, x1: G.x1, n: G.n, nhap: G.haps.size, name: [...G.names.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '', fwd: G.fwd, npseudo: G.npseudo, kind: G.kind })).sort((a, b) => a.x0 - b.x0)
   return { x0, x1, n: out.length, ms: Date.now() - T0, genes: out, groups: ogs, srcPres: hasProj ? srcList : null }
 }
 
@@ -467,4 +476,38 @@ export function travFindGene(t: Trav, q: string, limit = 60): any {
     return { gid: g.gid, pid: g.pid, hid: hidOf.get(g.pid), hap: t.haps[hidOf.get(g.pid) ?? 0], path: t.paths[g.pid].path, start: g.start, end: g.end, strand: g.strand, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, x0, x1 }
   })
   return { q: qq, n: hits.length, truncated: rows.length >= limit, ms: Date.now() - T0, hits }
+}
+
+
+// ---- 遺伝子の密度（3）: 全景など遺伝子を個別に出せない範囲向け。元の注釈（写しでない遺伝子）ごとに座標（遺伝子の先頭 300 トークンの最初の錨）を一度だけ求めて
+// キャッシュし、表示範囲を nbin に分けて「1 株あたりの遺伝子数」と「株で有無・コピー数が違う遺伝子数」（写しがあるときだけ）を返す ----
+type GeneDens = { x: Float64Array; nPerHap: number; varFlag: Uint8Array }
+export function travGeneDensity(t: Trav, x0: number, x1: number, nbin: number, minAnchors = 50): any {
+  const gdb = genesDbOf(t); if (!gdb) return { error: 'この DB には .genes サイドカーが無い' }
+  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
+  let D = (t as any).__gdens as GeneDens | undefined
+  if (!D) {
+    const T0 = Date.now(); const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
+    const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')
+    const gs = gdb.prepare(`SELECT g.gid, g.pid, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid${hasProj ? ' WHERE g.proj IS NULL' : ''}`).all() as { gid: number; pid: number; s0: number; e0: number }[]
+    const xs = new Float64Array(gs.length).fill(-1)
+    gs.forEach((g, i) => { const pi = (dist.names[g.pid] === t.paths[g.pid]?.path) ? g.pid : dist.pidx.get(t.paths[g.pid]?.path); if (pi == null) return
+      const tk = dist.read(pi, g.s0, Math.min(g.e0, g.s0 + 300)); for (let k = 0; k < tk.length; k++) { const d = tk[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { xs[i] = X[d]; break } } })
+    const nPaths = new Set(gs.map(g => t.paths[g.pid]?.hid)).size || 1
+    const varFlag = new Uint8Array(gs.length)
+    if (hasProj) {
+      const cnt = new Map<number, Map<number, number>>(); const part = new Set<number>()
+      for (const r of gdb.prepare('SELECT proj, pid, frac FROM gene WHERE proj IS NOT NULL').iterate() as Iterable<{ proj: number; pid: number; frac: number }>) {
+        const h = t.paths[r.pid]?.hid; if (h == null) continue; let m = cnt.get(r.proj); if (!m) { m = new Map(); cnt.set(r.proj, m) } m.set(h, (m.get(h) || 0) + 1); if (r.frac < 0.8) part.add(r.proj) }
+      const qc = t.db.prepare('SELECT DISTINCT hid FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ?')
+      gs.forEach((g, i) => { if (xs[i] < 0) return; const m = cnt.get(g.gid) || new Map(); const self = t.paths[g.pid]?.hid; const cover = (qc.all(xs[i], xs[i], minAnchors) as { hid: number }[]).map(r => r.hid)
+        let v = part.has(g.gid); for (const h of cover) { const c = (m.get(h) || 0) + (h === self ? 1 : 0); if (c !== 1) { v = true; break } } varFlag[i] = v ? 1 : 0 })
+    }
+    D = { x: xs, nPerHap: hasProj ? 1 : nPaths, varFlag }; (t as any).__gdens = D
+    console.log(`[trav/genedensity] ${gs.length} genes ${Date.now() - T0} ms`)
+  }
+  x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); nbin = Math.max(1, Math.min(2000, Math.floor(nbin) || 300)); const W = x1 - x0 + 1
+  const n = new Float64Array(nbin), v = new Float64Array(nbin)
+  for (let i = 0; i < D.x.length; i++) { const x = D.x[i]; if (x < x0 || x > x1) continue; const b = Math.min(nbin - 1, Math.floor((x - x0) * nbin / W)); n[b] += 1 / D.nPerHap; if (D.varFlag[i]) v[b] += 1 / D.nPerHap }
+  return { x0, x1, nbin, n: Array.from(n, z => Math.round(z * 10) / 10), v: Array.from(v, z => Math.round(z * 10) / 10), hasVar: D.varFlag.some(f => f) }
 }

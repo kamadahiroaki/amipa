@@ -26,7 +26,7 @@ import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/clie
 import { matchHapToKey } from './blockMsaRender'
 type Gene = { gid: number; pid: number; hid: number; tr: number; x0: number; x1: number; s0: number; e0: number; start: number; end: number; strand: string; fwd: boolean; type: string; name: string; locus: string; product: string; pseudo: boolean; anchored: boolean; og: number; ch?: [string, number, number][]; nodes?: { names: string[]; cds: { names: string[]; phase: number; strand: string; so: number; eo: number; first: boolean }[]; exon: string[][]; t0: number; t1: number } }   // ch = 子（'cds'|'exon'|'utr', x0, x1）、nodes = 塩基の段用（ノード名）
 type Pres = { cover: number; n0: number; n1: number; n2: number; part: number; absent: number[]; multi: number[]; partial: number[] }
-type OGroup = { og: number; x0: number; x1: number; n: number; nhap: number; name: string; fwd: number; npseudo: number; kind: string; pres?: Pres }   // 見出しの遺伝子トラック（オルソログ群＝錨の共有で結んだ遺伝子）
+type OGroup = { para?: string[] | null; og: number; x0: number; x1: number; n: number; nhap: number; name: string; fwd: number; npseudo: number; kind: string; pres?: Pres }   // 見出しの遺伝子トラック（オルソログ群＝錨の共有で結んだ遺伝子）
 export interface TravCallbacks {
   onBaseMsa?: (ranges: number[][], label: string) => void   // 塩基へ: [distill のパス番号, s0, e0, コンティグの主な向き] の列
   onVisible?: (v: { names: string[]; sync: boolean } | null) => void          // 表示範囲の錨のノード名（グラフを寄せる・強調）
@@ -63,6 +63,8 @@ let atomCum: number[] = []        // 原子 i の開始 bp（root.atoms の順�
 let blocks: Block[] = []           // 今の表示範囲のブロック
 let cols: Cols | null = null, colsNote = ''   // 錨の列（今の表示範囲）
 let genes: Gene[] = [], genesNote = ''      // 遺伝子レーン（今の表示範囲、通過ごと）
+let gdens: { x0: number; x1: number; nbin: number; n: number[]; v: number[]; hasVar: boolean } | null = null   // 全景の遺伝子の密度（3）
+let lof = new Map<number, { st: string; aa: number; ref: number | null; src: number | null }>()   // 機能喪失の目安（5）: gid → 状態
 let ogroups: OGroup[] = []; let srcPres: { name: string; type: string; x0: number; x1: number; pres: Pres }[] | null = null   // 参照を写した注釈のとき: 元の遺伝子ごとの有無                  // 見出しの遺伝子トラック
 const OGH = 16                              // 見出しの遺伝子トラックの高さ
 let treeCut: number | null = null          // 系統樹のまとめ: 併合の高さがこれ（根の高さに対する割合）以下の枝を代表 1 株に（null＝まとめない）
@@ -196,13 +198,15 @@ async function loadRange() {
     }
     updateBase()
     if (PARAMS.get('base') === '1' && !baseAuto && !($('base') as HTMLButtonElement).disabled) { baseAuto = true; setTimeout(() => $('base').click(), 0) }   // URL で塩基 MSA まで開く（撮影・再現用）
-    genes = []; genesNote = ''; ogroups = []
+    genes = []; genesNote = ''; ogroups = []; gdens = null; lof = new Map()
     if (showGenes()) {   // 遺伝子レーン: 通過ごとの遺伝子を座標に写したもの
       draw()
       const rg = await getJson(`/api/trav/genes?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}`)
       if (my !== loading) return
       const jg = await rg.json()
       if (jg.tooMany) genesNote = `遺伝子: 多すぎる（${fmt(jg.n)} > ${fmt(jg.max)}。範囲を狭める）`; else if (jg.error) genesNote = `遺伝子: ${jg.error}`; else { genes = jg.genes as Gene[]; ogroups = (jg.groups || []) as OGroup[]; srcPres = jg.srcPres || null } renderGpres()
+      if (jg.tooMany) { try { const rd = await getJson(`/api/trav/genedensity?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&nbin=400&minanch=${numOf('minanch', 50)}`); const jd = await rd.json(); if (my === loading && !jd.error) gdens = jd } catch { /* 密度は無くてもよい */ } }
+      if (genes.length && genes.length <= 20000) { const gids = [...new Set(genes.filter(gn => geneKind(gn) === 'cds').map(gn => gn.gid))]; if (gids.length) void (async () => { try { const rl = await fetch('/api/trav/genelof', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, gids }) }); const jl = await rl.json(); if (my !== loading || !jl.genes) return; lof = new Map(Object.entries(jl.genes).map(([k, v]) => [Number(k), v as any])); renderGpres(); draw() } catch { /* 目安なので失敗は無視 */ } })() }
       geneLanesByHid = new Map(); { const byHid = new Map<number, Gene[]>(); for (const gn of genes) { if (!byHid.has(gn.hid)) byHid.set(gn.hid, []); byHid.get(gn.hid)!.push(gn) } for (const [hid, gs] of byHid) geneLanesByHid.set(hid, geneLanes(gs)) }
       if (genesNote) $('info').textContent += ' | ' + genesNote; else $('info').textContent += ` | 遺伝子 ${fmt(genes.length)}`
     }
@@ -571,7 +575,7 @@ let ogHits: { o: OGroup; pa: number; pb: number }[] = []   // 見出しの遺伝
 function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
 function drawCore() {
   if (base && root) { drawBaseCore(); return }
-  const useCols = !!cols && wantCols(); const ogOn = ogroups.length > 0 && showGenes(); TOP = (useCols ? 88 : 70) + (ogOn ? OGH + 2 : 0)
+  const useCols = !!cols && wantCols(); const ogOn = (ogroups.length > 0 || !!gdens) && showGenes(); TOP = (useCols ? 88 : 70) + (ogOn ? OGH + 2 : 0)
   const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 22 : 15
   // 行の高さ: 遺伝子レーンのある行だけ段数ぶん高く（3 + 10 × 段）
   // 繰り返し通過（同じ場所を k 回）: 錨の列の段では k 段の小行に分けて各回のセルを出す（塩基の段の ·2 の行に対応）。ブロックの段は 1 片 ×k のまま
@@ -604,10 +608,18 @@ function drawCore() {
   if (ogOn) {   // 見出しの遺伝子トラック: 群＝1 本の矢印（濃い青緑＝core 90% 以上、薄い＝accessory、灰＝擬似が多数、紫＝RNA）。向きは群の多数
     const y0 = TOP - 12 - OGH; g.fillStyle = '#f3f6f7'; g.fillRect(LAB, y0, W - LAB, OGH); g.fillStyle = '#666'; g.font = '10px system-ui'; const lbl = '遺伝子群'; g.fillText(lbl, LAB - g.measureText(lbl).width - 4, y0 + OGH - 4)
     ogHits = []
+    if (!ogroups.length && gdens && gdens.n.length) {   // 全景: 遺伝子の密度（棒の高さ＝1 株あたりの遺伝子数、赤＝株で有無・コピー数が違う遺伝子）
+      const D = gdens; const mx = Math.max(1, ...D.n); const Wd = D.x1 - D.x0 + 1
+      for (let k = 0; k < D.nbin; k++) { if (!D.n[k]) continue; const xa = D.x0 + k * Wd / D.nbin, xb = D.x0 + (k + 1) * Wd / D.nbin; const pa = Math.max(LAB, X(xa)), pb = Math.min(W, X(xb)); if (pb <= pa) continue
+        const h = Math.max(1, (OGH - 3) * D.n[k] / mx); g.fillStyle = '#0d7c86'; g.fillRect(pa, y0 + OGH - 1 - h, Math.max(1, pb - pa), h)
+        if (D.v[k]) { const hv = Math.max(1, (OGH - 3) * D.v[k] / mx); g.fillStyle = '#d62728'; g.fillRect(pa, y0 + OGH - 1 - hv, Math.max(1, pb - pa), hv) } }
+      g.fillStyle = '#555'; g.font = '9px system-ui'; g.fillText(`遺伝子の密度（最大 ${mx.toFixed(0)}/区間${D.hasVar ? '、赤＝株で有無・コピー数が違う' : ''}。拡大すると個々の遺伝子）`, LAB + 4, y0 + 9)
+    }
     for (const o of ogroups) { if (o.x1 < v0 || o.x0 > v1) continue; const pa = Math.max(LAB, X(o.x0)), pb = Math.min(W, X(o.x1 + 1)); const w = Math.max(2, pb - pa); const core = o.nhap >= 0.9 * root.H
       g.fillStyle = o.npseudo * 2 > o.n ? '#9a9a9a' : o.kind === 'rna' ? (core ? '#6c5ce7' : '#b89be0') : (core ? '#0d7c86' : '#8cc3c8'); const right = o.fwd * 2 >= o.n
       g.beginPath(); if (w >= 8) { if (right) { g.moveTo(pa, y0 + 2); g.lineTo(pb - 5, y0 + 2); g.lineTo(pb, y0 + OGH / 2); g.lineTo(pb - 5, y0 + OGH - 2); g.lineTo(pa, y0 + OGH - 2) } else { g.moveTo(pb, y0 + 2); g.lineTo(pa + 5, y0 + 2); g.lineTo(pa, y0 + OGH / 2); g.lineTo(pa + 5, y0 + OGH - 2); g.lineTo(pb, y0 + OGH - 2) } g.closePath(); g.fill() } else g.fillRect(pa, y0 + 2, w, OGH - 4)
       if (o.name) { g.font = '9px system-ui'; const tw = g.measureText(o.name).width; if (w >= tw + 12) { g.fillStyle = '#fff'; g.fillText(o.name, pa + (right ? 3 : 7), y0 + OGH - 5) } }
+      if (o.para && w >= 4) { g.save(); g.setLineDash([2, 2]); g.strokeStyle = '#111'; g.lineWidth = 1; g.strokeRect(pa + .5, y0 + 1.5, w - 1, OGH - 3); g.restore() }   // 旁系を含む群＝黒の点線枠
       // 有無・コピー数の印（10-27）: 矢印の下に、欠ける株（赤）・2 コピー以上の株（青）・一部だけの株（橙）の割合を細い帯で。どの株も同じなら印なし
       if (o.pres && o.pres.cover) { const P = o.pres; let xx = pa; const seg = (n: number, col: string) => { if (!n) return; const ww = Math.max(2, w * n / P.cover); g.fillStyle = col; g.fillRect(xx, y0 + OGH - 2, ww, 3); xx += ww }
         seg(P.n0, '#d62728'); seg(P.n2, '#1f63c6'); seg(P.part, '#f39c12') }
@@ -770,6 +782,7 @@ function drawCore() {
           for (const [kind, cx0, cx1] of gn.ch!) { if (cx1 < p.c0 || cx0 > p.c1) continue; const [qa, qb] = pxInPiece(p, Math.max(p.c0, cx0), Math.min(p.c1 + 1, cx1 + 1), mode); const ea = Math.max(a, qa), eb = Math.min(b, qb); if (eb < ea) continue
             const hh2 = kind === 'cds' ? GLH - 1 : kind === 'exon' ? GLH - 4 : GLH - 6; g.fillStyle = kind === 'cds' ? col : (kind === 'exon' ? col : col); g.globalAlpha = kind === 'cds' ? 1 : 0.6; g.fillRect(ea, yy0 + Math.floor((GLH - 1 - hh2) / 2), Math.max(1, eb - ea), hh2); g.globalAlpha = 1 }
         } else { g.fillStyle = col; g.fillRect(a, yy0, w, GLH - 1) }
+        { const lf = lof.get(gn.gid); if (lf && lf.st !== 'ok' && lf.st !== 'nocds') { g.strokeStyle = '#d62728'; g.lineWidth = 1.5; g.strokeRect(a + .5, yy0 - .5, Math.max(2, w - 1), GLH); g.lineWidth = 1 } }   // 機能喪失の目安＝赤い枠
         const right = (p.fwd ? gn.fwd : !gn.fwd)   // 画面上の向き（各行の並びで片が鏡なら反転）
         if (w >= 12) { g.fillStyle = 'rgba(255,255,255,.9)'; g.beginPath(); if (right) { g.moveTo(b - 5, yy0 + 1); g.lineTo(b - 1, yy0 + (GLH - 1) / 2); g.lineTo(b - 5, yy0 + GLH - 2) } else { g.moveTo(a + 5, yy0 + 1); g.lineTo(a + 1, yy0 + (GLH - 1) / 2); g.lineTo(a + 5, yy0 + GLH - 2) } g.fill() }
         if (!drawn.has(gn.gid)) { const nm = gn.name || gn.locus || ''; g.font = '8.5px system-ui'; const tw = g.measureText(nm).width; if (nm && w >= tw + 12) { g.fillStyle = geneKind(gn) === 'pseudo' ? '#222' : '#fff'; g.fillText(nm, a + (right ? 3 : 7), yy0 + GLH - 3); drawn.add(gn.gid) } }
@@ -941,7 +954,7 @@ cv.addEventListener('mousemove', e => {
       tip.textContent = hits.slice(0, 4).map(({ o }) => { const mem = genes.filter(gn => gn.og === o.og); const names = [...new Set(mem.map(gn => gn.name || gn.locus).filter(Boolean))].slice(0, 4).join(' / '); const prod = mem.find(gn => gn.product)?.product || ''
         const P = o.pres; const hn = (hs: number[]) => hs.slice(0, 6).map(h => root!.haps[h].hap).join(', ') + (hs.length > 6 ? ` ほか ${hs.length - 6}` : '')
         const presTxt = P ? `\n  範囲を通る ${P.cover} 株: 1 コピー ${P.n1}・無し ${P.n0}・2 コピー以上 ${P.n2}・一部だけ（一致 80% 未満）${P.part}${P.absent.length ? `\n  無し: ${hn(P.absent)}` : ''}${P.multi.length ? `\n  2 コピー以上: ${hn(P.multi)}` : ''}${P.partial.length ? `\n  一部だけ: ${hn(P.partial)}` : ''}` : ''
-        return `遺伝子群 ${o.name || names}  ${o.nhap}/${H2} 株（遺伝子 ${o.n}${o.npseudo ? `、擬似 ${o.npseudo}` : ''}${o.n > o.nhap ? `、1 株に複数 ${mem.length - o.nhap} 個` : ''}）  向き +${o.fwd}/−${o.n - o.fwd}  座標 ${fmt(o.x0)}–${fmt(o.x1)}${names && names !== o.name ? `  別名 ${names}` : ''}${prod ? `\n  ${prod}` : ''}${presTxt}` }).join('\n')
+        return `遺伝子群 ${o.name || names}  ${o.nhap}/${H2} 株（遺伝子 ${o.n}${o.npseudo ? `、擬似 ${o.npseudo}` : ''}${o.n > o.nhap ? `、1 株に複数 ${mem.length - o.nhap} 個` : ''}）  向き +${o.fwd}/−${o.n - o.fwd}  座標 ${fmt(o.x0)}–${fmt(o.x1)}${names && names !== o.name ? `  別名 ${names}` : ''}${prod ? `\n  ${prod}` : ''}${o.para ? `\n  旁系を含む（別の座位の遺伝子が配列の共有で 1 群になった。有無は遺伝子ごとに見る）: ${o.para.join(', ')}` : ''}${presTxt}` }).join('\n')
       return
     }
     const b = blocks[blockAt(x)]; if (!b) { tip.style.display = 'none'; return }
@@ -959,7 +972,7 @@ cv.addEventListener('mousemove', e => {
   const lines = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}${(r.k || 1) >= 2 ? `\n  同じ場所を ${r.k} 回通る（まとめた通過）: ` + r.members!.map(m => `${m.dir >= 0 ? '→' : '←'}${fmt(m.x0)}–${fmt(m.x1)} 錨${fmt(m.nanch)}`).join(', ') : ''}`).concat(rhit.map(r => `反復（この株で 2 回以上出るノードの連なり） トークン ${fmt(r.i0)}–${fmt(r.i1)}  ${fmtbp(r.bp)}`))
   let xx = x   // カーソルの座標（各行の並びでは片の中の比例から）
   if (inRows) { const p = (lastPieces.get(hid) || []).find(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX); if (p) { const f = (e.offsetX - Math.min(p.px0, p.px1)) / Math.max(1, Math.abs(p.px1 - p.px0)); xx = p.c0 + (p.fwd ? f : 1 - f) * (p.c1 + 1 - p.c0) } }
-  if (genes.length && showGenes()) for (const gn of genes.filter(gn => gn.hid === hid && gn.x0 <= xx && gn.x1 >= xx).slice(0, 6)) lines.push(`遺伝子 ${gn.name || gn.locus || ('#' + gn.gid)}${gn.pseudo ? '（擬似）' : ''}  ${gn.type}${geneKind(gn) === 'rna' ? '（RNA 遺伝子）' : ''} 鎖 ${gn.strand}${gn.fwd ? '' : '（合意と逆向き）'}  ${fmtbp(gn.end - gn.start + 1)}  コンティグ ${fmt(gn.start)}–${fmt(gn.end)}  ${gn.product || ''}${gn.anchored ? '' : '  [錨なし: 位置は補間]'}`)
+  if (genes.length && showGenes()) for (const gn of genes.filter(gn => gn.hid === hid && gn.x0 <= xx && gn.x1 >= xx).slice(0, 6)) lines.push(`遺伝子 ${gn.name || gn.locus || ('#' + gn.gid)}${gn.pseudo ? '（擬似）' : ''}  ${gn.type}${geneKind(gn) === 'rna' ? '（RNA 遺伝子）' : ''} 鎖 ${gn.strand}${gn.fwd ? '' : '（合意と逆向き）'}  ${fmtbp(gn.end - gn.start + 1)}  コンティグ ${fmt(gn.start)}–${fmt(gn.end)}  ${gn.product || ''}${gn.anchored ? '' : '  [錨なし: 位置は補間]'}` + (() => { const lf = lof.get(gn.gid); const T: Record<string, string> = { trunc: '終止獲得（参照の 9 割未満で止まる）', fs: 'フレームシフト（CDS の長さが参照と 3 の倍数でない差）', nostart: '開始コドンが無い' }; return lf && T[lf.st] ? `  ★機能喪失の目安: ${T[lf.st]}（${lf.aa} aa／参照 ${lf.ref ?? '?'} aa）` : '' })())
   if (cols && wantCols()) {   // 錨の列: カーソルの列と、この行のアレル・錨の有無・挿入・窓の中のトークン範囲（塩基 MSA へ渡す範囲）
     const C = cols; const Wc = C.x1 - C.x0 + 1
     const c = Math.max(0, Math.min(C.ncol - 1, Math.floor((xx - C.x0) * C.ncol / Wc))); const xa = Math.floor(C.x0 + c * Wc / C.ncol), xb = Math.floor(C.x0 + (c + 1) * Wc / C.ncol) - 1
@@ -1074,19 +1087,21 @@ async function locate(names: string[], single: boolean) {
   loadRange()
 }
 // 遺伝子の有無の一覧（10-27）: 表示範囲の遺伝子群のうち、範囲を通る株の中で無し・2 コピー以上・一部だけの株がある群を、変化の大きい順に。行のクリックでその群に寄る
+// 元の遺伝子（またはその群）の写しのうち、機能喪失の目安が付いた株の数
+function lofCount(o: { name: string; x0: number; x1: number; og?: number }): number { const hs = new Set<number>(); for (const gn of genes) { const lf = lof.get(gn.gid); if (!lf || lf.st === 'ok' || lf.st === 'nocds') continue; if ((o.og != null ? gn.og === o.og : (gn.name || gn.locus) === o.name) && gn.x1 >= o.x0 && gn.x0 <= o.x1) hs.add(gn.hid) } return hs.size }
 function renderGpres() {
   const el = $('gptab'); if (el.style.display === 'none' || !root) return
   const base0: { name: string; x0: number; x1: number; pres?: Pres; og?: number }[] = srcPres ? srcPres : ogroups
-  const rowsG = base0.filter(o => o.pres && o.pres.cover && (o.pres.n0 || o.pres.n2 || o.pres.part)).sort((a, b) => (b.pres!.n0 + b.pres!.n2 + b.pres!.part) - (a.pres!.n0 + a.pres!.n2 + a.pres!.part))
+  const rowsG = base0.filter(o => o.pres && o.pres.cover && (o.pres.n0 || o.pres.n2 || o.pres.part || lofCount(o))).sort((a, b) => (b.pres!.n0 + b.pres!.n2 + b.pres!.part) - (a.pres!.n0 + a.pres!.n2 + a.pres!.part))
   if (!showGenes()) { el.textContent = '「遺伝子」が切れている。入れると一覧を作る'; return }
   if (!ogroups.length) { el.textContent = genesNote ? `${genesNote}（一覧は遺伝子を読める範囲で作る。数 Mb 以下に狭める）` : '遺伝子を読み込み中、またはこの範囲に遺伝子が無い'; return }
   if (!rowsG.length) { el.textContent = `表示範囲の${srcPres ? '遺伝子' : '遺伝子群'} ${(srcPres ? new Set(genes.map(g => (g as any).proj ?? g.gid)).size : ogroups.length).toLocaleString()} 個は、範囲を通る全株で 1 コピーずつ（有無・コピー数の違いは無い）`; return }
   const esc = (t: string) => t.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!))
   const hn = (hs: number[]) => esc(hs.slice(0, 8).map(h => root!.haps[h].hap).join(', ') + (hs.length > 8 ? ` ほか ${hs.length - 8}` : ''))
   el.innerHTML = `<div style="color:#555;margin-bottom:2px">表示範囲の${srcPres ? '遺伝子（参照の注釈を各株に写したもの）' : '遺伝子群'}のうち、株によって有無・コピー数が違うもの ${rowsG.length} 個（違いの大きい順）</div>` +
-    `<div style="color:#555;margin:2px 0 4px">各列は株の数。「範囲を通る株」＝その遺伝子の座標範囲にコンティグが掛かる株（届かない株は数えない）。「持たない」＝範囲を通るのに遺伝子が無い（欠失）。「2 コピー以上」＝同じ遺伝子が 2 つ以上。「一部だけ」＝あるが参照との一致が 80% 未満（部分的な欠失・融合など）。右端はそれぞれに当たる株の名前（クリックでその遺伝子に寄る）</div>` +
-    `<table style="border-collapse:collapse"><tr style="text-align:left;border-bottom:1px solid #ccc"><th style="padding:2px 8px">${srcPres ? '遺伝子' : '遺伝子群'}</th><th style="padding:2px 8px">範囲を通る株</th><th style="padding:2px 8px;color:#d62728">持たない</th><th style="padding:2px 8px;color:#1f63c6">2 コピー以上</th><th style="padding:2px 8px;color:#f39c12">一部だけ</th><th style="padding:2px 8px">該当する株</th></tr>` +
-    rowsG.map((o, i) => `<tr data-i="${i}" style="cursor:pointer;border-top:1px solid #eee"><td style="padding:2px 8px">${esc(o.name || '#' + (o.og ?? ''))}</td><td style="padding:2px 8px;text-align:right">${o.pres!.cover}</td><td style="padding:2px 8px;text-align:right">${o.pres!.n0 || ''}</td><td style="padding:2px 8px;text-align:right">${o.pres!.n2 || ''}</td><td style="padding:2px 8px;text-align:right">${o.pres!.part || ''}</td><td style="padding:2px 8px;color:#555">${o.pres!.n0 ? '<span style="color:#d62728">持たない</span> ' + hn(o.pres!.absent) + '　' : ''}${o.pres!.n2 ? '<span style="color:#1f63c6">2 コピー以上</span> ' + hn(o.pres!.multi) + '　' : ''}${o.pres!.part ? '<span style="color:#f39c12">一部だけ</span> ' + hn(o.pres!.partial) : ''}</td></tr>`).join('') + '</table>'
+    `<div style="color:#555;margin:2px 0 4px">各列は株の数。「範囲を通る株」＝その遺伝子の座標範囲にコンティグが掛かる株（届かない株は数えない）。「持たない」＝範囲を通るのに遺伝子が無い（欠失）。「2 コピー以上」＝同じ遺伝子が 2 つ以上。「一部だけ」＝あるが参照との一致が 80% 未満（部分的な欠失・融合など）。「機能喪失の目安」＝その株の配列で CDS を組み立てて翻訳すると、参照の 9 割未満で止まる・長さの差が 3 の倍数でない・開始コドンが無い株（境界の写し方の誤差を含む目安。参照の注釈の 1 割弱は参照自身でも完結しない）。右端はそれぞれに当たる株の名前（クリックでその遺伝子に寄る）</div>` +
+    `<table style="border-collapse:collapse"><tr style="text-align:left;border-bottom:1px solid #ccc"><th style="padding:2px 8px">${srcPres ? '遺伝子' : '遺伝子群'}</th><th style="padding:2px 8px">範囲を通る株</th><th style="padding:2px 8px;color:#d62728">持たない</th><th style="padding:2px 8px;color:#1f63c6">2 コピー以上</th><th style="padding:2px 8px;color:#f39c12">一部だけ</th><th style="padding:2px 8px;color:#8e0000">機能喪失の目安</th><th style="padding:2px 8px">該当する株</th></tr>` +
+    rowsG.map((o, i) => `<tr data-i="${i}" style="cursor:pointer;border-top:1px solid #eee"><td style="padding:2px 8px">${esc(o.name || '#' + (o.og ?? ''))}</td><td style="padding:2px 8px;text-align:right">${o.pres!.cover}</td><td style="padding:2px 8px;text-align:right">${o.pres!.n0 || ''}</td><td style="padding:2px 8px;text-align:right">${o.pres!.n2 || ''}</td><td style="padding:2px 8px;text-align:right">${o.pres!.part || ''}</td><td style="padding:2px 8px;text-align:right">${lofCount(o) || ''}</td><td style="padding:2px 8px;color:#555">${o.pres!.n0 ? '<span style="color:#d62728">持たない</span> ' + hn(o.pres!.absent) + '　' : ''}${o.pres!.n2 ? '<span style="color:#1f63c6">2 コピー以上</span> ' + hn(o.pres!.multi) + '　' : ''}${o.pres!.part ? '<span style="color:#f39c12">一部だけ</span> ' + hn(o.pres!.partial) : ''}</td></tr>`).join('') + '</table>'
   el.querySelectorAll('tr[data-i]').forEach(tr => tr.addEventListener('click', () => { const o = rowsG[Number((tr as HTMLElement).dataset.i)]; const pad = Math.max(50, (o.x1 - o.x0) * 0.5); hist.push(view); view = [Math.max(0, Math.floor(o.x0 - pad)), Math.min(root!.R - 1, Math.ceil(o.x1 + pad))]; userMoved = true; loadRange() }))
 }
 if (PARAMS.get('gpres') === '1') $('gptab').style.display = 'block'   // URL で一覧を開く（撮影用）
