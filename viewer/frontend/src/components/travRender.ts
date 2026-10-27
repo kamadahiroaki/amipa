@@ -563,7 +563,7 @@ function draw() { try { drawCore() } catch (e) { showErr('draw', e) } }
 function drawCore() {
   if (base && root) { drawBaseCore(); return }
   const useCols = !!cols && wantCols(); const ogOn = ogroups.length > 0 && showGenes(); TOP = (useCols ? 88 : 70) + (ogOn ? OGH + 2 : 0)
-  const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 36 : 15   // 各行の並び: 行間 28 px（試行 10-27。以前 22＝行間 14 px）
+  const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 22 : 15
   // 行の高さ: 遺伝子レーンのある行だけ段数ぶん高く（3 + 10 × 段）
   // 繰り返し通過（同じ場所を k 回）: 錨の列の段では k 段の小行に分けて各回のセルを出す（塩基の段の ·2 の行に対応）。ブロックの段は 1 片 ×k のまま
   const mergedByHap = new Map<number, Trav[]>(); for (const r of mergePasses(rows)) { if (!mergedByHap.has(r.hid)) mergedByHap.set(r.hid, []); mergedByHap.get(r.hid)!.push(r) }
@@ -679,7 +679,7 @@ function drawCore() {
         const mem = (p.tr.members && p.tr.members.length > 1) ? p.tr.members.slice().sort((a, b) => a.i0 - b.i0) : [p.tr]; const kAll = passK.get(hid) || 1
         g.fillStyle = '#fff'; g.fillRect(px0, yy, w, hh + (kAll - 1) * (BLK + 1) - 2); g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, 1)`; g.fillRect(px0, yy + hh + (kAll - 1) * (BLK + 1) - 2, w, 2)
         const C2 = cols; mem.forEach((mtr, j) => { const cr = C2.byId.get(mtr.id); const y2 = yy + j * (BLK + 1); if (cr) drawCells(cr, p, px0, px1, y2, hh - 2, mode); if (mem.length > 1 && w > 14) { g.fillStyle = 'rgba(0,0,0,.55)'; g.font = 'bold 8px system-ui'; g.fillText('·' + (j + 1), px0 + 2, y2 + 7) } })
-      } else { g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, ${p.tr.copy >= 1 ? .55 : 1})`; g.fillRect(px0, yy, w, hh)
+      } else { g.fillStyle = `hsla(${hue(p.blk)}, 70%, 46%, 1)`; g.fillRect(px0, yy, w, hh)   // コピーの薄塗りはやめた（10-27: 小さな断片が重なるだけで通過全体が薄くなり意味が無かった）
         if (cols) { const cr = cols.byId.get(p.tr.id); if (cr) drawGaps(cr, p, px0, px1, yy, hh, mode) } }   // 欠失（錨の無い連なり）を白い切れ目で
       if (w >= 3) { g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1; g.strokeRect(px0 + .5, yy + .5, w - 1, hh - 1) }   // ブロック境界の枠
       if (mode === 'rows' && !p.fwd) { g.fillStyle = 'rgba(0,0,0,.25)'; g.fillRect(px0, yy + hh - 2, w, 2) }   // 各行の並びで読む向きと逆（逆位）は下辺を暗く
@@ -749,16 +749,31 @@ function drawTree(rowOf: Map<number, number>) {
 function drawLines(mode: string, W: number) {
   if (!root) return
   if (mode === 'rows' && ($('showlines') as HTMLInputElement).checked) {
-    g.lineWidth = 1; const nS = Math.max(8, Math.floor((W - LAB) / 12)); const xsS: number[] = []; for (let k = 0; k < nS; k++) xsS.push(xOfPx(LAB + (k + 0.5) / nS * (W - LAB)))
-    // その行がその座標に錨を持たない（欠失）なら線を出さない。出すと欠けたブロックの位置（幅 0 の片）に線が一点へ集まった
-    const C3 = cols; const lacks = (p: Piece, x: number): boolean => { if (!C3) return false; const cr = C3.byId.get(p.tr.id); if (!cr) return false; const k = Math.floor((x - C3.x0) * C3.ncol / (C3.x1 - C3.x0 + 1)); return k >= 0 && k < C3.ncol && C3.nanch[k] > 0 && cr.pres[k] === 0 }
-    const posIn = (pcs: Piece[], x: number): number[] => { const out: number[] = []; for (const p of pcs) { if (x < p.c0 || x > p.c1 + 1 || lacks(p, x)) continue; const f = (x - p.c0) / Math.max(1, p.c1 + 1 - p.c0); out.push(p.px0 + (p.fwd ? f : 1 - f) * (p.px1 - p.px0)) } return out }
+    // 連結のリボン（10-27）: 隣り合う 2 行で同じブロックの片どうしを、共通の座標区間の両端で結ぶ四角形 1 枚にする。ずれ＝斜めの平行四辺形、
+    // 逆位（片の向きが違う）＝交差した蝶形、欠失＝その行が錨を持たない列の連なりを除いた区間ごとに分かれる。細い線を多数引くと、行が横に大きくずれた所で
+    // 線が数倍に伸びて面のように重なり、どこがどこに繋がるか読めなかった
+    const C3 = cols; const useC = !!C3 && wantCols()
+    const colOfX = (x: number) => C3 ? Math.floor((x - C3.x0) * C3.ncol / (C3.x1 - C3.x0 + 1)) : -1
+    const has = (p: Piece, k: number): boolean => { if (!C3) return true; const cr = C3.byId.get(p.tr.id); if (!cr || k < 0 || k >= C3.ncol) return true; return !(C3.nanch[k] > 0 && cr.pres[k] === 0) }
+    const pos = (p: Piece, x: number) => { const f = (x - p.c0) / Math.max(1, p.c1 + 1 - p.c0); return p.px0 + (p.fwd ? f : 1 - f) * (p.px1 - p.px0) }
     for (let k = 0; k + 1 < hapOrder.length; k++) {
       const A = lastPieces.get(hapOrder[k]) || [], B = lastPieces.get(hapOrder[k + 1]) || []; const yA = rowTop[k] + 2 + BLK, yB = rowTop[k + 1] + 2
-      for (const x of xsS) {
-        const pa = posIn(A, x), pb = posIn(B, x); if (!pa.length || !pb.length) continue
-        g.strokeStyle = `hsla(${hue(blockAt(x))}, 60%, 40%, ${(!!cols && wantCols()) ? .12 : (pa.length * pb.length > 1 ? .7 : .4)})`   // 錨の列の段ではセルの邪魔にならないよう薄く
-        for (const xa of pa) for (const xb of pb) { if (xa < LAB || xb < LAB) continue; g.beginPath(); g.moveTo(xa, yA); g.lineTo(xb, yB); g.stroke() }
+      for (const pa of A) for (const pb of B) {
+        if (pa.blk !== pb.blk) continue
+        const lo = Math.max(pa.c0, pb.c0), hi = Math.min(pa.c1, pb.c1); if (hi < lo) continue
+        const runs: [number, number][] = []   // 両方が錨を持つ列の連なり（錨の列が無ければ区間全体）。短い切れ目（3 列以下）は繋ぐ
+        if (C3) { const Wc = C3.x1 - C3.x0 + 1; const k0 = Math.max(0, colOfX(lo)), k1 = Math.min(C3.ncol - 1, colOfX(hi)); let r0 = -1, miss = 0
+          for (let c = k0; c <= k1 + 1; c++) { const ok = c <= k1 && has(pa, c) && has(pb, c)
+            if (ok) { if (r0 < 0) r0 = c; miss = 0 } else if (r0 >= 0) { miss++; if (miss > 3 || c > k1) { const e = c - miss + 1; const xa = Math.max(lo, C3.x0 + r0 * Wc / C3.ncol), xb = Math.min(hi + 1, C3.x0 + e * Wc / C3.ncol); if (xb > xa) runs.push([xa, xb]); r0 = -1; miss = 0 } } } }
+        else runs.push([lo, hi + 1])
+        const crossed = pa.fwd !== pb.fwd
+        g.fillStyle = `hsla(${hue(pa.blk)}, 60%, 50%, ${useC ? .10 : (crossed ? .32 : .22)})`; g.strokeStyle = `hsla(${hue(pa.blk)}, 60%, 35%, ${useC ? .25 : .55})`; g.lineWidth = 1
+        for (const [xa, xb] of runs) {
+          const a0 = pos(pa, xa), a1 = pos(pa, xb), b0 = pos(pb, xa), b1 = pos(pb, xb)
+          if (Math.max(a0, a1) < LAB || Math.max(b0, b1) < LAB) continue
+          g.beginPath(); g.moveTo(a0, yA); g.lineTo(a1, yA); g.lineTo(b1, yB); g.lineTo(b0, yB); g.closePath(); g.fill()
+          g.beginPath(); g.moveTo(a0, yA); g.lineTo(b0, yB); g.moveTo(a1, yA); g.lineTo(b1, yB); g.stroke()
+        }
       }
     }
   }
