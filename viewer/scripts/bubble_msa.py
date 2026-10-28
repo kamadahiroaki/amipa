@@ -522,7 +522,8 @@ def main():
             cells[n] = s
         ce = r.get("cend", (False, False))
         brk_ = [[nodes[i - 1], nodes[i], int(n_)] for i, n_ in r.get("brk", []) if 0 < i < len(nodes)]   # 継ぎ目: [前のノード, 後のノード, 飛ばしたトークン数]
-        raw.append(dict(samp=r["samp"], label=r["label"], path=r["path"],
+        hseq_ = "".join((seqleaf.get(n_, "N") if o_ else rc(seqleaf.get(n_, "N"))) for n_, o_ in zip(nodes, ors))   # その株のコンティグの向きの実際の配列（書き出し用）
+        raw.append(dict(hseq=hseq_, samp=r["samp"], label=r["label"], path=r["path"],
                         strand=("-" if rev else "+"), cells=cells, inv=inv, ends=([ce[1], ce[0]] if rev else [ce[0], ce[1]]),   # 表示の左端・右端がコンティグの端か
                         nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"], brk=brk_))
 
@@ -530,6 +531,7 @@ def main():
     # 列の多数の向き（rc_votes）の文字列で出す＝同じノードなら他の行と同じ文字になり、位置ごとの比較で偽のミスマッチが出ない（DDTL の 2.95 kb 逆位）。inv の印（紫の帯）は残す。
     # 孤立した 3 bp 以下の inv ノードはそのまま逆相補で出す（向きで実現した SNP: chrY n81087900 の T/A）。行が順向きでも列の多数が逆相補なら多数に合わせる
     for r in raw:
+        r["cells0"] = dict(r["cells"])   # 揃える前の文字（その株の実際の向き。書き出しの「実配列の整列」用）
         invset = set(r["inv"]); seqn = r["seq"]; norm_nodes = set(); i = 0
         while i < len(seqn):
             if seqn[i] not in invset: i += 1; continue
@@ -717,6 +719,7 @@ def main():
         else:
             i1 = max(i for i, ch in enumerate(sq) if ch not in "-~")
             r["seq"] = "." * i0 + sq[i0:i1 + 1] + "." * (len(sq) - i1 - 1)
+        sqt = "".join(cellchar({"cells": r.get("cells0", r["cells"])}, c) for c in cols); r["seqt"] = "".join(ch if r["seq"][k] != "." else "." for k, ch in enumerate(sqt))
     # 窓の端の列を落とす: 端の列に「範囲の外」の行があり、その行がコンティグの端で切れているのではない（＝この窓で読んでいないだけ）なら、
     # その列は一部の行にしか判断材料が無いので出さない（最大 40 列ずつ）。コンティグの端で切れている行の「範囲の外」は残す（意味がある）
     if cols:
@@ -726,7 +729,7 @@ def main():
         while t1 - 1 > t0 and len(cols) - t1 < 40 and any(r["seq"][t1 - 1] == "." and not r["ends"][1] for r in raw): t1 -= 1
         if t0 or t1 < len(cols):
             cols = cols[t0:t1]
-            for r in raw: r["seq"] = r["seq"][t0:t1]
+            for r in raw: r["seq"] = r["seq"][t0:t1]; r["seqt"] = r["seqt"][t0:t1]
 
     # --- bubble 内部(選択ノード配下の葉)の列範囲＋pad に自動トリム。
     #     変異は内部に集中する一方、flank は隣接 VNTR 等を拾いがちなので、内部基準で切ると焦点が定まる。 ---
@@ -744,7 +747,7 @@ def main():
     max_cols = args.max_cols if getattr(args, 'max_cols', None) is not None else (0 if getattr(args, 'cap', None) == 0 else MAX_COLS)
     if max_cols and b - a > max_cols: b = a + max_cols
     cols = cols[a:b]
-    for r in raw: r["seq"] = r["seq"][a:b]
+    for r in raw: r["seq"] = r["seq"][a:b]; r["seqt"] = r["seqt"][a:b]
     # 変異フラグ(トリム後)。逆位のノードの文字は上で列の多数の向きに揃えてあるので、同じノードなら変異にならない（DDTL の n76458304 で 82 列中 66 列が偽の変異になった 2026-10-26）
     for ci, c in enumerate(cols):
         vals = set(r["seq"][ci] for r in raw); vals.discard("~"); vals.discard(".")
@@ -781,7 +784,7 @@ def main():
                cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
-                      "inv": invmaj(r), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
+                      "inv": invmaj(r), "hseq": r.get("hseq", ""), "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
     print(json.dumps(out))
 
 if __name__ == "__main__":

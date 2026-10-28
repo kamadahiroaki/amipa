@@ -759,6 +759,7 @@ export interface MsaRow {
   strand: string            // 行の優勢向き(p_ori の bp 加重多数決)
   inv: string[]             // 優勢向きと逆に通ったノード= 局所反転アレル(塩基は逆相補で入っている)
   seq: string; isref: boolean; allele: number
+  hseq?: string             // その株のコンティグの向きの実際の配列（窓の範囲、欠失・逆位を含めた本当の配列。書き出し用）
 }
 export interface BubbleMsaResp {
   name?: string; bp?: number | null; refname?: string | null; nrow?: number; nallele?: number
