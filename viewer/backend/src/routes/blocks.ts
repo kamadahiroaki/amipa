@@ -391,7 +391,7 @@ function resolveNames(syn: ReturnType<typeof loadSynteny> & object, layer: numbe
 }
 blocksRouter.get('/blocks/subgraph', (req, res) => { runSubgraph(res, req.query as Record<string, string>) })
 // POST 版: 葉の名前の集合で指定（塩基の窓など、列範囲で表せない集合）。body {db, layer, names:[...], max?, namesOnly?}
-blocksRouter.post('/blocks/subgraph', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; const q: Record<string, string> = { db: String(b.db ?? ''), layer: String(b.layer ?? 0), max: String(b.max ?? ''), names: b.namesOnly ? '1' : '' }; runSubgraph(res, q, Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []) })
+blocksRouter.post('/blocks/subgraph', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; const q: Record<string, string> = { db: String(b.db ?? ''), layer: String(b.layer ?? 0), max: String(b.max ?? ''), names: b.namesOnly ? '1' : '', budget: String(b.budget ?? ''), ...(b.bbox && typeof b.bbox === 'object' ? { bx1: String((b.bbox as any).x1), by1: String((b.bbox as any).y1), bx2: String((b.bbox as any).x2), by2: String((b.bbox as any).y2) } : {}) }; runSubgraph(res, q, Array.isArray(b.names) ? (b.names as unknown[]).filter(x => typeof x === 'string') as string[] : []) })
 function runSubgraph(res: any, q: Record<string, string>, namesList?: string[]) {
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const syn = loadSynteny(q.db)
@@ -401,7 +401,16 @@ function runSubgraph(res: any, q: Record<string, string>, namesList?: string[]) 
   const t0 = Date.now()
   try {
     // 1) 範囲のノード名（集合の意味）: a0,a1=原子の集合 / c0,c1=原子の内側の列範囲（パスのトークン範囲の和）/ x0,x1=合意座標（旧: 重なる原子に直す）
-    const sel = resolveNames(syn, layer, q, max, namesList); if ('error' in sel) { res.json({ error: sel.error }); return }
+    // 葉の名前の集合 → 上の層: 親の連鎖（parent_name）で祖先に直す（10-28）。原子経由だと範囲に掛かる原子の上の層のノードを全部取り、
+    // 範囲が 2 万葉でも 1 段上で 9 万ノードに膨らんで、予算判定が必要以上に浅い層へ落ちた
+    let sel: ReturnType<typeof resolveNames>
+    const dpar = getDb(q.db); const S0 = syn as any
+    if (namesList && namesList.length && layer < (S0.maxlayer ?? 0) && tableCols(dpar, 'nodes').has('parent_name')) {
+      let cur = namesList.filter(n => typeof n === 'string'); let L = S0.maxlayer as number
+      while (L > layer && cur.length) { const next = new Set<string>(); for (let i = 0; i < cur.length; i += 400) { const ch = cur.slice(i, i + 400); for (const r of dpar.prepare(`SELECT parent_name FROM nodes WHERE layer_index = ? AND node_name IN (${ch.map(() => '?').join(',')})`).all(L, ...ch) as { parent_name: string | null }[]) if (r.parent_name) next.add(r.parent_name) } cur = [...next]; L-- }
+      sel = { names: cur.slice(0, max), truncated: cur.length > max, c0: -1, c1: -1, how: 'names→parents' }
+    } else sel = resolveNames(syn, layer, q, max, namesList)
+    if ('error' in sel) { res.json({ error: sel.error }); return }
     const { names, truncated, c0, c1, how } = sel
     if (q.names === '1') { res.json({ names, c0, c1, n: names.length, truncated, how, ms: Date.now() - t0 }); return }   // 名前だけ（塗り分け用）
     if (!names.length) { res.json({ nodes: [], outer: [], edges: [], c0, c1, n: 0, truncated, how, ms: Date.now() - t0 }); return }
@@ -412,6 +421,12 @@ function runSubgraph(res: any, q: Record<string, string>, namesList?: string[]) 
     const selNodes = (ph: string) => `SELECT n.rowid AS id, n.node_name, n.is_bubble, n.size, n.xCoord, n.yCoord, n.angle, n.radius, n.color${opt}, n.layer_index AS layer FROM nodes n WHERE n.layer_index = ? AND n.node_name IN (${ph})`
     const fetchNodes = (list: string[]) => { const out: any[] = []; for (let i = 0; i < list.length; i += 400) { const ch = list.slice(i, i + 400); out.push(...d.prepare(selNodes(ch.map(() => '?').join(','))).all(layer, ...ch)) } return parseNodes(out) }
     const nodes = fetchNodes(names)
+    // 表示予算（10-28）: bbox（画面の範囲）と budget があれば、範囲のうち画面に入るノードだけを数え、予算を超えたら辺を引かずに知らせる（viewer が 1 段粗い層へ）。
+    // 範囲全体のノード数で判定すると、画面に一部しか写っていないのに浅い層に落ちた
+    const budget = Number(q.budget) || 0
+    if (budget && q.bx1 != null) { const bx1 = Number(q.bx1), by1 = Number(q.by1), bx2 = Number(q.bx2), by2 = Number(q.by2); let nIn = 0
+      for (const n of nodes as any[]) { const r = Number(n.radius) || 0; if (n.xCoord + r >= bx1 && n.xCoord - r <= bx2 && n.yCoord + r >= by1 && n.yCoord - r <= by2) nIn++ }
+      if (nIn > budget) { res.json({ overBudget: true, nIn, n: names.length, nodes: [], outer: [], edges: [], c0, c1, truncated, how, ms: Date.now() - t0 }); return } }
     const inSet = new Set(nodes.map((n: any) => n.node_name as string))
     // 3) 辺（端点の索引で引き、rowid で重複を落とす）
     const edges: any[] = []; const seen = new Set<number>()

@@ -219,7 +219,7 @@ async function loadRange() {
         const jn = await rn.json(); fitNames = (jn.names || []) as string[]
       }
       if (hideOn) {
-        const rf = await getJson(`/api/trav/nodeset?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}&max=20000`)
+        const rf = await getJson(`/api/trav/nodeset?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}&max=150000`)
         if (my !== loading) return
         const jf = await rf.json(); if (!(jf.tooBig || jf.error)) { setNames = jf.names as string[]; if (jf.truncated) $('info').textContent += ` | 範囲のノード ${fmt(jf.n)} で打ち切り` } else if (hideOn) $('info').textContent += ` | グラフを絞る: ${jf.error || '範囲が広すぎる'}`
       }

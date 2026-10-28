@@ -945,9 +945,9 @@ export async function fetchBlockNames(dbFile: string, layer: number, sel: BlockS
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel), names: '1' })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok || j.error) return null; return { names: j.names || [], truncated: !!j.truncated } } catch { return null }
 }
-export async function fetchBlockSubgraph(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal, max?: number): Promise<BlockSubgraph | { error: string }> {
-  if ('names' in sel) { try { const res = await fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names, ...(max ? { max } : {}) }), signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } } }
-  const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel), ...(max ? { max: String(max) } : {}) })
+export async function fetchBlockSubgraph(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal, budget?: number, bbox?: { x1: number; y1: number; x2: number; y2: number }): Promise<BlockSubgraph | { error: string }> {
+  if ('names' in sel) { try { const res = await fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names, ...(budget && bbox ? { budget, bbox } : {}) }), signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } } }
+  const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel), ...(budget && bbox ? { budget: String(budget), bx1: String(bbox.x1), by1: String(bbox.y1), bx2: String(bbox.x2), by2: String(bbox.y2) } : {}) })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }
 // ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）
