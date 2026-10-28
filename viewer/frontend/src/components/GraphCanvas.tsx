@@ -509,7 +509,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   useEffect(() => { blockColorsRef.current = blockColors ?? null
     const k = blockColors?.filter ? (blockColors.filterSel ? blockSelKey(blockColors.filterSel) : (blockColors.filterRange ? `x${Math.floor(blockColors.filterRange[0])}|${Math.ceil(blockColors.filterRange[1])}` : '')) : ''
     if (k !== subKeyPrevRef.current) { subKeyPrevRef.current = k; recheckRef.current?.() }
-    renderRef.current?.() }, [blockColors])
+    renderRef.current?.(); renderRibbonsRef.current?.() }, [blockColors])
   useEffect(() => { ribbonsRef.current = ribbons; renderRibbonsRef.current?.() }, [ribbons])
 
   interface PathCache { nodes: CtgPathNode[]; steps: CtgPathStep[] }
@@ -1025,6 +1025,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           if (e.src_sign != null || e.start_x == null) { const [sx, sy] = rodEndpoint(ns, e.src_sign ?? 0, nt); const [ex, ey] = rodEndpoint(nt, e.tgt_sign ?? 0, ns); e.start_x = sx; e.start_y = sy; e.end_x = ex; e.end_y = ey; e.startc_x = sx; e.startc_y = sy; e.endc_x = ex; e.endc_y = ey }
           edges.push(e) }
         sub = { key, layer, nodes: g.nodes, edges, outerNames: new Set(g.outer.map(n => n.node_name)), outerIds: new Set(g.outer.map(n => n.id)) }
+        renderRibbonsRef.current?.()   // リボンも部分グラフに合わせて描き直す
         displayLayer = layer; displayGz = curGridZ()
         if (g.truncated) console.warn(`subgraph L${layer}: 範囲のノードが上限を超えたので先頭 ${g.nodes.length} 件だけ`)
         markDirty(); render()
@@ -2017,7 +2018,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         rl.drawPolygon([ax + px - originX, ay + py - originY, bx + px - originX, by + py - originY,
                         bx - px - originX, by - py - originY, ax - px - originX, ay - py - originY])
       }
-      ribs.forEach((rib, ri) => {
+      // 絞りモード（10-28）: 部分グラフの外のノード・辺はリボンも描かない（部分グラフが未着ならまだ描かない）。外へ出る辺は 35% だけの切れ端
+      const subF = subOn() ? sub : null
+      if (subOn() && !subF) return
+      const keepId = subF ? new Set(subF.nodes.filter(n => !subF.outerIds.has(n.id)).map(n => n.id)) : null
+      const keepNm = subF ? new Set(subF.nodes.filter(n => !subF.outerNames.has(n.node_name)).map(n => n.node_name)) : null
+      ribs.forEach((rib0, ri) => {
+        let rib = rib0
+        if (keepId && keepNm) { const nodes = rib0.nodes.filter(n => keepId.has(n.id) || keepNm.has(n.name)); const ids = new Set(nodes.map(n => n.id))
+          const edges: typeof rib0.edges = []; for (const e of rib0.edges) { const a = ids.has(e.su), b = ids.has(e.tv); if (a && b) edges.push(e); else if (a !== b) { const f = .35; edges.push(a ? { ...e, ex: e.sx + (e.ex - e.sx) * f, ey: e.sy + (e.ey - e.sy) * f } : { ...e, sx: e.ex + (e.sx - e.ex) * f, sy: e.ey + (e.sy - e.ey) * f }) } }
+          rib = { ...rib0, nodes, edges } }
         const hasGeom = (rib.nodes && rib.nodes.length) || (rib.edges && rib.edges.length)
         if (!hasGeom) return
         const off = (ri - (ribs.length - 1) / 2) * STAGGER
