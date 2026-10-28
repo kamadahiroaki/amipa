@@ -991,6 +991,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     let subLoading: { key: string; ctrl: AbortController } | null = null
     let subBudgetCap = Infinity   // 予算で上限にした層（絞りモード）。範囲や予算が変わったら解く
     let subBudgetKey = ''
+    let subBudgetBox: Rect | null = null   // 予算超過を判定した時の画面。画面がこれより十分狭くなるか外れたら判定し直す
     // 木: ノードの帰属（見えている段のブロック番号）。全場所のどれかが見えているブロックに入ればその番号（反復ノードも今の窓の場所で塗る）
     function rankOfName(nm: string, bm: BlockColorMap): number | null {
       const pl = nodePlacesRef.current.get(nm)
@@ -1020,7 +1021,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         if (!subLoading || subLoading.key !== key) return
         subLoading = null
         if (!r || ('error' in r && r.error)) { console.warn('subgraph:', (r as any)?.error); return }
-        if (mr && (r as any).overBudget && layer > 0) { onLodClampRef.current?.({ requested: chooseLayerByZoom(world.scale.x), served: layer - 1 }); subBudgetCap = layer - 1; ensureSubgraph(layer - 1); return }
+        if (mr && (r as any).overBudget && layer > 0) { onLodClampRef.current?.({ requested: chooseLayerByZoom(world.scale.x), served: layer - 1 }); subBudgetCap = layer - 1; subBudgetBox = { x1: vb.x1, y1: vb.y1, x2: vb.x2, y2: vb.y2 }; ensureSubgraph(layer - 1); return }
         const g = r as BlockSubgraph
         const byName = new Map<string, NodeData>()
         for (const n of g.nodes) { n.layer = layer; byName.set(n.node_name, n); nodeStore.set(n.id, n) }
@@ -2631,7 +2632,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       }
 
       currentLayer = layer
-      if (subKeyFor(layer)) { const sk = `${blockSelKey(subSel()!)}|${maxRowsRef.current || 0}|${layer}`; if (sk !== subBudgetKey) { subBudgetKey = sk; subBudgetCap = Infinity } const L2 = Math.min(layer, subBudgetCap); currentLayer = L2; onLodClampRef.current?.(L2 < layer ? { requested: layer, served: L2 } : null); ensureSubgraph(L2); return }   // 絞りモード: 範囲駆動で取る（タイルは使わない）。予算で粗くした層は範囲・予算が変わるまで保つ
+      if (subKeyFor(layer)) { const sk = `${blockSelKey(subSel()!)}|${maxRowsRef.current || 0}|${layer}`; if (sk !== subBudgetKey) { subBudgetKey = sk; subBudgetCap = Infinity }
+        else if (subBudgetCap < layer && subBudgetBox) { const b = subBudgetBox, v = viewport; const area = (r: Rect) => Math.max(0, r.x2 - r.x1) * Math.max(0, r.y2 - r.y1)
+          const ov = area({ x1: Math.max(b.x1, v.x1), y1: Math.max(b.y1, v.y1), x2: Math.min(b.x2, v.x2), y2: Math.min(b.y2, v.y2) })
+          if (area(v) < 0.7 * area(b) || ov < 0.5 * area(v)) { subBudgetCap = Infinity; subBudgetBox = null } }   /* 10-28: 予算で粗くした後に拡大・移動しても、拡大に応じた層が同じだと粗いまま残っていた */ const L2 = Math.min(layer, subBudgetCap); currentLayer = L2; onLodClampRef.current?.(L2 < layer ? { requested: layer, served: L2 } : null); ensureSubgraph(L2); return }   // 絞りモード: 範囲駆動で取る（タイルは使わない）。予算で粗くした層は範囲・予算が変わるまで保つ
       const prefetchRect = expandRect(viewport, FETCH_MARGIN)
       const gz = curGridZ()   // 格子解像度はカメラズーム基準（内容層 layer とは独立）
       // 先読み矩形から外れた／層が変わった取得は、この時点で用済み。abort してキュー待ちを減らす。
