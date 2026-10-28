@@ -495,7 +495,12 @@ function drawBaseCore() {
       const w = sp[1] - sp[0]; if (w >= 10) { g.fillStyle = '#fff'; g.beginPath(); if (right) { g.moveTo(sp[1] - 5, y0 + 2); g.lineTo(sp[1] - 1, y0 + OGH / 2); g.lineTo(sp[1] - 5, y0 + OGH - 2) } else { g.moveTo(sp[0] + 5, y0 + 2); g.lineTo(sp[0] + 1, y0 + OGH / 2); g.lineTo(sp[0] + 5, y0 + OGH - 2) } g.fill() }
       const nm = bg.g.name || bg.g.locus || ''; g.font = '9px system-ui'; const tw = g.measureText(nm).width; if (nm && w >= tw + 12) { g.fillStyle = '#111'; g.fillText(nm, sp[0] + (right ? 3 : 7), y0 + OGH - 4) } }
     B.lines.forEach((ln, k) => { const gs = B.genesByHid.get(ln.hid); if (!gs) return; const y = TOP + k * ROW + ROW - 4
-      for (const bg of gs) { const col = geneColor(bg.g); for (let ci = bg.c0; ci <= bg.c1; ci++) { if (!bg.cols[ci]) continue; const r = xOfCol(ci); if (!r || r[1] < B.sx || r[0] > B.sx + Wb) continue; const kd = bg.kindOf[ci]; g.fillStyle = col; g.globalAlpha = kd === 1 ? 1 : kd === 2 ? .55 : .2; g.fillRect(r[0], y, Math.max(1, r[1] - r[0]), 3) } }   // 太さは一定（10-28）。CDS＝濃い、エキソン・UTR＝中、イントロン＝薄い
+      // 1 つの区画（畳んだ群・俯瞰の群）に複数の列が入るので、区画ごとに 1 回だけ、区画の中で最も強い種類（CDS > エキソン > イントロン）で描く
+      // （10-28: 列ごとに同じ区画を重ね塗りしていたので、変異の無い群＝区画だけ濃く（以前は太く）見えた）
+      for (const bg of gs) { const col = geneColor(bg.g); const best = new Map<number, number>()
+        for (let ci = bg.c0; ci <= bg.c1; ci++) { if (!bg.cols[ci]) continue; const kk = B.colItem[ci]; if (kk < 0) continue; const kd = bg.kindOf[ci] || 3; const cur = best.get(kk); if (cur == null || kd < cur) best.set(kk, kd) }
+        for (const [kk, kd] of best) { const x0 = B.xs[kk], x1 = B.xs[kk + 1]; if (x1 < B.sx || x0 > B.sx + Wb) continue
+          g.fillStyle = col; g.globalAlpha = kd === 1 ? 1 : kd === 2 ? .55 : .25; g.fillRect(x0, y + (kd === 1 ? 0 : kd === 2 ? .5 : 1), Math.max(1, x1 - x0), kd === 1 ? 3 : kd === 2 ? 2 : 1) } }   // CDS 3 px・エキソン 2 px・イントロン 1 px
       g.globalAlpha = 1 })
   }
   if (B.hoverCi != null && B.colItem[B.hoverCi] >= 0) { const kk = B.colItem[B.hoverCi]; g.fillStyle = 'rgba(13,148,136,.10)'; g.fillRect(B.xs[kk], 0, B.xs[kk + 1] - B.xs[kk], H) }
