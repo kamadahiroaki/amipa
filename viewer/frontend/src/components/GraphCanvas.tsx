@@ -996,6 +996,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     let subBudgetKey = ''
     // 部分グラフに寄せる（10-28: 葉の座標の矩形で寄せると、表示している層のノードの広がりと違い、範囲が画面の一部にしか写らなかった）。
     // 表示している層の範囲内ノード（outer を除く）の座標の 5〜95 パーセンタイルの箱を 10% 広げて合わせる。寄せた結果で層が変わったら 1 回だけ寄せ直す
+    let subSelFitKey = ''   // 最後に「画面に無ければ寄せる」を判定した絞りの集合
     let pendingSubFit = false; let subFitTimer: ReturnType<typeof setTimeout> | null = null; let subRefits = 0
     function fitToSub() { if (!sub) return; const ns = sub.nodes.filter(n => !sub!.outerIds.has(n.id)); if (ns.length < 2) return
       const xs = ns.map(n => n.xCoord).sort((a, b) => a - b), ys = ns.map(n => n.yCoord).sort((a, b) => a - b); const pc = (a: number[], f: number) => a[Math.round(f * (a.length - 1))]
@@ -1045,6 +1046,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         sub = { key, layer, nodes: g.nodes, edges, outerNames: new Set(g.outer.map(n => n.node_name)), outerIds: new Set(g.outer.map(n => n.id)) }
         renderRibbonsRef.current?.()   // リボンも部分グラフに合わせて描き直す
         if (pendingSubFit) { pendingSubFit = false; fitToSub() }
+        else if (subSelFitKey !== blockSelKey(sel)) {   // 絞りの集合が変わったのに部分グラフが画面に無い／点にしかならないなら寄せる（10-28: URL の view= で開くと全景のまま絞られ、真っ白に見えた）
+          subSelFitKey = blockSelKey(sel); const vp = getViewport(); const ns = g.nodes.filter(n => !sub!.outerIds.has(n.id))
+          if (ns.length) { let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity; for (const n of ns) { x0 = Math.min(x0, n.xCoord); x1 = Math.max(x1, n.xCoord); y0 = Math.min(y0, n.yCoord); y1 = Math.max(y1, n.yCoord) }
+            const inView = x1 >= vp.x1 && x0 <= vp.x2 && y1 >= vp.y1 && y0 <= vp.y2; const tiny = Math.max(x1 - x0, y1 - y0) < 0.02 * (vp.x2 - vp.x1)
+            if (!inView || tiny) { subRefits = 0; fitToSub(); if (subFitTimer) clearTimeout(subFitTimer); subFitTimer = setTimeout(() => { pendingSubFit = false }, 8000) } } }
         displayLayer = layer; displayGz = curGridZ()
         if (g.truncated) console.warn(`subgraph L${layer}: 範囲のノードが上限を超えたので先頭 ${g.nodes.length} 件だけ`)
         markDirty(); render()

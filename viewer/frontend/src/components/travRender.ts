@@ -156,7 +156,7 @@ async function loadRoot() {
   const r = await getJson(`/api/trav/root?db=${encodeURIComponent(db)}`)
   if (!r.ok) { root = null; $('info').textContent = `${db}: .trav が無い（${r.status}）`; draw(); return }
   root = await r.json(); view = [0, root!.R - 1]; hist = []
-  const vq = PARAMS.get('view'); if (vq) { const [a, b] = vq.split('-').map(Number); if (Number.isFinite(a) && Number.isFinite(b)) view = [Math.max(0, a), Math.min(root!.R - 1, b)] }
+  const vq = PARAMS.get('view'); if (vq) { const [a, b] = vq.split('-').map(Number); if (Number.isFinite(a) && Number.isFinite(b)) view = [Math.max(0, a), Math.min(root!.R - 1, b)]; userMoved = true }   /* URL の範囲は寄せる（10-28: 全景のまま絞られて真っ白） */
   atomCum = []; let c = 0; for (const a of root!.atoms) { atomCum.push(c); c += a.bp }
   const refLike = (h: string) => /^(GRCh38|CHM13|GCF_000148365)/.test(h) ? 0 : 1
   baseOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(root!.haps[a].hap) - refLike(root!.haps[b].hap) || root!.haps[a].hap.localeCompare(root!.haps[b].hap)); hapOrder = baseOrder.slice()
