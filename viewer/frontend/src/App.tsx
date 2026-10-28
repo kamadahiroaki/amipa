@@ -369,7 +369,7 @@ export default function App() {
   const [lodMeta, setLodMeta] = useState<{
     layerZoom: number[]; world: { x0: number; x1: number; y0: number; y1: number } | null
     // 較正窓の規約（§4）。'square_side_W_over_s'=canvas 非依存の新既定 / 欠落=旧 DB は従来式。
-    zoomWindow?: StatsResult['zoom_window']
+    zoomWindow?: StatsResult['zoom_window']; calib?: number
   }>({ layerZoom: [], world: null })
   const [dbIncompatible, setDbIncompatible] = useState<string | null>(null)  // 現行仕様非互換DBの理由
   const [dbLegacy, setDbLegacy] = useState(false)       // 旧仕様(layer_zoom 無し)警告バナー（消せる）
@@ -548,6 +548,10 @@ export default function App() {
   //   超える範囲は backend の /pick_layer が粗い層を選ぶ（欠けずに簡略化）。絞りモードは部分グラフを上限で取り、打ち切られたら 1 段粗い層
   const [maxRows, setMaxRowsRaw] = useState<number>(() => { try { const v = localStorage.getItem('amipa.maxRows'); if (v != null && Number.isFinite(Number(v))) return Number(v) } catch { /* 保存できない環境 */ } return 20000 })
   const setMaxRows = useCallback((v: number) => { setMaxRowsRaw(v); try { localStorage.setItem('amipa.maxRows', String(v)) } catch { /* 保存できない環境 */ } }, [])
+  // 10-28: 層の閾値は「画面に約 V 個（較正の目標、既定 2,000）」で較正されている。表示予算 B が有効なら、画面に B 個まで出してよいので
+  //   閾値を √(V/B) 倍に下げて（グリフ数は拡大率の 2 乗に反比例）早く深い層に降りる。それでも予算を超える所は /pick_layer と絞りモードの予算判定が粗い層に戻す。
+  //   予算が無制限なら較正のまま
+  const layerZoomEff = useMemo(() => { const V = lodMeta.calib || 2000; const B = maxRows; if (!B || B <= V || !lodMeta.layerZoom.length) return lodMeta.layerZoom; const f = Math.sqrt(V / B); return lodMeta.layerZoom.map((z, i) => i === 0 ? z : Math.max(lodMeta.layerZoom[0] * 0.999, z * f)) }, [lodMeta, maxRows])
   const [lodClamp, setLodClamp] =
     useState<{ requested: number; served: number; counts?: Record<string, number> } | null>(null)
   // 選択群 → backend の sel= に渡す contig_id レンジ列。絞り込み OFF・索引無し・選択無しなら空文字。
@@ -1224,7 +1228,7 @@ export default function App() {
       const lz = (s.layer_zoom && s.layer_zoom.length)
         ? s.layer_zoom
         : (ln.length ? ln.map(n => Math.pow((n || 1) / (ln[0] || 1), 0.5)) : [])
-      setLodMeta({ layerZoom: lz, world: s.world ?? null, zoomWindow: s.zoom_window })
+      setLodMeta({ layerZoom: lz, world: s.world ?? null, zoomWindow: s.zoom_window, calib: Number((s as any).layer_zoom_budget) || 2000 })
       setMaxLayer(s.maxLayer)
     }).catch(e => setDbIncompatible('stats を取得できません: ' + String(e)))
   }, [selectedDb])
@@ -2435,7 +2439,7 @@ export default function App() {
                   refContigs={refContigs}
                   selectedPaths={selectedPaths}
                   ribbons={ribbonHidden ? EMPTY_RIBBONS : ribbons}
-                  layerZoom={lodMeta.layerZoom}
+                  layerZoom={layerZoomEff}
                   zoomWindow={lodMeta.zoomWindow}
                   worldBbox={lodMeta.world}
                   layerOffset={detailStep}
