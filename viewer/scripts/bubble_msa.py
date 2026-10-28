@@ -883,8 +883,9 @@ def main():
 
     # 行を allele(整列配列)でグループ化, 参照を先頭
     # 紫（逆位）の印は「列の多数の向きと逆に通ったノード」（10-28: 行の向きと逆のノードに付けていたので、全株が同じく逆に通るノード（グラフの格納向きが周囲と逆）が全行紫になった）。3 bp 以下は従来どおり
+    # 10-28 夜: 3 bp 以下も同じ規則に。行の向きと逆というだけで紫にすると、全株が逆に通る短いノード（n76136869 = TT をポリ A の中で AA として通る 2 bp の挿入）が全行紫になった
     def invmaj(r):
-        iv = set(r["inv"]); return [n for n in r["cells"] if ((n in iv) != (rc_votes.get(n, 0) > 0)) if len(seqleaf.get(n, "")) > 3] + [n for n in iv if len(seqleaf.get(n, "")) <= 3]
+        iv = set(r["inv"]); return [n for n in r["cells"] if (n in iv) != (rc_votes.get(n, 0) > 0)]
     order = sorted(range(len(raw)), key=lambda i: (not raw[i]["isref"], raw[i]["seq"], raw[i]["label"]))
     raw = [raw[i] for i in order]
     aid = {}; uniq = []

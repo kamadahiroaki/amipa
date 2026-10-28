@@ -197,8 +197,6 @@ async function loadRange() {
       if (cols && ($('order') as HTMLSelectElement).value === 'tree') hapOrder = treeOrder()   // 木を錨の列（アレル）で作り直す
     }
     updateBase()
-    if (baseAutoState && !($('base') as HTMLButtonElement).disabled) { baseAutoState = false; setTimeout(() => $('base').click(), 0) }
-    if (PARAMS.get('base') === '1' && !baseAuto && !($('base') as HTMLButtonElement).disabled) { baseAuto = true; setTimeout(() => $('base').click(), 0) }   // URL で塩基 MSA まで開く（撮影・再現用）
     genes = []; genesNote = ''; ogroups = []; gdens = null; lof = new Map()
     if (showGenes()) {   // 遺伝子レーン: 通過ごとの遺伝子を座標に写したもの
       draw()
@@ -230,6 +228,10 @@ async function loadRange() {
     } else if (cb.onRange) { rangeMode = 'none'; cb.onRange(null) }
   } catch (e) { showErr('range', e) }
   $('busy').style.display = 'none'; draw()
+  // 塩基の段を自動で開くのは、絞り・塗りを送り終えてから（10-28: 途中で開くと loading が進み、範囲の読み込みが絞りを送らずに抜けて、共有 URL の復元で絞り込みが外れた）
+  if (my !== loading) return
+  if (baseAutoState && !($('base') as HTMLButtonElement).disabled) { baseAutoState = false; setTimeout(() => $('base').click(), 0) }
+  if (PARAMS.get('base') === '1' && !baseAuto && !($('base') as HTMLButtonElement).disabled) { baseAuto = true; setTimeout(() => $('base').click(), 0) }   // URL で塩基 MSA まで開く（撮影・再現用）
 }
 
 // 塗り分け: 主画面に見えているノード（≤5,000）の座標を引き（葉＝錨の x、錨でない葉＝直前の錨の x、スーパーノード＝子孫の bp 多数派）、表示範囲の中をブロックの色、外を薄灰に。
