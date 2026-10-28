@@ -42,7 +42,7 @@ const GZIP_LEVEL = (() => {
 })()
 if (GZIP_LEVEL > 0) app.use(compression({ level: GZIP_LEVEL, threshold: 1024 }))
 
-app.use(express.json({ limit: '1mb' }))   // スナップショット保存用に上限を引き上げ
+app.use(express.json({ limit: '16mb' }))   // スナップショット保存用に上限を引き上げ
 // API レスポンスは全て動的（DB内容依存）で、frontend が独自にタイルキャッシュする。
 // ブラウザの HTTP キャッシュを無効化して、編集のDB反映後に古い応答が返らないようにする。
 app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next() })

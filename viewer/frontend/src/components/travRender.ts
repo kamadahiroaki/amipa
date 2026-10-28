@@ -237,7 +237,7 @@ async function rangeByLocate(my: number, fitNames?: string[]) {
   if (!cb.onRange || !root) return
   const names = cb.getVisibleNames ? cb.getVisibleNames() : []
   if (!names.length) { if (fitNames) cb.onRange({ names: [], colors: [], fit: false, hide: false, direct: true, fitNames }); return }
-  const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: names.slice(0, 5000) }) }); const j = await r.json()
+  const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: names.slice(0, 120000) }) }); const j = await r.json()
   if (my !== loading) return
   const nodes = (j.nodes || []) as { name: string; x: number; kind: number }[]; const inR = nodes.filter(n => n.x >= view[0] && n.x <= view[1]); const withX = nodes.filter(n => n.x >= 0).length
   $('info').textContent = $('info').textContent.replace(/ \| グラフ連動:[^|]*$/, '') + ` | グラフ連動: 見えている ${fmt(nodes.length)}（座標あり ${fmt(withX)}、範囲内 ${fmt(inR.length)}${!j.hasFill ? '、錨でない葉は座標なし' : ''}）`
@@ -1093,7 +1093,7 @@ async function locate(names: string[], single: boolean) {
   if (base) { base = null; $('basegrp').style.display = 'none' }
   // POST で送る（GET だと 2,000 個の名前で URL が長すぎて失敗し、広い範囲の「グラフの範囲を開く」が黙って効かなかった）
   let j: any
-  try { const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: names.slice(0, 5000) }) }); j = await r.json() } catch (e) { $('info').textContent = `グラフ → パネル: 座標の問い合わせに失敗 ${String(e)}`; $('info').style.color = '#c0392b'; return }
+  try { const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: names.slice(0, 120000) }) }); j = await r.json() } catch (e) { $('info').textContent = `グラフ → パネル: 座標の問い合わせに失敗 ${String(e)}`; $('info').style.color = '#c0392b'; return }
   // 座標を持つノードだけ。張りの広いスーパーノード（派閥が過半でない frac < 0.5）は場所を決めないので外す
   const xs: number[] = ((j.nodes || []) as { x: number; kind: number; frac?: number }[]).filter(n => n.x >= 0 && !(n.kind === -2 && (n.frac ?? 1) < 0.5)).map(n => n.x).sort((a, b) => a - b)
   if (!xs.length) { const leaf = names.filter(n => /^n\d+$/.test(n)).length; $('info').textContent = leaf ? `グラフ → パネル: 座標を持つノードが無い（錨でないノード: ${names.slice(0, 3).join(', ')}）` : `グラフ → パネル: グラフが粗い層を描いている（${names.length} 個、例 ${names.slice(0, 2).join(', ')}）。葉の層まで拡大すると座標を引ける`; $('info').style.color = '#c0392b'; return }

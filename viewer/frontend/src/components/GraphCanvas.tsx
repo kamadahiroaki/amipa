@@ -239,6 +239,7 @@ export interface GraphCanvasHandle {
   navigateTo: (cx: number, cy: number, highlightId?: number | null, targetLayer?: number) => void
   // 外接箱を画面に収める。targetLayer があれば、その層のズーム帯 [f(L), f(L+1)) に zoom を収める（MSA の窓の大きさ→表示層）
   fitBounds: (minx: number, miny: number, maxx: number, maxy: number, targetLayer?: number) => void
+  fitSub: () => void   // 絞りモード: 次に届く部分グラフ（範囲のノード）に寄せる（外れ値を除いた矩形）
   getVisibleNames: () => string[]   // 今描いているノードの名前（Traversals の「グラフの範囲を開く」）
   getSelectedNodes: () => NodeData[]
   // フェッチ済み(可視)サブグラフ上で A,B 間のノード名を返す(source/sink なら bubble 内部)。DB 非依存・即時。
@@ -325,6 +326,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const onModeChangeRef  = useRef<((m: boolean) => void) | null>(null)
   const navigateRef          = useRef<((cx: number, cy: number, highlightId?: number | null, targetLayer?: number) => void) | null>(null)
   const fitBoundsRef = useRef<((minx: number, miny: number, maxx: number, maxy: number, targetLayer?: number) => void) | null>(null)
+  const fitSubRef = useRef<(() => void) | null>(null)
   const getSelectedNodesRef  = useRef<(() => NodeData[]) | null>(null)
   const exportSvgRef         = useRef<(() => void) | null>(null)
   const nodesBetweenRef      = useRef<((a: string, b: string) => string[]) | null>(null)
@@ -670,7 +672,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     navigateTo: (cx, cy, highlightId?, targetLayer?) =>
       navigateRef.current?.(cx, cy, highlightId, targetLayer),
     fitBounds: (minx, miny, maxx, maxy, targetLayer?) => fitBoundsRef.current?.(minx, miny, maxx, maxy, targetLayer),
-    getVisibleNames: () => visibleNodesRef.current.map(n => n.node_name).slice(0, 5000),   // 描画のたびに更新される配列から（visibleNamesRef は編集のドラッグ時にしか入らない）
+    fitSub: () => fitSubRef.current?.(),
+    getVisibleNames: () => visibleNodesRef.current.map(n => n.node_name).slice(0, 120000),   // 描画のたびに更新される配列から（visibleNamesRef は編集のドラッグ時にしか入らない）
     getSelectedNodes: () => getSelectedNodesRef.current?.() ?? [],
     nodesBetween: (a, b) => nodesBetweenRef.current?.(a, b) ?? [],
     graphCounts: () => graphCountsRef.current?.() ?? { nodes: 0, edges: 0 },
@@ -991,6 +994,15 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     let subLoading: { key: string; ctrl: AbortController } | null = null
     let subBudgetCap = Infinity   // 予算で上限にした層（絞りモード）。範囲や予算が変わったら解く
     let subBudgetKey = ''
+    // 部分グラフに寄せる（10-28: 葉の座標の矩形で寄せると、表示している層のノードの広がりと違い、範囲が画面の一部にしか写らなかった）。
+    // 表示している層の範囲内ノード（outer を除く）の座標の 5〜95 パーセンタイルの箱を 10% 広げて合わせる。寄せた結果で層が変わったら 1 回だけ寄せ直す
+    let pendingSubFit = false; let subFitTimer: ReturnType<typeof setTimeout> | null = null; let subRefits = 0
+    function fitToSub() { if (!sub) return; const ns = sub.nodes.filter(n => !sub!.outerIds.has(n.id)); if (ns.length < 2) return
+      const xs = ns.map(n => n.xCoord).sort((a, b) => a - b), ys = ns.map(n => n.yCoord).sort((a, b) => a - b); const pc = (a: number[], f: number) => a[Math.round(f * (a.length - 1))]
+      let x0 = pc(xs, .05), x1 = pc(xs, .95), y0 = pc(ys, .05), y1 = pc(ys, .95); const px = (x1 - x0) * .1 + 1e-9, py = (y1 - y0) * .1 + 1e-9
+      fitBoundsRef.current?.(x0 - px, y0 - py, x1 + px, y1 + py)
+      if (subRefits < 1) { subRefits++; pendingSubFit = true } }   // 寄せた後に層が変わって部分グラフが取り直されたら、もう 1 回だけ寄せる（取り直しが無ければ 8 秒で消える）
+    fitSubRef.current = () => { pendingSubFit = true; subRefits = 0; if (subFitTimer) clearTimeout(subFitTimer); subFitTimer = setTimeout(() => { pendingSubFit = false }, 8000) }
     let subBudgetBox: Rect | null = null   // 予算超過を判定した時の画面。画面がこれより十分狭くなるか外れたら判定し直す
     // 木: ノードの帰属（見えている段のブロック番号）。全場所のどれかが見えているブロックに入ればその番号（反復ノードも今の窓の場所で塗る）
     function rankOfName(nm: string, bm: BlockColorMap): number | null {
@@ -1032,6 +1044,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           edges.push(e) }
         sub = { key, layer, nodes: g.nodes, edges, outerNames: new Set(g.outer.map(n => n.node_name)), outerIds: new Set(g.outer.map(n => n.id)) }
         renderRibbonsRef.current?.()   // リボンも部分グラフに合わせて描き直す
+        if (pendingSubFit) { pendingSubFit = false; fitToSub() }
         displayLayer = layer; displayGz = curGridZ()
         if (g.truncated) console.warn(`subgraph L${layer}: 範囲のノードが上限を超えたので先頭 ${g.nodes.length} 件だけ`)
         markDirty(); render()

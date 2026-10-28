@@ -1063,6 +1063,7 @@ export default function App() {
     else if (v.hide) setTrvFilter(v.names.length ? v.names : null)   // 絞り（非表示）は塗り分け・塩基の段の見える範囲とは別に保つ
     else if (v.direct && !v.names.length && v.fitNames) { /* 塗りは前のまま（見えているノードが 0 の瞬間）。寄せるだけ */ } else setTrvRange(v)
     // 寄せる: 外接箱がちょうど収まる倍率で（層は倍率から自動）。/blocks/bbox は名前指定だと layer を常に最深（葉）で返すので、それを渡すと箱の中心の最深層＝何も無い所に寄ってしまう
+    if (v?.hide && v.names.length && v.fitNames && v.fitNames.length) { graphRef.current?.fitSub(); return }   // 絞りモード: 届いた部分グラフ（表示している層の範囲のノード）に寄せる
     const fn = v?.fitNames; if (fn && fn.length && selectedDb) { const my = ++trvRangeReq.current; void fetchBlockBbox(selectedDb, { names: fn.slice(0, 5000) }).then(f => { if (my !== trvRangeReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy) }) }
   }, [selectedDb])
   const trvNodeColors = useMemo(() => { const m = new Map<string, number>(); if (trvRange && trvRange.colors) trvRange.names.forEach((n, i) => { const c = trvRange.colors![i]; if (c != null && c >= 0) m.set(n, c) }); return m }, [trvRange])
