@@ -857,6 +857,7 @@ export default function App() {
       graph: { nodeGreyMode, coverageTextMode, edgeWidthMode, cnvMode, showNodeNames, showNodeBp, showAlignColors, showRefPos,
                maxHb, coverageMin, nodeScale, edgeMin, mapMapq, maxEdgePx, maxEdgeReads, labelScale, labelColor, labelOffset },
       paths: [...selectedPaths.entries()],
+      trav: trvH > 0 ? (travApiRef.current?.getState?.() ?? null) : null,   // Traversals パネル（範囲・段・並び・絞り込みなど）
       panels: { leftW, rightW, topH, bottomH, msaH, blkH, showPaths, showOverlays },
       ribbon: { level: ribbonLevel, sel: [...ribbonSel.entries()] },
       align: { rows: alignRows, activeRowId: activeAlignRowId },
@@ -866,6 +867,7 @@ export default function App() {
   // スナップショットを適用（初期ロード時に ?s=id から呼ぶ。viewはURL経由でGraphCanvasが復元）
   function applySnapshot(s: any) {
     if (!s || typeof s !== 'object') return
+    if (s.trav && typeof s.trav === 'object') { pendingTravState.current = s.trav; setTrvH(h => (h > 0 ? h : 360)); if (travApiRef.current) { const st = s.trav; pendingTravState.current = null; travApiRef.current.setState(st) } }
     const g = s.graph ?? {}
     setNodeGreyMode(!!g.nodeGreyMode)
     // Edge width: 新形式 edgeWidthMode を優先。旧共有URL(breadthMode/detailDepthMode)は paths/reads に読み替え。
@@ -1050,6 +1052,7 @@ export default function App() {
   }, [showHint])
   // Traversals パネル: グラフをその範囲のノード集合に絞る（葉の名前。GraphCanvas が /api/blocks/subgraph の POST で層に直す）、グラフ → パネル（locateNodes / openNames）
   const travApiRef = useRef<TravHandle | null>(null)
+  const pendingTravState = useRef<any>(null)   // Share view の復元: パネルが用意できたら適用する Traversals の状態
   const [trvColors, setTrvColors] = useState<BlockColorMap | null>(null)
   const onTravFilter = useCallback((sel: { names: string[] } | null) => {
     setTrvColors(sel && sel.names.length ? { maxSpan: 1, contigs: new Map(), db: selectedDb ?? undefined, filter: true, filterSel: { names: sel.names } } : null)
@@ -3234,7 +3237,7 @@ export default function App() {
             getVisibleNames={() => graphRef.current?.getVisibleNames?.() ?? []}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
             onGraphRange={onTravGraphRange}
-            onReady={h => { travApiRef.current = h; if (!h) { setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null) } }}
+            onReady={h => { travApiRef.current = h; if (h && pendingTravState.current) { const st = pendingTravState.current; pendingTravState.current = null; setTimeout(() => h.setState(st), 1500) } if (!h) { setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null) } }}
             onHoverNodes={onTravHover}
             hapMarks={blkHapMarks}
           />
