@@ -444,6 +444,54 @@ def main():
             lab += ":" + r["ctg"][-8:]
         r["label"] = lab + ("" if not r["k"] else " ·%d" % r["k"])
 
+    # ---- リード（10-28）: 要求に reads があり、サイドカー <db>.reads があれば、窓のノード（Sall）を通るリードを行として足す ----
+    #   各リードの GAF の path を窓のノードの連なり（窓のノードを含む最初〜最後）で切り、ノードごとに cs から「格納向きの文字列」を作る
+    #   （一致＝ノードの塩基、置換＝リードの塩基（小文字でなく大文字）、欠失＝'-'、リードが掛からない所＝'.'）。挿入は数だけ記録（列は足さない）
+    read_meta = []
+    rq = (req.get("reads") if RNG is not None else None) or None
+    if rq:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import reads_query as RQ
+            rcon = sqlite3.connect("file:%s?mode=ro" % args.db, uri=True)
+            if RQ.attach_sidecar(rcon, args.db):
+                maxr = int(rq.get("max", 60)); want = set(rq.get("samples") or [])
+                getr, sname = RQ.open_readers(rcon, args.db)
+                win_ids = set(int(id_map[int(t) - 1]) for t in Sall.tolist()) if 'Sall' in dir() else set()
+                cand = {}
+                probe = sorted(win_ids)[:: max(1, len(win_ids) // 40)]        # 窓のノードを 40 個ほど標本してリードを集める
+                for gid in probe:
+                    for aid in RQ._node_aln_ids(rcon, gid)[:2000]: cand[aid] = cand.get(aid, 0) + 1
+                aids = sorted(cand, key=lambda a: -cand[a])[:max(1, maxr * 4)]
+                rows_ = rcon.execute("SELECT aln_id, sample_no, voff, read_name FROM rd.read_aln WHERE aln_id IN (%s)" % ",".join("?" * len(aids)), aids).fetchall() if aids else []
+                per = {}
+                for aid, sn, vo, rn in rows_:
+                    if want and sname.get(sn) not in want: continue
+                    per.setdefault(sn, []).append((aid, vo, rn))
+                pick = []
+                for sn, lst in per.items(): pick += [(sn, a, v, rn) for a, v, rn in sorted(lst, key=lambda e: -cand[e[0]])[:maxr]]
+                lines = RQ.fetch_lines(getr, [(sn, a, v) for sn, a, v, _ in pick])
+                need_d = {}
+                for (sn, aid, line), (_, _, _, rn) in zip(lines, pick):
+                    d = RQ.parse_gaf_line(line)
+                    if not d or not d.get("cs"): continue
+                    toks = [(int(m.group(2)), m.group(1) == '>') for m in RQ.TOK.finditer(d["path"])]
+                    inw = [i for i, (gid, _o) in enumerate(toks) if gid in win_ids]
+                    if not inw: continue
+                    read_meta.append(dict(sn=sn, sample=sname.get(sn, str(sn)), name=d["read_name"], mapq=d["mapq"], toks=toks, i0=inw[0], i1=inw[-1], d=d))
+                for rm in read_meta:
+                    for gid, _o in rm["toks"]: need_d[gid] = None
+                rcon.close()
+                if read_meta:
+                    dmap = dense_of(need_d.keys())
+                    for rm in read_meta:
+                        ids_ = []; ors_ = []
+                        for gid, o in rm["toks"][rm["i0"]:rm["i1"] + 1]:
+                            if gid in dmap: ids_.append(dmap[gid]); ors_.append(1 if o else 0)
+                        if not ids_: continue
+                        nm = rm["name"]; short = nm.split("/")[1] if nm.count("/") >= 2 else nm[-10:]
+                        runs.append(dict(label="▸" + rm["sample"] + ":" + short, samp=rm["sample"], lab="▸" + rm["sample"] + ":" + short, ctg="", path=nm, isref=False, ids=ids_, ors=ors_, pi=None, brk=[], k=0, cend=(False, False), rd=rm))
+        except Exception as e_:
+            print("reads: " + repr(e_), file=sys.stderr)
     need = sorted({nname(t) for r in runs for t in r["ids"]}, key=lambda n: int(n[1:]))
     COMP = str.maketrans("ACGTNacgtn", "TGCANtgcan")
     def rc(s): return s.translate(COMP)[::-1]
@@ -471,6 +519,42 @@ def main():
     #   比較の基準鎖は **その行自身の優勢向き**(bp 加重の多数決=長い共有ノードが決める)。
     #   優勢向きと違うステップだけ逆相補する。→ 逆走 contig は全体が揃って参照と一致し、
     #   局所的に反転しているノードだけが差分として出る(それが生物学的な実体)。
+    # リードの行のノードごとの文字列（格納向き）。パス座標で cs を歩き、ノード [off, off+seg) に一致・置換・欠失・挿入を落とす
+    for r in runs:
+        rm = r.get("rd")
+        if not rm: continue
+        d = rm["d"]; ps, pe = d["path_start"], d["path_end"]; toks = rm["toks"]
+        offs = []; off = 0
+        for gid, o in toks:
+            L_ = len(seqleaf.get("n%d" % gid, "")); offs.append((gid, o, off, L_)); off += L_
+        lo_ = offs[rm["i0"]][2]; hi_ = offs[rm["i1"]][2] + offs[rm["i1"]][3]
+        buf = {}; ins = {}
+        for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]: buf[(gid, of_)] = ["."] * L_
+        def put(pos, ch):
+            for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]:
+                if of_ <= pos < of_ + L_:
+                    sq = seqleaf.get("n%d" % gid, ""); base = (sq if o else sq.translate(COMP)[::-1])
+                    buf[(gid, of_)][pos - of_] = base[pos - of_] if ch is None else ch; return
+        pos = ps
+        for m_ in re.finditer(r'(:\d+)|(\*[a-z][a-z])|(-[a-z]+)|(\+[a-z]+)', d["cs"].lower()):
+            t = m_.group(0)
+            if t[0] == ':':
+                L = int(t[1:])
+                for q in range(max(pos, lo_), min(pos + L, hi_)): put(q, None)
+                pos += L
+            elif t[0] == '*':
+                if lo_ <= pos < hi_: put(pos, t[2].upper())
+                pos += 1
+            elif t[0] == '-':
+                for q in range(max(pos, lo_), min(pos + len(t) - 1, hi_)): put(q, "-")
+                pos += len(t) - 1
+            else:
+                if lo_ <= pos < hi_: ins[pos] = ins.get(pos, 0) + len(t) - 1
+            if pos >= hi_: break
+        rdc = {}
+        for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]:
+            wstr = "".join(buf[(gid, of_)]); rdc["n%d" % gid] = wstr if o else wstr.translate(COMP)[::-1]
+        r["rdcells"] = rdc; r["nins"] = sum(ins.values())
     raw = []; dense_of_name = {}; rc_votes = {}   # ノードが表示で逆相補されている行の多数（列の塩基オフセットを格納向きに直すため）
     # 行の向き: 合意列があれば「歩きが合意列を減らす向きに進むか」で決める（2026-10-18）。格納向きの bp の多数決だと、局所的に長い反転を
     # 含む逆鎖のコンティグが順向きと判定され、行が逆に読まれた（chr21 n73207575 の CA が半数の株で TG、573/574 が並列に見えず直列に）
@@ -515,7 +599,7 @@ def main():
         for n, o in zip(nodes, ors):
             if n in cells:
                 continue
-            s = seqleaf.get(n, "?")
+            s = r["rdcells"].get(n, seqleaf.get(n, "?")) if r.get("rdcells") else seqleaf.get(n, "?")
             if (not o) != rev:              # ステップ向きが行の表示の向きと違う = 局所反転
                 s = rc(s); inv.append(n); rc_votes[n] = rc_votes.get(n, 0) + 1
             else: rc_votes[n] = rc_votes.get(n, 0) - 1
@@ -523,7 +607,7 @@ def main():
         ce = r.get("cend", (False, False))
         brk_ = [[nodes[i - 1], nodes[i], int(n_)] for i, n_ in r.get("brk", []) if 0 < i < len(nodes)]   # 継ぎ目: [前のノード, 後のノード, 飛ばしたトークン数]
         hseq_ = "".join((seqleaf.get(n_, "N") if o_ else rc(seqleaf.get(n_, "N"))) for n_, o_ in zip(nodes, ors))   # その株のコンティグの向きの実際の配列（書き出し用）
-        raw.append(dict(hseq=hseq_, samp=r["samp"], label=r["label"], path=r["path"],
+        raw.append(dict(rdinfo=(dict(sample=r["rd"]["sample"], name=r["rd"]["name"], mapq=r["rd"]["mapq"], nins=r.get("nins", 0)) if r.get("rd") else None), hseq=hseq_, samp=r["samp"], label=r["label"], path=r["path"],
                         strand=("-" if rev else "+"), cells=cells, inv=inv, ends=([ce[1], ce[0]] if rev else [ce[0], ce[1]]),   # 表示の左端・右端がコンティグの端か
                         nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"], brk=brk_))
 
@@ -820,7 +904,7 @@ def main():
                cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl", "cp") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
-                      "inv": invmaj(r), "hseq": r.get("hseq", ""), "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
+                      "inv": invmaj(r), "hseq": r.get("hseq", ""), "read": r.get("rdinfo"), "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
     print(json.dumps(out))
 
 if __name__ == "__main__":

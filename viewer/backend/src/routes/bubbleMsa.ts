@@ -86,7 +86,7 @@ bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
   if (b.cap != null && Number.isFinite(Number(b.cap))) argv.push('--cap', String(Math.max(0, Math.floor(Number(b.cap)))))   // 0 = 畳まない（Blocks パネルは画面側で畳む）
   if (b.maxLeaves != null && Number.isFinite(Number(b.maxLeaves))) argv.push('--max-leaves', String(Math.max(1, Math.min(12000, Math.floor(Number(b.maxLeaves))))))   // 葉の上限（既定 400。画面は 12,000 を渡す: 1,200 列 ≈ 13 kb を一度に。3,000 列で計算 2 秒・5 MB）
   const t0 = Date.now()
-  runScript(SCRIPT, argv, JSON.stringify({ ranges, label: b.label ?? 'Blocks' }), TIMEOUT_MS).then(r => {
+  runScript(SCRIPT, argv, JSON.stringify({ ranges, label: b.label ?? 'Blocks', ...(b.reads && typeof b.reads === 'object' ? { reads: b.reads } : {}) }), TIMEOUT_MS).then(r => {
     if (!r.ok) { res.json({ error: 'MSA 抽出に失敗: ' + r.err.slice(-400) }); return }
     try { const o = JSON.parse(r.out); if (o && typeof o === 'object' && !o.error) o.ms = Date.now() - t0; res.json(o) }
     catch (e) { res.json({ error: 'MSA 出力を解釈できません: ' + (r.err ? r.err.slice(-400) : String(e)) }) }

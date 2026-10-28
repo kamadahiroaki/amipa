@@ -12,7 +12,7 @@ export const travRouter = Router()
 travRouter.get('/trav/root', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
-  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travRoot(t)) } catch (err) { res.status(500).json({ error: String(err) }) }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } { const r: any = travRoot(t); try { const fs = require('fs'); const base = path.join(getDbDir(), path.basename(q.db)); r.hasReads = fs.existsSync(base + '.reads') || (() => { try { return fs.existsSync(fs.realpathSync(base) + '.reads') } catch { return false } })() } catch { /* */ } res.json(r) } } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 travRouter.get('/trav/range', (req, res) => {
