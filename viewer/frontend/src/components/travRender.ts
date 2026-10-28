@@ -223,8 +223,9 @@ async function loadRange() {
         if (my !== loading) return
         const jf = await rf.json(); if (!(jf.tooBig || jf.error)) { setNames = jf.names as string[]; if (jf.truncated) $('info').textContent += ` | 範囲のノード ${fmt(jf.n)} で打ち切り` } else if (hideOn) $('info').textContent += ` | グラフを絞る: ${jf.error || '範囲が広すぎる'}`
       }
-      if (hideOn && setNames) { rangeMode = 'set'; cb.onRange({ names: setNames, colors: null, fit: false, hide: true, fitNames }) }
-      else { rangeMode = 'locate'; await rangeByLocate(my, fitNames) }
+      // 絞り（非表示）と塗り分けは別の通り道（10-28: 絞ると塗りが消え、塩基の段の見える範囲を送ると絞りが外れて上の層に戻っていた）
+      if (hideOn && setNames) { rangeMode = 'set'; cb.onRange({ names: setNames, colors: null, fit: false, hide: true, fitNames }); await rangeByLocate(my) }
+      else { rangeMode = 'locate'; cb.onRange({ names: [], colors: null, fit: false, hide: true }); await rangeByLocate(my, fitNames) }   // hide＋空＝絞りを外す
     } else if (cb.onRange) { rangeMode = 'none'; cb.onRange(null) }
   } catch (e) { showErr('range', e) }
   $('busy').style.display = 'none'; draw()
@@ -1143,6 +1144,6 @@ function baseExport(kind: string, which: string) {
   a.download = `${db.replace(/\.db$/, '')}_${Math.floor(view[0])}-${Math.ceil(view[1])}_${kind}.fa`; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove() }, 1000)
 }
 $('bexp').addEventListener('change', () => { const el = $('bexp') as HTMLSelectElement; const k = el.value; el.value = ''; if (k) baseExport(k, ($('bexpw') as HTMLSelectElement).value) })
-return { setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; draw() }, graphMoved() { if (rangeMode !== 'locate' || base) return; if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading) }, 500) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { loading++; window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
+return { setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; draw() }, graphMoved() { if (rangeMode === 'none' || base) return; if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading) }, 500) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { loading++; window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
 
 }

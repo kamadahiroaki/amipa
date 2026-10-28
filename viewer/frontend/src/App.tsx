@@ -1053,25 +1053,29 @@ export default function App() {
   // Traversals の表示範囲: 範囲のノード（葉の名前）→ 表示している層の名前に直して、範囲外を薄灰（hide なら非表示）、範囲内はブロックの色で塗る、寄せる
   const [trvRange, setTrvRange] = useState<{ names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null>(null)
   const trvRangeReq = useRef(0)
+  const [trvFilter, setTrvFilter] = useState<string[] | null>(null)   // Traversals の「グラフを絞る」の集合（葉の名前）
   const onTravRange = useCallback((v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null) => {
-    if (v && v.direct && !v.names.length && v.fitNames) { /* 塗りは前のまま（見えているノードが 0 の瞬間）。寄せるだけ */ } else setTrvRange(v)
+    if (!v) { setTrvRange(null); setTrvFilter(null) }
+    else if (v.hide) setTrvFilter(v.names.length ? v.names : null)   // 絞り（非表示）は塗り分け・塩基の段の見える範囲とは別に保つ
+    else if (v.direct && !v.names.length && v.fitNames) { /* 塗りは前のまま（見えているノードが 0 の瞬間）。寄せるだけ */ } else setTrvRange(v)
     // 寄せる: 外接箱がちょうど収まる倍率で（層は倍率から自動）。/blocks/bbox は名前指定だと layer を常に最深（葉）で返すので、それを渡すと箱の中心の最深層＝何も無い所に寄ってしまう
     const fn = v?.fitNames; if (fn && fn.length && selectedDb) { const my = ++trvRangeReq.current; void fetchBlockBbox(selectedDb, { names: fn.slice(0, 5000) }).then(f => { if (my !== trvRangeReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy) }) }
   }, [selectedDb])
   const trvNodeColors = useMemo(() => { const m = new Map<string, number>(); if (trvRange && trvRange.colors) trvRange.names.forEach((n, i) => { const c = trvRange.colors![i]; if (c != null && c >= 0) m.set(n, c) }); return m }, [trvRange])
   useEffect(() => {   // 範囲の葉の名前 → 表示している層の名前（/api/blocks/subgraph の名前だけ）。層が変わるたびに引き直す
-    if (!trvRange || !selectedDb) { setTrvColors(null); return }
-    if (trvRange.hide) { setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, filter: true, filterSel: { names: trvRange.names } }); return }
-    if (trvRange.direct) { setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) }); return }   // 名前はグラフが描いている層のものなのでそのまま
+    const withF = (m: BlockColorMap): BlockColorMap => trvFilter ? { ...m, filter: true, filterSel: { names: trvFilter } } : m
+    if (!selectedDb) { setTrvColors(null); return }
+    if (!trvRange) { setTrvColors(trvFilter ? withF({ maxSpan: 1, contigs: new Map(), db: selectedDb }) : null); return }
+    if (trvRange.direct) { setTrvColors(withF({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) })); return }   // 名前はグラフが描いている層のものなのでそのまま
     let live = true
     fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: selectedDb, layer: mapLayer, names: trvRange.names, namesOnly: true }) })
-      .then(r => r.json()).then(j => { if (!live) return; const names: string[] = Array.isArray(j?.names) ? j.names : trvRange.names; setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set([...names, ...trvRange.names]) }) })
-      .catch(() => { if (live) setTrvColors({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) }) })
+      .then(r => r.json()).then(j => { if (!live) return; const names: string[] = Array.isArray(j?.names) ? j.names : trvRange.names; setTrvColors(withF({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set([...names, ...trvRange.names]) })) })
+      .catch(() => { if (live) setTrvColors(withF({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) })) })
     return () => { live = false }
-  }, [trvRange, selectedDb, mapLayer])
+  }, [trvRange, trvFilter, selectedDb, mapLayer])
   // グラフの塗りや重ね表示を初期値に戻す（Traversals／Blocks の範囲、ホバー、MSA の選択、洪水、重ね着色、辺の太さ、リボン、パス選択）
   const resetGraphView = useCallback(() => {
-    setTrvRange(null); setTrvColors(null); setTrvHov(null); setBlkColors(null); setBlkHov(null); setBlkVis(null); setMsaNodeSel([]); setMsaHover(null)
+    setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null); setBlkColors(null); setBlkHov(null); setBlkVis(null); setMsaNodeSel([]); setMsaHover(null)
     setFloodMode(false); setFloodResult(null); setNodeGreyMode(false); setBandMode(false); setRegionMode(false); setGeneMode(false); setEdgeWidthMode('off'); setShowAlignColors(false)
     setRibbonSel(new Map()); setSelectedPaths(new Map())
     travApiRef.current?.resetLinks?.()
@@ -2375,8 +2379,8 @@ export default function App() {
           {selectedDb && maxLayer !== null && trvColors?.filter && (
             <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)', zIndex: 20, background: '#e7f5ff', border: '1px solid #74c0fc', borderRadius: 4, padding: '2px 8px', fontSize: 12, color: '#1864ab' }}
               title="Traversals パネルの「グラフを絞る」が入っているので、表示範囲に属するノードとパスリボンだけを描いている">
-              Traversals の範囲に絞り込み中{lodClamp ? `（予算により layer ${lodClamp.served}）` : ''}
-              {' · '}<span style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }} onClick={() => { setTrvRange(null); setTrvColors(null) }}>解除</span>
+              Traversals の範囲に絞り込み中{lodClamp ? `（表示予算超過のため layer ${lodClamp.served}）` : ''}
+              {' · '}<span style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }} onClick={() => { setTrvFilter(null) }}>解除</span>
             </div>
           )}
           {selectedDb && maxLayer !== null
@@ -2630,7 +2634,7 @@ export default function App() {
                   {lodClamp && (
                     <div style={{ background: '#fff4e6', border: '1px solid #ffd8a8', borderRadius: 3,
                       padding: '3px 5px', fontSize: 11, color: '#a8620a', lineHeight: 1.35 }}>
-                      密すぎて <b>layer {lodClamp.served}</b> を表示中（要求 {lodClamp.requested}）
+                      表示予算超過のため <b>layer {lodClamp.served}</b> を表示中（拡大に応じた層は {lodClamp.requested}）
                       {hapIdx && (
                         <>
                           {' · '}
@@ -3225,7 +3229,7 @@ export default function App() {
             getVisibleNames={() => graphRef.current?.getVisibleNames?.() ?? []}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
             onGraphRange={onTravGraphRange}
-            onReady={h => { travApiRef.current = h; if (!h) { setTrvRange(null); setTrvColors(null); setTrvHov(null) } }}
+            onReady={h => { travApiRef.current = h; if (!h) { setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null) } }}
             onHoverNodes={onTravHover}
             hapMarks={blkHapMarks}
           />
