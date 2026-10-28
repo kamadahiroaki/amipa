@@ -989,6 +989,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     // 範囲外の端点（outer）は隠し、その辺は橙の切れ端になる（hiddenNodeNames 経由）。
     let sub: { key: string; layer: number; nodes: NodeData[]; edges: EdgeData[]; outerNames: Set<string>; outerIds: Set<number> } | null = null
     let subLoading: { key: string; ctrl: AbortController } | null = null
+    let subBudgetCap = Infinity   // 予算で上限にした層（絞りモード）。範囲や予算が変わったら解く
+    let subBudgetKey = ''
     // 木: ノードの帰属（見えている段のブロック番号）。全場所のどれかが見えているブロックに入ればその番号（反復ノードも今の窓の場所で塗る）
     function rankOfName(nm: string, bm: BlockColorMap): number | null {
       const pl = nodePlacesRef.current.get(nm)
@@ -1012,10 +1014,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       if (subLoading && subLoading.key === key) return
       if (subLoading) { subLoading.ctrl.abort(); subLoading = null }
       const sel = subSel()!; const ctrl = new AbortController(); subLoading = { key, ctrl }
-      fetchBlockSubgraph(dbFile, layer, sel, ctrl.signal).then(r => {
+      // 予算（取得上限 maxRows）: 部分グラフも上限で打ち切って取り、打ち切られたら 1 段粗い層で取り直す（10-28。範囲の外は数えないので、同じ予算でより深い層に降りられる）
+      const mr = maxRowsRef.current || 0
+      fetchBlockSubgraph(dbFile, layer, sel, ctrl.signal, mr || undefined).then(r => {
         if (!subLoading || subLoading.key !== key) return
         subLoading = null
         if (!r || ('error' in r && r.error)) { console.warn('subgraph:', (r as any)?.error); return }
+        if (mr && (r as BlockSubgraph).truncated && layer > 0) { onLodClampRef.current?.({ requested: chooseLayerByZoom(world.scale.x), served: layer - 1 }); subBudgetCap = layer - 1; ensureSubgraph(layer - 1); return }
         const g = r as BlockSubgraph
         const byName = new Map<string, NodeData>()
         for (const n of g.nodes) { n.layer = layer; byName.set(n.node_name, n); nodeStore.set(n.id, n) }
@@ -2626,7 +2631,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       }
 
       currentLayer = layer
-      if (subKeyFor(layer)) { ensureSubgraph(layer); return }   // 絞りモード: 範囲駆動で取る（タイルは使わない）
+      if (subKeyFor(layer)) { const sk = `${blockSelKey(subSel()!)}|${maxRowsRef.current || 0}`; if (sk !== subBudgetKey) { subBudgetKey = sk; subBudgetCap = Infinity } const L2 = Math.min(layer, subBudgetCap); currentLayer = L2; onLodClampRef.current?.(L2 < layer ? { requested: layer, served: L2 } : null); ensureSubgraph(L2); return }   // 絞りモード: 範囲駆動で取る（タイルは使わない）。予算で粗くした層は範囲・予算が変わるまで保つ
       const prefetchRect = expandRect(viewport, FETCH_MARGIN)
       const gz = curGridZ()   // 格子解像度はカメラズーム基準（内容層 layer とは独立）
       // 先読み矩形から外れた／層が変わった取得は、この時点で用済み。abort してキュー待ちを減らす。
@@ -2709,7 +2714,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const viewport = getViewport()
       const L = chooseLayerByZoom(world.scale.x)
       const mr = maxRowsRef.current
-      if (!mr) {
+      if (!mr || subOn()) {   // 絞りモードは /pick_layer（範囲外も数える）を使わず、部分グラフの取得で予算を判定する
         onLodClampRef.current?.(null)
         checkAndFetch(viewport, L)   // currentLayer を L に更新しタイル取得
         maybePromote()               // タイルが揃うまで旧層維持、揃えばシームレス差し替え

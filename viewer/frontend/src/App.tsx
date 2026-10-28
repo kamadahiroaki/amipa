@@ -539,12 +539,15 @@ export default function App() {
   // LOD 安全弁: 1 リクエストで受け取る行数の上限（= 描いても読めない枚数）。**UX 値なので client が決める**。
   // 密領域に入ると backend が上位層へ clamp し、その旨が lodClamp に入る（絞り込みへの導線を出す）。
   // 0 = 安全弁 OFF（従来どおり）。
-  const MAXROWS_OPTS = [0, 5000, 20000, 50000] as const
+  const MAXROWS_OPTS = [5000, 20000, 50000, 100000, 0] as const
   // 既定を一旦 0(無制限=安全弁 OFF) にしている。密領域で clamp されずに素の重さを見るため。
   // ⚠ この状態では L_safe が働かず、残る防波堤は backend の時間ガード(FETCH_MS=15s)だけ。
   //   しかもその時間チェックは 1024 行ごとなので、1 行あたりが病的に遅い環境（WG cold の実測で
   //   最初の 1024 行に 280 秒）では発火が遅れる。常用の既定に戻すなら 20000。
-  const [maxRows, setMaxRows] = useState<number>(0)
+  // 10-28: 予算（表示グリフの上限）を有効にし、既定 20,000。選択はブラウザに保存してセッションを越えて保つ（閲覧者ごと）。
+  //   超える範囲は backend の /pick_layer が粗い層を選ぶ（欠けずに簡略化）。絞りモードは部分グラフを上限で取り、打ち切られたら 1 段粗い層
+  const [maxRows, setMaxRowsRaw] = useState<number>(() => { try { const v = localStorage.getItem('amipa.maxRows'); if (v != null && Number.isFinite(Number(v))) return Number(v) } catch { /* 保存できない環境 */ } return 20000 })
+  const setMaxRows = useCallback((v: number) => { setMaxRowsRaw(v); try { localStorage.setItem('amipa.maxRows', String(v)) } catch { /* 保存できない環境 */ } }, [])
   const [lodClamp, setLodClamp] =
     useState<{ requested: number; served: number; counts?: Record<string, number> } | null>(null)
   // 選択群 → backend の sel= に渡す contig_id レンジ列。絞り込み OFF・索引無し・選択無しなら空文字。
@@ -2369,6 +2372,13 @@ export default function App() {
               {hint.text}
             </div>
           )}
+          {selectedDb && maxLayer !== null && trvColors?.filter && (
+            <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)', zIndex: 20, background: '#e7f5ff', border: '1px solid #74c0fc', borderRadius: 4, padding: '2px 8px', fontSize: 12, color: '#1864ab' }}
+              title="Traversals パネルの「グラフを絞る」が入っているので、表示範囲に属するノードとパスリボンだけを描いている">
+              Traversals の範囲に絞り込み中{lodClamp ? `（予算により layer ${lodClamp.served}）` : ''}
+              {' · '}<span style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }} onClick={() => { setTrvRange(null); setTrvColors(null) }}>解除</span>
+            </div>
+          )}
           {selectedDb && maxLayer !== null
             ? <>
                 <GraphCanvas
@@ -2643,7 +2653,7 @@ export default function App() {
                   {/* 取得上限（UX 値）。遅い環境や重い端末では下げる。0=無制限（安全弁 OFF）。 */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11,
                     color: '#868e96' }}>
-                    <span title="1 リクエストで受け取る最大グリフ数。これを超える層は自動で 1 段上に落ちる（UX 上限なので端末に合わせて調整）">上限</span>
+                    <span title="表示するグリフ（ノード）の予算。範囲がこれを超えるときは粗い層（簡略化した表示）に切り替える。選択はこのブラウザに保存される">予算</span>
                     <select value={maxRows} onChange={e => setMaxRows(Number(e.target.value))}
                       style={{ flex: 1, fontSize: 11 }}>
                       {MAXROWS_OPTS.map(v => (
