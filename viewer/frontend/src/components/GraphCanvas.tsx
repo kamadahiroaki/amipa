@@ -1377,7 +1377,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           return true
         })
         // base: 全エッジ 1px(native:true=深層でも消えない。パス多重度 0/低もここで見える)
-        edgeLayer.lineStyle(1, 0xced4da, 0.55, 0.5, true)
+        edgeLayer.lineStyle(1, 0xced4da, blockColorsRef.current ? 0.3 : 0.55, 0.5, true)   // ブロック色で塗っているときは辺を薄く（塗りが辺の灰に埋もれる）
         for (const e of be) { const [sx, sy, ex, ey] = edgePts(e); edgeLayer.moveTo(sx, sy); edgeLayer.lineTo(ex, ey) }
         edgeLayer.lineStyle(0)
         // 太さ=breadth 線形・上限=一定ノード厚み・塗りクアッド。高 breadth を後に描いて上へ。
@@ -1593,7 +1593,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             nodeLayer.lineStyle(2 / zoom, 0xf08c00, 1.0, 0.5, true)
             nodeLayer.beginFill(fillColor === 0x228be6 ? 0x74c0fc : fillColor, 1.0)
           } else {
-            nodeLayer.lineStyle(0.8 / zoom, lineColor, shouldGrey ? 0.4 : 0.6, 0.5, true)
+            // ブロック色で塗るときの枠: 線は native（常に 1 px）なので、画面で細いノードでは枠が塗りの大半を占めて全体が暗く濁る
+            // （10-28: 多数のノードでブロック色が見分けにくい）。短辺 8 px 未満は枠なし、それ以上も塗りに近い色で薄く
+            const colored = blockColor != null && !shouldGrey && floodFill == null && linkColor == null
+            if (colored && 2 * hh * zoom < 8) nodeLayer.lineStyle(0)
+            else if (colored) nodeLayer.lineStyle(0.8 / zoom, darken(blockColor!, 0.8), 0.5, 0.5, true)
+            else nodeLayer.lineStyle(0.8 / zoom, lineColor, shouldGrey ? 0.4 : 0.6, 0.5, true)
             nodeLayer.beginFill(fillColor, shouldGrey ? 0.7 : 1.0)
           }
           // 5点: side0(-hw,5'/enter)側は平ら。side1(+hw,0)=3'/exit=次ノードへの接続点を尖端(5点目)にし、
