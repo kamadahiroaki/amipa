@@ -359,7 +359,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
         const chs = qch.all(g.gid) as { type: string; phase: string; strand: string; parent: number | null; start: number; end: number; s0: number; e0: number; so: number; eo: number }[]
         for (const c of chs) { const kind = /cds/i.test(c.type) ? 'cds' : /utr/i.test(c.type) ? 'utr' : 'exon'; const a = toX(c.s0), b = toX(c.e0); const lo = Math.round(Math.min(a, b)), hi = Math.round(Math.max(a, b)); if (!per.has(kind)) per.set(kind, []); per.get(kind)!.push([lo, hi]) }
         // 塩基の段用: 遺伝子（と CDS の片）のトークンのノード名。窓に当たる分だけ（通過のトークン区間の中）、1 遺伝子 6,000 個まで
-        if (withNodes && idmapG && out.length < 300) {
+        if (withNodes && idmapG && out.length < 5000) {
           const ta = Math.max(s0, g.s0), tb = Math.min(e0, g.e0); const toks = dist.read(pi, ta, Math.min(tb, ta + 6000)); const names: string[] = []; for (let k = 0; k < toks.length; k++) names.push('n' + idmapG[toks[k] - 1].toString())
           // CDS の片は転写産物 1 本（親 parent ごとに合計 bp が最大のもの）に絞る。GENCODE は転写産物が複数あり、混ぜると読み枠が壊れて全行が変異・終止になる（APOBEC3B は 4 転写産物 28 片）
           const byParent = new Map<string, { len: number; parts: typeof chs }>(); for (const c of chs) { if (!/cds/i.test(c.type)) continue; const k = c.parent == null ? '' : String(c.parent); const e = byParent.get(k) || { len: 0, parts: [] }; e.len += Math.max(0, c.end - c.start + 1); e.parts.push(c); byParent.set(k, e) }

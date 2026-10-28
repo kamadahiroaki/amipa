@@ -495,7 +495,7 @@ function drawBaseCore() {
       const w = sp[1] - sp[0]; if (w >= 10) { g.fillStyle = '#fff'; g.beginPath(); if (right) { g.moveTo(sp[1] - 5, y0 + 2); g.lineTo(sp[1] - 1, y0 + OGH / 2); g.lineTo(sp[1] - 5, y0 + OGH - 2) } else { g.moveTo(sp[0] + 5, y0 + 2); g.lineTo(sp[0] + 1, y0 + OGH / 2); g.lineTo(sp[0] + 5, y0 + OGH - 2) } g.fill() }
       const nm = bg.g.name || bg.g.locus || ''; g.font = '9px system-ui'; const tw = g.measureText(nm).width; if (nm && w >= tw + 12) { g.fillStyle = '#111'; g.fillText(nm, sp[0] + (right ? 3 : 7), y0 + OGH - 4) } }
     B.lines.forEach((ln, k) => { const gs = B.genesByHid.get(ln.hid); if (!gs) return; const y = TOP + k * ROW + ROW - 4
-      for (const bg of gs) { const col = geneColor(bg.g); for (let ci = bg.c0; ci <= bg.c1; ci++) { if (!bg.cols[ci]) continue; const r = xOfCol(ci); if (!r || r[1] < B.sx || r[0] > B.sx + Wb) continue; const kd = bg.kindOf[ci]; g.fillStyle = col; g.globalAlpha = kd === 1 ? 1 : kd === 2 ? .6 : .3; g.fillRect(r[0], y + (kd === 1 ? 0 : 1), Math.max(1, r[1] - r[0]), kd === 1 ? 3 : kd === 2 ? 2 : 1) } }
+      for (const bg of gs) { const col = geneColor(bg.g); for (let ci = bg.c0; ci <= bg.c1; ci++) { if (!bg.cols[ci]) continue; const r = xOfCol(ci); if (!r || r[1] < B.sx || r[0] > B.sx + Wb) continue; const kd = bg.kindOf[ci]; g.fillStyle = col; g.globalAlpha = kd === 1 ? 1 : kd === 2 ? .55 : .2; g.fillRect(r[0], y, Math.max(1, r[1] - r[0]), 3) } }   // 太さは一定（10-28）。CDS＝濃い、エキソン・UTR＝中、イントロン＝薄い
       g.globalAlpha = 1 })
   }
   if (B.hoverCi != null && B.colItem[B.hoverCi] >= 0) { const kk = B.colItem[B.hoverCi]; g.fillStyle = 'rgba(13,148,136,.10)'; g.fillRect(B.xs[kk], 0, B.xs[kk + 1] - B.xs[kk], H) }
