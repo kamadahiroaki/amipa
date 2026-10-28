@@ -674,7 +674,8 @@ def main():
         pools = []
         for n in members:
             for pl in pools:
-                if not (present[n] & pl[1]): pl[0].append(n); pl[1] |= present[n]; break
+                # 長さが違うアレルは同じ列群に重ねない（10-28: 短い方が長い方の前半に揃い、合意が 2 ノードの混合になって長い方の前半だけミスマッチに見えた）
+                if not (present[n] & pl[1]) and len(seqleaf.get(n, '')) == len(seqleaf.get(pl[0][0], '')): pl[0].append(n); pl[1] |= present[n]; break
             else: pools.append([[n], set(present[n])])
         groups.extend(pl[0] for pl in pools)
 
@@ -758,6 +759,9 @@ def main():
         c["g"] = gid[-1][1]
 
     # 行を allele(整列配列)でグループ化, 参照を先頭
+    # 紫（逆位）の印は「列の多数の向きと逆に通ったノード」（10-28: 行の向きと逆のノードに付けていたので、全株が同じく逆に通るノード（グラフの格納向きが周囲と逆）が全行紫になった）。3 bp 以下は従来どおり
+    def invmaj(r):
+        iv = set(r["inv"]); return [n for n in r["cells"] if ((n in iv) != (rc_votes.get(n, 0) > 0)) if len(seqleaf.get(n, "")) > 3] + [n for n in iv if len(seqleaf.get(n, "")) <= 3]
     order = sorted(range(len(raw)), key=lambda i: (not raw[i]["isref"], raw[i]["seq"], raw[i]["label"]))
     raw = [raw[i] for i in order]
     aid = {}; uniq = []
@@ -777,7 +781,7 @@ def main():
                cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
-                      "inv": r["inv"], "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
+                      "inv": invmaj(r), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
     print(json.dumps(out))
 
 if __name__ == "__main__":

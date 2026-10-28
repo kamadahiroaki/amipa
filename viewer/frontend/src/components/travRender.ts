@@ -481,7 +481,7 @@ function drawBaseCore() {
       const col = BASE_COLORS[ch.toUpperCase()] || BASE_COLORS.N; g.fillStyle = col[1]; g.fillRect(x, y, w, h); if (letters) { g.fillStyle = col[0]; g.fillText(ch, x + w / 2, y + h / 2 + 1) }
       if (inv.has(it.ci)) { g.fillStyle = '#7c3aed'; g.fillRect(x, y, w, 2) } }
     for (const b of (B.brk[ln.mi] || [])) { const kk = B.colItem[b.ci]; if (kk < 0) continue; const x = B.xs[kk]; if (x < B.sx - 2 || x > B.sx + Wb + 2) continue; g.fillStyle = '#111'; g.fillRect(x - 1, y - 1, 2, h + 2) }   // 継ぎ目（同じコンティグの離れた範囲を繋いだ所）
-    const EC = BE ? BE.code.get(ln.mi) : null; if (EC) for (let kk = k0; kk <= k1; kk++) { const it = B.items[kk]; const ec = it.kind === 'col' ? EC[it.ci] : effMaxIn(EC, it.ci0, it.ci1); if (!ec) continue; g.fillStyle = EFF_COL[ec]; g.fillRect(B.xs[kk], y, Math.max(1, B.xs[kk + 1] - B.xs[kk] - (cw >= 8 ? 1 : 0)), ec === 8 ? 1 : 2) }   // 変異の効果（上辺）
+    const EC = BE ? BE.code.get(ln.mi) : null; if (EC) for (let kk = k0; kk <= k1; kk++) { const it = B.items[kk]; const ec = it.kind === 'col' ? EC[it.ci] : effMaxIn(EC, it.ci0, it.ci1); if (!ec) continue; g.fillStyle = EFF_COL[ec]; g.fillRect(B.xs[kk], y + h - (ec === 8 ? 1 : 3), Math.max(1, B.xs[kk + 1] - B.xs[kk] - (cw >= 8 ? 1 : 0)), ec === 8 ? 1 : 3) }   // 変異の効果（下辺。その行の遺伝子帯のすぐ上に。10-28: 上辺だと上の行の遺伝子帯と組に見えた）
     g.textAlign = 'left'; g.textBaseline = 'alphabetic' })
   // 遺伝子: 見出しのトラック（遺伝子ごとに矢印、CDS の列は濃く）と、行の下の帯（その株の遺伝子: CDS 濃い・エキソン薄い・他は細い線）
   if (gOn) {
@@ -1082,6 +1082,8 @@ loadRoot()
 // グラフ → パネル: ノード名を座標に直し、1 個なら前後 3,000 錨（原子の中）に寄る。多数（見えている範囲）なら 10〜90 パーセンタイルの範囲へ
 async function locate(names: string[], single: boolean) {
   if (!root || !names.length) return
+  // 塩基の段を見ているとき、グラフのクリック（1 ノード）は段を閉じずに、その列へ横に寄せて印を付ける（10-28: クリックで上の段に戻っていた）
+  if (base && single) { const B = base; const ci = names.map(n => B.byNode.get(n)?.[0]).find(c => c != null); if (ci != null) { B.hoverCi = ci; const kk = B.colItem[ci]; const Wb = cv.parentElement!.clientWidth - LAB - 4; if (kk >= 0) B.sx = Math.max(0, Math.min(B.fullW - Wb, B.xs[kk] - Wb / 2)); draw() } return }
   if (base) { base = null; $('basegrp').style.display = 'none' }
   // POST で送る（GET だと 2,000 個の名前で URL が長すぎて失敗し、広い範囲の「グラフの範囲を開く」が黙って効かなかった）
   let j: any
