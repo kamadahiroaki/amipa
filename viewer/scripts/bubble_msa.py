@@ -799,11 +799,11 @@ def main():
     ncopy_cols = sum(1 for f_ in final if f_[1] is not None)
     cols = []
     for g, cpkey, gorig in final:
-        rb = next((refbp[n] for n in g if n in refbp), None)
+        ri = next((i_ for i_, n in enumerate(g) if n in refbp), None); rb = refbp[g[ri]] if ri is not None else None   # ri = 参照位置を持つノードの g 内の番号（列の参照位置 = rb + so[ri]）
         w = max((len(seqleaf.get(n, "")) for n in g), default=0)
         if w == 0:
             continue
-        meta = dict(nodes=g, rb=rb, nl=w, _cp=cpkey, _g=gorig, cp=(1 if cpkey is not None else 0))   # nl = 群の幅（＝ノードの bp。窓の端で列が切られても、画面側が鏡像の位置を正しく求められるように）
+        meta = dict(nodes=g, rb=rb, ri=ri, nl=w, _cp=cpkey, _g=gorig, cp=(1 if cpkey is not None else 0))   # nl = 群の幅（＝ノードの bp。窓の端で列が切られても、画面側が鏡像の位置を正しく求められるように）
         def soffs(k):   # 列 k（表示の向き）→ 各ノードの格納向きのオフセット（ノードより先なら -1）。逆相補で表示しているノードは L-1-k
             out = []
             for n in g:
@@ -813,9 +813,9 @@ def main():
         if w <= CAP:
             for k in range(w): cols.append(dict(kind="base", off=k, so=soffs(k), **meta))
         else:
-            for k in range(HEAD): cols.append(dict(kind="base", off=k, **meta))
+            for k in range(HEAD): cols.append(dict(kind="base", off=k, so=soffs(k), **meta))
             cols.append(dict(kind="ell", bp=w, **meta))
-            for k in range(w - TAIL, w): cols.append(dict(kind="base", off=k, **meta))
+            for k in range(w - TAIL, w): cols.append(dict(kind="base", off=k, so=soffs(k), **meta))
 
     def cellchar(r, c):
         s = None
@@ -902,7 +902,7 @@ def main():
     out = dict(name=label, bp=(min(anc)[0] if anc else None), refname=refname,
                nrow=len(raw), nallele=len(uniq),
                scan=dict(leaves=len(leaves), contigs=len(pis), tokens=ntok),   # 走査コストの実測(診断用)
-               cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl", "cp") if k in c} for c in cols],
+               cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl", "cp", "ri") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
                       "inv": invmaj(r), "hseq": r.get("hseq", ""), "read": r.get("rdinfo"), "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)

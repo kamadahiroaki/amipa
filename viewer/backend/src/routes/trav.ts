@@ -5,6 +5,8 @@ import { runScript } from '../pyRunner'
 import { distillFor } from './bubbleMsa'
 // 通過サイドカー `<db>.trav` の API（試作）。GET /api/trav/root?db  /api/trav/range?db&x0&x1[&min]  /api/trav/path?db&pid
 import { Router } from 'express'
+import fs from 'fs'
+import Database from 'better-sqlite3'
 import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, genesPathOf } from '../trav'
 
 export const travRouter = Router()
@@ -12,7 +14,7 @@ export const travRouter = Router()
 travRouter.get('/trav/root', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
-  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } { const r: any = travRoot(t); try { const fs = require('fs'); const base = path.join(getDbDir(), path.basename(q.db)); r.hasReads = fs.existsSync(base + '.reads') || (() => { try { return fs.existsSync(fs.realpathSync(base) + '.reads') } catch { return false } })() } catch { /* */ } res.json(r) } } catch (err) { res.status(500).json({ error: String(err) }) }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } { const r: any = travRoot(t); try { const fs = require('fs'); const base = path.join(getDbDir(), path.basename(q.db)); r.hasReads = fs.existsSync(base + '.reads') || (() => { try { return fs.existsSync(fs.realpathSync(base) + '.reads') } catch { return false } })(); r.hasAnn = !!annPathOf(q.db) } catch { /* */ } res.json(r) } } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 travRouter.get('/trav/range', (req, res) => {
@@ -87,6 +89,29 @@ travRouter.get('/trav/findgene', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travFindGene(t, String(q.q || ''), Math.max(1, Math.min(300, Number(q.limit) || 60)))) } catch (err) { res.status(500).json({ error: String(err) }) }
+})
+
+// ---- 参照座標の注釈（<db>.ann: RepeatMasker・GIAB の変異とベンチマーク領域。build_ann.py で作る）----
+//   GET /api/trav/ann?db&contig&s&e  → 区間 [s, e)（参照の 0 始まり）に掛かる反復・変異・ベンチマーク領域。塩基の段が列の参照位置に写して描く
+function annPathOf(db: string): string | null { const base = path.join(getDbDir(), path.basename(db)); const cands = [base + '.ann']; try { cands.push(fs.realpathSync(base) + '.ann') } catch { /* ignore */ } return cands.find(c => { try { return fs.existsSync(c) } catch { return false } }) ?? null }
+const annDbs = new Map<string, Database.Database | null>()
+function annDbOf(db: string): Database.Database | null { if (!annDbs.has(db)) { const f = annPathOf(db); annDbs.set(db, f ? new Database(f, { readonly: true }) : null) } return annDbs.get(db)! }
+travRouter.get('/trav/ann', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db || !q.contig) { res.status(400).json({ error: 'Missing db/contig' }); return }
+  const d = annDbOf(q.db); if (!d) { res.status(404).json({ error: 'no .ann sidecar' }); return }
+  const s = Math.max(0, Number(q.s) || 0), e = Number(q.e) || 0
+  if (!(e > s) || e - s > 5_000_000) { res.status(400).json({ error: 'range must be 1 bp – 5 Mb' }); return }
+  try {
+    const meta = Object.fromEntries((d.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]).map(r => [r.key, r.value]))
+    const ml = Number(meta.maxlen_rmsk) || 0, mb = Number(meta.maxlen_bench) || 0
+    const rmsk = ml ? d.prepare('SELECT s, e, strand, name, cls, fam, div FROM rmsk WHERE contig = ? AND s >= ? AND s < ? AND e > ? ORDER BY s').all(q.contig, s - ml, e, s) : []
+    const vars = d.prepare('SELECT sample, pos, ref, alt, gt FROM var WHERE contig = ? AND pos >= ? AND pos < ? ORDER BY pos').all(q.contig, s - 200, e)
+    const samples = (d.prepare('SELECT DISTINCT sample FROM bench').all() as { sample: string }[]).map(r => r.sample)
+    const bench: Record<string, [number, number][]> = {}
+    for (const sm of samples) bench[sm] = (d.prepare('SELECT s, e FROM bench WHERE sample = ? AND contig = ? AND s >= ? AND s < ? AND e > ? ORDER BY s').all(sm, q.contig, s - mb, e, s) as { s: number; e: number }[]).map(r => [r.s, r.e])
+    res.json({ ref: meta.ref_key, contig: q.contig, s, e, rmsk, vars, bench, samples, src: { rmsk: meta.src_rmsk, vcf: samples.map(sm => meta['src_vcf_' + sm]) } })
+  } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 travRouter.get('/trav/genedensity', (req, res) => {
