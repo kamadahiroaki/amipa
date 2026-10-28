@@ -568,7 +568,11 @@ function treeOrder(): number[] {
 }
 
 // ---- 描画 ----
-type Piece = { blk: number; px0: number; px1: number; tr: Trav; inv: boolean; disp: boolean; fwd: boolean; c0: number; c1: number }
+type Piece = { blk: number; px0: number; px1: number; tr: Trav; inv: boolean; disp: boolean; fwd: boolean; c0: number; c1: number; cum?: Float64Array; k0?: number }   // cum＝錨の列ごとの累積の割合（各行の並びで欠失の列にも幅を取る）
+// 片の中の座標 x → 片の中の割合（0〜1、合意の向き）。cum があれば錨の列ごとの幅で、無ければ座標に比例
+function fracOf(p: Piece, x: number): number { x = Math.max(p.c0, Math.min(p.c1 + 1, x)); if (!p.cum || !cols) return (x - p.c0) / Math.max(1, p.c1 + 1 - p.c0)
+  const C = cols; const cw = (C.x1 - C.x0 + 1) / C.ncol; const fc = (x - C.x0) / cw; let c = Math.floor(fc); const k = Math.max(0, Math.min(p.cum.length - 2, c - p.k0!)); const t = Math.max(0, Math.min(1, fc - (p.k0! + k)))
+  return p.cum[k] + t * (p.cum[k + 1] - p.cum[k]) }
 let rowColPx: Float64Array | null = null   // 各行の並びの列の画面位置（上段の描画用）
 let lastPieces = new Map<number, Piece[]>(); let mrowsByHap = new Map<number, Trav[]>()   // 表示用（繰り返し通過をまとめた通過）
 let ogHits: { o: OGroup; pa: number; pb: number }[] = []   // 見出しの遺伝子トラックの当たり
@@ -638,7 +642,7 @@ function drawCore() {
   const cpByHap = new Map<number, Copy[]>(); for (const c of copies) { if (!cpByHap.has(c.hid)) cpByHap.set(c.hid, []); cpByHap.get(c.hid)!.push(c) }
   const rpByHap = new Map<number, Rep[]>(); for (const c of reps) { if (!rpByHap.has(c.hid)) rpByHap.set(c.hid, []); rpByHap.get(c.hid)!.push(c) }
   const piecesOf = new Map<number, Piece[]>(); const fullView = v0 <= 0 && v1 >= root.R - 2
-  type Deferred = { hid: number; raw: { blk: number; tr: Trav; c0: number; c1: number; key: number; wbp: number; fwd: boolean }[]; gapBp: number; pcs: Piece[]; inv: Set<Trav>; disp: Set<Trav>; span: number }; const deferred: Deferred[] = []
+  type Deferred = { hid: number; raw: { blk: number; tr: Trav; c0: number; c1: number; key: number; wbp: number; fwd: boolean; cum?: Float64Array; k0?: number }[]; gapBp: number; pcs: Piece[]; inv: Set<Trav>; disp: Set<Trav>; span: number }; const deferred: Deferred[] = []
   for (const hid of hapOrder) {
     const ts = byHap.get(hid) || []
     // コンティグごとの主な向き（錨数で重み）と、コンティグ内の順が合意と合わない通過（転座: 最長単調部分列から外れるもの）
@@ -655,14 +659,15 @@ function drawCore() {
       }
     }
     // 片（ブロック × 通過）。各行の並び用に、コンティグ上の bp 位置（読む向きに揃えた鍵）と幅を付ける
-    type Raw = { blk: number; tr: Trav; c0: number; c1: number; key: number; wbp: number; fwd: boolean }
+    type Raw = { blk: number; tr: Trav; c0: number; c1: number; key: number; wbp: number; fwd: boolean; cum?: Float64Array; k0?: number }
     const raw: Raw[] = []
     for (const r of ts) for (let bi = blockAt(r.x0); bi < blocks.length && blocks[bi].x0 <= r.x1; bi++) {
       const b = blocks[bi]; if (b.x1 < r.x0) continue
       const c0 = Math.max(b.x0, r.x0), c1 = Math.min(b.x1, r.x1); const Lx = Math.max(1, r.x1 - r.x0 + 1); const f0 = (c0 - r.x0) / Lx, f1 = (c1 + 1 - r.x0) / Lx
       const [q0, q1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]; const bpA = (r.bp0 ?? 0) + q0 * r.bp, bpB = (r.bp0 ?? 0) + q1 * r.bp   // コンティグ上の bp 区間（格納向き）
       const mir = domOf.get(r.pid)! < 0; const key = mir ? -bpB : bpA   // 読む向き（主な向き）に並ぶ鍵
-      raw.push({ blk: bi, tr: r, c0, c1, key, wbp: pieceBp(r, c0, c1) ?? Math.max(1, bpB - bpA), fwd: (r.dir >= 0) !== mir })
+      const pc = mode === 'rows' ? pieceCum(r, c0, c1) : null
+      raw.push({ blk: bi, tr: r, c0, c1, key, wbp: pc ? pc.wbp : (pieceBp(r, c0, c1) ?? Math.max(1, bpB - bpA)), fwd: (r.dir >= 0) !== mir, cum: pc?.cum, k0: pc?.k0 })
     }
     const pcs: Piece[] = []
     if (mode === 'coord') { for (const q of raw) pcs.push({ blk: q.blk, px0: X(q.c0), px1: X(q.c1 + 1), tr: q.tr, inv: inv.has(q.tr), disp: disp.has(q.tr), fwd: !inv.has(q.tr), c0: q.c0, c1: q.c1 }) }   // 向きはコンティグの主な向きに対する相対
@@ -735,7 +740,7 @@ function drawCore() {
     { const cp = new Float64Array(blocks.length + 1); let acc = 0; for (let i = 0; i < blocks.length; i++) { cp[i] = LAB + acc * scale; acc += colW[i] } cp[blocks.length] = LAB + acc * scale
       const changed = !rowColPx || rowColPx.length !== cp.length || cp.some((v, i) => Math.abs(v - rowColPx![i]) > 0.5); rowColPx = cp; if (changed) requestAnimationFrame(() => draw()) }
     for (const { d, xs } of placed) d.raw.forEach((q, i) => { const px0 = LAB + xs[i] * scale, px1 = LAB + (xs[i] + q.wbp) * scale
-      d.pcs.push({ blk: q.blk, px0, px1, tr: q.tr, inv: d.inv.has(q.tr), disp: d.disp.has(q.tr), fwd: q.fwd, c0: q.c0, c1: q.c1 }) })
+      d.pcs.push({ blk: q.blk, px0, px1, tr: q.tr, inv: d.inv.has(q.tr), disp: d.disp.has(q.tr), fwd: q.fwd, c0: q.c0, c1: q.c1, cum: q.cum, k0: q.k0 }) })
   }
   lastPieces = piecesOf
   const genesByTr = new Map<number, Gene[]>(); if (genes.length && showGenes()) for (const gn of genes) { if (!genesByTr.has(gn.tr)) genesByTr.set(gn.tr, []); genesByTr.get(gn.tr)!.push(gn) }
@@ -830,7 +835,7 @@ function drawLines(mode: string, W: number) {
     const C3 = cols; const useC = !!C3 && wantCols()
     const colOfX = (x: number) => C3 ? Math.floor((x - C3.x0) * C3.ncol / (C3.x1 - C3.x0 + 1)) : -1
     const has = (p: Piece, k: number): boolean => { if (!C3) return true; const cr = C3.byId.get(p.tr.id); if (!cr || k < 0 || k >= C3.ncol) return true; return !(C3.nanch[k] > 0 && cr.pres[k] === 0) }
-    const pos = (p: Piece, x: number) => { const f = (x - p.c0) / Math.max(1, p.c1 + 1 - p.c0); return p.px0 + (p.fwd ? f : 1 - f) * (p.px1 - p.px0) }
+    const pos = (p: Piece, x: number) => { const f = fracOf(p, x); return p.px0 + (p.fwd ? f : 1 - f) * (p.px1 - p.px0) }
     for (let k = 0; k + 1 < hapOrder.length; k++) {
       const A = lastPieces.get(hapOrder[k]) || [], B = lastPieces.get(hapOrder[k + 1]) || []; const yA = rowTop[k] + 2 + BLK, yB = rowTop[k + 1] + 2
       for (const pa of A) for (const pb of B) {
@@ -864,6 +869,16 @@ function geneLanes(gs: Gene[]): Map<number, number> { const out = new Map<number
 // 片の幅（bp）: 錨の列が読めていれば、片の x 区間に掛かる列ごとに「その株のトークンの bp（錨も錨でないノードも）」を足す（＝その株が実際に持つ配列の長さ）。
 // 無ければ通過全体の平均 bp/x × 区間。平均だと短い逆位の通過（局所の実 bp）と長い両側の通過（ゲノム平均）で同じブロックの幅が数倍違い、各行の並びで逆位の株だけ
 // ブロックが短く描かれて連結線が乱れた（DDTL、2026-10-26）。錨の有無×合意 bp では、アレルの多い区間で錨を持たない株が短く見えた
+// 列ごとの bp の中央値（錨を持つ行だけ）。欠失の列に取る幅
+function colMedBp(): Float64Array | null { if (!cols) return null; const C = cols as any; if (C.__med) return C.__med; const out = new Float64Array(cols.ncol)
+  for (let k = 0; k < cols.ncol; k++) { const a: number[] = []; for (const r of cols.rows) if (r.pres[k] > 0 && r.bpc.length) a.push(r.bpc[k]); if (a.length) { a.sort((u, v) => u - v); out[k] = a[a.length >> 1] } } C.__med = out; return out }
+// 片の列ごとの幅（その株の bp、欠失の列＝その株が錨を持たない列は列の中央値）と累積の割合。錨の列の段の各行の並び用（10-28: ブロックの中の欠失で後ろが左に詰まった。APOBEC3A の融合型欠失）
+function pieceCum(r: Trav, c0: number, c1: number): { wbp: number; cum: Float64Array; k0: number } | null {
+  if (!cols || !wantCols()) return null; const cr = cols.byId.get(r.id); const med = colMedBp(); if (!cr || !cr.bpc.length || !med) return null
+  const C = cols; const cw = (C.x1 - C.x0 + 1) / C.ncol; const k0 = Math.max(0, Math.floor((c0 - C.x0) / cw)), k1 = Math.min(C.ncol - 1, Math.floor((c1 - C.x0) / cw)); if (k1 < k0) return null
+  const cum = new Float64Array(k1 - k0 + 2); let acc = 0
+  for (let k = k0; k <= k1; k++) { const xa = C.x0 + k * cw; const f = Math.max(0, Math.min(xa + cw, c1 + 1) - Math.max(xa, c0)) / cw; const del = C.nanch[k] > 0 && cr.pres[k] === 0; acc += (del ? med[k] : cr.bpc[k]) * f; cum[k - k0 + 1] = acc }
+  if (acc <= 0) return null; for (let i = 0; i < cum.length; i++) cum[i] /= acc; return { wbp: Math.max(1, Math.round(acc)), cum, k0 } }
 function pieceBp(r: Trav, c0: number, c1: number): number | null {
   if (!cols) return null; const cr = cols.byId.get(r.id); if (!cr || !cr.bpc.length) return null
   const C = cols; const Wc = C.x1 - C.x0 + 1; const cw = Wc / C.ncol; const k0 = Math.max(0, Math.floor((c0 - C.x0) / cw)), k1 = Math.min(C.ncol - 1, Math.floor((c1 - C.x0) / cw)); if (k1 < k0) return null
@@ -893,7 +908,7 @@ function mergePasses(ts: Trav[]): Trav[] {
 // 片の中の座標区間 [xa, xb) → 画面の px（合意座標は X()、各行の並びは片の中の比例。向きが逆なら鏡）
 function pxInPiece(p: Piece, xa: number, xb: number, mode: string): [number, number] {
   if (mode === 'coord') { const a = X(xa), b = X(xb); return [Math.min(a, b), Math.max(a, b)] }
-  const span = Math.max(1, p.c1 + 1 - p.c0); const fa = (xa - p.c0) / span, fb = (xb - p.c0) / span; const L = p.px1 - p.px0
+  const fa = fracOf(p, xa), fb = fracOf(p, xb); const L = p.px1 - p.px0
   const a = p.fwd ? p.px0 + fa * L : p.px0 + (1 - fb) * L, b = p.fwd ? p.px0 + fb * L : p.px0 + (1 - fa) * L; return [Math.min(a, b), Math.max(a, b)]
 }
 // ブロックの段の切れ目: 錨の列の pres が 0 の列が 20 列以上続く所（＝その株が持たない配列、欠失）を白く抜く。通過は J（2,000 錨）未満の跳びでは切れないので、片の色だけでは欠失が見えない
@@ -911,14 +926,14 @@ function drawGaps(cr: ColRow, p: Piece, px0: number, px1: number, yy: number, hh
 // 共有の大きさ: 2 行だけ（対）は淡い橙、多くの行が共有する少数派ほど濃い赤（対数。ヒトの数 kb の列は対の共有だらけなので、線形だと真っ赤になる）
 const shareColor = (cnt: number, nrow: number) => { const t = Math.log(Math.max(2, cnt)) / Math.log(Math.max(3, nrow)); return `hsl(${Math.round(30 - 30 * t)}, 85%, ${Math.round(80 - 35 * t)}%)` }
 function drawCells(cr: ColRow, p: Piece, px0: number, px1: number, yy: number, hh: number, mode: string) {
-  const C = cols!; const Wc = C.x1 - C.x0 + 1; const span = Math.max(1, p.c1 + 1 - p.c0); const coarse = Wc / C.ncol > 20
+  const C = cols!; const Wc = C.x1 - C.x0 + 1; const coarse = Wc / C.ncol > 20
   const c0 = Math.max(0, Math.floor((p.c0 - C.x0) * C.ncol / Wc)), c1 = Math.min(C.ncol - 1, Math.floor((p.c1 - C.x0) * C.ncol / Wc))
   for (let c = c0; c <= c1; c++) {
     const k = cr.cls[c]; if (k === 255) continue
     const xa = Math.max(p.c0, C.x0 + c * Wc / C.ncol), xb = Math.min(p.c1 + 1, C.x0 + (c + 1) * Wc / C.ncol); if (xb <= xa) continue
     let pa: number, pb: number
     if (mode === 'coord') { pa = X(xa); pb = X(xb) }
-    else { const fa = (xa - p.c0) / span, fb = (xb - p.c0) / span; const L = p.px1 - p.px0; if (p.fwd) { pa = p.px0 + fa * L; pb = p.px0 + fb * L } else { pa = p.px0 + (1 - fb) * L; pb = p.px0 + (1 - fa) * L } }
+    else { const fa = fracOf(p, xa), fb = fracOf(p, xb); const L = p.px1 - p.px0; if (p.fwd) { pa = p.px0 + fa * L; pb = p.px0 + fb * L } else { pa = p.px0 + (1 - fb) * L; pb = p.px0 + (1 - fa) * L } }
     const a = Math.max(px0, Math.min(pa, pb)), b = Math.min(px1, Math.max(pa, pb)); if (b < a) continue; const wc = Math.max(1, b - a)
     // 粗い段: 多数派＝灰、この行だけのアレル＝ごく薄い灰（ヒトの数 kb の列は全行が別アレルになり、番号の色では真っ赤になる）、2 行以上が共有する少数派＝持つ行の割合の色
     let fill = k === 0 ? `hsl(${hue(p.blk)}, 45%, 78%)` : CLS_COL[Math.min(k, CLS_COL.length - 1)]   // 多数派＝ブロックの色の淡色（10-27: 灰だとブロックの順が読めなかった）
@@ -971,7 +986,7 @@ cv.addEventListener('mousemove', e => {
   tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
   const lines = hit.map(r => `${root!.haps[r.hid].hap}  pid ${r.pid}  トークン ${fmt(r.i0)}–${fmt(r.i1)}${r.bp0 != null ? `  コンティグ ${fmtbp(r.bp0)}〜` : ''}  座標 ${fmt(r.x0)}–${fmt(r.x1)}  ${r.dir >= 0 ? '→' : '←'}  錨 ${fmt(r.nanch)}  ${fmtbp(r.bp)}${r.copy ? `  コピー ·${r.copy}` : ''}${(r.k || 1) >= 2 ? `\n  同じ場所を ${r.k} 回通る（まとめた通過）: ` + r.members!.map(m => `${m.dir >= 0 ? '→' : '←'}${fmt(m.x0)}–${fmt(m.x1)} 錨${fmt(m.nanch)}`).join(', ') : ''}`).concat(rhit.map(r => `反復（この株で 2 回以上出るノードの連なり） トークン ${fmt(r.i0)}–${fmt(r.i1)}  ${fmtbp(r.bp)}`))
   let xx = x   // カーソルの座標（各行の並びでは片の中の比例から）
-  if (inRows) { const p = (lastPieces.get(hid) || []).find(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX); if (p) { const f = (e.offsetX - Math.min(p.px0, p.px1)) / Math.max(1, Math.abs(p.px1 - p.px0)); xx = p.c0 + (p.fwd ? f : 1 - f) * (p.c1 + 1 - p.c0) } }
+  if (inRows) { const p = (lastPieces.get(hid) || []).find(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX); if (p) { const f = (e.offsetX - Math.min(p.px0, p.px1)) / Math.max(1, Math.abs(p.px1 - p.px0)); const ft = p.fwd ? f : 1 - f; let lo = p.c0, hi = p.c1 + 1; for (let it = 0; it < 30; it++) { const m = (lo + hi) / 2; if (fracOf(p, m) < ft) lo = m; else hi = m } xx = lo } }
   if (genes.length && showGenes()) for (const gn of genes.filter(gn => gn.hid === hid && gn.x0 <= xx && gn.x1 >= xx).slice(0, 6)) lines.push(`遺伝子 ${gn.name || gn.locus || ('#' + gn.gid)}${gn.pseudo ? '（擬似）' : ''}  ${gn.type}${geneKind(gn) === 'rna' ? '（RNA 遺伝子）' : ''} 鎖 ${gn.strand}${gn.fwd ? '' : '（合意と逆向き）'}  ${fmtbp(gn.end - gn.start + 1)}  コンティグ ${fmt(gn.start)}–${fmt(gn.end)}  ${gn.product || ''}${gn.anchored ? '' : '  [錨なし: 位置は補間]'}` + (() => { const lf = lof.get(gn.gid); const T: Record<string, string> = { trunc: '終止獲得（参照の 9 割未満で止まる）', fs: 'フレームシフト（CDS の長さが参照と 3 の倍数でない差）', nostart: '開始コドンが無い' }; return lf && T[lf.st] ? `  ★機能喪失の目安: ${T[lf.st]}（${lf.aa} aa／参照 ${lf.ref ?? '?'} aa）` : '' })())
   if (cols && wantCols()) {   // 錨の列: カーソルの列と、この行のアレル・錨の有無・挿入・窓の中のトークン範囲（塩基 MSA へ渡す範囲）
     const C = cols; const Wc = C.x1 - C.x0 + 1
