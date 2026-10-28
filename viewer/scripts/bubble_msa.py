@@ -681,13 +681,45 @@ def main():
             else: pools.append([[n], set(present[n])])
         groups.extend(pl[0] for pl in pools)
 
+    # 並びの違う株と同じノードの再訪（10-28）: 列の順は全株で 1 つなので、ある株がノードを列の順と違う順に通る所（局所の入れ替わり・反復）や、
+    # 同じノードを 2 回通る所は、その株の配列が整列から復元できなかった。各行の「ノードの群番号の並び」の最長増加部分列から外れる出現を、
+    # 直前の（増加列の）群の直後に足した「写しの群」に置く（同じ置き場所・同じノード・同じ順位の写しは株どうしで共有）。元の群ではその行は欠失
+    gidx = {}
+    for gi_, g_ in enumerate(groups):
+        for n_ in g_: gidx.setdefault(n_, gi_)
+    import bisect as _bs
+    copies_after = {}          # 元の群の番号 → [(順位 j, ノード)]（写しの群を作る順）
+    for r in raw:
+        seqr = [n_ for n_ in r["seq"] if n_ in gidx]; gl = [gidx[n_] for n_ in seqr]
+        tails, tidx, prev = [], [], [-1] * len(gl)        # 狭義増加の LIS（同じ群＝同じノードの再訪は 1 回だけ入る）
+        for i_, v in enumerate(gl):
+            k_ = _bs.bisect_left(tails, v)
+            if k_ > 0: prev[i_] = tidx[k_ - 1]
+            if k_ == len(tails): tails.append(v); tidx.append(i_)
+            else: tails[k_] = v; tidx[k_] = i_
+        keep = set(); k_ = tidx[-1] if tidx else -1
+        while k_ >= 0: keep.add(k_); k_ = prev[k_]
+        r["skip"] = set(); r["cps"] = set(); anchor = -1; j_ = 0; kept_g = set(gl[q] for q in keep)
+        for i_, n_ in enumerate(seqr):
+            if i_ in keep: anchor = gl[i_]; j_ = 0; continue
+            key = (anchor, j_, n_); j_ += 1
+            lst = copies_after.setdefault(anchor, [])
+            if (j_ - 1, n_) not in lst: lst.append((j_ - 1, n_))
+            r["cps"].add(key)
+            if gl[i_] not in kept_g: r["skip"].add(gl[i_])   # この行はこのノードを増加列で通らない＝元の群では欠失
+    final = []                 # (ノードの群, 写しの鍵 or None, 元の群の番号)
+    for c_ in sorted(copies_after.get(-1, [])): final.append(([c_[1]], (-1, c_[0], c_[1]), -1))
+    for gi_, g_ in enumerate(groups):
+        final.append((g_, None, gi_))
+        for c_ in sorted(copies_after.get(gi_, [])): final.append(([c_[1]], (gi_, c_[0], c_[1]), gi_))
+    ncopy_cols = sum(1 for f_ in final if f_[1] is not None)
     cols = []
-    for g in groups:
+    for g, cpkey, gorig in final:
         rb = next((refbp[n] for n in g if n in refbp), None)
         w = max((len(seqleaf.get(n, "")) for n in g), default=0)
         if w == 0:
             continue
-        meta = dict(nodes=g, rb=rb, nl=w)   # nl = 群の幅（＝ノードの bp。窓の端で列が切られても、画面側が鏡像の位置を正しく求められるように）
+        meta = dict(nodes=g, rb=rb, nl=w, _cp=cpkey, _g=gorig, cp=(1 if cpkey is not None else 0))   # nl = 群の幅（＝ノードの bp。窓の端で列が切られても、画面側が鏡像の位置を正しく求められるように）
         def soffs(k):   # 列 k（表示の向き）→ 各ノードの格納向きのオフセット（ノードより先なら -1）。逆相補で表示しているノードは L-1-k
             out = []
             for n in g:
@@ -703,6 +735,10 @@ def main():
 
     def cellchar(r, c):
         s = None
+        cp = c.get("_cp")
+        if cp is not None:                          # 写しの群: この行がその写しを持つときだけ
+            if cp not in r.get("cps", ()): return "-"
+        elif c.get("_g") in r.get("skip", ()): return "-"   # 元の群: この行が増加列で通らないノード
         for n in c["nodes"]:                      # 群のメンバは互いに排他=行が持つのは高々1つ
             if n in r["cells"]:
                 s = r["cells"][n]; break
@@ -719,7 +755,7 @@ def main():
         else:
             i1 = max(i for i, ch in enumerate(sq) if ch not in "-~")
             r["seq"] = "." * i0 + sq[i0:i1 + 1] + "." * (len(sq) - i1 - 1)
-        sqt = "".join(cellchar({"cells": r.get("cells0", r["cells"])}, c) for c in cols); r["seqt"] = "".join(ch if r["seq"][k] != "." else "." for k, ch in enumerate(sqt))
+        sqt = "".join(cellchar({"cells": r.get("cells0", r["cells"]), "skip": r.get("skip", ()), "cps": r.get("cps", ())}, c) for c in cols); r["seqt"] = "".join(ch if r["seq"][k] != "." else "." for k, ch in enumerate(sqt))
     # 窓の端の列を落とす: 端の列に「範囲の外」の行があり、その行がコンティグの端で切れているのではない（＝この窓で読んでいないだけ）なら、
     # その列は一部の行にしか判断材料が無いので出さない（最大 40 列ずつ）。コンティグの端で切れている行の「範囲の外」は残す（意味がある）
     if cols:
@@ -781,7 +817,7 @@ def main():
     out = dict(name=label, bp=(min(anc)[0] if anc else None), refname=refname,
                nrow=len(raw), nallele=len(uniq),
                scan=dict(leaves=len(leaves), contigs=len(pis), tokens=ntok),   # 走査コストの実測(診断用)
-               cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl") if k in c} for c in cols],
+               cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl", "cp") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
                       "inv": invmaj(r), "hseq": r.get("hseq", ""), "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
