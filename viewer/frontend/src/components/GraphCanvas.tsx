@@ -1,7 +1,7 @@
 import type { GuardSink } from '../api/client'
 import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import * as PIXI from 'pixi.js'
-import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap, fetchBlockSubgraph, fetchBlockNames, blockSelKey, type BlockSubgraph, type BlockSel } from '../api/client'
+import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap, fetchBlockSubgraph, fetchBlockNames, fetchBlockBbox, blockSelKey, type BlockSubgraph, type BlockSel } from '../api/client'
 import { stainToColor, GIE_COLORS, GENE_DENSITY_LOW, GENE_DENSITY_HIGH } from '../annotColors'
 // §8.2 Phase 3: 図版の幾何＋SVG 直列化は backend の純粋モジュールを共有する(ヘッドレス CLI と一本化)。
 import { buildGraphFigure, drawListToSvg, FIG_SCALE } from '../../../backend/src/figure/svgSerialize'
@@ -998,7 +998,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     // 表示している層の範囲内ノード（outer を除く）の座標の 5〜95 パーセンタイルの箱を 10% 広げて合わせる。寄せた結果で層が変わったら 1 回だけ寄せ直す
     let subSelFitKey = ''   // 最後に「画面に無ければ寄せる」を判定した絞りの集合
     let pendingSubFit = false; let subFitTimer: ReturnType<typeof setTimeout> | null = null; let subRefits = 0
-    function fitToSub() { if (!sub) return; const ns = sub.nodes.filter(n => !sub!.outerIds.has(n.id)); if (ns.length < 2) return
+    function fitToSub() { if (!sub) return; const ns = sub.nodes.filter(n => !sub!.outerIds.has(n.id))
+      // 浅い層の部分グラフ（数個のスーパーノード）では中心の箱が意味を持たない → 葉の外接箱に寄せ、層が下りて取り直した部分グラフで寄せ直す
+      // （10-28: 全景で URL の view= から絞ると層 0 の 1 ノードだけが届き、寄せずに全景のまま＝真っ白）
+      if (ns.length < 8) { const sel = subSel(); if (sel) { const sl: BlockSel = 'names' in sel ? { names: sel.names.length > 5000 ? sel.names.filter((_, i) => i % Math.ceil(sel.names.length / 5000) === 0) : sel.names } : sel
+          void fetchBlockBbox(dbFile, sl).then(f => { if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; const px = (f.maxx - f.minx) * .1 + 1e-6, py = (f.maxy - f.miny) * .1 + 1e-6; fitBoundsRef.current?.(f.minx - px, f.miny - py, f.maxx + px, f.maxy + py) }) }
+        pendingSubFit = true; return }
       const xs = ns.map(n => n.xCoord).sort((a, b) => a - b), ys = ns.map(n => n.yCoord).sort((a, b) => a - b); const pc = (a: number[], f: number) => a[Math.round(f * (a.length - 1))]
       let x0 = pc(xs, .05), x1 = pc(xs, .95), y0 = pc(ys, .05), y1 = pc(ys, .95); const px = (x1 - x0) * .1 + 1e-9, py = (y1 - y0) * .1 + 1e-9
       fitBoundsRef.current?.(x0 - px, y0 - py, x1 + px, y1 + py)
