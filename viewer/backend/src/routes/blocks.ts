@@ -348,7 +348,13 @@ function runBbox(res: any, q: Record<string, string>, namesList?: string[]) {
     for (let i = 0; i < names.length; i += 400) { const ch = names.slice(i, i + 400)
       for (const r of d.prepare(sel(ch.map(() => '?').join(','))).all(bboxLayer, ...ch) as { xCoord: number; yCoord: number }[]) { if (r.xCoord == null) continue; minx = Math.min(minx, r.xCoord); maxx = Math.max(maxx, r.xCoord); miny = Math.min(miny, r.yCoord); maxy = Math.max(maxy, r.yCoord); sx += r.xCoord; sy += r.yCoord; n++ } }
     if (!n) { res.json({ layer, count: 0, counts, c0, c1, ms: Date.now() - t0 }); return }
-    res.json({ layer, count: n, counts, c0, c1, minx, miny, maxx, maxy, cx: sx / n, cy: sy / n, ms: Date.now() - t0 })
+    // 外れ値を除いた矩形（10-28）: ecoli では範囲の一部のノード（IS・反復）がレイアウトの中央のハブなど遠くにあり、外接矩形がグラフ全体に広がって
+    // 範囲が画面の中央に小さく写った。座標の 5〜95 パーセンタイルの箱を 15% 広げたものを返す（元の外接矩形は raw に）
+    const xs2: number[] = [], ys2: number[] = []
+    for (let i = 0; i < names.length; i += 400) { const ch = names.slice(i, i + 400); for (const r of d.prepare(sel(ch.map(() => '?').join(','))).all(bboxLayer, ...ch) as { xCoord: number; yCoord: number }[]) { if (r.xCoord == null) continue; xs2.push(r.xCoord); ys2.push(r.yCoord) } }
+    xs2.sort((u, v) => u - v); ys2.sort((u, v) => u - v); const pc = (a: number[], f: number) => a[Math.min(a.length - 1, Math.max(0, Math.round(f * (a.length - 1))))]
+    let tx0 = pc(xs2, .05), tx1 = pc(xs2, .95), ty0 = pc(ys2, .05), ty1 = pc(ys2, .95); const px = (tx1 - tx0) * .15 + 1e-9, py = (ty1 - ty0) * .15 + 1e-9; tx0 -= px; tx1 += px; ty0 -= py; ty1 += py
+    res.json({ layer, count: n, counts, c0, c1, minx: tx0, miny: ty0, maxx: tx1, maxy: ty1, raw: { minx, miny, maxx, maxy }, cx: sx / n, cy: sy / n, ms: Date.now() - t0 })
   } catch (err) { res.status(500).json({ error: String(err) }) }
 }
 
