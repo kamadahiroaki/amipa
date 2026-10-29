@@ -282,7 +282,7 @@ async function openBase(ranges: number[][], label: string) {
     if (hid == null) return; if (!rowsOf.has(hid)) rowsOf.set(hid, []); rowsOf.get(hid)!.push(mi) })
   const byNode = new Map<string, number[]>(); d.cols.forEach((c, i) => { for (const nm of (c.nodes || [])) { const a = byNode.get(nm); if (a) a.push(i); else byNode.set(nm, [i]) } })
   baseGenesReq = ++baseGenesSeq
-  const inv = d.rows.map(r => { const st = new Set<number>(); for (const n of (r.inv || [])) for (const i of (byNode.get(n) || [])) st.add(i); return st })
+  const inv = d.rows.map(r => { const st = new Set<number>(); if ((r as any).invc) { for (const [a, b] of (r as any).invc as [number, number][]) for (let i = a; i <= b; i++) st.add(i) } else for (const n of (r.inv || [])) for (const i of (byNode.get(n) || [])) st.add(i); return st })   // invc＝通過ごとの逆向きの列（10-29。無ければノード名から）
   // 逆位のノードの文字は bubble_msa が列の多数の向きに揃えて返す（同じノードなら他の行と同じ文字。孤立した 3 bp 以下は逆相補のまま＝向きで実現した SNP）。
   // 画面側は inv（紫の帯）で逆向きを示すだけ。norm は比較・多数派・並べ替え・効果に使う配列（＝seq）
   const norm = d.rows.map(r => r.seq)
