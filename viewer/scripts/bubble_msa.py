@@ -611,19 +611,20 @@ def main():
             sq = disp(p); sh = [bpos[n] for n in sq if n in bpos]
             t = int(np.sign(np.diff(np.asarray(sh, np.int64))).sum()) if len(sh) >= 2 else 0
             if t == 0 and btrend != 0: t = ctrend(sq) * (1 if btrend > 0 else -1)
-            if t < 0: p[3] = not p[3]
+            if t < 0: p[3] = not p[3]   # リードの向きは列ができた後に最長増加部分列で決め直す（lis_len）
+    has_h = any(not p[0].get("rd") for p in pre)
     for r, nodes, ors, rev in pre:
         # 通過ごとの文字列（10-29）: occ_st＝格納向き（リードは自分の塩基）、occ_inv＝その通過が行の表示の向きと逆か、occ＝表示の向きの文字列。
         # 同じノードを 2 回通る行（タンデム反復の輪・局所の入れ替わり）で、写しの列にその回の文字と向きを出すため。cells / inv / rc_votes は従来どおり最初の通過で決める
-        cells, inv = {}, []; occ, occ_inv, occ_st = [], [], []; rdo = r.get("rdocc")
+        cells, inv = {}, []; occ, occ_inv, occ_st = [], [], []; rdo = r.get("rdocc"); vote = not (rdo and has_h)   # 列の多数の向きは株の行だけで決める（株が無ければ全行）
         for k_, (n, o) in enumerate(zip(nodes, ors)):
             st_ = rdo[k_] if rdo else seqleaf.get(n, "?"); iv_ = (not o) != rev   # ステップ向きが行の表示の向きと違う = 局所反転
             s = rc(st_) if iv_ else st_
             occ.append(s); occ_inv.append(iv_); occ_st.append(st_)
             if n in cells:
                 continue
-            if iv_: inv.append(n); rc_votes[n] = rc_votes.get(n, 0) + 1
-            else: rc_votes[n] = rc_votes.get(n, 0) - 1
+            if iv_: inv.append(n)
+            if vote: rc_votes[n] = rc_votes.get(n, 0) + (1 if iv_ else -1)
             cells[n] = s
         if rev: occ, occ_inv, occ_st = occ[::-1], occ_inv[::-1], occ_st[::-1]
         rins_ = [(n_, k_, q_, (len(nodes) - 1 - i_) if rev else i_) for n_, k_, q_, i_ in r.get("rins", [])]
@@ -639,8 +640,8 @@ def main():
     # 列の多数の向き（rc_votes）の文字列で出す＝同じノードなら他の行と同じ文字になり、位置ごとの比較で偽のミスマッチが出ない（DDTL の 2.95 kb 逆位）。inv の印（紫の帯）は残す。
     # 孤立した 3 bp 以下の inv ノードはそのまま逆相補で出す（向きで実現した SNP: chrY n81087900 の T/A）。行が順向きでも列の多数が逆相補なら多数に合わせる
     # 通過ごとに揃える（10-29）。連なりは「行の並びで隣り合う、逆向きの通過」。リードは自分の塩基（occ_st）で揃える
-    for r in raw:
-        seqn = r["seq"]; occ = r["occ"]; oi = r["occ_inv"]; ost = r["occ_st"]; r["occ0"] = list(occ)   # occ0＝揃える前の文字（その株の実際の向き。書き出しの「実配列の整列」用）
+    def norm_row(r):
+        seqn = r["seq"]; oi = r["occ_inv"]; ost = r["occ_st"]; occ = r["occ"] = list(r["occ0"])
         i = 0
         while i < len(seqn):
             if not oi[i]: i += 1; continue
@@ -651,6 +652,9 @@ def main():
             i = j
         for q, n in enumerate(seqn):
             if not oi[q] and rc_votes.get(n, 0) > 0 and len(seqleaf.get(n, "")) > 3: occ[q] = rc(ost[q])
+    for r in raw:
+        r["occ0"] = list(r["occ"])   # occ0＝揃える前の文字（その株の実際の向き。書き出しの「実配列の整列」用）
+        norm_row(r)
 
     # --- 固定幅列。★同じサイトの排他アレルは「アレル群」として **1 ブロック**にまとめる。
     #   旧実装は「id 隣接・等長・排他のペア」だけを統合していたので、3 アレル以上の site(G/A/C)や
@@ -720,7 +724,7 @@ def main():
         order_ = []; heap = [(prio[n], n) for n in inv_nodes if indeg[n] == 0]; _hq.heapify(heap); done_ = set()
         while len(order_) < len(inv_nodes):
             if not heap:   # 閉路: 残りの中で優先度が最小のものを入れる
-                rest = [n for n in inv_nodes if n not in done_]; m_ = min(rest, key=lambda n: prio[n]); indeg[m_] = 0; heap = [(prio[m_], m_)]
+                rest = [n for n in inv_nodes if n not in done_]; m_ = min(rest, key=lambda n: (prio[n], int(n[1:]))); indeg[m_] = 0; heap = [(prio[m_], m_)]   # 同点はノード番号で（10-29: 集合の並び順＝ハッシュの種で列が変わった。ecoli50 の環の継ぎ目で 9.8 万〜15 万列）
             _, n = _hq.heappop(heap)
             if n in done_: continue
             done_.add(n); order_.append(n)
@@ -799,6 +803,27 @@ def main():
         for n_ in g_: gidx.setdefault(n_, gi_)
     import bisect as _bs
     copies_after = {}          # 元の群の番号 → [(順位 j, ノード)]（写しの群を作る順）
+    # リードの向きを列の順で決め直す（10-29）: 行のノード列を列の群番号に直し、順向きと逆向きで最長増加部分列の長さを比べて長い方を採る。
+    # 株の 1 行や合意座標と比べる方法は、環状の継ぎ目（合意座標の折り返し）やタンデム重複（株自身が同じノードを 2 回通る）で誤った
+    def lis_len(v):
+        t_ = []
+        for x in v:
+            k_ = _bs.bisect_left(t_, x)
+            if k_ == len(t_): t_.append(x)
+            else: t_[k_] = x
+        return len(t_)
+    if craw is not raw:
+        for r in raw:
+            if not r.get("rdinfo"): continue
+            g_ = [gidx[n_] for n_ in r["seq"] if n_ in gidx]
+            if lis_len(g_[::-1]) <= lis_len(g_): continue
+            L_ = len(r["seq"]); r["seq"] = r["seq"][::-1]; r["seqn"] = r["seqn"][::-1]; r["occ_st"] = r["occ_st"][::-1]
+            r["occ_inv"] = [not x for x in r["occ_inv"][::-1]]; r["occ0"] = [rc(x) for x in r["occ0"][::-1]]; norm_row(r)
+            r["strand"] = "+" if r["strand"] == "-" else "-"; r["ends"] = r["ends"][::-1]
+            r["rins"] = [(n_, k_, q_, L_ - 1 - i_) for n_, k_, q_, i_ in r.get("rins", [])]
+            fo = {}
+            for q, n_ in enumerate(r["seq"]): fo.setdefault(n_, q)
+            r["inv"] = [n_ for n_, q in fo.items() if r["occ_inv"][q]]
     cset = set(id(r) for r in craw)
     for r in sorted(raw, key=lambda r: id(r) not in cset):   # 列を作る行（株）を先に。リードは株の写しの列にだけ入る
         mk = id(r) in cset
@@ -867,7 +892,9 @@ def main():
         else:
             i1 = max(i for i, ch in enumerate(sq) if ch not in "-~")
             r["seq"] = "." * i0 + sq[i0:i1 + 1] + "." * (len(sq) - i1 - 1)
-        sqt = "".join(cellchar(r, c, "occ0") for c in cols); r["seqt"] = "".join(ch if r["seq"][k] != "." else "." for k, ch in enumerate(sqt))
+        # 実際の向きの文字の範囲外は自分の文字で決める（10-29: seq の "." を写していたので、列の向きに揃えて端が入れ替わったノード＝リードが途中から始まる逆向きのノードで、本物の塩基が "." に化けた）
+        sqt = "".join(cellchar(r, c, "occ0") for c in cols); j0 = next((i for i, ch in enumerate(sqt) if ch not in "-~"), None)
+        r["seqt"] = "." * len(sqt) if j0 is None else ("." * j0 + sqt[j0:max(i for i, ch in enumerate(sqt) if ch not in "-~") + 1]).ljust(len(sqt), ".")
     # 窓の端の列を落とす: 端の列に「範囲の外」の行があり、その行がコンティグの端で切れているのではない（＝この窓で読んでいないだけ）なら、
     # その列は一部の行にしか判断材料が無いので出さない（最大 40 列ずつ）。コンティグの端で切れている行の「範囲の外」は残す（意味がある）
     if cols:
