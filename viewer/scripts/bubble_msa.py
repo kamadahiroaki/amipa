@@ -536,7 +536,7 @@ def main():
         for gid, o in toks:
             L_ = len(seqleaf.get("n%d" % gid, "")); offs.append((gid, o, off, L_)); off += L_
         lo_ = offs[rm["i0"]][2]; hi_ = offs[rm["i1"]][2] + offs[rm["i1"]][3]
-        buf = {}; ins = {}
+        buf = {}; ins = {}; rins = []
         for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]: buf[(gid, of_)] = ["."] * L_
         def put(pos, ch):
             for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]:
@@ -557,12 +557,17 @@ def main():
                 for q in range(max(pos, lo_), min(pos + len(t) - 1, hi_)): put(q, "-")
                 pos += len(t) - 1
             else:
-                if lo_ <= pos < hi_: ins[pos] = ins.get(pos, 0) + len(t) - 1
+                if lo_ <= pos < hi_:
+                    ins[pos] = ins.get(pos, 0) + len(t) - 1
+                    for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]:   # 挿入の位置を「ノード・格納向きの塩基の間」で覚える（列への対応は列を作った後）
+                        if of_ <= pos < of_ + L_:
+                            k_ = pos - of_; sq_ = t[1:].upper()
+                            rins.append(("n%d" % gid, k_ if o else L_ - k_, sq_ if o else rc(sq_))); break
             if pos >= hi_: break
         rdc = {}
         for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]:
             wstr = "".join(buf[(gid, of_)]); rdc["n%d" % gid] = wstr if o else wstr.translate(COMP)[::-1]
-        r["rdcells"] = rdc; r["nins"] = sum(ins.values())
+        r["rdcells"] = rdc; r["nins"] = sum(ins.values()); r["rins"] = rins
     raw = []; dense_of_name = {}; rc_votes = {}   # ノードが表示で逆相補されている行の多数（列の塩基オフセットを格納向きに直すため）
     # 行の向き: 合意列があれば「歩きが合意列を減らす向きに進むか」で決める（2026-10-18）。格納向きの bp の多数決だと、局所的に長い反転を
     # 含む逆鎖のコンティグが順向きと判定され、行が逆に読まれた（chr21 n73207575 の CA が半数の株で TG、573/574 が並列に見えず直列に）
@@ -618,7 +623,7 @@ def main():
         ce = r.get("cend", (False, False))
         brk_ = [[nodes[i - 1], nodes[i], int(n_)] for i, n_ in r.get("brk", []) if 0 < i < len(nodes)]   # 継ぎ目: [前のノード, 後のノード, 飛ばしたトークン数]
         hseq_ = "".join((seqleaf.get(n_, "N") if o_ else rc(seqleaf.get(n_, "N"))) for n_, o_ in zip(nodes, ors))   # その株のコンティグの向きの実際の配列（書き出し用）
-        raw.append(dict(rdinfo=(dict(sample=r["rd"]["sample"], name=r["rd"]["name"], mapq=r["rd"]["mapq"], nins=r.get("nins", 0)) if r.get("rd") else None), hseq=hseq_, samp=r["samp"], label=r["label"], path=r["path"],
+        raw.append(dict(rdinfo=(dict(sample=r["rd"]["sample"], name=r["rd"]["name"], mapq=r["rd"]["mapq"], nins=r.get("nins", 0)) if r.get("rd") else None), rins=r.get("rins", []), rdc=r.get("rdcells"), hseq=hseq_, samp=r["samp"], label=r["label"], path=r["path"],
                         strand=("-" if rev else "+"), cells=cells, inv=inv, ends=([ce[1], ce[0]] if rev else [ce[0], ce[1]]),   # 表示の左端・右端がコンティグの端か
                         nodes=set(nodes), seq=(nodes[::-1] if rev else nodes), isref=r["isref"], brk=brk_))
 
@@ -637,9 +642,10 @@ def main():
             i = j
         for n in norm_nodes:
             s_ = seqleaf.get(n)
+            if r.get("rdc") and n in r["rdc"]: s_ = r["rdc"][n]   # リードは参照の配列でなく自分の塩基（格納向き）で揃える
             if s_ is not None: r["cells"][n] = rc(s_) if rc_votes.get(n, 0) > 0 else s_
         for n in list(r["cells"]):
-            if n not in invset and rc_votes.get(n, 0) > 0 and len(seqleaf.get(n, "")) > 3: r["cells"][n] = rc(seqleaf[n])
+            if n not in invset and rc_votes.get(n, 0) > 0 and len(seqleaf.get(n, "")) > 3: r["cells"][n] = rc((r.get("rdc") or {}).get(n, seqleaf[n]))
 
     # --- 固定幅列。★同じサイトの排他アレルは「アレル群」として **1 ブロック**にまとめる。
     #   旧実装は「id 隣接・等長・排他のペア」だけを統合していたので、3 アレル以上の site(G/A/C)や
@@ -855,17 +861,18 @@ def main():
     # その列は一部の行にしか判断材料が無いので出さない（最大 40 列ずつ）。コンティグの端で切れている行の「範囲の外」は残す（意味がある）
     if cols:
         t0 = 0
-        while t0 < min(40, len(cols) - 1) and any(r["seq"][t0] == "." and not r["ends"][0] for r in raw): t0 += 1
+        hraw = [r for r in raw if not r.get("rdinfo")]   # リードは窓の途中で始まり終わるのが普通なので、端の列を落とす判断に使わない
+        while t0 < min(40, len(cols) - 1) and any(r["seq"][t0] == "." and not r["ends"][0] for r in hraw): t0 += 1
         t1 = len(cols)
-        while t1 - 1 > t0 and len(cols) - t1 < 40 and any(r["seq"][t1 - 1] == "." and not r["ends"][1] for r in raw): t1 -= 1
+        while t1 - 1 > t0 and len(cols) - t1 < 40 and any(r["seq"][t1 - 1] == "." and not r["ends"][1] for r in hraw): t1 -= 1
         if t0 or t1 < len(cols):
             cols = cols[t0:t1]
             for r in raw: r["seq"] = r["seq"][t0:t1]; r["seqt"] = r["seqt"][t0:t1]
 
     # --- bubble 内部(選択ノード配下の葉)の列範囲＋pad に自動トリム。
     #     変異は内部に集中する一方、flank は隣接 VNTR 等を拾いがちなので、内部基準で切ると焦点が定まる。 ---
-    def is_var(ci):
-        vals = set(r["seq"][ci] for r in raw); vals.discard("~"); vals.discard(".")
+    def is_var(ci):   # 変異の有無は株の行だけで決める（リードの読み取りエラーで列が変異扱いにならないように）
+        vals = set(r["seq"][ci] for r in raw if not r.get("rdinfo")); vals.discard("~"); vals.discard(".")
         return len(vals) > 1
     leafset = set(leaves)
     intidx = [ci for ci in range(len(cols)) if any(n in leafset for n in cols[ci]["nodes"])]
@@ -881,8 +888,28 @@ def main():
     for r in raw: r["seq"] = r["seq"][a:b]; r["seqt"] = r["seqt"][a:b]
     # 変異フラグ(トリム後)。逆位のノードの文字は上で列の多数の向きに揃えてあるので、同じノードなら変異にならない（DDTL の n76458304 で 82 列中 66 列が偽の変異になった 2026-10-26）
     for ci, c in enumerate(cols):
-        vals = set(r["seq"][ci] for r in raw); vals.discard("~"); vals.discard(".")
+        vals = set(r["seq"][ci] for r in raw if not r.get("rdinfo")); vals.discard("~"); vals.discard(".")
         c["variant"] = bool(c.get("variant")) or (len(vals) > 1)
+    # リードだけの挿入を列に対応させる: 格納向きの塩基 k-1 と k の間 → その 2 列の境界。片方しか無い（ノードの端・畳んだ区間）ときはある方の列の端
+    if any(r.get("rins") for r in raw):
+        so_at = {}
+        for ci, c in enumerate(cols):
+            for j, n in enumerate(c["nodes"]):
+                so_ = c.get("so"); v = so_[j] if so_ and j < len(so_) else None
+                if c["kind"] == "ell": so_at.setdefault((n, "ell"), ci)
+                elif v is not None and v >= 0: so_at[(n, v)] = ci
+        for r in raw:
+            out_ = []
+            for n, k, sq_ in r.get("rins", []):
+                a_, b_ = so_at.get((n, k - 1)), so_at.get((n, k))
+                if a_ is not None and b_ is not None: ci, side = max(a_, b_), 0
+                elif b_ is not None: ci, side = b_, 0 if (so_at.get((n, k + 1), b_ + 1) > b_) else 1
+                elif a_ is not None: ci, side = a_, 1 if (so_at.get((n, k - 2), a_ - 1) < a_) else 0
+                elif (n, "ell") in so_at: ci, side = so_at[(n, "ell")], 2
+                else: continue
+                if r["seq"][ci] == ".": continue
+                out_.append([ci, side, sq_])
+            r["rins"] = out_
 
     # 列が属する群の連番(frontend が境界の描画とブロック見出しに使う)
     gseq, gid = -1, []
@@ -916,7 +943,7 @@ def main():
                cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl", "cp", "ri") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
-                      "inv": invmaj(r), "hseq": r.get("hseq", ""), "read": r.get("rdinfo"), "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
+                      "inv": invmaj(r), "hseq": r.get("hseq", ""), "read": r.get("rdinfo"), "rins": (r.get("rins") or None) if r.get("rdinfo") else None, "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
     print(json.dumps(out))
 
 if __name__ == "__main__":
