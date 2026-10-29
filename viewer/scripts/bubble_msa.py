@@ -457,18 +457,31 @@ def main():
                 maxr = int(rq.get("max", 60)); want = set(rq.get("samples") or [])
                 getr, sname = RQ.open_readers(rcon, args.db)
                 win_ids = set(int(id_map[int(t) - 1]) for t in Sall.tolist()) if 'Sall' in dir() else set()
-                cand = {}
-                probe = sorted(win_ids)[:: max(1, len(win_ids) // 40)]        # 窓のノードを 40 個ほど標本してリードを集める
+                # 窓全体から選ぶ（10-29）: 窓のノードを最大 200 個標本し（id 順＝おおよそ位置順）、標本を順に回って、まだ選んでいないリードを 1 本ずつ取る
+                # （サンプルごとに上限まで）。以前は「標本 40 個を多く通る順」に上限まで取ったので、リード長より広い窓では 1 か所に固まった
+                cand = {}; plist = []
+                probe = sorted(win_ids)[:: max(1, len(win_ids) // 200)]
                 for gid in probe:
-                    for aid in RQ._node_aln_ids(rcon, gid)[:2000]: cand[aid] = cand.get(aid, 0) + 1
-                aids = sorted(cand, key=lambda a: -cand[a])[:max(1, maxr * 4)]
-                rows_ = rcon.execute("SELECT aln_id, sample_no, voff, read_name FROM rd.read_aln WHERE aln_id IN (%s)" % ",".join("?" * len(aids)), aids).fetchall() if aids else []
-                per = {}
-                for aid, sn, vo, rn in rows_:
-                    if want and sname.get(sn) not in want: continue
-                    per.setdefault(sn, []).append((aid, vo, rn))
-                pick = []
-                for sn, lst in per.items(): pick += [(sn, a, v, rn) for a, v, rn in sorted(lst, key=lambda e: -cand[e[0]])[:maxr]]
+                    al_ = RQ._node_aln_ids(rcon, gid)[:2000]; plist.append(al_)
+                    for aid in al_: cand[aid] = cand.get(aid, 0) + 1
+                allc = list(cand)
+                info = {}
+                for i_ in range(0, len(allc), 900):
+                    ch_ = allc[i_:i_ + 900]
+                    for aid, sn, vo, rn in rcon.execute("SELECT aln_id, sample_no, voff, read_name FROM rd.read_aln WHERE aln_id IN (%s)" % ",".join("?" * len(ch_)), ch_):
+                        if want and sname.get(sn) not in want: continue
+                        info[aid] = (sn, vo, rn)
+                plist = [sorted((a for a in al_ if a in info), key=lambda a: -cand[a]) for al_ in plist]
+                got = {}; chosen = set(); pick = []; pos_ = [0] * len(plist); more = True
+                while more:
+                    more = False
+                    for pi_, al_ in enumerate(plist):
+                        while pos_[pi_] < len(al_):
+                            a = al_[pos_[pi_]]; pos_[pi_] += 1
+                            if a in chosen: continue
+                            sn, vo, rn = info[a]
+                            if got.get(sn, 0) >= maxr: continue
+                            chosen.add(a); got[sn] = got.get(sn, 0) + 1; pick.append((sn, a, vo, rn)); more = True; break
                 lines = RQ.fetch_lines(getr, [(sn, a, v) for sn, a, v, _ in pick])
                 need_d = {}
                 for (sn, aid, line), (_, _, _, rn) in zip(lines, pick):
