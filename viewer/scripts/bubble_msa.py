@@ -483,7 +483,13 @@ def main():
                     for i_ in inw[1:]:
                         if i_ - cl[-1][-1] > 50: cl.append([i_])
                         else: cl[-1].append(i_)
-                    best_ = max(cl, key=len)
+                    # 塊の間が JOINR トークン以内ならつなぐ（10-29: 列は株の行だけで作り、窓に無いノードは印に畳むようになったので、最大の塊だけに
+                    # 切る必要が無くなった。ecoli50 原子 406 で 18.7 kb のリードが株に無い 140–170 トークンの経路で 3 塊に分かれ、1.2 kb しか出なかった）
+                    JOINR = 2000; mg = [list(cl[0])]
+                    for c_ in cl[1:]:
+                        if c_[0] - mg[-1][-1] <= JOINR: mg[-1].extend(c_)
+                        else: mg.append(list(c_))
+                    best_ = max(mg, key=len)
                     read_meta.append(dict(sn=sn, sample=sname.get(sn, str(sn)), name=d["read_name"], mapq=d["mapq"], toks=toks, i0=best_[0], i1=best_[-1], d=d))
                 for rm in read_meta:
                     for gid, _o in rm["toks"]: need_d[gid] = None
