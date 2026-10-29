@@ -538,11 +538,19 @@ def main():
         lo_ = offs[rm["i0"]][2]; hi_ = offs[rm["i1"]][2] + offs[rm["i1"]][3]
         buf = {}; ins = {}; rins = []
         for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]: buf[(gid, of_)] = ["."] * L_
+        import bisect as _bsr
+        starts_ = [of_ for _g, _o, of_, _L in offs]   # パス座標 → トークンは二分探索（10-29: 先頭から順に探していたので塩基数×ノード数で、ヒト 1.1 kb の窓が 25 秒）
+        def tok_at(pos):
+            t_i = _bsr.bisect_right(starts_, pos, rm["i0"], rm["i1"] + 1) - 1
+            if t_i < rm["i0"]: return None
+            gid, o, of_, L_ = offs[t_i]
+            return t_i if of_ <= pos < of_ + L_ else None
         def put(pos, ch):
-            for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]:
-                if of_ <= pos < of_ + L_:
-                    sq = seqleaf.get("n%d" % gid, ""); base = (sq if o else sq.translate(COMP)[::-1])
-                    buf[(gid, of_)][pos - of_] = base[pos - of_] if ch is None else ch; return
+            t_i = tok_at(pos)
+            if t_i is None: return
+            gid, o, of_, L_ = offs[t_i]
+            sq = seqleaf.get("n%d" % gid, ""); base = (sq if o else sq.translate(COMP)[::-1])
+            buf[(gid, of_)][pos - of_] = base[pos - of_] if ch is None else ch
         pos = ps
         for m_ in re.finditer(r'(:\d+)|(\*[a-z][a-z])|(-[a-z]+)|(\+[a-z]+)', d["cs"].lower()):
             t = m_.group(0)
@@ -559,10 +567,10 @@ def main():
             else:
                 if lo_ <= pos < hi_:
                     ins[pos] = ins.get(pos, 0) + len(t) - 1
-                    for gid, o, of_, L_ in offs[rm["i0"]:rm["i1"] + 1]:   # 挿入の位置を「ノード・格納向きの塩基の間」で覚える（列への対応は列を作った後）
-                        if of_ <= pos < of_ + L_:
-                            k_ = pos - of_; sq_ = t[1:].upper()
-                            rins.append(("n%d" % gid, k_ if o else L_ - k_, sq_ if o else rc(sq_), offs.index((gid, o, of_, L_)))); break
+                    t_i = tok_at(pos)   # 挿入の位置を「ノード・格納向きの塩基の間」で覚える（列への対応は列を作った後）
+                    if t_i is not None:
+                        gid, o, of_, L_ = offs[t_i]; k_ = pos - of_; sq_ = t[1:].upper()
+                        rins.append(("n%d" % gid, k_ if o else L_ - k_, sq_ if o else rc(sq_), t_i))
             if pos >= hi_: break
         # 通過ごと（トークンごと）の格納向きの文字列（10-29: ノード名で持つと同じノードの 2 回目の通過が 1 回目を上書きした）
         rdt = {}
@@ -873,18 +881,19 @@ def main():
             cols.append(dict(kind="ell", bp=w, **meta))
             for k in range(w - TAIL, w): cols.append(dict(kind="base", off=k, so=soffs(k), **meta))
 
+    for c in cols: c["_k"] = ("c", c["_cp"]) if c.get("_cp") is not None else ("g", c.get("_g"))   # 列の鍵は 1 回だけ作る（10-29: 行×列×4 回作っていて、ヒトの窓で 1,800 万回）
     def occ_of(r, c):   # この列に置くこの行の通過の番号（無ければ None）。写しの列はその写し、元の列は増加列に入った通過
-        cp = c.get("_cp")
-        return r["occ_at"].get(("c", cp) if cp is not None else ("g", c.get("_g")))
-    def cellchar(r, c, which="occ"):
-        k_ = occ_of(r, c)
+        return r["occ_at"].get(c["_k"])
+    def cellchar(r, c, which="occ", k_=False):
+        if k_ is False: k_ = occ_of(r, c)
         if k_ is None: return "-"
         s = r[which][k_]
         if c["kind"] == "ell": return "~"
         k = c["off"]
         return s[k] if k < len(s) else "-"        # 同群で短いアレルは末尾を gap 埋め
     for r in raw:
-        sq = "".join(cellchar(r, c) for c in cols)
+        oc_ = [r["occ_at"].get(c["_k"]) for c in cols]
+        sq = "".join(cellchar(r, c, "occ", k_) for c, k_ in zip(cols, oc_))
         # 行の範囲の外（最初の塩基より前・最後の塩基より後）は "."＝読んでいない。窓の端で、この行のトークン範囲は終わっているが
         # 他の行の範囲がもう少し先まで届くと、その列がこの行の欠失に見えた（2026-10-19: HG01978#2 の n73207588 以降）
         i0 = next((i for i, ch in enumerate(sq) if ch not in "-~"), None)
@@ -893,7 +902,7 @@ def main():
             i1 = max(i for i, ch in enumerate(sq) if ch not in "-~")
             r["seq"] = "." * i0 + sq[i0:i1 + 1] + "." * (len(sq) - i1 - 1)
         # 実際の向きの文字の範囲外は自分の文字で決める（10-29: seq の "." を写していたので、列の向きに揃えて端が入れ替わったノード＝リードが途中から始まる逆向きのノードで、本物の塩基が "." に化けた）
-        sqt = "".join(cellchar(r, c, "occ0") for c in cols); j0 = next((i for i, ch in enumerate(sqt) if ch not in "-~"), None)
+        sqt = "".join(cellchar(r, c, "occ0", k_) for c, k_ in zip(cols, oc_)); j0 = next((i for i, ch in enumerate(sqt) if ch not in "-~"), None)
         r["seqt"] = "." * len(sqt) if j0 is None else ("." * j0 + sqt[j0:max(i for i, ch in enumerate(sqt) if ch not in "-~") + 1]).ljust(len(sqt), ".")
     # 窓の端の列を落とす: 端の列に「範囲の外」の行があり、その行がコンティグの端で切れているのではない（＝この窓で読んでいないだけ）なら、
     # その列は一部の行にしか判断材料が無いので出さない（最大 40 列ずつ）。コンティグの端で切れている行の「範囲の外」は残す（意味がある）
@@ -929,11 +938,11 @@ def main():
         vals = set(r["seq"][ci] for r in raw if not r.get("rdinfo")); vals.discard("~"); vals.discard(".")
         c["variant"] = bool(c.get("variant")) or (len(vals) > 1)
     # リードの、列に置かれなかった通過（株より多い周回・株に無い経路）を連なりごとに 1 つの印にする（10-29）。置き場所は直前に置かれた通過の列の右端（無ければ直後の左端）
+    for r in raw: r["_oc"] = [r["occ_at"].get(c["_k"]) for c in cols]   # 確定した列 → この行の通過（印・紫の印で使い回す）
     for r in raw:
         if not r.get("rdinfo"): continue
         placed = {}
-        for ci, c in enumerate(cols):
-            k_ = occ_of(r, c)
+        for ci, k_ in enumerate(r["_oc"]):
             if k_ is not None: placed.setdefault(k_, [ci, ci]); placed[k_][1] = ci
         sq_ = r["seqn"]; i = 0; ext = []
         if not placed: continue
@@ -956,7 +965,7 @@ def main():
             if not r.get("rins"): continue
             so_at = {}   # この行の (通過の番号, ノード, 格納向きの位置) → 列（10-29: 同じノードの別の通過の列に印が付かないように）
             for ci, c in enumerate(cols):
-                q_ = occ_of(r, c)
+                q_ = r["_oc"][ci]
                 if q_ is None: continue
                 for j, n in enumerate(c["nodes"]):
                     so_ = c.get("so"); v = so_[j] if so_ and j < len(so_) else None
@@ -989,7 +998,7 @@ def main():
     def invcols(r):   # 逆向きの印を列で（10-29）: 列に置いた通過が列の多数の向きと逆なら。ノード名で返すと、同じノードの順向きの通過（写しの列）にも印が付く。[[先頭, 末尾], ...]
         out_, st_ = [], None
         for ci, c in enumerate(cols):
-            k_ = occ_of(r, c); f_ = k_ is not None and (r["occ_inv"][k_] != (rc_votes.get(r["seqn"][k_], 0) > 0))
+            k_ = r["_oc"][ci]; f_ = k_ is not None and (r["occ_inv"][k_] != (rc_votes.get(r["seqn"][k_], 0) > 0))
             if f_ and st_ is None: st_ = ci
             if not f_ and st_ is not None: out_.append([st_, ci - 1]); st_ = None
         if st_ is not None: out_.append([st_, len(cols) - 1])
