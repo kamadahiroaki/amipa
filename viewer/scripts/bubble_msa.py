@@ -662,8 +662,12 @@ def main():
     #   ★さらに（2026-10-06）: 排他だけだと、連鎖不平衡で常に一緒に出る隣のサイトのアレル同士（29‖31 と 30‖32 の 2 サイトで、
     #   29 と 30、31 と 32 が常に同じ株）を同じサイトと誤って束ね、全株に偽の欠失が出た。同じサイト＝**グラフで並列**（行の並びから
     #   見た直前・直後のノード集合が同じ）を条件にする。群の順は行の中での位置（中央値）で決める（id 順だと島の中で乱れる）。
-    alln = sorted({n for r in raw for n in r["nodes"]}, key=lambda n: int(n[1:]))
-    present = {n: set(i for i, r in enumerate(raw) if n in r["nodes"]) for n in alln}
+    # 列は株の行だけで作る（10-29）。リードは株の列（元の列・株が作った写しの列）に当てはめ、当てはまらない通過（株より多い周回・株に無い経路）は
+    # 列を作らずに印にする（rins）。リードから列を作ると、輪に入る位置の違うリードごとに専用の写しの列ができ、ecoli50 の窓で列の 8 割がリード 1 本だけの列になった。
+    # 株の行が無い（パスの無いグラフ）ときは全行で作る
+    craw = [r for r in raw if not r.get("rdinfo")] or raw
+    alln = sorted({n for r in craw for n in r["nodes"]}, key=lambda n: int(n[1:]))
+    present = {n: set(i for i, r in enumerate(craw) if n in r["nodes"]) for n in alln}
     #   やり方: 全行が持つノード（不変ノード）で各行の並びを区切り、区切りの中（＝バブルの通り方＝アレル）で、区切りの先頭からの
     #   塩基オフセットが同じノード同士を同じ列群にする（29+32 と 31+30 の 2 bp ずつのアレルは [29|31][32|30] に揃う）。
     #   長さの違うアレルはオフセットがずれた所から別の群＝gap になる（整列としてはそれが正しい）。
@@ -675,7 +679,7 @@ def main():
         #   区切りの順は合意列。区切りの間はこれまでどおり行ごとの塩基オフセットで揃える（多ノードのアレルの中の順を保つ。合意列で並べると
         #   錨でないノードの列は近似なので、アレルの中が入れ替わって読み枠が壊れた＝ecoli ybeF で内部の終止 14）
         pred, succ = {}, {}
-        for r in raw:
+        for r in craw:
             sq = r["seq"]
             for a_, b_ in zip(sq, sq[1:]): succ.setdefault(a_, set()).add(b_); pred.setdefault(b_, set()).add(a_)
         # 並列＝直前と直後のノードを少なくとも 1 つずつ共有し、同じ行に共存しない（排他）。完全一致だと、広い窓で別の経路を通る行が
@@ -692,8 +696,8 @@ def main():
         # 近似なので順に使うとアレルの中や島の中が入れ替わった（ecoli ybeF で内部の終止 10）
         # 区切り＝並列な相手を持たず、行の 1/4 以上が持つノード（共有の多い鎖のノードは合意列が正確）。順は合意列（参照行の向きに合わせる）。
         # 参照行の上のノードだけに限ると、参照がその区間を別の経路で通るとき区切りが数百塩基立たず、上流の indel でオフセットが 1 ずれた
-        base_row = next((r for r in raw if r["isref"]), raw[0])
-        need_ = max(2, (len(raw) + 3) // 4)
+        base_row = next((r for r in craw if r["isref"]), craw[0])
+        need_ = max(2, (len(craw) + 3) // 4)
         inv_nodes = {n for n in alln if n not in paired and len(present[n]) >= need_ and colof.get(n, -1) >= 0}
         # 区切りの順: 全行の「区切りの並び」を有向辺にしてトポロジカルに並べる（行の向きは参照に揃えてある）。同点・閉路は参照行の位置、
         # 次に合意列で決める。参照に無い区切りを「直前の区切りの直後」に置く近似は、行ごとに直前が違うと順が崩れた
@@ -703,7 +707,7 @@ def main():
             if n in inv_nodes: bposf.setdefault(n, k)
         prio = {n: (0, bposf[n]) if n in bposf else (1, colof.get(n, 0)) for n in inv_nodes}
         outs = {n: set() for n in inv_nodes}; indeg = {n: 0 for n in inv_nodes}
-        for r in raw:
+        for r in craw:
             sq_ = [n for n in r["seq"] if n in inv_nodes]
             for a_, b_ in zip(sq_, sq_[1:]):
                 if a_ != b_ and b_ not in outs[a_]: outs[a_].add(b_); indeg[b_] += 1
@@ -725,17 +729,17 @@ def main():
                 if indeg[m_] == 0 and m_ not in done_: _hq.heappush(heap, (prio[m_], m_))
         seg_pos = {n: float(k) for k, n in enumerate(order_)}
     else:
-        inv_nodes = {n for n in alln if len(present[n]) == len(raw)}
+        inv_nodes = {n for n in alln if len(present[n]) == len(craw)}
         seg_pos = {}                                   # 不変ノード → 並びの中の位置（参照行があれば参照行、無ければ最初の行）
-        base_row = next((r for r in raw if r["isref"]), raw[0])
+        base_row = next((r for r in craw if r["isref"]), craw[0])
         for i, n in enumerate(base_row["seq"]):
             if n in inv_nodes and n not in seg_pos: seg_pos[n] = i
         nseg = len(seg_pos)
-        for r in raw:                                  # 参照行に無い不変ノードは無い（全行が持つ）はずだが、順が違う行は位置を後ろに
+        for r in craw:                                  # 参照行に無い不変ノードは無い（全行が持つ）はずだが、順が違う行は位置を後ろに
             for n in r["seq"]:
                 if n in inv_nodes and n not in seg_pos: seg_pos[n] = nseg; nseg += 1
     keyof = {}                                     # ノード → (区切りの順位, オフセット bp)。行によって違えば最初の行の値
-    for r in raw:
+    for r in craw:
         seg = -1; off = 0
         sq = r["seq"]
         if colof:
@@ -795,7 +799,9 @@ def main():
         for n_ in g_: gidx.setdefault(n_, gi_)
     import bisect as _bs
     copies_after = {}          # 元の群の番号 → [(順位 j, ノード)]（写しの群を作る順）
-    for r in raw:
+    cset = set(id(r) for r in craw)
+    for r in sorted(raw, key=lambda r: id(r) not in cset):   # 列を作る行（株）を先に。リードは株の写しの列にだけ入る
+        mk = id(r) in cset
         seqi = [k_ for k_, n_ in enumerate(r["seq"]) if n_ in gidx]; seqr = [r["seq"][k_] for k_ in seqi]; gl = [gidx[n_] for n_ in seqr]
         r["occ_at"] = {}   # 列の鍵（("g", 元の群) / ("c", 写しの鍵)）→ この行の通過の番号（r["seq"] の位置）
         tails, tidx, prev = [], [], [-1] * len(gl)        # 狭義増加の LIS（同じ群＝同じノードの再訪は 1 回だけ入る）
@@ -809,10 +815,12 @@ def main():
         r["skip"] = set(); r["cps"] = set(); anchor = -1; j_ = 0; kept_g = set(gl[q] for q in keep)
         for i_, n_ in enumerate(seqr):
             if i_ in keep: anchor = gl[i_]; j_ = 0; r["occ_at"][("g", gl[i_])] = seqi[i_]; continue
-            key = (anchor, j_, n_); j_ += 1; r["occ_at"][("c", key)] = seqi[i_]
+            key = (anchor, j_, n_); j_ += 1
             lst = copies_after.setdefault(anchor, [])
-            if (j_ - 1, n_) not in lst: lst.append((j_ - 1, n_))
-            r["cps"].add(key)
+            if (j_ - 1, n_) not in lst:
+                if not mk: continue   # リード: 株に無い写し＝余分な周回。列を作らない（印は後で）
+                lst.append((j_ - 1, n_))
+            r["occ_at"][("c", key)] = seqi[i_]; r["cps"].add(key)
             if gl[i_] not in kept_g: r["skip"].add(gl[i_])   # この行はこのノードを増加列で通らない＝元の群では欠失
     final = []                 # (ノードの群, 写しの鍵 or None, 元の群の番号)
     for c_ in sorted(copies_after.get(-1, [])): final.append(([c_[1]], (-1, c_[0], c_[1]), -1))
@@ -893,6 +901,28 @@ def main():
     for ci, c in enumerate(cols):
         vals = set(r["seq"][ci] for r in raw if not r.get("rdinfo")); vals.discard("~"); vals.discard(".")
         c["variant"] = bool(c.get("variant")) or (len(vals) > 1)
+    # リードの、列に置かれなかった通過（株より多い周回・株に無い経路）を連なりごとに 1 つの印にする（10-29）。置き場所は直前に置かれた通過の列の右端（無ければ直後の左端）
+    for r in raw:
+        if not r.get("rdinfo"): continue
+        placed = {}
+        for ci, c in enumerate(cols):
+            k_ = occ_of(r, c)
+            if k_ is not None: placed.setdefault(k_, [ci, ci]); placed[k_][1] = ci
+        sq_ = r["seqn"]; i = 0; ext = []
+        if not placed: continue
+        pk = sorted(placed); lo_k, hi_k = pk[0], pk[-1]
+        while i < len(sq_):
+            if i in placed or i < lo_k or i > hi_k: i += 1; continue   # 窓の外（切り詰めた列の先）は数えない
+            j = i
+            while j < len(sq_) and j not in placed: j += 1
+            bases = "".join(r["occ0"][q] for q in range(i, j)).replace("-", "").replace(".", "")   # 実際の向きの文字（表示の向きに読む）
+            if bases:
+                prv = max((q for q in placed if q < i), default=None); nxt = min((q for q in placed if q >= j), default=None)
+                ci, side = (placed[prv][1], 1) if prv is not None else (placed[nxt][0], 0)
+                nn = sq_[i:j]; kind = "株より多い周回" if all(n in gidx for n in nn) else "株に無い経路"
+                ext.append([ci, side, bases, "%s（ノード %d 個: %s%s）" % (kind, len(nn), " ".join(nn[:4]), " …" if len(nn) > 4 else "")])
+            i = j
+        r["rext"] = ext
     # リードだけの挿入を列に対応させる: 格納向きの塩基 k-1 と k の間 → その 2 列の境界。片方しか無い（ノードの端・畳んだ区間）ときはある方の列の端
     if any(r.get("rins") for r in raw):
         for r in raw:
@@ -958,7 +988,7 @@ def main():
                cols=[{k: c[k] for k in ("kind", "nodes", "g", "rb", "variant", "off", "bp", "so", "nl", "cp", "ri") if k in c} for c in cols],
                rows=[{"samp": r["samp"], "label": r["label"], "path": r["path"], "strand": r["strand"],
                       "seq": r["seq"], "isref": r["isref"], "allele": r["allele"],
-                      "inv": invmaj(r), "invc": invcols(r), "hseq": r.get("hseq", ""), "read": r.get("rdinfo"), "rins": (r.get("rins") or None) if r.get("rdinfo") else None, "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
+                      "inv": invmaj(r), "invc": invcols(r), "hseq": r.get("hseq", ""), "read": r.get("rdinfo"), "rins": ((r.get("rins") or []) + (r.get("rext") or []) or None) if r.get("rdinfo") else None, "seqt": (r["seqt"] if r.get("seqt") != r["seq"] else None), "ends": r.get("ends", [False, False]), "brk": r.get("brk", [])} for r in raw])   # inv=行の優勢向きと逆に通ったノード(局所反転)
     print(json.dumps(out))
 
 if __name__ == "__main__":
