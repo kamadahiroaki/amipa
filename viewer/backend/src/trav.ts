@@ -511,3 +511,54 @@ export function travGeneDensity(t: Trav, x0: number, x1: number, nbin: number, m
   for (let i = 0; i < D.x.length; i++) { const x = D.x[i]; if (x < x0 || x > x1) continue; const b = Math.min(nbin - 1, Math.floor((x - x0) * nbin / W)); n[b] += 1 / D.nPerHap; if (D.varFlag[i]) v[b] += 1 / D.nPerHap }
   return { x0, x1, nbin, n: Array.from(n, z => Math.round(z * 10) / 10), v: Array.from(v, z => Math.round(z * 10) / 10), hasVar: D.varFlag.some(f => f) }
 }
+
+// ---- ブロック・錨の列の段のリード（10-29） ----
+// 範囲 [x0, x1] を ncol 列に切り、列ごとに錨のノードを 1 個標本して <db>.reads の転置索引（node_reads: ノード → 整列 id、サンプルごとのチャンク）を引く。
+// 返すもの: サンプルごとの列の深さ（そのノードを通る整列の数）と、整列ごとの「掛かる列の片」（標本の列が GAP 列以上抜けたら次の片）。GAF は読まない。
+// 整列が maxReads を超えたら片は返さず深さだけ（overflow）。画面は詰めた段が多すぎるときも深さだけにする
+interface ReadsDb { db: Database.Database; chunk: Map<number, { sn: number; base: number }>; samples: string[]; stmt: Database.Statement }
+const readsCache = new Map<string, ReadsDb | null>()
+function readsDbOf(t: Trav): ReadsDb | null {
+  if (readsCache.has(t.file)) return readsCache.get(t.file)!
+  const base = path.join(getDbDir(), path.basename(t.dbFile)); let p = base + '.reads'
+  if (!fs.existsSync(p)) { try { p = fs.realpathSync(base) + '.reads' } catch { p = '' } }
+  let r: ReadsDb | null = null
+  if (p && fs.existsSync(p)) {
+    const db = new Database(p, { readonly: true })
+    const chunk = new Map<number, { sn: number; base: number }>(); for (const c of db.prepare('SELECT chunk_no, sample_no, base_aln_id FROM read_chunk').all() as any[]) chunk.set(c.chunk_no, { sn: c.sample_no, base: c.base_aln_id })
+    const samples: string[] = []; for (const s of db.prepare('SELECT sample_no, sample_id FROM read_src ORDER BY sample_no').all() as any[]) samples[s.sample_no] = s.sample_id
+    r = { db, chunk, samples, stmt: db.prepare('SELECT chunk_no, postings FROM node_reads WHERE gfa_id=?') }
+  }
+  readsCache.set(t.file, r); return r
+}
+function denseOfX(t: Trav): Int32Array {
+  const c = (t as any).__dox as Int32Array | undefined; if (c) return c
+  const dx = t.db.prepare("SELECT blob FROM arrays WHERE name='dense_of_x'").get() as { blob: Buffer } | undefined
+  const arr = dx ? new Int32Array(dx.blob.buffer.slice(dx.blob.byteOffset, dx.blob.byteOffset + dx.blob.byteLength)) : new Int32Array(0)
+  ;(t as any).__dox = arr; return arr
+}
+export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxReads = 4000): any {
+  const R = readsDbOf(t); if (!R) return { error: 'no .reads sidecar' }
+  const dox = denseOfX(t), idmap = idMapOf(t); const W = x1 - x0 + 1; ncol = Math.max(4, Math.min(1500, Math.floor(ncol), W))
+  const GAP = 3; const S = R.samples.length; const dep = Array.from({ length: S }, () => new Uint16Array(ncol))
+  const pieces = new Map<number, number[]>(); let overflow = false; const t0 = Date.now()
+  for (let c = 0; c < ncol; c++) {
+    const xa = Math.floor(x0 + c * W / ncol), xb = Math.max(xa, Math.floor(x0 + (c + 1) * W / ncol) - 1); const mid = (xa + xb) >> 1
+    let d = -1; for (let k = 0; k <= Math.min(16, xb - xa); k++) { for (const x of [mid + k, mid - k]) { if (x < xa || x > xb || x < 0 || x >= dox.length) continue; if (dox[x] >= 1) { d = dox[x]; break } } if (d >= 1) break }
+    if (d < 1 || d - 1 >= idmap.length) continue
+    for (const row of R.stmt.all(Number(idmap[d - 1])) as { chunk_no: number; postings: Buffer }[]) {
+      const ch = R.chunk.get(row.chunk_no); if (!ch) continue; const buf = row.postings; let shift = 0, cur = 0, prev = ch.base, n = 0
+      for (let i = 0; i < buf.length; i++) { const b = buf[i]; cur += (b & 0x7f) * 2 ** shift; if (b & 0x80) { shift += 7; continue } prev += cur; cur = 0; shift = 0; n++
+        if (overflow) continue
+        const p = pieces.get(prev); if (!p) { if (pieces.size >= maxReads) { overflow = true; continue } pieces.set(prev, [ch.sn, c, c]) } else if (c - p[p.length - 1] <= GAP) p[p.length - 1] = c; else p.push(c, c) }
+      dep[ch.sn][c] = Math.min(65535, dep[ch.sn][c] + n)
+    }
+  }
+  let reads: any[] | null = null
+  if (!overflow) {
+    const ids = [...pieces.keys()]; const name = new Map<number, string>()
+    for (let i = 0; i < ids.length; i += 900) { const ch = ids.slice(i, i + 900); for (const r of R.db.prepare(`SELECT aln_id, read_name FROM read_aln WHERE aln_id IN (${ch.map(() => '?').join(',')})`).all(...ch) as any[]) name.set(r.aln_id, r.read_name) }
+    reads = ids.map(a => { const p = pieces.get(a)!; return { a, s: p[0], n: name.get(a) || '', p: p.slice(1) } })
+  }
+  return { x0, x1, ncol, samples: R.samples, dep: dep.map(b => b64(b)), reads, overflow, ms: Date.now() - t0 }
+}

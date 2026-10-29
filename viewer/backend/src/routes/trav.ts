@@ -7,7 +7,7 @@ import { distillFor } from './bubbleMsa'
 import { Router } from 'express'
 import fs from 'fs'
 import Database from 'better-sqlite3'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, genesPathOf } from '../trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, genesPathOf, travReads } from '../trav'
 
 export const travRouter = Router()
 
@@ -52,6 +52,15 @@ travRouter.get('/trav/cols', (req, res) => {
   const x0 = Number(q.x0), x1 = Number(q.x1)
   if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 < x0) { res.status(400).json({ error: 'bad x0/x1' }); return }
   try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travCols(t, x0, x1, Number(q.ncol) || 1000, q.minanch != null ? Number(q.minanch) : 50)) } catch (err) { res.status(500).json({ error: String(err) }) }
+})
+
+// ブロック・錨の列の段のリード: 列ごとのサンプル別の深さと、整列ごとの掛かる列の片（GET /api/trav/reads?db&x0&x1&ncol）
+travRouter.get('/trav/reads', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const x0 = Number(q.x0), x1 = Number(q.x1)
+  if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 < x0) { res.status(400).json({ error: 'bad x0/x1' }); return }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travReads(t, Math.floor(x0), Math.floor(x1), Number(q.ncol) || 600, Number(q.max) || 4000)) } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 // 遺伝子レーン: 範囲に掛かる通過ごとの遺伝子（<db>.genes）を座標に写したもの
