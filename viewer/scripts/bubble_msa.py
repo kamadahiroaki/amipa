@@ -477,7 +477,14 @@ def main():
                     toks = [(int(m.group(2)), m.group(1) == '>') for m in RQ.TOK.finditer(d["path"])]
                     inw = [i for i, (gid, _o) in enumerate(toks) if gid in win_ids]
                     if not inw: continue
-                    read_meta.append(dict(sn=sn, sample=sname.get(sn, str(sn)), name=d["read_name"], mapq=d["mapq"], toks=toks, i0=inw[0], i1=inw[-1], d=d))
+                    # 窓のノードに離れた 2 か所以上で触れるリード（反復・環の継ぎ目）は、窓のノードを最も多く含む連なりだけを行にする
+                    # （10-29: 先頭と末尾の窓ノードの間を全部入れていたので、間の窓外の区間が株の通らない列として並んだ。ecoli x 500,000）
+                    cl = [[inw[0]]]
+                    for i_ in inw[1:]:
+                        if i_ - cl[-1][-1] > 50: cl.append([i_])
+                        else: cl[-1].append(i_)
+                    best_ = max(cl, key=len)
+                    read_meta.append(dict(sn=sn, sample=sname.get(sn, str(sn)), name=d["read_name"], mapq=d["mapq"], toks=toks, i0=best_[0], i1=best_[-1], d=d))
                 for rm in read_meta:
                     for gid, _o in rm["toks"]: need_d[gid] = None
                 rcon.close()
@@ -492,7 +499,8 @@ def main():
                         runs.append(dict(label="▸" + rm["sample"] + ":" + short, samp=rm["sample"], lab="▸" + rm["sample"] + ":" + short, ctg="", path=nm, isref=False, ids=ids_, ors=ors_, pi=None, brk=[], k=0, cend=(False, False), rd=rm))
         except Exception as e_:
             print("reads: " + repr(e_), file=sys.stderr)
-    need = sorted({nname(t) for r in runs for t in r["ids"]}, key=lambda n: int(n[1:]))
+    need = sorted({nname(t) for r in runs for t in r["ids"]} | {"n%d" % gid for r in runs if r.get("rd") for gid, _o in r["rd"]["toks"]}, key=lambda n: int(n[1:]))
+    # ↑ リードは窓の外のノードの長さも要る（パス上の位置＝ノード長の累積。10-29: 窓の手前のノードを長さ 0 として数え、cs の位置がずれて塩基が別の列に落ちるか消えた）
     COMP = str.maketrans("ACGTNacgtn", "TGCANtgcan")
     def rc(s): return s.translate(COMP)[::-1]
     seqleaf, refbp, refcid = {}, {}, {}
@@ -572,6 +580,17 @@ def main():
         for t, n in zip(ids, nodes): dense_of_name.setdefault(n, int(t))
     def disp(p): return p[1][::-1] if p[3] else p[1]
     bi = next((k for k, p in enumerate(pre) if p[0]["isref"]), 0)
+    # 通過パネルからコンティグの主な向き（錨数の重み付き）が来ていればそれを優先する（2026-10-26）。窓が反転ブロックに偏ると bp 多数決も
+    # 共有ノードの並びも反転ブロックの向きに引かれ、両側配列の方が「逆向き」に見えた（DDTL の狭い窓）。参照の向きを基準に、無ければ合意の向き
+    # ★先に決める（10-29）: 後で上書きしていたので、基準の行（参照が無い ecoli では先頭の株）が反転されると、それに揃えたリードの行だけが逆向きのまま残り、
+    #   ノードの順が逆なので全部が写しの列に回った（ecoli の窓の 7/12 で株とリードの列が分かれた）
+    fixed = set()
+    if pre and RNG is not None:
+        refdir = RDIR.get(pre[bi][0].get("pi"))
+        for k, p in enumerate(pre):
+            d = RDIR.get(p[0].get("pi"))
+            if d is None: continue
+            p[3] = (d != refdir) if refdir is not None else (d < 0); fixed.add(k)
     if pre:
         bseq = disp(pre[bi]); bpos = {}
         for k, n in enumerate(bseq): bpos.setdefault(n, k)
@@ -581,19 +600,11 @@ def main():
             return int(np.sign(np.diff(np.asarray(cs, np.int64))).sum()) if len(cs) >= 2 else 0
         btrend = ctrend(bseq)
         for k, p in enumerate(pre):
-            if k == bi: continue
+            if k == bi or k in fixed: continue
             sq = disp(p); sh = [bpos[n] for n in sq if n in bpos]
             t = int(np.sign(np.diff(np.asarray(sh, np.int64))).sum()) if len(sh) >= 2 else 0
             if t == 0 and btrend != 0: t = ctrend(sq) * (1 if btrend > 0 else -1)
             if t < 0: p[3] = not p[3]
-        # 通過パネルからコンティグの主な向き（錨数の重み付き）が来ていればそれを優先する（2026-10-26）。窓が反転ブロックに偏ると bp 多数決も
-        # 共有ノードの並びも反転ブロックの向きに引かれ、両側配列の方が「逆向き」に見えた（DDTL の狭い窓）。参照の向きを基準に、無ければ合意の向き
-        refdir = RDIR.get(pre[bi][0].get("pi")) if RNG is not None else None
-        if RNG is not None:
-            for p in pre:
-                d = RDIR.get(p[0].get("pi"))
-                if d is None: continue
-                p[3] = (d != refdir) if refdir is not None else (d < 0)
     for r, nodes, ors, rev in pre:
         cells, inv = {}, []
         for n, o in zip(nodes, ors):
