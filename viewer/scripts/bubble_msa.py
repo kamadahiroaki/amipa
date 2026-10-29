@@ -863,8 +863,10 @@ def main():
             if gl[i_] not in kept_g: r["skip"].add(gl[i_])   # この行はこのノードを増加列で通らない＝元の群では欠失
     final = []                 # (ノードの群, 写しの鍵 or None, 元の群の番号)
     for c_ in sorted(copies_after.get(-1, [])): final.append(([c_[1]], (-1, c_[0], c_[1]), -1))
+    used_g = {k_[1] for r in raw for k_ in r["occ_at"] if k_[0] == "g"}   # どの行も置かれない元の列は出さない（10-29: 株 1〜2 本にしか無いノードは
+    # 列の順が最初の 1 行の並びで決まり、当の株の並びと食い違うと全員が写しの列に回って、空の元の列が残った。ecoli50 原子 406 で 4.2 万列中 1 万列）
     for gi_, g_ in enumerate(groups):
-        final.append((g_, None, gi_))
+        if gi_ in used_g: final.append((g_, None, gi_))
         for c_ in sorted(copies_after.get(gi_, [])): final.append(([c_[1]], (gi_, c_[0], c_[1]), gi_))
     ncopy_cols = sum(1 for f_ in final if f_[1] is not None)
     cols = []
