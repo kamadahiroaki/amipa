@@ -3,6 +3,7 @@
 // コピー copies（同じコンティグの通過の座標の重なり）、境界 bounds（支持・持続度）、原子 atoms、反復 reps（出現単位）。
 // 現行の `.synteny` と並行して読む（置き換えはまだ）。
 import Database from 'better-sqlite3'
+import zlib from 'zlib'
 import fs from 'fs'
 import path from 'path'
 import { getDbDir } from './db'
@@ -537,12 +538,43 @@ function denseOfX(t: Trav): Int32Array {
   const arr = dx ? new Int32Array(dx.blob.buffer.slice(dx.blob.byteOffset, dx.blob.byteOffset + dx.blob.byteLength)) : new Int32Array(0)
   ;(t as any).__dox = arr; return arr
 }
+// 座標ごとの深さ <db>.xdepth（prep/amipa_prep/reads_xdepth.py）: 段 L（1・64・4096 座標）の区画の平均と深さ 0 の割合を、ブロック（4096 区画）× サンプルの zlib で持つ
+interface XDepth { db: Database.Database; R: number; samples: string[]; levels: number[]; block: number; stmt: Database.Statement }
+const xdepthCache = new Map<string, XDepth | null>()
+function xdepthOf(t: Trav): XDepth | null {
+  if (xdepthCache.has(t.file)) return xdepthCache.get(t.file)!
+  const base = path.join(getDbDir(), path.basename(t.dbFile)); let p = base + '.xdepth'
+  if (!fs.existsSync(p)) { try { p = fs.realpathSync(base) + '.xdepth' } catch { p = '' } }
+  let r: XDepth | null = null
+  if (p && fs.existsSync(p)) { try {
+    const db = new Database(p, { readonly: true }); const m: Record<string, string> = {}; for (const row of db.prepare('SELECT key, value FROM meta').all() as any[]) m[row.key] = row.value
+    if (Number(m.R) === t.R || Number(m.R) === denseOfX(t).length) r = { db, R: Number(m.R), samples: JSON.parse(m.samples), levels: m.levels.split(',').map(Number).sort((a, b) => a - b), block: Number(m.block), stmt: db.prepare('SELECT b, s, mean, zero FROM depth WHERE level=? AND b BETWEEN ? AND ?') }
+    else db.close()   // 座標の数が .trav と合わない（.trav を作り直した）なら使わない
+  } catch { r = null } }
+  xdepthCache.set(t.file, r); return r
+}
+// 列ごとの深さ（平均）と深さ 0 の座標の割合（×255）を xdepth から。段は 1 列に区画が 1 個以上入る最も粗いもの
+function xdepthCols(X: XDepth, x0: number, x1: number, ncol: number): { dep: Uint16Array[]; zf: Uint8Array[]; level: number } {
+  const W = x1 - x0 + 1; let L = X.levels[0]; for (const l of X.levels) if (W / l >= ncol) L = l
+  const i0 = Math.floor(x0 / L), i1 = Math.floor(x1 / L); const S = X.samples.length; const nb = i1 - i0 + 1
+  const mean = Array.from({ length: S }, () => new Uint16Array(nb)), zero = Array.from({ length: S }, () => new Uint8Array(nb))
+  for (const row of X.stmt.all(L, Math.floor(i0 / X.block), Math.floor(i1 / X.block)) as { b: number; s: number; mean: Buffer; zero: Buffer | null }[]) {
+    const mb = zlib.inflateSync(row.mean); const m = new Uint16Array(mb.buffer, mb.byteOffset, mb.byteLength / 2); const z = row.zero ? zlib.inflateSync(row.zero) : null
+    const off = row.b * X.block; for (let k = 0; k < m.length; k++) { const i = off + k; if (i < i0 || i > i1) continue; mean[row.s][i - i0] = m[k]; zero[row.s][i - i0] = z ? z[k] : (m[k] ? 0 : 255) } }
+  const dep = Array.from({ length: S }, () => new Uint16Array(ncol)), zf = Array.from({ length: S }, () => new Uint8Array(ncol))
+  for (let c = 0; c < ncol; c++) { const xa = Math.floor(x0 + c * W / ncol), xb = Math.max(xa, Math.floor(x0 + (c + 1) * W / ncol) - 1); const a = Math.floor(xa / L) - i0, b = Math.floor(xb / L) - i0
+    for (let s = 0; s < S; s++) { let sm = 0, sz = 0; for (let i = a; i <= b; i++) { sm += mean[s][i]; sz += zero[s][i] } const n = b - a + 1; dep[s][c] = Math.round(sm / n); zf[s][c] = Math.round(sz / n) } }
+  return { dep, zf, level: L }
+}
+const PIECE_MAX_W = Number(process.env.AMIPA_TRAV_READS_PIECE_W) || 50_000   // これより広い範囲はリードの片を作らない（索引を引かない）
 export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxReads = 4000): any {
   const R = readsDbOf(t); if (!R) return { error: 'no .reads sidecar' }
+  const XD = xdepthOf(t)
   const dox = denseOfX(t), idmap = idMapOf(t); const W = x1 - x0 + 1; ncol = Math.max(4, Math.min(1500, Math.floor(ncol), W))
   const GAP = 3; const S = R.samples.length; const dep = Array.from({ length: S }, () => new Uint16Array(ncol))
   const pieces = new Map<number, number[]>(); let overflow = false; const t0 = Date.now()
-  for (let c = 0; c < ncol; c++) {
+  const wide = !!XD && W > PIECE_MAX_W; if (wide) overflow = true
+  for (let c = 0; c < ncol && !wide; c++) {
     const xa = Math.floor(x0 + c * W / ncol), xb = Math.max(xa, Math.floor(x0 + (c + 1) * W / ncol) - 1); const mid = (xa + xb) >> 1
     let d = -1; for (let k = 0; k <= Math.min(16, xb - xa); k++) { for (const x of [mid + k, mid - k]) { if (x < xa || x > xb || x < 0 || x >= dox.length) continue; if (dox[x] >= 1) { d = dox[x]; break } } if (d >= 1) break }
     if (d < 1 || d - 1 >= idmap.length) continue
@@ -560,5 +592,6 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
     for (let i = 0; i < ids.length; i += 900) { const ch = ids.slice(i, i + 900); for (const r of R.db.prepare(`SELECT aln_id, read_name FROM read_aln WHERE aln_id IN (${ch.map(() => '?').join(',')})`).all(...ch) as any[]) name.set(r.aln_id, r.read_name) }
     reads = ids.map(a => { const p = pieces.get(a)!; return { a, s: p[0], n: name.get(a) || '', p: p.slice(1) } })
   }
-  return { x0, x1, ncol, samples: R.samples, dep: dep.map(b => b64(b)), reads, overflow, ms: Date.now() - t0 }
+  if (XD) { const xc = xdepthCols(XD, x0, x1, ncol); return { x0, x1, ncol, samples: XD.samples, dep: xc.dep.map(b => b64(b)), zf: xc.zf.map(b => b64(b)), src: 'xdepth', level: xc.level, reads, overflow, wide, ms: Date.now() - t0 } }
+  return { x0, x1, ncol, samples: R.samples, dep: dep.map(b => b64(b)), src: 'sample', reads, overflow, ms: Date.now() - t0 }
 }

@@ -65,7 +65,7 @@ let cols: Cols | null = null, colsNote = ''   // 錨の列（今の表示範囲�
 let genes: Gene[] = [], genesNote = ''      // 遺伝子レーン（今の表示範囲、通過ごと）
 let gdens: { x0: number; x1: number; nbin: number; n: number[]; v: number[]; hasVar: boolean } | null = null   // 全景の遺伝子の密度（3）
 // ブロック・錨の列の段のリード（10-29）: /api/trav/reads。dep＝サンプルごとの列の深さ、reads＝整列ごとの掛かる列の片 [c0, c1, c0, c1, …]（多すぎると null）
-type TReads = { key: string; x0: number; x1: number; ncol: number; samples: string[]; dep: Uint16Array[]; reads: { a: number; s: number; n: string; p: number[] }[] | null; overflow: boolean }
+type TReads = { key: string; x0: number; x1: number; ncol: number; samples: string[]; dep: Uint16Array[]; zf?: Uint8Array[]; src?: string; level?: number; reads: { a: number; s: number; n: string; p: number[] }[] | null; overflow: boolean }
 let treads: TReads | null = null, treadsKey = ''
 type TRBlock = { s: number; y: number; h: number; depH: number; laneY: number; lanes: number[][]; detail: boolean }
 let treadsLay: { y0: number; y1: number; blocks: TRBlock[]; max: number } | null = null
@@ -183,7 +183,8 @@ async function loadTReads() {
   if (key === treadsKey) return; treadsKey = key
   try { const r = await getJson(`/api/trav/reads?db=${encodeURIComponent(db)}&x0=${x0}&x1=${x1}&ncol=${ncol}`); const j = await r.json(); if (key !== treadsKey || j.error) return
     const u16 = (b: string) => { const bin = atob(b); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return new Uint16Array(a.buffer) }
-    treads = { key, x0: j.x0, x1: j.x1, ncol: j.ncol, samples: j.samples, dep: j.dep.map(u16), reads: j.reads, overflow: j.overflow }; draw() } catch { /* 出さない */ }
+    const u8 = (b: string) => { const bin = atob(b); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a }
+    treads = { key, x0: j.x0, x1: j.x1, ncol: j.ncol, samples: j.samples, dep: j.dep.map(u16), zf: j.zf ? j.zf.map(u8) : undefined, src: j.src, level: j.level, reads: j.reads, overflow: j.overflow }; draw() } catch { /* 出さない */ }
 }
 async function loadRange() {
   if (!root) return
@@ -703,7 +704,7 @@ function layoutTReads(y0: number, W: number, mode: string): number {
 function drawTReads(W: number) {
   const T = treads, L = treadsLay; if (!T || !L) return
   g.fillStyle = '#d6dde3'; g.fillRect(LAB, L.y0 + 6, W - LAB, 1); g.fillStyle = '#556'; g.font = '10px system-ui'; g.textAlign = 'left'
-  g.fillText(`リード（深さの最大 ${L.max}${T.overflow ? '・4,000 本を超えるので深さだけ' : !L.blocks.some(b => b.detail) ? `・詰めると ${TR_MAXLANE} 段を超えるので深さだけ` : ''}）`, LAB + 2, L.y0 + 12)
+  g.fillText(`リード（深さの最大 ${L.max}・${T.src === 'xdepth' ? `座標ごとの深さ${(T.level || 1) > 1 ? `（${T.level} 座標の平均）` : ''}` : '1 列 1 錨の標本'}${T.overflow ? '・リードが多すぎる範囲なので深さだけ' : !L.blocks.some(b => b.detail) ? `・詰めると ${TR_MAXLANE} 段を超えるので深さだけ` : ''}）`, LAB + 2, L.y0 + 12)
   for (const B of L.blocks) {
     g.fillStyle = '#1c6e8c'; g.font = '10px system-ui'; g.fillText(`▸${T.samples[B.s]}${B.detail ? `  ${B.lanes.reduce((t, l) => t + l.length, 0)} 本` : ''}`, TREEW + 4, B.y + 10 + TR_DEP / 2)
     const dep = T.dep[B.s]; const yb = B.y + 12 + B.depH
@@ -720,7 +721,7 @@ function drawTReads(W: number) {
 function treadsHover(e: MouseEvent): boolean {
   const T = treads, L = treadsLay; if (!T || !L || e.offsetY < L.y0 || e.offsetY >= L.y1 || e.offsetX < LAB) return false
   const B = L.blocks.find(b => e.offsetY >= b.y && e.offsetY < b.y + b.h); if (!B) { tip.style.display = 'none'; return true }
-  const x = xOfPx(e.offsetX); const c = Math.floor((x - T.x0) / (T.x1 - T.x0 + 1) * T.ncol); const lines = [`${T.samples[B.s]}  座標 ${fmt(Math.floor(x))}  深さ ${c >= 0 && c < T.ncol ? T.dep[B.s][c] : 0}（この位置の錨を通る整列の数）`]
+  const x = xOfPx(e.offsetX); const c = Math.floor((x - T.x0) / (T.x1 - T.x0 + 1) * T.ncol); const ok = c >= 0 && c < T.ncol; const lines = [`${T.samples[B.s]}  座標 ${fmt(Math.floor(x))}  深さ ${ok ? T.dep[B.s][c] : 0}（${T.src === 'xdepth' ? 'この列の錨を通る整列の数の平均' : 'この列で標本した錨 1 個を通る整列の数'}）${T.zf && ok ? `  深さ 0 の錨 ${Math.round(100 * T.zf[B.s][c] / 255)}%` : ''}`]
   if (B.detail && T.reads && e.offsetY >= B.laneY) { const li = Math.floor((e.offsetY - B.laneY) / TR_LANE); const lane = B.lanes[li]
     if (lane) for (const i of lane) { const r = T.reads[i]; if (c >= r.p[0] - 1 && c <= r.p[r.p.length - 1] + 1) { lines.push(`リード ${r.n}（整列 #${r.a}）  座標 ${fmt(Math.floor(trColX(T, r.p[0])))}–${fmt(Math.floor(trColX(T, r.p[r.p.length - 1] + 1)))}${r.p.length > 2 ? `  ${r.p.length / 2} 片（間は錨を外れた所）` : ''}`); break } } }
   tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'; tip.textContent = lines.join('\n'); return true
