@@ -569,8 +569,11 @@ function xdepthCols(X: XDepth, x0: number, x1: number, ncol: number): { dep: Uin
   return { dep, zf, level: L }
 }
 const PIECE_MAX_W = Number(process.env.AMIPA_TRAV_READS_PIECE_W) || 50_000   // これより広い範囲はリードの片を作らない（索引を引かない）
-export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxReads = 4000): any {
+export function travReadSamples(t: Trav): string[] { const R = readsDbOf(t); return R ? R.samples.filter(Boolean) : [] }
+export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxReads = 4000, only: string[] | null = null): any {
   const R = readsDbOf(t); if (!R) return { error: 'no .reads sidecar' }
+  const want = only && only.length ? new Set(only) : null   // 選んだサンプルだけ（10-30）。null＝全部
+  const keep = (sn: number) => !want || want.has(R.samples[sn])
   const XD = xdepthOf(t)
   const dox = denseOfX(t), idmap = idMapOf(t); const W = x1 - x0 + 1; ncol = Math.max(4, Math.min(1500, Math.floor(ncol), W))
   const GAP = 3; const S = R.samples.length; const dep = Array.from({ length: S }, () => new Uint16Array(ncol))
@@ -581,7 +584,7 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
     let d = -1; for (let k = 0; k <= Math.min(16, xb - xa); k++) { for (const x of [mid + k, mid - k]) { if (x < xa || x > xb || x < 0 || x >= dox.length) continue; if (dox[x] >= 1) { d = dox[x]; break } } if (d >= 1) break }
     if (d < 1 || d - 1 >= idmap.length) continue
     for (const row of R.stmt.all(Number(idmap[d - 1])) as { chunk_no: number; postings: Buffer }[]) {
-      const ch = R.chunk.get(row.chunk_no); if (!ch) continue; const buf = row.postings; let shift = 0, cur = 0, prev = ch.base, n = 0
+      const ch = R.chunk.get(row.chunk_no); if (!ch || !keep(ch.sn)) continue; const buf = row.postings; let shift = 0, cur = 0, prev = ch.base, n = 0
       for (let i = 0; i < buf.length; i++) { const b = buf[i]; cur += (b & 0x7f) * 2 ** shift; if (b & 0x80) { shift += 7; continue } prev += cur; cur = 0; shift = 0; n++
         if (overflow) continue
         const p = pieces.get(prev); if (!p) { if (pieces.size >= maxReads) { overflow = true; continue } pieces.set(prev, [ch.sn, c, c]) } else if (c - p[p.length - 1] <= GAP) p[p.length - 1] = c; else p.push(c, c) }
@@ -594,8 +597,10 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
     for (let i = 0; i < ids.length; i += 900) { const ch = ids.slice(i, i + 900); for (const r of R.db.prepare(`SELECT aln_id, read_name FROM read_aln WHERE aln_id IN (${ch.map(() => '?').join(',')})`).all(...ch) as any[]) name.set(r.aln_id, r.read_name) }
     reads = ids.map(a => { const p = pieces.get(a)!; return { a, s: p[0], n: name.get(a) || '', p: p.slice(1) } })
   }
-  if (XD) { const xc = xdepthCols(XD, x0, x1, ncol); return { x0, x1, ncol, samples: XD.samples, dep: xc.dep.map(b => b64(b)), zf: xc.zf.map(b => b64(b)), src: 'xdepth', level: xc.level, reads, overflow, wide, ms: Date.now() - t0 } }
-  return { x0, x1, ncol, samples: R.samples, dep: dep.map(b => b64(b)), src: 'sample', reads, overflow, ms: Date.now() - t0 }
+  const idx = R.samples.map((_, s) => s).filter(keep)   // 返すサンプル（reads の s はこの並びの番号に付け直す）
+  const remap = new Map(idx.map((s, i) => [s, i])); if (reads) for (const r of reads) r.s = remap.get(r.s) ?? r.s
+  if (XD) { const xc = xdepthCols(XD, x0, x1, ncol); const xi = idx.map(s => XD.samples.indexOf(R.samples[s])); return { x0, x1, ncol, samples: idx.map(s => R.samples[s]), dep: xi.map(i => b64(i >= 0 ? xc.dep[i] : new Uint16Array(ncol))), zf: xi.map(i => b64(i >= 0 ? xc.zf[i] : new Uint8Array(ncol))), src: 'xdepth', level: xc.level, reads, overflow, wide, ms: Date.now() - t0 } }
+  return { x0, x1, ncol, samples: idx.map(s => R.samples[s]), dep: idx.map(s => b64(dep[s])), src: 'sample', reads, overflow, ms: Date.now() - t0 }
 }
 
 // 範囲 [x0, x1] の葉（ノード）の数: x_fill（錨はその座標、錨でない葉は直前の錨の座標）が範囲に入るノードを、並べた x_fill の二分探索で数える（10-30）。

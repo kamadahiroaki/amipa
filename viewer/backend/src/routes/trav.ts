@@ -7,14 +7,14 @@ import { distillFor } from './bubbleMsa'
 import { Router } from 'express'
 import fs from 'fs'
 import Database from 'better-sqlite3'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, genesPathOf, travReads, travNLeaf } from '../trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, genesPathOf, travReads, travNLeaf, travReadSamples } from '../trav'
 
 export const travRouter = Router()
 
 travRouter.get('/trav/root', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
-  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } { const r: any = travRoot(t); try { const fs = require('fs'); const base = path.join(getDbDir(), path.basename(q.db)); r.hasReads = fs.existsSync(base + '.reads') || (() => { try { return fs.existsSync(fs.realpathSync(base) + '.reads') } catch { return false } })(); r.hasAnn = !!annPathOf(q.db) } catch { /* */ } res.json(r) } } catch (err) { res.status(500).json({ error: String(err) }) }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } { const r: any = travRoot(t); try { const fs = require('fs'); const base = path.join(getDbDir(), path.basename(q.db)); r.hasReads = fs.existsSync(base + '.reads') || (() => { try { return fs.existsSync(fs.realpathSync(base) + '.reads') } catch { return false } })(); r.hasAnn = !!annPathOf(q.db); if (r.hasReads) r.readSamples = travReadSamples(t) } catch { /* */ } res.json(r) } } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 travRouter.get('/trav/range', (req, res) => {
@@ -61,7 +61,7 @@ travRouter.get('/trav/reads', (req, res) => {
   if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const x0 = Number(q.x0), x1 = Number(q.x1)
   if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 < x0) { res.status(400).json({ error: 'bad x0/x1' }); return }
-  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travReads(t, Math.floor(x0), Math.floor(x1), Number(q.ncol) || 600, Number(q.max) || 4000)) } catch (err) { res.status(500).json({ error: String(err) }) }
+  try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travReads(t, Math.floor(x0), Math.floor(x1), Number(q.ncol) || 600, Number(q.max) || 4000, q.samples ? String(q.samples).split(',').filter(Boolean) : null)) } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
 // 遺伝子レーン: 範囲に掛かる通過ごとの遺伝子（<db>.genes）を座標に写したもの
