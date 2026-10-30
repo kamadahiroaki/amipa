@@ -1043,6 +1043,29 @@ export default function App() {
     const key = matchHapToKey(hap, pathGroups.map(g => g.key)); const g = key ? pathGroups.find(x => x.key === key) : undefined
     if (g) { toggleRibbonGroup(g); setRibbonHidden(false) } else showHint(`パス群に「${hap}」に合うものがありません`)
   }, [pathGroups, toggleRibbonGroup, showHint])
+  // Traversals から複数の株をまとめて選ぶ・外す（木の枝のクリック、選択を外す。10-30）。粒度が未定ならハプロタイプにして、群が出そろってから適用
+  const pendingHapsRef = useRef<{ haps: string[]; on: boolean } | null>(null)
+  const applyHaps = useCallback((haps: string[], on: boolean) => {
+    const keys = pathGroups.map(g => g.key)
+    setRibbonSel(prev => {
+      const next = new Map(prev)
+      for (const h of haps) {
+        const k = matchHapToKey(h, keys); const g = k ? pathGroups.find(x => x.key === k) : undefined; if (!g) continue
+        if (!on) { next.delete(g.key); continue }
+        if (next.has(g.key)) continue
+        const used = new Set([...next.values()].map(v => v.color)); const color = PATH_COLORS.find(c => !used.has(c)) ?? PATH_COLORS[next.size % PATH_COLORS.length]
+        next.set(g.key, { gids: g.gids, color })
+      }
+      return next
+    })
+    if (on) setRibbonHidden(false)
+  }, [pathGroups])
+  const onTravSelectHaps = useCallback((haps: string[], on: boolean) => {
+    if (!on && haps.length === 0) { setRibbonSel(new Map()); return }   // 全部外す
+    if (ribbonLevel === 'none' || pathGroups.length === 0) { pendingHapsRef.current = { haps, on }; if (ribbonLevel === 'none') setRibbonLevel('haplotype'); return }
+    applyHaps(haps, on)
+  }, [ribbonLevel, pathGroups, applyHaps])
+  useEffect(() => { const p = pendingHapsRef.current; if (!p || pathGroups.length === 0) return; pendingHapsRef.current = null; applyHaps(p.haps, p.on) }, [pathGroups, applyHaps])
   // Blocks の底 → 塩基レベル MSA（MSA パネル）。範囲を渡してパネルを開く
   const [msaRangeReq, setMsaRangeReq] = useState<{ ranges: [string | number, number, number][]; label: string; key: number } | null>(null)
   const onBlockBaseMsa = useCallback((req: { ranges: [string, number, number][]; label: string }) => {
@@ -3236,6 +3259,7 @@ export default function App() {
             onRange={onTravRange}
             getVisibleNames={() => graphRef.current?.getVisibleNames?.() ?? []}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
+            onSelectHaps={onTravSelectHaps}
             onGraphRange={onTravGraphRange}
             onReady={h => { travApiRef.current = h; if (h && pendingTravState.current) { const st = pendingTravState.current; pendingTravState.current = null; setTimeout(() => h.setState(st), 1500) } if (!h) { setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null) } }}
             onHoverNodes={onTravHover}

@@ -10,6 +10,7 @@ interface Props {
   db: string | null
   onVisible?: (v: { names: string[]; sync: boolean } | null) => void
   onSelectHap?: (hap: string) => void
+  onSelectHaps?: (haps: string[], on: boolean) => void   // まとめて選ぶ・外す（木の枝、選択を外す）。haps が空で on=false は全部外す
   onFilter?: (sel: { names: string[] } | null) => void
   onGraphRange?: () => void
   onReady?: (h: TravHandle | null) => void
@@ -18,11 +19,11 @@ interface Props {
   onRange?: (v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null) => void   // 表示範囲のノードと色（塗る・範囲外を薄灰か非表示・fitNames があれば寄せる）
   getVisibleNames?: () => string[]                  // グラフに見えているノード名（広い範囲の塗り分け）
 }
-export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange, getVisibleNames }: Props) {
+export default function TravPanel({ db, onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange, getVisibleNames }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const hRef = useRef<TravHandle | null>(null)
-  const cbRef = useRef({ onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames })
-  useEffect(() => { cbRef.current = { onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames } }, [onVisible, onSelectHap, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames])
+  const cbRef = useRef({ onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames })
+  useEffect(() => { cbRef.current = { onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames } }, [onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames])
   useEffect(() => { hRef.current?.setHapMarks(hapMarks ?? new Map()) }, [hapMarks])
   useEffect(() => {
     hRef.current?.destroy(); hRef.current = null; cbRef.current.onReady?.(null)
@@ -30,6 +31,7 @@ export default function TravPanel({ db, onVisible, onSelectHap, onFilter, onGrap
     hRef.current = mountTrav(rootRef.current, { db, params: new URLSearchParams(window.location.search) }, {   // ?view=a-b&mode=…&base=1 を主画面でも受ける（撮影・再現用）
       onVisible: v => cbRef.current.onVisible?.(v),
       onSelectHap: h => cbRef.current.onSelectHap?.(h),
+      onSelectHaps: (hs, on) => cbRef.current.onSelectHaps?.(hs, on),
       onFilter: sel => cbRef.current.onFilter?.(sel),
       onGraphRange: () => cbRef.current.onGraphRange?.(),
       onHoverNodes: names => cbRef.current.onHoverNodes?.(names),
