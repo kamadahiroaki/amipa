@@ -1330,6 +1330,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       let refRadN = Infinity
       for (const n of visibleNodes) { const r = n.radius; if (r > 0 && r < refRadN) refRadN = r }
       const constHalfThick = Math.max((isFinite(refRadN) ? refRadN : 0.001) * 0.35, MIN_HALF_THICK_PX / zoom)
+      // 色で塗っているときの辺の薄さ（10-30）: 画面のノード（グリフ）が 2,000 以上は薄い灰 0.3、400 以下は元の色と濃さ、間は数の対数で連続に。
+      // ノードの短辺が 24 px 以上でも元の濃さ。小さいノードが密集すると 1 px の辺がノードと同じ面積になって色が濁るが、
+      // 拡大してノードが少ないと薄い辺ではつながりが見えない（ノードの厚みは拡大してもあまり太らないので、太さだけでは決められない）
+      const nGlyph = visibleNodes.length
+      const edgeFade = !blockColorsRef.current ? 1 : Math.max(Math.max(0, Math.min(1, Math.log(2000 / Math.max(1, nGlyph)) / Math.log(2000 / 400))), Math.max(0, Math.min(1, (2 * constHalfThick * zoom - 8) / 16)))
+      const edgeBase = (alpha: number) => edgeLayer.lineStyle(1, lerpColor(0xced4da, 0xadb5bd, edgeFade), 0.3 + (alpha - 0.3) * edgeFade, 0.5, true)
 
       // Build hidden sets for coverage threshold filter
       hiddenNodeIds   = new Set<number>()
@@ -1377,7 +1383,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           return true
         })
         // base: 全エッジ 1px(native:true=深層でも消えない。パス多重度 0/低もここで見える)
-        edgeLayer.lineStyle(1, 0xced4da, blockColorsRef.current ? 0.3 : 0.55, 0.5, true)   // ブロック色で塗っているときは辺を薄く（塗りが辺の灰に埋もれる）
+        edgeBase(0.55); if (edgeFade >= 1 && !blockColorsRef.current) edgeLayer.lineStyle(1, 0xced4da, 0.55, 0.5, true)   // ブロック色で塗っているときは辺を薄く（ノードの大きさで連続に）
         for (const e of be) { const [sx, sy, ex, ey] = edgePts(e); edgeLayer.moveTo(sx, sy); edgeLayer.lineTo(ex, ey) }
         edgeLayer.lineStyle(0)
         // 太さ=breadth 線形・上限=一定ノード厚み・塗りクアッド。高 breadth を後に描いて上へ。
@@ -1422,7 +1428,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           return true
         })
         // base: 全エッジ 1px(native:true=gl.LINES=深層でも消えない。read_support 0/低もここで見える)
-        edgeLayer.lineStyle(1, blockColorsRef.current ? 0xced4da : 0xadb5bd, blockColorsRef.current ? 0.3 : 0.5, 0.5, true)   // ブロック色のときは Paths と同じく薄く（10-30）
+        edgeBase(0.5)   // ブロック色のときは薄く（ノードの大きさで連続に。10-30）
         for (const e of detailEdges) {
           const [sx, sy, ex, ey] = edgePts(e)
           edgeLayer.moveTo(sx, sy)
@@ -1451,7 +1457,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       } else {
         // 既定（Edge width: Off）の辺。ブロック色で塗っているときは薄く（10-30: c696f10 で Paths の経路だけ薄くしていて、既定の経路は濃い灰 0.9 のまま。
         // 辺は拡大率によらず 1 px なので、小さいノードが密集すると辺の面積がノードと同程度になり、ブロック色が暗く濁って見えた）
-        edgeLayer.lineStyle(1, blockColorsRef.current ? 0xced4da : 0xadb5bd, blockColorsRef.current ? 0.3 : 0.9, 0.5, true)
+        edgeBase(0.9)
         for (const e of visibleEdges) {
           if (edgeMinVal > 0 && (e.read_support ?? 0) < edgeMinVal) continue
           if (hiddenNodeNames.has(e.source) || hiddenNodeNames.has(e.target)) continue
