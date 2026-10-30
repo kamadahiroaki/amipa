@@ -263,6 +263,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; rep?: boolean; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; bpc: Uint32Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array; frq: Uint8Array }
   const outs: RowOut[] = []
   const T0 = Date.now(); let tRead = 0, tMix = 0, nread = 0
+  const leafSeen = new Uint8Array(X.length); let nleafW = 0
   for (const r of rows) {
     // distill のパス番号: .trav の pid は distill の p_names の順（構築器が同じ順で読む）。名前で引くと重複した名前（ヒト v2 の分割された W 行）で別のパスに当たる
     const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
@@ -271,6 +272,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
     let tw0 = -1, tw1 = -1
     const tm0 = Date.now()
     forEachWindowToken(r, toks, s0, x0, x1, X, K, (d, isA, xa, ti) => {
+      if (!leafSeen[d]) { leafSeen[d] = 1; nleafW++ }   // 窓の中で通過が通る異なるノード＝塩基の段が集める葉（段の自動切替に使う）
       const c = Math.min(ncol - 1, Math.floor((xa - x0) * ncol / W)); has[c] = 1
       h1[c] = Math.imul(h1[c] ^ d, 0x01000193) >>> 0; h2[c] = (Math.imul(h2[c], 0x9E3779B1) + d + 1) >>> 0
       bpcf[c] += BP[d]
@@ -290,7 +292,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
     ncls[c] = Math.min(255, ranked.length); nrow[c] = m.size ? ranked.reduce((a, e) => a + e[1], 0) : 0; major[c] = ranked.length ? ranked[0][1] : 0
   }
   const ms = Date.now() - T0; if (ms > 2000) console.log(`[trav/cols] ${rows.length} rows, read ${nread} tok (${tRead} ms), mix ${tMix} ms, total ${ms} ms`)
-  return { x0, x1, ncol, ntok, nread, ms, msPre: T0 - T00, msRead: tRead, nrows: rows.length, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
+  return { x0, x1, ncol, ntok, nread, nleaf: nleafW, ms, msPre: T0 - T00, msRead: tRead, nrows: rows.length, cols: { nanch: b64(nanch), ncls: b64(ncls), nrow: b64(nrow), major: b64(major) },
     rows: outs.map(o => ({ id: o.id, pid: o.pid, hid: o.hid, dir: o.dir, copy: o.copy, rep: o.rep, tw0: o.tw0, tw1: o.tw1, pres: b64(o.pres), cls: b64(o.cls), ins: b64(o.ins), bpc: b64(o.bpc), frq: b64(o.frq) })) }
 }
 
@@ -594,4 +596,16 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
   }
   if (XD) { const xc = xdepthCols(XD, x0, x1, ncol); return { x0, x1, ncol, samples: XD.samples, dep: xc.dep.map(b => b64(b)), zf: xc.zf.map(b => b64(b)), src: 'xdepth', level: xc.level, reads, overflow, wide, ms: Date.now() - t0 } }
   return { x0, x1, ncol, samples: R.samples, dep: dep.map(b => b64(b)), src: 'sample', reads, overflow, ms: Date.now() - t0 }
+}
+
+// 範囲 [x0, x1] の葉（ノード）の数: x_fill（錨はその座標、錨でない葉は直前の錨の座標）が範囲に入るノードを、並べた x_fill の二分探索で数える（10-30）。
+// 段の自動切替（ノード段に降りてよいか）に使う。塩基の段が実際に集める葉（通過のトークンのノード）とほぼ同じ
+export function travNLeaf(t: Trav, x0: number, x1: number): number | null {
+  let s = (t as any).__xfs as Int32Array | null | undefined
+  if (s === undefined) { const r = t.db.prepare("SELECT blob FROM arrays WHERE name='x_fill'").get() as { blob: Buffer } | undefined
+    if (!r) s = null; else { const a = new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)); s = a.filter(v => v >= 0).sort() }
+    ;(t as any).__xfs = s }
+  if (!s) return null
+  const lb = (v: number) => { let lo = 0, hi = s!.length; while (lo < hi) { const m = (lo + hi) >> 1; if (s![m] < v) lo = m + 1; else hi = m } return lo }
+  return lb(Math.floor(x1) + 1) - lb(Math.floor(x0))
 }
