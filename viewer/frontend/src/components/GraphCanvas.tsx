@@ -1422,7 +1422,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           return true
         })
         // base: 全エッジ 1px(native:true=gl.LINES=深層でも消えない。read_support 0/低もここで見える)
-        edgeLayer.lineStyle(1, 0xadb5bd, 0.5, 0.5, true)
+        edgeLayer.lineStyle(1, blockColorsRef.current ? 0xced4da : 0xadb5bd, blockColorsRef.current ? 0.3 : 0.5, 0.5, true)   // ブロック色のときは Paths と同じく薄く（10-30）
         for (const e of detailEdges) {
           const [sx, sy, ex, ey] = edgePts(e)
           edgeLayer.moveTo(sx, sy)
@@ -1449,7 +1449,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           }
         }
       } else {
-        edgeLayer.lineStyle(1, 0xadb5bd, 0.9, 0.5, true)
+        // 既定（Edge width: Off）の辺。ブロック色で塗っているときは薄く（10-30: c696f10 で Paths の経路だけ薄くしていて、既定の経路は濃い灰 0.9 のまま。
+        // 辺は拡大率によらず 1 px なので、小さいノードが密集すると辺の面積がノードと同程度になり、ブロック色が暗く濁って見えた）
+        edgeLayer.lineStyle(1, blockColorsRef.current ? 0xced4da : 0xadb5bd, blockColorsRef.current ? 0.3 : 0.9, 0.5, true)
         for (const e of visibleEdges) {
           if (edgeMinVal > 0 && (e.read_support ?? 0) < edgeMinVal) continue
           if (hiddenNodeNames.has(e.source) || hiddenNodeNames.has(e.target)) continue
@@ -1595,9 +1597,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           } else {
             // ブロック色で塗るときの枠: 線は native（常に 1 px）なので、画面で細いノードでは枠が塗りの大半を占めて全体が暗く濁る
             // （10-28: 多数のノードでブロック色が見分けにくい）。短辺 8 px 未満は枠なし、それ以上も塗りに近い色で薄く
-            const colored = blockColor != null && !shouldGrey && floodFill == null && linkColor == null
-            if (colored && 2 * hh * zoom < 8) nodeLayer.lineStyle(0)
-            else if (colored) nodeLayer.lineStyle(0.8 / zoom, darken(blockColor!, 0.8), 0.5, 0.5, true)
+            // 10-30: Traversals のグラフ連動の色は linkColor（ノードごとの色）で来るので、そちらも同じ扱いに（以前は blockColor だけで、linkColor の枠はほぼ黒 0x343a40）。
+            // また短辺 8 px でもまだ縁が濃く見えた（6〜10 px のノードで 1 px の枠が塗りの 3 割前後）→ 24 px 未満は枠なし、それ以上も塗りに近い色で薄く
+            const colored = (blockColor != null || linkColor != null) && !shouldGrey && floodFill == null
+            if (colored && 2 * hh * zoom < 24) nodeLayer.lineStyle(0)
+            else if (colored) nodeLayer.lineStyle(0.8 / zoom, darken(fillColor, 0.85), 0.35, 0.5, true)
             else nodeLayer.lineStyle(0.8 / zoom, lineColor, shouldGrey ? 0.4 : 0.6, 0.5, true)
             nodeLayer.beginFill(fillColor, shouldGrey ? 0.7 : 1.0)
           }
