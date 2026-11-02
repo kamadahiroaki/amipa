@@ -1099,7 +1099,7 @@ export default function App() {
     if (!trvRange) { setTrvColors(trvFilter ? withF({ maxSpan: 1, contigs: new Map(), db: selectedDb }) : null); return }
     if (trvRange.direct) { setTrvColors(withF({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) })); return }   // 名前はグラフが描いている層のものなのでそのまま
     let live = true
-    fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: selectedDb, layer: mapLayer, names: trvRange.names, namesOnly: true }) })
+    fetch('/api/graph/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: selectedDb, layer: mapLayer, names: trvRange.names, namesOnly: true }) })
       .then(r => r.json()).then(j => { if (!live) return; const names: string[] = Array.isArray(j?.names) ? j.names : trvRange.names; setTrvColors(withF({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set([...names, ...trvRange.names]) })) })
       .catch(() => { if (live) setTrvColors(withF({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) })) })
     return () => { live = false }

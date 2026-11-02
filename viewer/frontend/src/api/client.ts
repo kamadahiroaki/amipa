@@ -815,7 +815,7 @@ export async function fetchBlockSites(dbFile: string, q: { c0?: number; c1?: num
 }
 // 原子の範囲 → その層のノード名（木の経路。参照座標を使わない）
 export async function fetchBlockAncestors(dbFile: string, layer: number, names: string[]): Promise<string[]> {
-  try { const res = await fetch(`/api/blocks/ancestors?db=${encodeURIComponent(dbFile)}&layer=${layer}&names=${encodeURIComponent(names.slice(0, 200).join(','))}`); if (!res.ok) return names; const j = await res.json(); return Array.isArray(j.names) && j.names.length ? j.names : names } catch { return names }
+  try { const res = await fetch(`/api/graph/ancestors?db=${encodeURIComponent(dbFile)}&layer=${layer}&names=${encodeURIComponent(names.slice(0, 200).join(','))}`); if (!res.ok) return names; const j = await res.json(); return Array.isArray(j.names) && j.names.length ? j.names : names } catch { return names }
 }
 export async function fetchBlockNodesTree(dbFile: string, layer: number, a0: number, a1: number): Promise<string[]> {
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), a0: String(a0), a1: String(a1) })
@@ -933,7 +933,7 @@ export type BlockSel = { atoms: [number, number] } | { cols: [number, number] } 
 export function blockSelParams(sel: BlockSel): Record<string, string> { return 'names' in sel ? {} : 'atoms' in sel ? { a0: String(sel.atoms[0]), a1: String(sel.atoms[1]) } : 'cols' in sel ? { c0: String(Math.floor(sel.cols[0])), c1: String(Math.ceil(sel.cols[1])) } : { x0: String(Math.floor(sel.x[0])), x1: String(Math.ceil(sel.x[1])) } }
 export function blockSelKey(sel: BlockSel): string { if ('names' in sel) { const n = sel.names; return `n${n.length}:${n[0] || ''}:${n[n.length >> 1] || ''}:${n[n.length - 1] || ''}` } const p = blockSelParams(sel); return Object.entries(p).map(([k, v]) => k + v).join('|') }
 export async function fetchBlockBbox(dbFile: string, sel: BlockSel, target = 800): Promise<BlockViewFit | null> {
-  if ('names' in sel) { try { const r = await fetch('/api/blocks/bbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, names: sel.names, target }) }); if (!r.ok) return null; return await r.json() } catch { return null } }
+  if ('names' in sel) { try { const r = await fetch('/api/graph/bbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, names: sel.names, target }) }); if (!r.ok) return null; return await r.json() } catch { return null } }
   try { const p = new URLSearchParams({ db: dbFile, ...blockSelParams(sel), target: String(target) }); const r = await fetch(`/api/blocks/bbox?${p}`); if (!r.ok) return null; return await r.json() } catch { return null }
 }
 // 木: 範囲駆動の部分グラフ（Blocks の窓の範囲だけ）。空間問い合わせをせず名前で引くので、密な中央でも窓の広さぶんの時間で返る。
@@ -941,12 +941,12 @@ export async function fetchBlockBbox(dbFile: string, sel: BlockSel, target = 800
 export interface BlockSubgraph { nodes: NodeData[]; outer: NodeData[]; edges: EdgeData[]; c0: number; c1: number; n: number; truncated: boolean; ms: number; error?: string }
 // 窓のノード名だけ（アレル行列の窓の塗り分け用。絞りモードでなくても使う）
 export async function fetchBlockNames(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal): Promise<{ names: string[]; truncated: boolean } | null> {
-  if ('names' in sel) { if (layer < 0) return null; try { const res = await fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names, namesOnly: true }), signal }); const j = await res.json(); if (!res.ok || j.error) return null; return { names: j.names || [], truncated: !!j.truncated } } catch { return null } }
+  if ('names' in sel) { if (layer < 0) return null; try { const res = await fetch('/api/graph/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names, namesOnly: true }), signal }); const j = await res.json(); if (!res.ok || j.error) return null; return { names: j.names || [], truncated: !!j.truncated } } catch { return null } }
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel), names: '1' })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok || j.error) return null; return { names: j.names || [], truncated: !!j.truncated } } catch { return null }
 }
 export async function fetchBlockSubgraph(dbFile: string, layer: number, sel: BlockSel, signal?: AbortSignal, budget?: number, bbox?: { x1: number; y1: number; x2: number; y2: number }): Promise<BlockSubgraph | { error: string }> {
-  if ('names' in sel) { try { const res = await fetch('/api/blocks/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names, ...(budget && bbox ? { budget, bbox } : {}) }), signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } } }
+  if ('names' in sel) { try { const res = await fetch('/api/graph/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names, ...(budget && bbox ? { budget, bbox } : {}) }), signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } } }
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel), ...(budget && bbox ? { budget: String(budget), bx1: String(bbox.x1), by1: String(bbox.y1), bx2: String(bbox.x2), by2: String(bbox.y2) } : {}) })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
 }
