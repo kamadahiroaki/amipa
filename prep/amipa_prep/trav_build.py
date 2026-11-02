@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """trav 段: 錨・座標・通過・境界・持続度の木・反復を distill から作り、サイドカー <db>.trav に書く（2026-10-22 の構築器 synteny2_build.py を 11-02 に prep へ移した）。
 
-  1. 出現回数 C[node, hap]（ハプロタイプ単位。丸ごと別コンティグに含まれるコンティグは除く）
+  1. 出現回数（ハプロタイプごとの 2 回以上出るノードの一覧。ハプロタイプ単位。丸ごと別コンティグに含まれるコンティグは除く）
   2. 強い錨（1 回だけ出る株 ≥ support_strong、2 回以上の株 ≤ max_multi）→ コンティグの向きを揃え、隣接の多数決の有向グラフ → トポロジカル順
   3. 残りの候補（≥2 株で 1 回）を、持つ株ごとに両脇の強い錨から補間し、中央値を座標、ばらつき ≤ tol なら錨（順序一貫）、超えれば「場所が株で違う」
   4. 通過: コンティグごとに座標のある錨を辿り、区分単調（ε）と跳び（J）で切る。同じコンティグで座標区間が重なる通過にコピー番号
@@ -22,7 +22,12 @@ ap.add_argument("--contained", type=float, default=0.9, help="他コンティグ
 ap.add_argument("--consist", type=float, default=0.1, help="順序一貫の選別: 後ろ向き・跳びがこの割合を超える株で起きる錨を外す"); ap.add_argument("--rounds", type=int, default=3); ap.add_argument("--reloc-rounds", type=int, default=10, help="挿入片の置き直しの最大回数（0 で無効）"); ap.add_argument("--seg-multi", type=int, default=1, help="通過の切り出しに、そのハプロタイプが 2 回以上通る錨も使う（11-02。0 で旧来の 1 回だけ。座標を作る段は常に 1 回だけ）。2 回通るハプロタイプの区間が通過として残らず、行が出なかった")
 ap.add_argument("--seg-anchors", default="strong", help="通過の切り出しに使う錨: strong（強い錨だけ）| all（補間で置いた錨も）"); ap.add_argument("--rep-gap", type=int, default=20); ap.add_argument("--rep-gap-bp", type=int, default=500); ap.add_argument("--rep-min-bp", type=int, default=500)
 a = ap.parse_args(); T0 = time.time()
-def log(*x): print(f"[{time.time()-T0:7.1f}s]", *x, file=sys.stderr, flush=True)
+ADJ_BATCH = 50_000_000   # 隣接の組を足し込む単位（int64 で 400 MB）
+def _mem():   # 現在の常駐メモリと最大値（GB）。段ごとのメモリを測る（11-02、全ゲノムの見積もり用）
+    try:
+        st = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith(("VmRSS", "VmHWM"))); return f"RSS {int(st['VmRSS'].split()[0]) / 1e6:.1f}/{int(st['VmHWM'].split()[0]) / 1e6:.1f}G"
+    except Exception: return ""
+def log(*x): print(f"[{time.time()-T0:7.1f}s {_mem()}]", *x, file=sys.stderr, flush=True)
 
 D = a.distill
 p_tok = np.load(D + "/p_tok.npy", mmap_mode="r"); p_ori = np.load(D + "/p_ori.npy", mmap_mode="r"); p_off = np.load(D + "/p_off.npy"); id_map = np.load(D + "/id_map.npy")
@@ -87,25 +92,48 @@ for h in range(H):
         elif ((idx < 0.05 * n) | (idx >= 0.95 * n)).all(): relation[pi] = 2
         else: relation[pi] = 3
 excl = relation == 1
-C = np.zeros((N + 1, H), np.uint8)
+# 出現回数はハプロタイプごとの「2 回以上出るノード」の一覧（整列済み）だけを持つ（11-02）。以前はノード × ハプロタイプの表 C（uint8）で、
+# 全ゲノム 8,142 万ノード × 92 で 7.5 GB、ハプロタイプ数に比例して増えた。使うのは「そのハプロタイプで 1 回だけか / 2 回以上か」と
+# ノードごとの数（cnt1: 1 回だけ通るハプロタイプ数、cntm: 2 回以上）だけ。除外したコンティグ（冗長）は数えない
+MULTI = [np.zeros(0, np.int64)] * H
+cnt1 = np.zeros(N + 1, np.int32); cntm = np.zeros(N + 1, np.int32)
 for h in range(H):
     ps = [pi for pi in paths_of[h] if not excl[pi]]
     if not ps: continue
-    t = np.concatenate([tok(pi) for pi in ps]); C[:, h] = np.minimum(255, np.bincount(t, minlength=N + 1))
-cnt1 = (C == 1).sum(1).astype(np.int32); cntm = (C >= 2).sum(1).astype(np.int32); cnt1[0] = cntm[0] = 0
+    c_ = np.bincount(np.concatenate([tok(pi) for pi in ps]), minlength=N + 1)
+    cnt1 += (c_ == 1); m_ = c_ >= 2; cntm += m_; MULTI[h] = np.flatnonzero(m_)
+    del c_, m_
+cnt1[0] = cntm[0] = 0
+def multi(t, h):
+    """トークン列 t のうち、ハプロタイプ h で 2 回以上出るノード（元の C[t, h] >= 2）"""
+    mh = MULTI[h]
+    if mh.size == 0: return np.zeros(t.size, bool)
+    i = np.searchsorted(mh, t); return mh[np.minimum(i, mh.size - 1)] == t
+def once(t, h):
+    """ハプロタイプ h で 1 回だけ出るノード（元の C[t, h] == 1。t は除外していないパスのトークン）"""
+    return ~multi(t, h)
 log(f"冗長コンティグ {int(excl.sum())}（端の重なり {int((relation==2).sum())}、内部共有 {int((relation==3).sum())}）; 候補錨 {int((cnt1>=2).sum()):,}")
 
 # ---- 2. 強い錨の多数決順（順序一貫の選別つき） ----
 def build_order(strong):
     """コンティグの向きを揃え、隣接する強い錨の組の多数決で有向グラフを作り、トポロジカル順を返す（閉路は dcol の小さい方を先に）"""
-    orient = np.ones(NP, np.int8); keys = []
+    orient = np.ones(NP, np.int8); keys = []; nkeys = [0]; acc = [np.zeros(0, np.int64), np.zeros(0, np.int64)]
+    # 隣接する強い錨の組を、パスを読みながら一定量ごとに数えて足し込む（11-02）。以前は全パスの組を 1 本の配列に集めてから np.unique で、
+    # 全ゲノムでは 10 億組超（パス数・トークン数に比例）。足し込みなら組の種類数（錨の数の程度）で頭打ち
+    def fold_keys():
+        if not keys: return
+        u_, c_ = np.unique(np.concatenate(keys), return_counts=True); keys.clear(); nkeys[0] = 0
+        if acc[0].size: k2 = np.concatenate((acc[0], u_)); c2 = np.concatenate((acc[1], c_)); o_ = np.argsort(k2, kind="stable"); k2 = k2[o_]; c2 = c2[o_]
+        else: k2, c2 = u_, c_
+        st_ = np.flatnonzero(np.concatenate(([True], k2[1:] != k2[:-1]))); acc[0] = k2[st_]; acc[1] = np.add.reduceat(c2, st_)
     for pi in range(NP):
         if excl[pi]: continue
-        t = tok(pi); h = phap[pi]; m = strong[t] & (C[t, h] == 1); s_ = t[m].astype(np.int64)
+        t = tok(pi); h = phap[pi]; m = strong[t] & once(t, h); s_ = t[m].astype(np.int64)
         if s_.size < 2: continue
         if np.mean(np.diff(dcol[s_]) > 0) < 0.5: orient[pi] = -1; s_ = s_[::-1]
-        keys.append(s_[:-1] * (N + 1) + s_[1:])
-    k = np.concatenate(keys); uk, cnt = np.unique(k, return_counts=True); ea = uk // (N + 1); eb = uk % (N + 1)
+        keys.append(s_[:-1] * (N + 1) + s_[1:]); nkeys[0] += keys[-1].size
+        if nkeys[0] >= ADJ_BATCH: fold_keys()
+    fold_keys(); uk, cnt = acc[0], acc[1]; ea = uk // (N + 1); eb = uk % (N + 1); log(f'  [順序] パスの走査と隣接の集計（組 {uk.size:,}）')
     rk = eb * (N + 1) + ea; idx = np.searchsorted(uk, rk); has = (idx < uk.size) & (uk[np.minimum(idx, uk.size - 1)] == rk); crev = np.where(has, cnt[np.minimum(idx, uk.size - 1)], 0)
     keep = (cnt > crev) | ((cnt == crev) & (dcol[ea] < dcol[eb])); ea, eb = ea[keep], eb[keep]; o = np.argsort(ea, kind="stable"); ea, eb = ea[o], eb[o]
     indeg = np.bincount(eb, minlength=N + 1); start = np.searchsorted(ea, np.arange(N + 2)); snodes = np.flatnonzero(strong); rank = np.full(N + 1, -1.0); done = np.zeros(N + 1, bool)
@@ -118,7 +146,7 @@ def build_order(strong):
     comp_min = np.full(ncomp, np.iinfo(np.int64).max); np.minimum.at(comp_min, comp[snodes], dcol[snodes]); comp_order = np.argsort(comp_min, kind='stable')
     comp_rank = np.empty(ncomp, np.int64); comp_rank[comp_order] = np.arange(ncomp)
     heap = [(int(comp_rank[comp[n]]), int(dcol[n]), int(n)) for n in snodes if indeg[n] == 0]; heapq.heapify(heap)
-    frontier = []; r = 0; stalls = 0; far = 0
+    frontier = []; r = 0; stalls = 0; far = 0; log('  [順序] 有向グラフ・成分')
     # 最前線も空のとき（別の成分へ移る）: 種の順序（dcol）で「直前に置いたノードの次」から前向きに探す。無ければ先頭から。
     # 以前は dcol 最小の残りを置いていて、ヒトでは 8,000 回も遠くへ飛んだ
     by_dcol = snodes[np.argsort(dcol[snodes], kind="stable")]; pos_of = np.full(N + 1, -1, np.int64); pos_of[by_dcol] = np.arange(by_dcol.size)
@@ -164,7 +192,7 @@ def build_order(strong):
         main = max(comps, key=lambda c: size[c]); ins = {c: [] for c in comps}
         for pi in range(NP):
             if excl[pi]: continue
-            t = tok(pi); h = phap[pi]; m = strong[t] & (C[t, h] == 1); s_ = t[m]
+            t = tok(pi); h = phap[pi]; m = strong[t] & once(t, h); s_ = t[m]
             if s_.size < 2: continue
             if orient[pi] < 0: s_ = s_[::-1]
             cs = comp[s_]; rr = rank[s_]; prev_other = -1.0; prev_c = -1
@@ -199,7 +227,7 @@ for it in range(a.rounds):
     njump = np.zeros(N + 1, np.int32); nseen = np.zeros(N + 1, np.int32)
     for pi in range(NP):
         if excl[pi]: continue
-        t = tok(pi); h = phap[pi]; m = strong[t] & (C[t, h] == 1); s_ = t[m]
+        t = tok(pi); h = phap[pi]; m = strong[t] & once(t, h); s_ = t[m]
         if s_.size < 3: continue
         if orient[pi] < 0: s_ = s_[::-1]
         rr = rank[s_]; d = np.diff(rr); bad = (d < -a.eps) | (np.abs(d) > a.J); jp = np.zeros(s_.size, bool); jp[1:] |= bad; jp[:-1] |= bad
@@ -215,7 +243,7 @@ cand = (cnt1 >= 2) & ~strong & (cnt1 >= cntm); cand[0] = False
 sum_pos = np.zeros(N + 1); sum_sq = np.zeros(N + 1); npos = np.zeros(N + 1, np.int32); mn = np.full(N + 1, np.inf); mx = np.full(N + 1, -np.inf)
 for pi in range(NP):
     if excl[pi]: continue
-    t = tok(pi); h = phap[pi]; u = C[t, h] == 1; si = np.flatnonzero(strong[t] & u)
+    t = tok(pi); h = phap[pi]; u = once(t, h); si = np.flatnonzero(strong[t] & u)
     if si.size < 2: continue
     ci = np.flatnonzero(cand[t] & u)
     if ci.size == 0: continue
@@ -261,7 +289,7 @@ def _reloc_once(X_, minB=RELOC_MIN):
     recs = []; segs_by_hap = {}; nseg = 0
     for pi in range(NP):
         if excl[pi]: continue
-        t = tok(pi); h = phap[pi]; use = strong[t] & (C[t, h] == 1); xs = np.where(use, X_[t], -1); vi = np.flatnonzero(xs >= 0)
+        t = tok(pi); h = phap[pi]; use = strong[t] & once(t, h); xs = np.where(use, X_[t], -1); vi = np.flatnonzero(xs >= 0)
         if vi.size < RELOC_MIN: continue
         xv = xs[vi]; cuts, _k = segment(xv, a.eps, a.J, np.zeros(0, np.bool_)); bnd = [0] + [int(c) for c in cuts] + [xv.size]
         big = [(bnd[i], bnd[i + 1]) for i in range(len(bnd) - 1) if bnd[i + 1] - bnd[i] >= minB]; nseg += sum(1 for s_, e_ in big if e_ - s_ >= RELOC_MIN)
@@ -352,7 +380,7 @@ xbp = np.zeros(R + 1, np.int64); xbp[1:] = np.cumsum(bp[order])
 # 1 パス目: 単調性の違反の着地点を数え、その座標を通る株の半分以上が同じ所で跳ぶなら座標軸の「折り目」とする（2 パス目では切らない）
 fold_cnt = np.zeros(R // FOLDBIN + 2, np.int32); cov1 = np.zeros(R + 2, np.int32); seen_fold = {}
 for pi in range(NP):
-    t = tok(pi); h = phap[pi]; use = (strong[t] if a.seg_anchors == 'strong' else hasx[t]) & ((C[t, h] >= 1) if a.seg_multi else (C[t, h] == 1)) & (not excl[pi]); xs = np.where(use, X[t], -1); vi = np.flatnonzero(xs >= 0)
+    t = tok(pi); h = phap[pi]; use = (strong[t] if a.seg_anchors == 'strong' else hasx[t]) & (True if a.seg_multi else once(t, h)) & (not excl[pi]); xs = np.where(use, X[t], -1); vi = np.flatnonzero(xs >= 0)
     if vi.size < a.min_anchors: continue
     xv = xs[vi]; cuts, kinds = segment(xv, a.eps, a.J, np.zeros(0, np.bool_))
     cov1[xv.min()] += 1; cov1[xv.max() + 1] -= 1
@@ -372,7 +400,7 @@ ends = collections.Counter()   # 座標 → 通過の端の支持（ハプロタ
 breaks_rev = []                # (x, hap) 単調性の違反（後ろ向き）による切断の着地点。多くの株が同じ所で跳ぶ＝順序が線形にならない硬い領域
 cov = np.zeros(R + 2, np.int32)
 for pi in range(NP):
-    t = tok(pi); h = phap[pi]; mult_ok = ((C[t, h] >= 1) if a.seg_multi else (C[t, h] == 1)) & (not excl[pi])
+    t = tok(pi); h = phap[pi]; mult_ok = (True if a.seg_multi else once(t, h)) & (not excl[pi])
     use = (strong[t] if a.seg_anchors == 'strong' else hasx[t]) & mult_ok; xs = np.where(use, X[t], -1); vi = np.flatnonzero(xs >= 0)
     cum = np.concatenate(([0], np.cumsum(bp[t]))); segs = []
     def add_segs(vi_, xv_, cuts_, fill=0):
@@ -471,7 +499,7 @@ log(f"原子（持続度 >= {a.floor_bp} bp）{len(atoms):,}")
 reps = []
 for pi in range(NP):
     if excl[pi]: continue
-    t = tok(pi); h = phap[pi]; m = C[t, h] >= 2
+    t = tok(pi); h = phap[pi]; m = multi(t, h)
     if not m.any(): continue
     e = np.diff(np.concatenate(([0], m.view(np.int8), [0]))); st = np.flatnonzero(e == 1); en = np.flatnonzero(e == -1); cum = np.concatenate(([0], np.cumsum(bp[t])))
     ms, me = [int(st[0])], [int(en[0])]
