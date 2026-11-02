@@ -12,6 +12,14 @@ D = a.distill; tok = np.load(D + '/p_tok.npy', mmap_mode='r'); off = np.load(D +
 sid = np.load(D + '/s_id.npy'); sbp = np.load(D + '/s_bp.npy'); bp = np.zeros(N1, np.int64); bp[sid] = sbp
 nbin = int(X.max()) // B + 2
 keys = []; ws = []; xs = []
+# 錨でないトークンを一定量（BATCH）ごとに（ノード, 桶）で集計して足し込む（11-02）。以前は全パス分ためてから集計で、メモリが全トークン数（パス数）に比例した。
+# 足すのは bp と bp × 座標（どちらも整数値）なので、まとめ方を変えても和は同じ
+BATCH = 20_000_000; nbuf = [0]; ntot = [0]; acc = [np.zeros(0, np.int64), np.zeros(0), np.zeros(0)]
+def fold():
+    if not keys: return
+    k_ = np.concatenate(keys); w_ = np.concatenate(ws).astype(np.float64); x_ = np.concatenate(xs); keys.clear(); ws.clear(); xs.clear(); nbuf[0] = 0
+    k_ = np.concatenate((acc[0], k_)); a_w = np.concatenate((acc[1], w_)); a_x = np.concatenate((acc[2], w_ * x_))
+    uk_, inv_ = np.unique(k_, return_inverse=True); acc[0] = uk_; acc[1] = np.bincount(inv_, weights=a_w); acc[2] = np.bincount(inv_, weights=a_x)
 for pi in range(NP):
     t = np.asarray(tok[off[pi]:off[pi + 1]]).astype(np.int64); x = X[t]; m = x >= 0
     if not m.any(): continue
@@ -19,11 +27,11 @@ for pi in range(NP):
     # 先頭（最初の錨より前）は次の錨で埋める
     first = np.flatnonzero(m)[0]; xf = np.where(last >= 0, x[np.maximum(last, 0)], x[first])
     nm = ~m
-    if nm.any(): keys.append(t[nm] * nbin + xf[nm] // B); ws.append(bp[t[nm]]); xs.append(xf[nm])
-    if pi % 200 == 0: print(f'path {pi}/{NP} ({time.time()-t0:.0f}s)', file=sys.stderr)
-key = np.concatenate(keys); w = np.concatenate(ws); xv = np.concatenate(xs); del keys, ws, xs
-print(f'錨でないトークン {len(key):,} ({time.time()-t0:.0f}s)', file=sys.stderr)
-uk, inv = np.unique(key, return_inverse=True); wsum = np.bincount(inv, weights=w); xw = np.bincount(inv, weights=w * xv)
+    if nm.any(): keys.append(t[nm] * nbin + xf[nm] // B); ws.append(bp[t[nm]]); xs.append(xf[nm]); nbuf[0] += int(nm.sum()); ntot[0] += int(nm.sum())
+    if nbuf[0] >= BATCH: fold()
+    if pi % 2000 == 0: print(f'path {pi}/{NP} ({time.time()-t0:.0f}s)', file=sys.stderr)
+fold(); uk, wsum, xw = acc
+print(f'錨でないトークン {ntot[0]:,} ({time.time()-t0:.0f}s)', file=sys.stderr)
 node = uk // nbin
 order = np.lexsort((-wsum, node)); firstm = np.ones(len(order), bool); firstm[1:] = node[order][1:] != node[order][:-1]; best = order[firstm]
 xfill = np.full(N1, -1, np.int32); xfill[node[best]] = np.round(xw[best] / np.maximum(1, wsum[best])).astype(np.int32)

@@ -95,7 +95,7 @@ def main():
                 if sn in done: sys.exit(f"チャンク {cn}（サンプル {sn}）が、そのサンプルを書き出した後に現れた。索引のチャンクが追記順に並んでいない")
                 if sn not in open_: open_[sn] = {"diff": np.zeros(R + 1, np.int64), "vis": np.zeros(R, np.uint32)}
                 m = cr == cn; pend.setdefault(cn, []).append((aln[m].astype(np.int64), xr[m].astype(np.int64)))
-                np.add.at(open_[sn]["vis"], xr[m], 1)
+                u_, c_ = np.unique(xr[m], return_counts=True); open_[sn]["vis"][u_] += c_.astype(np.uint32)   # np.add.at は遅い（11-02）
         gids, cns, blobs = [], [], []
     prev_cn = None
     for gid, cn, blob in rc.execute("SELECT gfa_id, chunk_no, postings FROM node_reads"):
