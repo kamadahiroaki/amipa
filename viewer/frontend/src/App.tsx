@@ -3087,8 +3087,8 @@ export default function App() {
       {/* ── Bottom panel ──────────────────────────────────────────── */}
       {/* Alignment のハンドルは、閉じているときは「下に他のパネルが無い」場合だけ出す。
           MSA / Blocks が開いていると、その直上にこのハンドルが来て、下のパネルを広げようとした
-          ドラッグが Alignment を開いてしまう（掴みしろ GRIP_PAD 分だけ下にも張り出している） */}
-      {(bottomH > 0 || (msaH === 0 && blkH === 0)) && (
+          ドラッグが Alignment を開いてしまう（掴みしろ GRIP_PAD 分だけ下にも張り出している）。Traversals も同じ（11-02） */}
+      {(bottomH > 0 || (msaH === 0 && blkH === 0 && trvH === 0)) && (
         <div
           onMouseDown={onBottomHandleDown}
           title="Drag to resize bottom panel"
