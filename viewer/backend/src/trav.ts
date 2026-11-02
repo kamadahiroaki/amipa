@@ -194,7 +194,10 @@ function windowTokens(t: Trav, r: TravRow, pi: number, x0: number, x1: number): 
     let lo = -1, hi = -1
     for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { lo = X[d]; break } }
     for (let k = toks.length - 1; k >= 0; k--) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { hi = X[d]; break } }
-    const cutLo = s0 > r.i0 && lo >= x0 && lo <= x1, cutHi = e0 < r.i1 + 1 && hi >= x0 && hi <= x1
+    // 読んだ区間の端の錨が窓の端を越えていなければ広げる（11-02）。以前は「端の錨が窓の中なら」で、見積もり（トークンを x に比例で置く）が窓を
+    // 飛び越えたとき（端の錨が窓の外）に広げず、窓の手前のトークンを取りこぼした（chr202122v2 x 2,639,602 の n76136864。片の中のトークンの密度が一様でない）
+    const fwd = r.dir >= 0, none = lo < 0 || hi < 0
+    const cutLo = s0 > r.i0 && (none || (fwd ? lo > x0 : lo < x1)), cutHi = e0 < r.i1 + 1 && (none || (fwd ? hi < x1 : hi > x0))
     if (!cutLo && !cutHi) break
     const grow = Math.max(1000, e0 - s0); if (cutLo) s0 = Math.max(r.i0, s0 - grow); if (cutHi) e0 = Math.min(r.i1 + 1, e0 + grow)
   }
