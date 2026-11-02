@@ -22,12 +22,28 @@ ap.add_argument("--contained", type=float, default=0.9, help="他コンティグ
 ap.add_argument("--consist", type=float, default=0.1, help="順序一貫の選別: 後ろ向き・跳びがこの割合を超える株で起きる錨を外す"); ap.add_argument("--rounds", type=int, default=3); ap.add_argument("--reloc-rounds", type=int, default=10, help="挿入片の置き直しの最大回数（0 で無効）"); ap.add_argument("--seg-multi", type=int, default=1, help="通過の切り出しに、そのハプロタイプが 2 回以上通る錨も使う（11-02。0 で旧来の 1 回だけ。座標を作る段は常に 1 回だけ）。2 回通るハプロタイプの区間が通過として残らず、行が出なかった")
 ap.add_argument("--seg-anchors", default="strong", help="通過の切り出しに使う錨: strong（強い錨だけ）| all（補間で置いた錨も）"); ap.add_argument("--rep-gap", type=int, default=20); ap.add_argument("--rep-gap-bp", type=int, default=500); ap.add_argument("--rep-min-bp", type=int, default=500)
 a = ap.parse_args(); T0 = time.time()
-ADJ_BATCH = 50_000_000   # 隣接の組を足し込む単位（int64 で 400 MB）
+ADJ_BATCH = 5_000_000   # 隣接の組を足し込む単位（int64 で 40 MB）。11-02: 5,000 万（400 MB）だと混んだ計算ノードで一時配列の確保（np.unique の複製）が遅く、1 回の集計が 13 秒〜245 秒とばらついた
 def _mem():   # 現在の常駐メモリと最大値（GB）。段ごとのメモリを測る（11-02、全ゲノムの見積もり用）
     try:
         st = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith(("VmRSS", "VmHWM"))); return f"RSS {int(st['VmRSS'].split()[0]) / 1e6:.1f}/{int(st['VmHWM'].split()[0]) / 1e6:.1f}G"
     except Exception: return ""
 def log(*x): print(f"[{time.time()-T0:7.1f}s {_mem()}]", *x, file=sys.stderr, flush=True)
+# np.add.at / minimum.at / maximum.at の代わり（11-02）。ufunc.at は 1 要素ごとの処理が遅く、順序一貫の選別と補間のループで時間の大半を占めた。
+# 同じ順に 1 要素ずつ処理するので結果（浮動小数の和の順も）は元と同じ
+@njit(cache=True)
+def _add_at(a, idx, v):
+    for k in range(idx.size): a[idx[k]] += v[k]
+@njit(cache=True)
+def _add1_at(a, idx):
+    for k in range(idx.size): a[idx[k]] += 1
+@njit(cache=True)
+def _min_at(a, idx, v):
+    for k in range(idx.size):
+        if v[k] < a[idx[k]]: a[idx[k]] = v[k]
+@njit(cache=True)
+def _max_at(a, idx, v):
+    for k in range(idx.size):
+        if v[k] > a[idx[k]]: a[idx[k]] = v[k]
 
 D = a.distill
 p_tok = np.load(D + "/p_tok.npy", mmap_mode="r"); p_ori = np.load(D + "/p_ori.npy", mmap_mode="r"); p_off = np.load(D + "/p_off.npy"); id_map = np.load(D + "/id_map.npy")
@@ -63,7 +79,7 @@ def seed_from_ref(prefix):
         if not k.any() or k.all(): continue
         idx = np.where(k, np.arange(t.size), -1); last = np.maximum.accumulate(idx); fst = int(np.flatnonzero(k)[0])
         fill = np.where(last >= 0, v[np.maximum(last, 0)], v[fst]); m = ~k
-        ssum += np.bincount(t[m], weights=fill[m], minlength=N + 1); scnt += np.bincount(t[m], minlength=N + 1)
+        tm = t[m].astype(np.int64); _add_at(ssum, tm, fill[m]); _add1_at(scnt, tm)   # 11-02: パスごとにノード数の長さの bincount を足していた（パス数 × ノード数。全ゲノムで 80 分）
     un = np.isnan(seed) & (scnt > 0); seed[un] = ssum[un] / scnt[un] + 0.5
     seed[np.isnan(seed)] = r0 + 1
     rank = np.empty(N + 1, np.int64); rank[np.lexsort((np.arange(N + 1), seed))] = np.arange(N + 1)
@@ -104,17 +120,89 @@ for h in range(H):
     cnt1 += (c_ == 1); m_ = c_ >= 2; cntm += m_; MULTI[h] = np.flatnonzero(m_)
     del c_, m_
 cnt1[0] = cntm[0] = 0
+ANYMULTI = cntm > 0   # どれかのハプロタイプで 2 回以上出るノード（ほとんどのトークンはここで落ちるので、二分探索はその分だけ）
 def multi(t, h):
     """トークン列 t のうち、ハプロタイプ h で 2 回以上出るノード（元の C[t, h] >= 2）"""
-    mh = MULTI[h]
-    if mh.size == 0: return np.zeros(t.size, bool)
-    i = np.searchsorted(mh, t); return mh[np.minimum(i, mh.size - 1)] == t
+    mh = MULTI[h]; out = np.zeros(t.size, bool)
+    if mh.size == 0: return out
+    c = np.flatnonzero(ANYMULTI[t])
+    if c.size: tc = t[c]; i = np.searchsorted(mh, tc); out[c] = mh[np.minimum(i, mh.size - 1)] == tc
+    return out
 def once(t, h):
     """ハプロタイプ h で 1 回だけ出るノード（元の C[t, h] == 1。t は除外していないパスのトークン）"""
     return ~multi(t, h)
 log(f"冗長コンティグ {int(excl.sum())}（端の重なり {int((relation==2).sum())}、内部共有 {int((relation==3).sum())}）; 候補錨 {int((cnt1>=2).sum()):,}")
 
 # ---- 2. 強い錨の多数決順（順序一貫の選別つき） ----
+@njit(cache=True)
+def _comp_ins(cs, rr, main):
+    """パスの強い錨の並び（成分 cs、順位 rr）で、骨格（main）以外の成分に入る所ごとに (成分, 直前の骨格の順位。無ければその錨の順位)"""
+    oc = np.empty(cs.size, np.int64); ov = np.empty(cs.size, np.float64); n = 0; prev_other = -1.0; prev_c = -1
+    for k in range(cs.size):
+        c = cs[k]
+        if c != prev_c:
+            if c != main and prev_c >= 0 and prev_c != c:
+                oc[n] = c; ov[n] = prev_other if prev_other >= 0 else rr[k]; n += 1
+            prev_c = c
+        if c == main: prev_other = rr[k]
+    return oc[:n], ov[:n]
+@njit(cache=True)
+def _find_alive(p, by_dcol, done, nxt_alive):
+    root = p
+    while root < by_dcol.size and done[by_dcol[root]]:
+        root = nxt_alive[root + 1] if nxt_alive[root + 1] != root + 1 else root + 1
+    q = p
+    while q < root:
+        nq = nxt_alive[q + 1] if q + 1 < nxt_alive.size else q + 1
+        nxt_alive[q] = root; q = nq if nq > q else q + 1
+    return root
+@njit(cache=True)
+def _kahn(snodes, indeg, start, eb, crank, dcol, by_dcol, pos_of, N):
+    """Kahn 法（build_order の説明どおり）。ヒープの要素は (成分の順, dcol, ノード)、最前線は (成分の順 × (N+2) + 残りの入次数, dcol, ノード)。
+    直前に置いたノードの後続で準備できたもの（local、LIFO・dcol の小さい方を先に）を優先。詰まったら最前線、それも空なら種の順で直前の次"""
+    done = np.zeros(N + 1, np.bool_); rank = np.full(N + 1, -1.0); nxt_alive = np.arange(by_dcol.size + 1)
+    heap = [(np.int64(0), np.int64(0), np.int64(0))]; heap.pop()
+    frontier = [(np.int64(0), np.int64(0), np.int64(0))]; frontier.pop()
+    for n in snodes:
+        if indeg[n] == 0: heap.append((crank[n], dcol[n], n))
+    heapq.heapify(heap)
+    r = 0; stalls = 0; far = 0; last = -1; local = [np.int64(0)]; local.pop(); M = np.int64(N + 2)
+    while r < snodes.size:
+        n = -1
+        while len(local) > 0:
+            c = local.pop()
+            if not done[c] and indeg[c] == 0:
+                n = c; break
+        while n < 0 and len(heap) > 0:
+            it = heapq.heappop(heap); c = it[2]
+            if not done[c] and indeg[c] == 0:
+                n = c; break
+        if n < 0:
+            while len(frontier) > 0:
+                it = heapq.heappop(frontier); c = it[2]
+                if not done[c] and indeg[c] == it[0] % M and crank[c] == it[0] // M:
+                    n = c; break
+            if n >= 0: stalls += 1
+            else:
+                p = _find_alive(pos_of[last] + 1 if last >= 0 else 0, by_dcol, done, nxt_alive)
+                if p >= by_dcol.size: p = _find_alive(0, by_dcol, done, nxt_alive)
+                n = by_dcol[p]; stalls += 1; far += 1
+        done[n] = True; rank[n] = r; r += 1; last = n
+        local = [np.int64(0)]; local.pop()
+        for j in range(start[n], start[n + 1]):
+            m = eb[j]
+            if done[m]: continue
+            indeg[m] -= 1
+            if indeg[m] <= 0:
+                heapq.heappush(heap, (crank[m], dcol[m], m)); local.append(m)
+            else:
+                heapq.heappush(frontier, (crank[m] * M + indeg[m], dcol[m], m))
+        if len(local) > 1:   # dcol の小さい方を先に（LIFO なので逆順に積む。元の list.sort(key=-dcol) と同じ安定な並べ替え）
+            la = np.empty(len(local), np.int64)
+            for k in range(len(local)): la[k] = local[k]
+            o = np.argsort(-dcol[la], kind="mergesort"); local = [np.int64(0)]; local.pop()
+            for k in range(o.size): local.append(la[o[k]])
+    return rank, stalls, far
 def build_order(strong):
     """コンティグの向きを揃え、隣接する強い錨の組の多数決で有向グラフを作り、トポロジカル順を返す（閉路は dcol の小さい方を先に）"""
     orient = np.ones(NP, np.int8); keys = []; nkeys = [0]; acc = [np.zeros(0, np.int64), np.zeros(0, np.int64)]
@@ -122,7 +210,7 @@ def build_order(strong):
     # 全ゲノムでは 10 億組超（パス数・トークン数に比例）。足し込みなら組の種類数（錨の数の程度）で頭打ち
     def fold_keys():
         if not keys: return
-        u_, c_ = np.unique(np.concatenate(keys), return_counts=True); keys.clear(); nkeys[0] = 0
+        k_ = np.concatenate(keys); keys.clear(); nkeys[0] = 0; k_.sort(); b_ = np.flatnonzero(np.concatenate(([True], k_[1:] != k_[:-1]))); u_ = k_[b_]; c_ = np.diff(np.concatenate((b_, [k_.size]))); del k_
         if acc[0].size: k2 = np.concatenate((acc[0], u_)); c2 = np.concatenate((acc[1], c_)); o_ = np.argsort(k2, kind="stable"); k2 = k2[o_]; c2 = c2[o_]
         else: k2, c2 = u_, c_
         st_ = np.flatnonzero(np.concatenate(([True], k2[1:] != k2[:-1]))); acc[0] = k2[st_]; acc[1] = np.add.reduceat(c2, st_)
@@ -145,75 +233,43 @@ def build_order(strong):
     g = _sp.coo_matrix((np.ones(ea.size, np.int8), (ea, eb)), shape=(N + 1, N + 1)); ncomp, comp = _cg.connected_components(g, directed=True, connection='weak')
     comp_min = np.full(ncomp, np.iinfo(np.int64).max); np.minimum.at(comp_min, comp[snodes], dcol[snodes]); comp_order = np.argsort(comp_min, kind='stable')
     comp_rank = np.empty(ncomp, np.int64); comp_rank[comp_order] = np.arange(ncomp)
-    heap = [(int(comp_rank[comp[n]]), int(dcol[n]), int(n)) for n in snodes if indeg[n] == 0]; heapq.heapify(heap)
-    frontier = []; r = 0; stalls = 0; far = 0; log('  [順序] 有向グラフ・成分')
+    log('  [順序] 有向グラフ・成分')
     # 最前線も空のとき（別の成分へ移る）: 種の順序（dcol）で「直前に置いたノードの次」から前向きに探す。無ければ先頭から。
     # 以前は dcol 最小の残りを置いていて、ヒトでは 8,000 回も遠くへ飛んだ
     by_dcol = snodes[np.argsort(dcol[snodes], kind="stable")]; pos_of = np.full(N + 1, -1, np.int64); pos_of[by_dcol] = np.arange(by_dcol.size)
-    nxt_alive = np.arange(by_dcol.size + 1)                 # 次に生きている位置（経路圧縮）
-    def find_alive(p):
-        root = p
-        while root < by_dcol.size and done[by_dcol[root]]: root = nxt_alive[root + 1] if nxt_alive[root + 1] != root + 1 else root + 1
-        q = p
-        while q < root: nq = nxt_alive[q + 1] if q + 1 < nxt_alive.size else q + 1; nxt_alive[q] = root; q = nq if nq > q else q + 1
-        return root
-    last = -1; local = []     # 直前に置いたノードの後続（鎖を続けるための優先候補、LIFO）
-    while r < snodes.size:
-        n = -1
-        # まず直前のノードの後続で準備できたもの（鎖の続き）。準備できていない後続（別の枝待ち）は残す
-        while local:
-            cand_ = local.pop()
-            if not done[cand_] and indeg[cand_] == 0: n = cand_; break
-        while n < 0 and heap:
-            d0, _, cand_ = heapq.heappop(heap)
-            if not done[cand_] and indeg[cand_] == 0: n = cand_; break
-        if n < 0:
-            while frontier:
-                d0, _, cand_ = heapq.heappop(frontier)
-                if not done[cand_] and indeg[cand_] == d0 % (N + 2) and comp_rank[comp[cand_]] == d0 // (N + 2): n = cand_; break
-            if n >= 0: stalls += 1
-            else:
-                p = find_alive(pos_of[last] + 1) if last >= 0 else find_alive(0)
-                if p >= by_dcol.size: p = find_alive(0)
-                n = int(by_dcol[p]); stalls += 1; far += 1
-        done[n] = True; rank[n] = r; r += 1; last = n; local = []
-        for m_ in eb[start[n]:start[n + 1]]:
-            if done[m_]: continue
-            indeg[m_] -= 1
-            if indeg[m_] <= 0: heapq.heappush(heap, (int(comp_rank[comp[m_]]), int(dcol[m_]), int(m_))); local.append(int(m_))
-            else: heapq.heappush(frontier, (int(comp_rank[comp[m_]]) * (N + 2) + int(indeg[m_]), int(dcol[m_]), int(m_)))
-        if len(local) > 1: local.sort(key=lambda q: -dcol[q])   # 複数準備できたら dcol の小さい方を先に（LIFO なので逆順に積む）
+    # 11-02: Kahn 法の本体を numba に（_kahn）。Python のヒープで 1 ノードずつだと、ヒト chr20–22 の 244 万錨で 1 回 40 秒、全ゲノムでは 1 回 10 分超
+    rank, stalls, far = _kahn(snodes.astype(np.int64), indeg.astype(np.int64), start.astype(np.int64), eb.astype(np.int64), comp_rank[comp].astype(np.int64), dcol.astype(np.int64), by_dcol.astype(np.int64), pos_of, N)
     # 成分の順の修正: 小さな成分（参照に無い島など）は種の dcol が当てにならず末尾に置かれて、全株の途中に「遠い色の片」として現れた。
     # 各成分の挿入位置＝それを持つ株で、成分の最初のノードの直前にある別成分のノードの順位（中央値）。大きい方の成分を骨格にして並べ直す
     comps = sorted(set(comp[snodes].tolist()))
     if len(comps) > 1:
-        size = {c: 0 for c in comps}
-        for c in comp[snodes].tolist(): size[c] += 1
-        main = max(comps, key=lambda c: size[c]); ins = {c: [] for c in comps}
+        # 11-02: パスの強い錨を Python で 1 つずつ見ていた所を numba（_comp_ins）に、成分ごとの集計を並べ替え 1 回に（ヒトで 1 回 30 秒超、全ゲノムで成分の数にも比例）
+        size_ = np.bincount(comp[snodes]); main = int(np.argmax(size_))
+        ic, iv = [], []
         for pi in range(NP):
             if excl[pi]: continue
             t = tok(pi); h = phap[pi]; m = strong[t] & once(t, h); s_ = t[m]
             if s_.size < 2: continue
             if orient[pi] < 0: s_ = s_[::-1]
-            cs = comp[s_]; rr = rank[s_]; prev_other = -1.0; prev_c = -1
-            for k_ in range(s_.size):
-                c_ = int(cs[k_])
-                if c_ != prev_c:
-                    if c_ != main and prev_c >= 0 and prev_c != c_: ins[c_].append(float(prev_other if prev_other >= 0 else rr[k_]))
-                    prev_c = c_
-                if c_ == main: prev_other = float(rr[k_])
+            c_, v_ = _comp_ins(comp[s_].astype(np.int64), rank[s_], main)
+            if c_.size: ic.append(c_); iv.append(v_)
         pos_c = {}
+        if ic:
+            ic = np.concatenate(ic); iv = np.concatenate(iv); o_ = np.lexsort((iv, ic)); ic = ic[o_]; iv = iv[o_]
+            b_ = np.flatnonzero(np.concatenate(([True], ic[1:] != ic[:-1], [True])))
+            for k0, k1 in zip(b_[:-1], b_[1:]): pos_c[int(ic[k0])] = float(np.median(iv[k0:k1]))
+        cmin = np.full(size_.size, np.inf); _min_at(cmin, comp[snodes].astype(np.int64), rank[snodes])
         for c in comps:
-            if c == main: continue
-            pos_c[c] = float(np.median(ins[c])) if ins[c] else float(np.min(rank[snodes][comp[snodes] == c]))
+            if c != main and c not in pos_c: pos_c[c] = float(cmin[c])
         # 新しい順位: 骨格の順位軸に、各成分をその挿入位置の直後へ差し込む
         order_nodes = snodes[np.argsort(rank[snodes], kind='stable')]; oc = comp[order_nodes]
         main_nodes = order_nodes[oc == main]; main_rank = rank[main_nodes]
         others = sorted([c for c in comps if c != main], key=lambda c: pos_c[c])
-        pieces = []; cut = 0
+        pieces = []; cut = 0; og_ = np.argsort(oc, kind='stable'); oc_s = oc[og_]   # 成分ごとの錨（順位の順）を一度にまとめる（成分ごとに全錨をなめない）
         for c in others:
             p_ = pos_c[c]; k_ = int(np.searchsorted(main_rank, p_, side='right'))
-            pieces.append(main_nodes[cut:k_]); pieces.append(order_nodes[oc == c]); cut = k_
+            g0, g1 = np.searchsorted(oc_s, c, 'left'), np.searchsorted(oc_s, c, 'right')
+            pieces.append(main_nodes[cut:k_]); pieces.append(order_nodes[og_[g0:g1]]); cut = k_
         pieces.append(main_nodes[cut:]); new_order = np.concatenate(pieces); rank[new_order] = np.arange(new_order.size, dtype=np.float64)
     return rank, orient, (stalls, far, len(comps)), ea.size
 
@@ -231,7 +287,7 @@ for it in range(a.rounds):
         if s_.size < 3: continue
         if orient[pi] < 0: s_ = s_[::-1]
         rr = rank[s_]; d = np.diff(rr); bad = (d < -a.eps) | (np.abs(d) > a.J); jp = np.zeros(s_.size, bool); jp[1:] |= bad; jp[:-1] |= bad
-        np.add.at(njump, s_, jp.astype(np.int32)); np.add.at(nseen, s_, 1)
+        _add_at(njump, s_, jp.astype(np.int32)); _add1_at(nseen, s_)
     drop = strong & (nseen > 0) & (njump > np.maximum(2, a.consist * nseen))
     if not drop.any(): break
     wormhole |= drop; strong &= ~drop
@@ -251,7 +307,7 @@ for pi in range(NP):
     i0, i1 = si[j0], si[j1]; r0, r1 = rank[t[i0]], rank[t[i1]]
     f = np.where(i1 > i0, (ci - i0) / np.maximum(1, i1 - i0), 0.5); pos = r0 + f * (r1 - r0)
     inside = (ci > si[0]) & (ci < si[-1]); ci, pos = ci[inside], pos[inside]
-    nodes = t[ci]; np.add.at(sum_pos, nodes, pos); np.add.at(sum_sq, nodes, pos * pos); np.add.at(npos, nodes, 1); np.minimum.at(mn, nodes, pos); np.maximum.at(mx, nodes, pos)
+    nodes = t[ci]; _add_at(sum_pos, nodes, pos); _add_at(sum_sq, nodes, pos * pos); _add1_at(npos, nodes); _min_at(mn, nodes, pos); _max_at(mx, nodes, pos)
 placed = npos >= 1; spread = np.where(placed, mx - mn, 0.0); consistent = placed & (spread <= a.tol)
 rank[consistent] = sum_pos[consistent] / npos[consistent]
 kind = np.zeros(N + 1, np.int8)                 # 0 無, 1 強い錨, 2 補間で置いた錨, 3 場所が株で違う, 4 多重（座標なし）, 5 私有
