@@ -77,7 +77,8 @@ def load_gff(acc):
 KEEP = {"gene", "pseudogene", "rRNA", "tRNA", "ncRNA", "tmRNA", "SRP_RNA", "RNase_P_RNA", "antisense_RNA", "riboswitch", "mobile_element", "repeat_region", "regulatory_region"}
 gid = 0; genes_by_pid = {}; n_cds = 0; fid2gid = {}; seq2pid = {}
 for pid, (path, L) in paths.items():
-    acc = path.split("#")[0]; seqid = path.split("#")[-1].split("[")[0]   # 最後の # 区切りが seqid（`GRCh38#chr20` は 2 項、`GCF#1#NZ_…` は 3 項）。部分範囲 [a-b] は落とす
+    if "#" in path: acc = path.split("#")[0]; seqid = path.split("#")[-1].split("[")[0]   # 最後の # 区切りが seqid（`GRCh38#chr20` は 2 項、`GCF#1#NZ_…` は 3 項）。部分範囲 [a-b] は落とす
+    else: acc, _, seqid = path.partition("."); seqid = (seqid or path).split("[")[0]   # # の無い名前（全ゲノム MC の `GRCh38.chr1`）は最初の . で sample と seqid に分ける（11-02）
     seq2pid[(acc, seqid)] = pid
     feats = load_gff(acc)[1].get(seqid, [])
     cds = collections.defaultdict(list); rows = []

@@ -29,7 +29,12 @@ p_tok = np.load(D + "/p_tok.npy", mmap_mode="r"); p_ori = np.load(D + "/p_ori.np
 names = open(D + "/p_names.txt").read().splitlines(); NP = len(names); N = len(id_map)
 _sid = np.load(D + "/s_id.npy"); _sbp = np.load(D + "/s_bp.npy"); bp = np.zeros(N + 1, np.int64); bp[_sid] = _sbp
 def hap_of(nm):
-    f = nm.split("#"); return f[0] + "#" + f[1] if len(f) >= 3 else (f[0] + "#0" if len(f) == 2 else nm)
+    # PanSN（sample#hap#contig）。# の無い名前（全ゲノム MC の参照 `GRCh38.chr1` など、P 行）は最初の . の前を sample、ハプロタイプ 0 とする（11-02。
+    # 以前は名前そのままで、GRCh38 の 2,580 本がそれぞれ別のハプロタイプになった）
+    f = nm.split("#")
+    if len(f) >= 3: return f[0] + "#" + f[1]
+    if len(f) == 2: return f[0] + "#0"
+    return (nm.split(".", 1)[0] if "." in nm else nm) + "#0"
 haps = sorted({hap_of(n) for n in names}); hidx = {h: i for i, h in enumerate(haps)}; H = len(haps); phap = np.array([hidx[hap_of(n)] for n in names])
 paths_of = collections.defaultdict(list)
 for pi, h in enumerate(phap): paths_of[int(h)].append(pi)
@@ -38,6 +43,9 @@ def seed_from_ref(prefix):
     """種（11-02）: 参照パスのトークンの順位。参照に無いノードは、各パスで直前に通った順位のあるノードの値（先頭は次の値）を前に埋め、パスをまたいだ平均 + 0.5。
     最後に順位へ直す（同点はノード番号順）。古い木の dcol（参照の骨格＋補間の合意列）と同じ考え方を distill だけで作る"""
     refs = [pi for pi, n in enumerate(names) if (n.startswith(prefix) if prefix else pi == 0)]
+    # 参照の alt・random・chrUn などの断片は種に使わない（全ゲノム MC の GRCh38 は 2,580 本のうち主な染色体 24 本）。最長の 1% 以上の長さのパスだけ
+    if len(refs) > 1:
+        rl = np.array([p_off[pi + 1] - p_off[pi] for pi in refs]); refs = [pi for pi, l in zip(refs, rl) if l >= 0.01 * rl.max()]
     if not refs: log(f"種: --seed-ref {prefix!r} に当たるパスが無いので先頭のパス {names[0]} を使う"); refs = [0]
     seed = np.full(N + 1, np.nan); r0 = 0.0; bnd_ = []
     for pi in refs:

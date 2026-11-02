@@ -26,30 +26,31 @@ excl = dict(c.execute("select pid, excluded from paths"))
 pieces = collections.defaultdict(list)
 for pid, i0, i1, x0, x1, na in c.execute("select pid, i0, i1, x0, x1, nanch from trav"): pieces[pid].append((i0, i1, x0, x1, na))
 log(f"パス {NP:,}  座標 {R:,}  通過片 {sum(map(len, pieces.values())):,}")
-# 全パスの錨の出現を x の順に
-xs_l, pid_l, pos_l = [], [], []
+# 窓を先に決め、パスを 1 本ずつ走査して窓に振り分ける（11-02: 全パスの錨の出現を一度に並べると全ゲノムで 40 億件 × 16 バイトになるため）
+rng = np.random.default_rng(a.seed); widths = [int(w) for w in a.widths.split(",")]
+WIN = []
+for wi in range(a.windows):
+    W = widths[wi % len(widths)]; x0 = int(rng.integers(0, max(1, R - W))); WIN.append((x0, x0 + W - 1, min(50, max(10, int(W * 0.1)))))
+W0 = np.array([w[0] for w in WIN]); W1 = np.array([w[1] for w in WIN])
+cnt = collections.Counter(); anc = collections.Counter(); bad = []; hitwin = np.zeros(len(WIN), bool); nocc = 0
 for pi in range(NP):
     t = np.asarray(p_tok[p_off[pi]:p_off[pi + 1]]); x = X[t]; k = np.flatnonzero(x >= 0)
-    xs_l.append(x[k].astype(np.int32)); pos_l.append(k.astype(np.int64)); pid_l.append(np.full(k.size, pi, np.int32))
-XS = np.concatenate(xs_l); PS = np.concatenate(pos_l); PI = np.concatenate(pid_l); del xs_l, pos_l, pid_l
-o = np.argsort(XS, kind="stable"); XS, PS, PI = XS[o], PS[o], PI[o]
-log(f"錨の出現 {XS.size:,}")
-rng = np.random.default_rng(a.seed); widths = [int(w) for w in a.widths.split(",")]
-cnt = collections.Counter(); anc = collections.Counter(); bad = []; nwin = 0
-for wi in range(a.windows):
-    W = widths[wi % len(widths)]; x0 = int(rng.integers(0, max(1, R - W))); x1 = x0 + W - 1; floor = min(50, max(10, int(W * 0.1)))
-    lo, hi = np.searchsorted(XS, x0, "left"), np.searchsorted(XS, x1, "right")
-    if hi <= lo: continue
-    nwin += 1; pi_w = PI[lo:hi]; ps_w = PS[lo:hi]; oo = np.lexsort((ps_w, pi_w)); pi_w = pi_w[oo]; ps_w = ps_w[oo]
-    cut = np.flatnonzero((np.diff(pi_w) != 0) | (np.diff(ps_w) > a.gap)) + 1; st = np.concatenate(([0], cut)); en = np.concatenate((cut, [pi_w.size]))
-    for s_, e_ in zip(st, en):
-        n = int(e_ - s_)
-        if n < a.min_anch: continue
-        pid = int(pi_w[s_]); v0, v1 = int(ps_w[s_]), int(ps_w[e_ - 1])
-        hit = [p for p in pieces.get(pid, ()) if p[0] <= v1 and p[1] >= v0 and p[2] <= x1 and p[3] >= x0]
-        cls = ("shown" if any(p[4] >= floor for p in hit) else "floor") if hit else ("excluded" if excl.get(pid) else "missing")
-        cnt[cls] += 1; anc[cls] += n
-        if cls == "missing": bad.append((n, names[pid], pid, x0, x1, v0, v1))
+    if k.size < a.min_anch: continue
+    xs = x[k].astype(np.int64); o = np.argsort(xs, kind="stable"); xs_s = xs[o]; pos_s = k[o]; nocc += k.size
+    los = np.searchsorted(xs_s, W0, "left"); his = np.searchsorted(xs_s, W1, "right")
+    for wi in np.flatnonzero(his - los >= a.min_anch):
+        x0, x1, floor = WIN[wi]; hitwin[wi] = True
+        ps = np.sort(pos_s[los[wi]:his[wi]]); cut = np.flatnonzero(np.diff(ps) > a.gap) + 1
+        for s_, e_ in zip(np.concatenate(([0], cut)), np.concatenate((cut, [ps.size]))):
+            n = int(e_ - s_)
+            if n < a.min_anch: continue
+            v0, v1 = int(ps[s_]), int(ps[e_ - 1])
+            hit = [p for p in pieces.get(pi, ()) if p[0] <= v1 and p[1] >= v0 and p[2] <= x1 and p[3] >= x0]
+            cls = ("shown" if any(p[4] >= floor for p in hit) else "floor") if hit else ("excluded" if excl.get(pi) else "missing")
+            cnt[cls] += 1; anc[cls] += n
+            if cls == "missing": bad.append((n, names[pi], pi, x0, x1, v0, v1))
+    if pi % 5000 == 0 and pi: log(f"  パス {pi:,} / {NP:,}")
+nwin = int(hitwin.sum()); log(f"錨の出現 {nocc:,}")
 tot = sum(cnt.values()) or 1; tota = sum(anc.values()) or 1
 log(f"窓 {nwin}（幅 {a.widths}）  訪問（窓の錨 {a.min_anch} 個以上） {tot:,}")
 for k in ["shown", "floor", "excluded", "missing"]: print(f"  {k:9s} 訪問 {cnt[k]:>8,} ({100 * cnt[k] / tot:5.2f}%)  錨 {anc[k]:>10,} ({100 * anc[k] / tota:5.2f}%)")
