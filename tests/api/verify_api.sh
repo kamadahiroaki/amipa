@@ -197,6 +197,45 @@ else
   echo "  SKIP Blocks の木（.synteny 無し）"
 fi
 
+echo "-- Traversals（.trav がある DB だけ。無ければ SKIP）"
+#   範囲は /trav/root の座標の数 R から取る（中央の狭い窓と広い窓）。塩基の段の要求は /trav/cols の行（pid・tw0・tw1・dir）から画面と同じ形で組む
+TR=$(get "trav/root?db=$DB")
+TRR=$("$PY" -c 'import sys,json; j=json.load(sys.stdin); print(int(j.get("R") or 0), 1 if j.get("hasReads") else 0, 1 if j.get("hasAnn") else 0)' <<<"$TR" 2>/dev/null || echo "0 0 0")
+read -r TRN THR THA <<<"$TRR"
+if [ "${TRN:-0}" -gt 0 ]; then
+  TX0=$((TRN / 2)); TX1=$((TRN / 2 + 400)); WX0=$((TRN / 2)); WX1=$((TRN / 2 + TRN / 20))
+  hit "/trav/root"               "trav/root?db=$DB"
+  hit "/trav/atoms"              "trav/atoms?db=$DB&minanch=50"
+  hit "/trav/range (広い窓)"     "trav/range?db=$DB&x0=$WX0&x1=$WX1&minanch=50"
+  hit "/trav/cols (広い窓)"      "trav/cols?db=$DB&x0=$WX0&x1=$WX1&ncol=1000&minanch=50"
+  hit "/trav/cols (狭い窓)"      "trav/cols?db=$DB&x0=$TX0&x1=$TX1&ncol=400&minanch=50"
+  hit "/trav/nleaf"              "trav/nleaf?db=$DB&x0=$TX0&x1=$TX1"
+  hit "/trav/nodeset"            "trav/nodeset?db=$DB&x0=$TX0&x1=$TX1&minanch=50"
+  hit "/trav/nodes (寄せる先)"   "trav/nodes?db=$DB&x0=$WX0&x1=$WX1&max=500"
+  TNM=$(get "trav/nodeset?db=$DB&x0=$TX0&x1=$TX1&minanch=50" | "$PY" -c 'import sys,json; print(",".join(json.load(sys.stdin).get("names", [])[:20]))' 2>/dev/null)
+  [ -n "$TNM" ] && hit "/trav/locate"  "trav/locate?db=$DB&names=$TNM"
+  if get "trav/genes?db=$DB&x0=$TX0&x1=$TX1&minanch=50" | grep -q '.genes サイドカーが無い'; then echo "  SKIP /trav/genes, genedensity, findgene（.genes 無し）"
+  else
+    hit "/trav/genes"            "trav/genes?db=$DB&x0=$WX0&x1=$WX1&minanch=50" allow-empty
+    hit "/trav/genedensity"      "trav/genedensity?db=$DB&x0=0&x1=$TRN&nbin=200" allow-empty
+    hit "/trav/findgene"         "trav/findgene?db=$DB&q=a" allow-empty
+  fi
+  if [ "$THR" = 1 ]; then
+    hit "/trav/reads (広い窓・深さ)" "trav/reads?db=$DB&x0=$WX0&x1=$WX1"
+    hit "/trav/reads (狭い窓)"       "trav/reads?db=$DB&x0=$TX0&x1=$TX1"
+  else echo "  SKIP /trav/reads（リードのサイドカー無し）"; fi
+  TBM=$(get "trav/cols?db=$DB&x0=$TX0&x1=$TX1&ncol=400&minanch=50" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); r=[[x["pid"], x["tw0"], x["tw1"] + 1, 1 if x["dir"] >= 0 else -1] for x in j.get("rows", []) if x["tw0"] >= 0]; print(json.dumps({"db": sys.argv[1], "ranges": r, "flank": 0, "cap": 0, "maxLeaves": 3000, "label": "api", "reads": {"max": 10}}) if r else "")' "$DB" 2>/dev/null)
+  if [ -n "$TBM" ]; then hit "/bubble_msa/ranges (Traversals の塩基の段)" "bubble_msa/ranges" "" "$TBM"
+  else FAIL=$((FAIL+1)); FAILED+=("/trav/cols の行"); echo "  NG   /trav/cols の行             狭い窓に通過が無い"; fi
+  if [ "$THA" = 1 ]; then
+    ACT=$(get "ref_contigs?db=$DB" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); c=(j.get("contigs") or j) if isinstance(j, (dict, list)) else []; c=c[0] if isinstance(c, list) and c else {}; print(c.get("name") or c.get("contig") or "")' 2>/dev/null)
+    ACN=$(echo "$ACT" | sed 's/.*#//')
+    [ -n "$ACN" ] && hit "/trav/ann"  "trav/ann?db=$DB&contig=$ACN&s=1000000&e=1100000"
+  fi
+else
+  echo "  SKIP Traversals（.trav 無し）"
+fi
+
 echo "-- アノテ / その他（データが無ければ空が正常 = allow-empty）"
 hit "/annot_dicts"         "annot_dicts?db=$DB" allow-empty
 hit "/gene_features"       "gene_features?db=$DB&layer=$L&$R" allow-empty

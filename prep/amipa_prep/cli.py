@@ -59,8 +59,9 @@ DEFAULT_POVU = Path(os.environ.get("AMIPA_POVU") or os.environ.get("GGB_POVU") o
 
 # 実行順。annot / reads は入力が指定された時だけ走る。trav（Traversals の錨・通過）はパスがあれば既定で走る（--no-trav で省く）。
 # xdepth（座標ごとのリードの深さ）は reads と trav の両方があるときだけ。genes（株ごとの GFF をパスに写す）は --gff-dir のときだけ。
+# ann（参照座標の反復・変異の注釈、Traversals の塩基の段）は --ann-rmsk / --ann-vcf / --ann-bed のときだけ。
 # tiled は reads の後: 葉層のリード支持(rs)を edges_t に焼き込むため。reads を後から足したら tiled も作り直す
-STAGES = ["distill", "collapse", "decompose", "lod", "layout", "emit", "trav", "genes", "annot", "reads", "xdepth", "tiled", "bundle"]
+STAGES = ["distill", "collapse", "decompose", "lod", "layout", "emit", "trav", "genes", "ann", "annot", "reads", "xdepth", "tiled", "bundle"]
 
 STATE_VERSION = 1
 
@@ -233,6 +234,7 @@ class Bundle:
           <name>.db.trav               Traversals の錨・座標・通過（既定で作る。--no-trav で省く）
           <name>.db.xdepth             座標ごとのリードの深さ（--reads と trav があるとき）
           <name>.db.genes              株ごとの遺伝子（--gff-dir のとき）
+          <name>.db.ann                参照座標の反復・変異の注釈（--ann-* のとき）
           reads/                       リード実体（seekable zstd の GAF。--reads 指定時）
           manifest.json                版・能力・sha256
           work/                        中間物（typed/npz/pvst/tree）と log。部分やり直しに要る
@@ -253,6 +255,7 @@ class Bundle:
         self.trav = Path(str(self.db) + ".trav")       # Traversals の錨・座標・通過（trav_build.py ほか）
         self.xdepth = Path(str(self.db) + ".xdepth")   # 座標ごとのリードの深さ（reads_xdepth.py）
         self.genes = Path(str(self.db) + ".genes")     # 株ごとの遺伝子（genes_build.py → genes_project.py）
+        self.ann = Path(str(self.db) + ".ann")         # 参照座標の反復・変異の注釈（ann_build.py）。.annot（band/gene/region）とは別
         self.reads_dir = self.root / "reads"
         self.state_path = self.root / "state.json"
         self.povu_dir = self.work / "povu"
@@ -568,6 +571,18 @@ def build_stages(b: Bundle, a) -> dict:
             note="株ごとの遺伝子（GFF → パスのトークン範囲、参照の注釈を写す）",
         )
 
+    # 参照座標の注釈（--ann-* のとき）: RepeatMasker（UCSC rmsk.txt）と、サンプルごとの変異（VCF）・ベンチマーク領域（BED）。座標は --ref-key の参照の 0 始まり。
+    #   DB に依らない（列の参照位置 rb + オフセットと viewer で突き合わせる）ので入力はファイルだけ
+    if getattr(a, "ann_rmsk", None) or getattr(a, "ann_vcf", None) or getattr(a, "ann_bed", None):
+        acmd2 = [py, str(PKG / "ann_build.py"), "--out", str(b.ann) + ".new", "--ref-key", a.ref_key]; ins2 = []
+        if a.ann_rmsk: acmd2 += ["--rmsk", str(a.ann_rmsk)]; ins2.append(Path(a.ann_rmsk))
+        for flag, specs in (("--vcf", a.ann_vcf or []), ("--bed", a.ann_bed or [])):
+            for spec in specs:
+                if "=" not in spec: die(f"--ann-{flag[2:]} は SAMPLE=FILE の形で指定する: {spec}")
+                acmd2 += [flag, spec]; ins2.append(Path(spec.split("=", 1)[1]))
+        st["ann"] = Stage("ann", [acmd2, ["mv", "-f", str(b.ann) + ".new", str(b.ann)]], inputs=ins2, outputs=[b.ann], env=thread_env(1),
+                          note="参照座標の反復・変異の注釈（Traversals の塩基の段）")
+
     # アノテ（任意）: <db>.annot サイドカーへ書き、被覆索引を張る。DB 本体は不変。
     if a.band or a.gene or a.region:
         acmd = [py, str(PKG / "annotate.py"), str(b.db)]
@@ -621,11 +636,13 @@ def build_stages(b: Bundle, a) -> dict:
         )
 
     # 座標ごとのリードの深さ（reads と trav があるとき）: Traversals のブロック・錨の列の段の厚み
-    if a.reads and "trav" in st:
+    #   リードは今回の --reads か、既にあるリードのサイドカー <db>.reads（前の実行で足したもの）
+    reads_side = Path(str(b.db) + ".reads")
+    if (a.reads or reads_side.exists()) and "trav" in st:
         st["xdepth"] = Stage(
             "xdepth",
             [[py, str(PKG / "reads_xdepth.py"), "--db", str(b.db), "--tmp", str(tmp)]],
-            inputs=[b.trav, b.reads_dir], outputs=[b.xdepth], env=thread_env(1),
+            inputs=[b.trav, reads_side], outputs=[b.xdepth], env=thread_env(1),
             key_exclude=["--tmp"],   # 一時領域の場所は出力を変えない（emit と同じ）
             note="座標ごとのリードの深さ（Traversals 用）",
         )
@@ -687,7 +704,7 @@ def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
     con.close()
 
     files = []
-    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.genes] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
+    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.genes, b.ann] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
             + sorted(b.root.glob(f"{b.db.name}.nametri")) \
             + sorted(b.root.glob(f"{b.db.name}.reads")):
         if not p.exists():
@@ -897,6 +914,9 @@ def add_common(p, need_gfa=False):
                         "アレルの差分と元ノードとの対応は <db>.collapse に入る")
     p.add_argument("--gff-dir", default=None,
                    help="株ごとの GFF の置き場（<名前>.gff、名前はパス名の # の前）。あれば <name>.db.genes を作る（Traversals の遺伝子）")
+    p.add_argument("--ann-rmsk", default=None, help="RepeatMasker の表（UCSC rmsk.txt[.gz]、--ref-key の参照の座標）。<name>.db.ann に入れる")
+    p.add_argument("--ann-vcf", action="append", default=None, metavar="SAMPLE=VCF", help="サンプルの変異（参照の座標。GIAB ベンチマークなど）。複数可")
+    p.add_argument("--ann-bed", action="append", default=None, metavar="SAMPLE=BED", help="サンプルのベンチマーク領域（この外の変異は判定されていない）。複数可")
     p.add_argument("--no-trav", action="store_true",
                    help="Traversals の錨・通過 <name>.db.trav を作らない（既定は作る。パスの無いグラフでは作らない）")
     p.add_argument("--no-tiled", action="store_true",
