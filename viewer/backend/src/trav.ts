@@ -69,9 +69,13 @@ export function travRoot(t: Trav): any {
 }
 
 // 座標区間 [x0, x1] に重なる通過とコピー。ハプロタイプごとの通過数（×n の材料）も返す
+// 錨の床を表示範囲の幅に合わせる（11-02）: 床は広い範囲で硬い領域のかけら（50 錨未満の断片）を隠すためのもの。狭い範囲では短い通過片も範囲の大きな部分を
+// 占めるので、床を範囲の座標数の 1 割（下限は構築の最小 10）まで下げる。chr202122v2 x 1,085,725–1,085,925 で、HG03492#1 の 2 回目の通過（錨 48）が隠れ、
+// その株にだけあるノードがグラフの絞り込みからも漏れた
+export function effFloor(minAnchors: number, x0: number, x1: number): number { return Math.min(minAnchors, Math.max(10, Math.floor((x1 - x0 + 1) * 0.1))) }
 export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number; minAnchors?: number } = {}): any {
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid, i0').all(x1, x0) as TravRow[]
-  const mo = opts.minOverlap ?? 0; const ma = opts.minAnchors ?? 0   // 錨が少ない断片（硬い領域のかけら）は既定で出さない。ヒト v2 は 50 錨未満が 8,964 本で、x≈1.52M の 1 か所に 5,298 本集中
+  const mo = opts.minOverlap ?? 0; const ma = effFloor(opts.minAnchors ?? 0, x0, x1)   // 錨が少ない断片（硬い領域のかけら）は既定で出さない。ヒト v2 は 50 錨未満が 8,964 本で、x≈1.52M の 1 か所に 5,298 本集中
   const out = rows.filter(r => r.nanch >= ma && (mo <= 0 || Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo))
   try { markRepeats(t, out) } catch (e) { console.warn('[trav/range] markRepeats', e) }
   const copies = t.db.prepare('SELECT id, pid, hid, x0, x1, ia0, ia1, ib0, ib1, bpa, bpb FROM copies WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid').all(x1, x0) as CopyRow[]
@@ -253,7 +257,7 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   const X = t.xOfDense!, K = t.kindOfDense!, BP = t.bpOfDense!, dist = t.dist!
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); const W = x1 - x0 + 1; if (W <= 0) return { error: 'empty' }
   ncol = Math.max(1, Math.min(W, Math.floor(ncol) || 1))
-  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
+  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, effFloor(minAnchors, x0, x1)) as TravRow[]
   try { markRepeats(t, rows) } catch (e) { console.warn('[trav/cols] markRepeats', e) }
   // 読む量の見積もり: 通過のうち窓に掛かる割合（x が錨の番号に比例するとして）× トークン数 ＋ 余白。ヒトは 1 通過が 100 万トークンなので全長で数えると小さな窓でも断ってしまう
   let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
@@ -313,7 +317,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', genes: [] }
   const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
-  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
+  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, effFloor(minAnchors, x0, x1)) as TravRow[]
   const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')   // 参照の注釈を写した遺伝子（genes_project.py）: proj＝元の gid、frac＝一致率
   const q = gdb.prepare(`SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0${hasProj ? ', g.proj, g.frac' : ''} FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?`)
   const qch = gdb.prepare("SELECT f.type, f.phase, f.strand, f.parent, f.start, f.end, t.s0, t.e0, t.so, t.eo FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds','exon','five_prime_UTR','three_prime_UTR','UTR') ORDER BY t.s0")   // 子（エキソン・CDS・UTR）のトークン範囲と読み枠
@@ -418,7 +422,7 @@ export function travNodeSet(t: Trav, x0: number, x1: number, minAnchors = 50, ma
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', names: [] }
   const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!; const idmap = idMapOf(t)
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); if (x1 < x0) return { error: 'empty', names: [] }
-  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, minAnchors) as TravRow[]
+  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, effFloor(minAnchors, x0, x1)) as TravRow[]
   let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
   if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, names: [] }
   const seen = new Uint8Array(X.length); const names: string[] = []; const xs: number[] = []; let truncated = false; const T0 = Date.now()
