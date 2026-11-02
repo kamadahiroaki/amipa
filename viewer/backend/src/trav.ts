@@ -1,7 +1,7 @@
-// 通過（traversal）のサイドカー `<db>.trav`（functions/anchor2/build/synteny2_build.py が作る、SQLite）を読む。
+// 通過（traversal）のサイドカー `<db>.trav`（prep の trav 段 trav_build.py が作る、SQLite）を読む。
 // 設計: amipa-lab/plans/anchor2-traversals.md。錨の座標 x（多数決順の順位）、通過 trav（コンティグ × 座標区間 × 向き × コピー番号）、
 // コピー copies（同じコンティグの通過の座標の重なり）、境界 bounds（支持・持続度）、原子 atoms、反復 reps（出現単位）。
-// 現行の `.synteny` と並行して読む（置き換えはまだ）。
+// 古い木（.synteny）と Blocks パネルは 11-02 に外した。作るのは prep の trav 段（prep/amipa_prep/trav_build.py ほか）。
 import Database from 'better-sqlite3'
 import zlib from 'zlib'
 import fs from 'fs'

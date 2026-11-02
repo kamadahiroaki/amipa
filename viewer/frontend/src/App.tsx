@@ -3,14 +3,10 @@ import GraphCanvas, { GraphCanvasHandle, PATH_COLORS, RibbonData , BlockColorMap
 import Minimap from './components/Minimap'
 import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, INTRON_COLOR } from './annotColors'
 import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
-import BubbleMsa from './components/BubbleMsa'
-import BlockMsa from './components/BlockMsa'
 import TravPanel from './components/TravPanel'
 import type { TravHandle } from './components/travRender'
-import type { BlockView } from './components/blockMsaRender'
-import { matchHapToKey } from './components/blockMsaRender'
-import type { BlockRef, BlockMsaHandle } from './components/blockMsaRender'
-import { API_LEVEL_REQUIRED, fetchBlockView, fetchBlockBbox, blockSelKey, type BlockSel, fetchBlocksTree, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockNodesTree, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo, fetchBlockNodes } from './api/client'
+import { matchHapToKey } from './components/hapKey'
+import { API_LEVEL_REQUIRED, fetchBlockBbox, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -27,7 +23,6 @@ function fixed(v: number | undefined | null, digits: number): string {
 }
 
 // 「間を全選択」で一度に選べるノード数の上限(抽出器の MAX_LEAVES=400 に合わせる)。
-const MSA_MAX_NODES = 400
 
 function fmtBpDetail(bp: number): string {
   if (!isFinite(bp)) return '?'
@@ -167,43 +162,6 @@ const handleStyle: React.CSSProperties = {
 }
 // 掴みしろ(px)。5px の線を掴むのは細すぎるので、上下(左右)にこれだけ透明な帯を足す。
 const GRIP_PAD = 6
-
-// Blocks パネルが知らせてきた「見えている窓・段のブロック（参照区間と色）」を、GraphCanvas の塗り分け表に組み直す。
-// 色は panel と同じ rgb() 文字列なので、ここで数値に直す。コンティグごとに開始位置で昇順。
-function blockViewToColors(v: BlockView): BlockColorMap {
-  const groups = new Map<number, { s: number; e: number; c: number }[]>()
-  let maxSpan = 1
-  for (const b of v.blocks) {
-    const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color)
-    const c = m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96
-    const g = groups.get(b.ref_contig) ?? []; g.push({ s: b.x, e: b.x + Math.max(1, b.span), c }); groups.set(b.ref_contig, g)
-    maxSpan = Math.max(maxSpan, b.span)
-  }
-  const contigs = new Map<number, { starts: number[]; ends: number[]; colors: number[] }>()
-  for (const [k, g] of groups) { g.sort((a, b) => a.s - b.s); contigs.set(k, { starts: g.map(i => i.s), ends: g.map(i => i.e), colors: g.map(i => i.c) }) }
-  // 全体窓を見ているときは「最細段のブロック番号 → 色」も作る（見えているブロックの members で写す。絞り込みで見えない番号は null）
-  let rankColors: (number | null)[] | null = null
-  let atomRank: ((atom: number) => number | null) | undefined
-  let xRange: [number, number] | undefined
-  let nodeSet: Set<string> | undefined
-  if (v.tree) {
-    // 木: 見えているブロックごとに色を持ち、ノード → 原子番号（nodemap）→ ブロック番号は原子の範囲 [a0, a1] で引く。窓や段に依らず使える
-    rankColors = v.blocks.map(b => { const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color); return m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96 })
-    const ranges = v.blocks.map((b, i) => [b.a0 ?? -1, b.a1 ?? -1, i] as [number, number, number]).filter(r => r[0] >= 0).sort((p, q) => p[0] - q[0])
-    // ブロックより下の段（アレル行列・塩基）: 窓の合意座標の範囲に重なる原子を 1 色で塗る（葉は GraphCanvas が xRange でノード単位に絞る）
-    if (v.xRange && !ranges.length && v.atomsIn) ranges.push([v.atomsIn[0], v.atomsIn[1], 0])
-    if (v.xRange) xRange = v.xRange
-    if (v.nodeNames && v.nodeNames.length) nodeSet = new Set(v.nodeNames)
-    atomRank = (atom: number) => { let lo = 0, hi = ranges.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ranges[m][1] < atom) lo = m + 1; else hi = m } return (lo < ranges.length && atom >= ranges[lo][0] && atom <= ranges[lo][1]) ? ranges[lo][2] : null }
-  } else if (v.win === 0 && v.n0 > 0) {
-    rankColors = new Array(v.n0).fill(null)
-    for (const b of v.blocks) {
-      const m = /rgb\((\d+),\s*(\d+),\s*(\d+)\)/.exec(b.color); const c = m ? ((+m[1]) << 16) | ((+m[2]) << 8) | (+m[3]) : 0x868e96
-      for (const r of (b.members || [b.rank])) if (r >= 0 && r < v.n0) rankColors[r] = c
-    }
-  }
-  return { maxSpan, contigs, rankColors, atomRank, xRange, nodeSet, filter: !!v.filterGraph, filterRange: v.filterRange ?? undefined, filterSel: v.filterSel ?? (v.filterRange ? { x: v.filterRange } : undefined) }
-}
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)
 
@@ -574,21 +532,14 @@ export default function App() {
   const [ribbonTheta, setRibbonTheta] = useState(0)
   const [ribbons, setRibbons] = useState<RibbonData[]>([])
   const [ribbonSearch, setRibbonSearch] = useState('')
-  // パス群一覧の並び。名前順（既定）/ 系統順（Blocks のサイドカーの系統樹の葉の順）/ 被覆順（サーバの並び）
-  const [ribbonSort, setRibbonSort] = useState<'name' | 'tree' | 'cov'>('name')
-  const [treeHaps, setTreeHaps] = useState<string[] | null>(null)      // 系統順に使う葉の順（db ごとに取り直す）
-  useEffect(() => { setTreeHaps(null) }, [selectedDb])
-  useEffect(() => { if (ribbonSort === 'tree' && treeHaps == null && selectedDb) { fetchBlocksTree(selectedDb).then(setTreeHaps) } }, [ribbonSort, treeHaps, selectedDb])
+  // パス群一覧の並び。名前順（既定）/ 被覆順（サーバの並び）。系統順（古い木 .synteny の系統樹）は 11-02 に Blocks と一緒に外した
+  const [ribbonSort, setRibbonSort] = useState<'name' | 'cov'>('name')
   const sortedPathGroups = useMemo(() => {
     const gs = pathGroups.slice()
     const byName = (a: PathGroup, b: PathGroup) => a.key.localeCompare(b.key, undefined, { numeric: true })
     if (ribbonSort === 'cov') return gs
-    if (ribbonSort === 'name') return gs.sort(byName)
-    if (!treeHaps || !treeHaps.length) return gs.sort(byName)
-    const keys = gs.map(g => g.key); const rank = new Map<string, number>()
-    treeHaps.forEach((hap, i) => { const k = matchHapToKey(hap, keys); if (k != null && !rank.has(k)) rank.set(k, i) })
-    return gs.sort((a, b) => { const ra = rank.get(a.key), rb = rank.get(b.key); if (ra != null && rb != null) return ra - rb; if (ra != null) return -1; if (rb != null) return 1; return byName(a, b) })
-  }, [pathGroups, ribbonSort, treeHaps])
+    return gs.sort(byName)
+  }, [pathGroups, ribbonSort])
   const [ribbonHidden, setRibbonHidden] = useState(false)        // 選択は維持したままリボン描画だけ一時非表示
   // Layer 2: UTGクリック時のCTGリスト
   // 葉ノードの塩基配列(選択時 on-demand)。leafSeqFull=全長取得済みか(既定は先頭100kb)。
@@ -792,24 +743,6 @@ export default function App() {
     })
   }, [pathGroups, ribbonSearch])
 
-  // 2 ノード選択時: **フェッチ済み(可視)サブグラフ上で** A,B 間のノードを全選択(source/sink なら bubble 内部)。
-  // DB は叩かない(client-side BFS, 可視エッジに有界＝WG でも即時)。可視外のノードは対象にならない。
-  function fillBetween() {
-    if (msaNodeSel.length !== 2) return
-    const cnt = graphRef.current?.graphCounts() ?? { nodes: 0, edges: 0 }
-    const got = graphRef.current?.nodesBetween(msaNodeSel[0], msaNodeSel[1]) ?? []
-    // ★ 失敗を無言にしない。可視サブグラフ依存なので「なぜ効かないか」を必ず出す。
-    if (got.length > MSA_MAX_NODES) {
-      showHint(`間のノードが多すぎます（${got.length}）。より近い 2 ノードを選ぶか、深い層で選び直してください`)
-    } else if (got.length > 2) {
-      setMsaNodeSel(got); showHint(`間を全選択: ${got.length} ノード`)
-    } else if (cnt.edges === 0) {
-      showHint('エッジが未取得のため「間を全選択」できません（描画が落ち着いてから再実行）')
-    } else {
-      showHint('可視サブグラフ上で 2 ノードが繋がっていません（内部が見えるまでズームして再実行）')
-    }
-  }
-
   const showHint = useCallback((text: string) => {
     if (hintTimerRef.current) clearTimeout(hintTimerRef.current)
     setHint({ text, key: Date.now() })
@@ -858,7 +791,7 @@ export default function App() {
                maxHb, coverageMin, nodeScale, edgeMin, mapMapq, maxEdgePx, maxEdgeReads, labelScale, labelColor, labelOffset },
       paths: [...selectedPaths.entries()],
       trav: trvH > 0 ? (travApiRef.current?.getState?.() ?? null) : null,   // Traversals パネル（範囲・段・並び・絞り込みなど）
-      panels: { leftW, rightW, topH, bottomH, msaH, blkH, showPaths, showOverlays },
+      panels: { leftW, rightW, topH, bottomH, showPaths, showOverlays },
       ribbon: { level: ribbonLevel, sel: [...ribbonSel.entries()] },
       align: { rows: alignRows, activeRowId: activeAlignRowId },
     }
@@ -894,8 +827,6 @@ export default function App() {
     if (typeof pn.rightW === 'number') setRightW(pn.rightW)
     if (typeof pn.topH === 'number') setTopH(pn.topH)
     if (typeof pn.bottomH === 'number') setBottomH(pn.bottomH)
-    if (typeof pn.msaH === 'number') setMsaH(pn.msaH)
-    if (typeof pn.blkH === 'number') setBlkH(pn.blkH)
     if (typeof pn.showPaths === 'boolean') setShowPaths(pn.showPaths)
     if (typeof pn.showOverlays === 'boolean') setShowOverlays(pn.showOverlays)
     const rb = s.ribbon
@@ -992,43 +923,9 @@ export default function App() {
   // Surrounding panel sizes (px). Start collapsed so graph fills most of the area.
   const [topH,    setTopH]    = useState(0)
   const [bottomH, setBottomH] = useState(0)
-  const [msaH,    setMsaH]    = useState(0)        // Bubble MSA 下部パネルの高さ(0=閉)
   const [rightW,  setRightW]  = useState(Math.round(window.innerWidth * 0.18))
-  const [msaPick, setMsaPick] = useState(false)                 // ON: グラフのクリックで MSA 対象ノードを追加
-  const [msaNodeSel, setMsaNodeSel] = useState<string[]>([])    // MSA 対象ノード名
-  // MSA パネルで hover 中の列のノード群。列=アレル群(排他アレル複数)なので配列で受ける。
-  const [msaHover, setMsaHover] = useState<string[] | null>(null)
-  // 多解像度 MSA（共線ブロック）パネル。選択/ホバーしたブロック＝参照区間 → 表示層のノード名に解いてグラフを強調する。
-  const [blkH, setBlkH] = useState(0)                                  // パネル高さ(0=閉)
   const [trvH, setTrvH] = useState(() => (new URLSearchParams(window.location.search).get('trav') ? 360 : 0))   // 通過（Traversals）パネルの高さ(0=閉)。?trav=1 で開いて始める
-  const [blkColors, setBlkColors] = useState<BlockColorMap | null>(null)   // Blocks の窓・段に合わせたノードの塗り分け（参照区間→色）
-  const blkScopeKeyRef = useRef<string>('')                                 // 直近にグラフを寄せた窓・絞り込み（同じなら寄せ直さない）
   const pendingHapRef = useRef<string | null>(null)                          // パス群の一覧が届いてから切り替える行
-  // Blocks の窓・絞り込みが変わったら、グラフをその参照区間へ寄せ、区間に合う層（属するノードが ~800 個以下の最も細かい層）で表示
-  const onBlockView = useCallback((v: BlockView | null) => {
-    setBlkColors(v ? { ...blockViewToColors(v), db: selectedDb ?? undefined } : null)
-    if (!v || !v.sync || !selectedDb) return
-    // 木の窓は合意座標の範囲で寄せる（参照区間は島で潰れる: ecoli50 の原子 393 中 110 が合意幅の 5% 未満）。根（範囲なし）は寄せない
-    if (v.tree && (v.filterSel || v.filterRange)) {
-      const sel: BlockSel = v.filterSel ?? { x: v.filterRange! }
-      const key = 'sel:' + blockSelKey(sel)
-      if (key === blkScopeKeyRef.current) return
-      blkScopeKeyRef.current = key
-      void fetchBlockBbox(selectedDb, sel).then(f => {
-        if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return
-        graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer)
-      })
-      return
-    }
-    if (!v.scope) return
-    if (v.scopeKey === blkScopeKeyRef.current) return
-    blkScopeKeyRef.current = v.scopeKey
-    const sc = v.scope
-    void fetchBlockView(selectedDb, sc.contig, sc.start, sc.end).then(f => {
-      if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return
-      graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer)
-    })
-  }, [selectedDb])
   // 行ラベルのクリック → そのハプロタイプのパス群（リボン）を選択／解除。パスパネルが「なし」なら haplotype 粒度で開く
   const onBlockSelectHap = useCallback((groupKey: string, hap: string) => {
     if (ribbonLevel === 'none' || pathGroups.length === 0) { pendingHapRef.current = hap; if (ribbonLevel === 'none') setRibbonLevel('haplotype'); return }
@@ -1066,14 +963,7 @@ export default function App() {
     applyHaps(haps, on)
   }, [ribbonLevel, pathGroups, applyHaps])
   useEffect(() => { const p = pendingHapsRef.current; if (!p || pathGroups.length === 0) return; pendingHapsRef.current = null; applyHaps(p.haps, p.on) }, [pathGroups, applyHaps])
-  // Blocks の底 → 塩基レベル MSA（MSA パネル）。範囲を渡してパネルを開く
-  const [msaRangeReq, setMsaRangeReq] = useState<{ ranges: [string | number, number, number][]; label: string; key: number } | null>(null)
-  const onBlockBaseMsa = useCallback((req: { ranges: [string, number, number][]; label: string }) => {
-    setMsaRangeReq({ ranges: req.ranges, label: req.label, key: Date.now() })
-    setMsaH(h => (h > 0 ? h : 300))
-    showHint(`Blocks ${req.label} の各行（${req.ranges.length} 範囲）を塩基レベル MSA に渡しました`)
-  }, [showHint])
-  // Traversals パネル: グラフをその範囲のノード集合に絞る（葉の名前。GraphCanvas が /api/blocks/subgraph の POST で層に直す）、グラフ → パネル（locateNodes / openNames）
+  // Traversals パネル: グラフをその範囲のノード集合に絞る（葉の名前。GraphCanvas が /api/graph/subgraph の POST で層に直す）、グラフ → パネル（locateNodes / openNames）
   const travApiRef = useRef<TravHandle | null>(null)
   const pendingTravState = useRef<any>(null)   // Share view の復元: パネルが用意できたら適用する Traversals の状態
   const [trvColors, setTrvColors] = useState<BlockColorMap | null>(null)
@@ -1093,7 +983,7 @@ export default function App() {
     const fn = v?.fitNames; if (fn && fn.length && selectedDb) { const my = ++trvRangeReq.current; void fetchBlockBbox(selectedDb, { names: fn.slice(0, 5000) }).then(f => { if (my !== trvRangeReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy) }) }
   }, [selectedDb])
   const trvNodeColors = useMemo(() => { const m = new Map<string, number>(); if (trvRange && trvRange.colors) trvRange.names.forEach((n, i) => { const c = trvRange.colors![i]; if (c != null && c >= 0) m.set(n, c) }); return m }, [trvRange])
-  useEffect(() => {   // 範囲の葉の名前 → 表示している層の名前（/api/blocks/subgraph の名前だけ）。層が変わるたびに引き直す
+  useEffect(() => {   // 範囲の葉の名前 → 表示している層の名前（/api/graph/subgraph の名前だけ）。層が変わるたびに引き直す
     const withF = (m: BlockColorMap): BlockColorMap => trvFilter ? { ...m, filter: true, filterSel: { names: trvFilter } } : m
     if (!selectedDb) { setTrvColors(null); return }
     if (!trvRange) { setTrvColors(trvFilter ? withF({ maxSpan: 1, contigs: new Map(), db: selectedDb }) : null); return }
@@ -1104,9 +994,9 @@ export default function App() {
       .catch(() => { if (live) setTrvColors(withF({ maxSpan: 1, contigs: new Map(), db: selectedDb, dimSet: new Set(trvRange.names) })) })
     return () => { live = false }
   }, [trvRange, trvFilter, selectedDb, mapLayer])
-  // グラフの塗りや重ね表示を初期値に戻す（Traversals／Blocks の範囲、ホバー、MSA の選択、洪水、重ね着色、辺の太さ、リボン、パス選択）
+  // グラフの塗りや重ね表示を初期値に戻す（Traversals の範囲、ホバー、洪水、重ね着色、辺の太さ、リボン、パス選択）
   const resetGraphView = useCallback(() => {
-    setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null); setBlkColors(null); setBlkHov(null); setBlkVis(null); setMsaNodeSel([]); setMsaHover(null)
+    setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null)
     setFloodMode(false); setFloodResult(null); setNodeGreyMode(false); setBandMode(false); setRegionMode(false); setGeneMode(false); setEdgeWidthMode('off'); setShowAlignColors(false)
     setRibbonSel(new Map()); setSelectedPaths(new Map())
     travApiRef.current?.resetLinks?.()
@@ -1125,47 +1015,8 @@ export default function App() {
     if (!names.length) { showHint('グラフに見えているノードがありません'); return }
     travApiRef.current?.openNames(names)
   }, [showHint])
-  // 遺伝子（参照座標）を参照コンティグ id ごとに。gene.chrom（例 chrY）と ref_contigs.name を末尾一致で合わせる
-  const blkGenes = useMemo(() => {
-    const m = new Map<number, { name: string; start: number; end: number; strand?: string }[]>()
-    if (!geneFeatures.length || !refContigs.size) return m
-    const byName = new Map<string, number>(); for (const [id, rc] of refContigs) byName.set(rc.name, id)
-    const one = refContigs.size === 1 ? [...refContigs.keys()][0] : null
-    for (const g of geneFeatures) {
-      let cid: number | undefined = g.chrom ? byName.get(g.chrom) : undefined
-      if (cid == null && g.chrom) { for (const [nm, id] of byName) if (nm.endsWith(g.chrom) || g.chrom.endsWith(nm)) { cid = id; break } }
-      if (cid == null && one != null) cid = one
-      if (cid == null) continue
-      const arr = m.get(cid) ?? []; arr.push({ name: g.name, start: g.start, end: g.end, strand: g.strand }); m.set(cid, arr)
-    }
-    for (const arr of m.values()) arr.sort((a, b) => a.start - b.start)
-    return m
-  }, [geneFeatures, refContigs])
-  const blkHapMarks = useMemo(() => { const m = new Map<string, string>(); for (const [k, v] of ribbonSel) m.set(k, '#' + v.color.toString(16).padStart(6, '0')); return m }, [ribbonSel])
-  const [blkHov, setBlkHov] = useState<Set<string> | null>(null)       // ホバー中ブロックのノード群（マゼンタ）
-  const blkApiRef = useRef<BlockMsaHandle | null>(null)
-  const blkReq = useRef(0)
-  const resolveBlock = useCallback(async (b: BlockRef | null, set: (v: Set<string> | null) => void) => {
-    const my = ++blkReq.current
-    if (!b || !selectedDb) { set(null); return }
-    if (b.names && b.names.length) {   // 塩基の段: 葉のノード名。グラフが粗い層を描いていれば、その層の祖先に直して光らせる（直さないと名前が合わず何も光らない）
-      const nm = b.names.filter(x => /^n\d+$/.test(x)); if (!nm.length) { set(null); return }
-      const up = await fetchBlockAncestors(selectedDb, mapLayer, nm); if (my !== blkReq.current) return
-      set(new Set([...nm, ...up])); return }
-    const names = (b.tree && b.a0 != null && b.a1 != null) ? await fetchBlockNodesTree(selectedDb, mapLayer, b.a0, b.a1) : await fetchBlockNodes(selectedDb, mapLayer, b.ref_contig, b.x, b.x + b.span)   // 木: 原子の範囲 → ノード名（参照座標を使わない）
-    if (my !== blkReq.current) return                                  // 古い問い合わせは捨てる
-    set(names.length ? new Set(names) : null)
-  }, [selectedDb, mapLayer])
-  const [blkVis, setBlkVis] = useState<Set<string> | null>(null)   // 塩基の段で見えている範囲のノード（葉と、グラフが描いている層の祖先）
-  const blkVisReq = useRef(0)
-  const onBlockBaseVisible = useCallback((v: { names: string[]; sync: boolean } | null) => {
-    const my = ++blkVisReq.current
-    if (!v || !v.names.length || !selectedDb) { setBlkVis(null); return }
-    void fetchBlockAncestors(selectedDb, mapLayer, v.names.slice(0, 200)).then(up => { if (my !== blkVisReq.current) return; setBlkVis(new Set([...v.names, ...up])) })
-    if (v.sync) void fetchBlockBbox(selectedDb, { names: v.names }).then(f => { if (my !== blkVisReq.current) return; if (!f || f.minx == null || f.maxx == null || f.miny == null || f.maxy == null) return; graphRef.current?.fitBounds(f.minx, f.miny, f.maxx, f.maxy, f.layer) })   // グラフ連動: 見えている範囲に寄せる
-  }, [selectedDb, mapLayer])
-  const msaHiSet = useMemo(() => { const s0 = new Set(msaNodeSel); if (blkVis) for (const n of blkVis) s0.add(n); return s0 }, [msaNodeSel, blkVis])  // グラフ強調用（bubble MSA の選択）。ブロックは窓全体の塗り分けで見せるのでリングは出さない
-  const msaHoverSet = useMemo(() => { if (blkHov && blkHov.size) return blkHov; if (trvHov && trvHov.size) return trvHov; return (msaHover && msaHover.length ? new Set(msaHover) : null) }, [msaHover, blkHov, trvHov])
+  const selHapMarks = useMemo(() => { const m = new Map<string, string>(); for (const [k, v] of ribbonSel) m.set(k, '#' + v.color.toString(16).padStart(6, '0')); return m }, [ribbonSel])
+  const trvHoverSet = useMemo(() => (trvHov && trvHov.size ? trvHov : null), [trvHov])   // Traversals の塩基の段でホバー中のノード（グラフでマゼンタ）
 
   useEffect(() => {
     fetch('/api/databases')
@@ -1279,18 +1130,6 @@ export default function App() {
     const start = bottomH
     makeDragHandler(delta =>
       setBottomH(Math.max(MIN_SIDE, Math.min(window.innerHeight - MIN_GRAPH, start - delta)))
-    )(e)
-  }
-  function onMsaHandleDown(e: React.MouseEvent) {
-    const start = msaH
-    makeDragHandler(delta =>
-      setMsaH(Math.max(MIN_SIDE, Math.min(window.innerHeight - MIN_GRAPH, start - delta)))
-    )(e)
-  }
-  function onBlkHandleDown(e: React.MouseEvent) {
-    const start = blkH
-    makeDragHandler(delta =>
-      setBlkH(Math.max(MIN_SIDE, Math.min(window.innerHeight - MIN_GRAPH, start - delta)))
     )(e)
   }
   function onTrvHandleDown(e: React.MouseEvent) {
@@ -1977,7 +1816,7 @@ export default function App() {
           </button>
           <button
             onClick={resetGraphView}
-            title="グラフの塗りと重ね表示を初期値に戻す（Traversals／Blocks の範囲の塗りと絞り込み、ホバーの強調、MSA の選択、洪水、重ね着色、辺の太さ、リボン、パス選択）"
+            title="グラフの塗りと重ね表示を初期値に戻す（Traversals の範囲の塗りと絞り込み、ホバーの強調、洪水、重ね着色、辺の太さ、リボン、パス選択）"
             style={{ fontFamily: 'sans-serif', fontSize: 13, padding: '4px 10px', border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057', cursor: 'pointer' }}
           >
             Reset
@@ -2019,7 +1858,7 @@ export default function App() {
                   </button>
                 )}
                 <span style={{ fontSize: 10, color: '#adb5bd', borderTop: '1px solid #f1f3f5', paddingTop: 4 }}>
-                  MSA / アレル表はバブル選択→MSA パネルの Export から
+                  塩基の整列（FASTA）は Traversals の塩基の段の「書き出し…」から
                 </span>
                 <span style={{ fontSize: 10, color: '#868e96', borderTop: '1px solid #f1f3f5', paddingTop: 4 }}>状態（セッション）</span>
                 <button onClick={shareSelfContainedLink} disabled={!selectedDb}
@@ -2117,46 +1956,6 @@ export default function App() {
             }}
           >
             Alignment
-          </button>
-          <button
-            onClick={() => setMsaH(h => {
-              // Alignment と同様、開くとノード選択(クリックで MSA 対象ノード追加)を自動 ON、閉じると OFF。
-              if (h > 0) { setMsaPick(false); return 0 }
-              setMsaPick(true); return 300
-            })}
-            title="Bubble MSA パネル（開くとノード選択が自動 ON：グラフのノードをクリックで追加）"
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-              border: '1px solid',
-              borderColor: msaH > 0 ? '#0d9488' : '#adb5bd',
-              borderRadius: 4,
-              background: msaH > 0 ? '#e6f4f1' : '#f8f9fa',
-              color: msaH > 0 ? '#0d9488' : '#495057',
-              cursor: 'pointer',
-              fontWeight: msaH > 0 ? 600 : 400,
-            }}
-          >
-            MSA
-          </button>
-          <button
-            onClick={() => setBlkH(h => {
-              if (h > 0) return 0
-              showHint('Blocks: パネルで見ている窓・段に合わせて、グラフのノードをブロック色で塗り分けます（薄灰＝窓の外か参照座標なし）。ブロックをホバーすると該当ノードがマゼンタで光り、グラフでノードを選ぶとそのブロックが選ばれます。')
-              return 380
-            })}
-            title="多解像度 MSA（共線ブロック）パネル。ブロックを選ぶとグラフ側の該当ノードが光り、グラフでノードを選ぶとそのブロックが選ばれる"
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-              border: '1px solid',
-              borderColor: blkH > 0 ? '#0d9488' : '#adb5bd',
-              borderRadius: 4,
-              background: blkH > 0 ? '#e6f4f1' : '#f8f9fa',
-              color: blkH > 0 ? '#0d9488' : '#495057',
-              cursor: 'pointer',
-              fontWeight: blkH > 0 ? 600 : 400,
-            }}
-          >
-            Blocks
           </button>
           <button
             onClick={() => setTrvH(h => {
@@ -2334,17 +2133,13 @@ export default function App() {
                     <input type="text" placeholder="絞り込み…" value={ribbonSearch}
                       onChange={e => setRibbonSearch(e.target.value)}
                       style={{ flex: 1, minWidth: 0, padding: '2px 4px', border: '1px solid #ced4da', borderRadius: 3 }} />
-                    <select value={ribbonSort} onChange={e => setRibbonSort(e.target.value as 'name' | 'tree' | 'cov')}
-                      title="一覧の並び。系統順は Blocks（多解像度 MSA）のサイドカーにある系統樹の葉の順（MSA の行と同じ）"
+                    <select value={ribbonSort} onChange={e => setRibbonSort(e.target.value as 'name' | 'cov')}
+                      title="一覧の並び"
                       style={{ flex: '0 0 auto' }}>
                       <option value="name">名前順</option>
-                      <option value="tree">系統順</option>
                       <option value="cov">被覆順</option>
                     </select>
                   </div>
-                  {ribbonSort === 'tree' && treeHaps != null && treeHaps.length === 0 && (
-                    <div style={{ fontSize: 11, color: '#868e96', marginBottom: 4 }}>この DB には系統樹（Blocks のサイドカー）が無いので名前順で表示</div>
-                  )}
                   <div style={{ overflowY: 'auto', flex: 1 }}>
                     {sortedPathGroups
                       .filter(g => !ribbonSearch || g.key.toLowerCase().includes(ribbonSearch.toLowerCase()))
@@ -2475,11 +2270,9 @@ export default function App() {
                   floodResult={floodResult}
                   floodSeedComp={floodSeedComp}
                   floodMaxHop={floodHops}
-                  msaHighlight={msaHiSet}
-                  msaHoverNodes={msaHoverSet}
-                  blockColors={blkColors ?? trvColors}
+                  msaHoverNodes={trvHoverSet}
+                  blockColors={trvColors}
                   nodeColors={trvNodeColors.size ? new Map([...activeNodeColors, ...trvNodeColors]) : activeNodeColors}
-                  onVisibleAtoms={atoms => { blkApiRef.current?.setGraphAtoms?.(atoms) }}
                   onViewportChange={(vp, layer, glyphs) => {
                     setMapViewport(vp); setMapLayer(layer); travApiRef.current?.graphMoved?.()   // Traversals: 広い範囲の塗り分けは見えているノードで引き直す
                     if (glyphs !== undefined) setMapGlyphs(glyphs)
@@ -2490,16 +2283,6 @@ export default function App() {
                   onNodeSelect={node => {
                     setSelectedNode(node)
                     if (trvH > 0 && node && /^n\d+$/.test(node.node_name)) travApiRef.current?.locateNodes([node.node_name])   // 通過: ノード → 座標の位置へ
-                    if (blkH > 0 && node) {
-                      const h = blkApiRef.current
-                      if (h && h.isTree && h.isTree() && h.locateNodes) h.locateNodes([node.node_name])          // 木: ノード → 葉（原子）の場所を Blocks に印
-                      else if (h && node.ref_bp != null && node.ref_contig_id != null) h.selectByRef(node.ref_contig_id, node.ref_bp)
-                    }
-                    // MSA ノード選択モード中はクリックしたノードを MSA 対象集合にトグル追加。
-                    if (node && msaPick) {
-                      const nm = node.node_name
-                      setMsaNodeSel(prev => prev.includes(nm) ? prev.filter(x => x !== nm) : [...prev, nm])
-                    }
                     // 近接モード: クリック点からグラフ距離フラッド。背景クリック(node=null)で解除。
                     if (floodMode) {
                       if (node) {
@@ -3085,10 +2868,10 @@ export default function App() {
       </div>
 
       {/* ── Bottom panel ──────────────────────────────────────────── */}
-      {/* Alignment のハンドルは、閉じているときは「下に他のパネルが無い」場合だけ出す。
-          MSA / Blocks が開いていると、その直上にこのハンドルが来て、下のパネルを広げようとした
-          ドラッグが Alignment を開いてしまう（掴みしろ GRIP_PAD 分だけ下にも張り出している）。Traversals も同じ（11-02） */}
-      {(bottomH > 0 || (msaH === 0 && blkH === 0 && trvH === 0)) && (
+      {/* Alignment のハンドルは、閉じているときは「下に Traversals が無い」場合だけ出す。
+          Traversals が開いていると、その直上にこのハンドルが来て、Traversals を広げようとした
+          ドラッグが Alignment を開いてしまう（掴みしろ GRIP_PAD 分だけ下にも張り出している。11-02） */}
+      {(bottomH > 0 || trvH === 0) && (
         <div
           onMouseDown={onBottomHandleDown}
           title="Drag to resize bottom panel"
@@ -3191,59 +2974,7 @@ export default function App() {
         </div>
       )}
 
-      {/* ── Bottom panel 2: Bubble MSA ────────────────────────────── */}
-      {msaH > 0 && (
-        <div
-          onMouseDown={onMsaHandleDown}
-          title="Drag to resize MSA panel"
-          className="amipa-grip-row"
-        style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
-        />
-      )}
-      {msaH > 0 && (
-        <div style={{ height: msaH, flexShrink: 0, overflow: 'hidden', borderTop: '1px solid #c8cdd3', background: '#fff' }}>
-          <BubbleMsa
-            db={selectedDb}
-            pickedNodes={msaNodeSel}
-            pickMode={msaPick}
-            onTogglePick={() => setMsaPick(p => !p)}
-            onRemoveNode={name => setMsaNodeSel(prev => prev.filter(x => x !== name))}
-            onClearNodes={() => setMsaNodeSel([])}
-            onFillBetween={fillBetween}
-            onHoverNode={setMsaHover}
-            sampleKeys={[...ribbonSel.keys()]}
-            ribbonLevel={ribbonLevel}
-            rangeReq={msaRangeReq}
-          />
-        </div>
-      )}
-
-      {/* ── Bottom panel 3: 多解像度 MSA（共線ブロック） ─────────────── */}
-      {blkH > 0 && (
-        <div
-          onMouseDown={onBlkHandleDown}
-          title="Drag to resize Blocks panel"
-          className="amipa-grip-row"
-          style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
-        />
-      )}
-      {blkH > 0 && (
-        <div style={{ height: blkH, flexShrink: 0, overflow: 'hidden', borderTop: '1px solid #c8cdd3', background: '#fff' }}>
-          <BlockMsa
-            db={selectedDb}
-            onHoverBlock={b => { void resolveBlock(b, setBlkHov) }}
-            onView={onBlockView}
-            onBaseVisible={onBlockBaseVisible}
-            onSelectHap={onBlockSelectHap}
-            onBaseMsa={onBlockBaseMsa}
-            hapMarks={blkHapMarks}
-            genes={blkGenes}
-            onReady={h => { blkApiRef.current = h; if (!h) { setBlkHov(null); setBlkColors(null) } }}
-          />
-        </div>
-      )}
-
-      {/* ── Bottom panel 4: 通過（Traversals、新しい錨と通過に基づくシンテニー） ─────────────── */}
+      {/* ── Bottom panel 2: 通過（Traversals、錨と通過に基づくシンテニー。11-02 に Bubble MSA・Blocks パネルを外した） ─────────────── */}
       {trvH > 0 && (
         <div
           onMouseDown={onTrvHandleDown}
@@ -3263,7 +2994,7 @@ export default function App() {
             onGraphRange={onTravGraphRange}
             onReady={h => { travApiRef.current = h; if (h && pendingTravState.current) { const st = pendingTravState.current; pendingTravState.current = null; setTimeout(() => h.setState(st), 1500) } if (!h) { setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null) } }}
             onHoverNodes={onTravHover}
-            hapMarks={blkHapMarks}
+            hapMarks={selHapMarks}
           />
         </div>
       )}

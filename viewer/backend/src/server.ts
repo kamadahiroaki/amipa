@@ -12,7 +12,6 @@ import { sessionRouter } from './routes/session'
 import { bubbleMsaRouter } from './routes/bubbleMsa'
 import { exportRouter } from './routes/exportData'
 import { renderRouter } from './routes/render'
-import { blocksRouter, warmBlocksRoot } from './routes/blocks'
 import { travRouter } from './routes/trav'
 import { graphSelRouter } from './routes/graphsel'
 import { initWorkerPool } from './workerPool'
@@ -161,7 +160,6 @@ app.use('/api', exportRouter)
 app.use('/api', renderRouter)
 app.use('/api', graphSelRouter)   // 葉の名前の集合でグラフを扱う口（Traversals の範囲を絞る・寄せる・光らせる）
 app.use('/api', travRouter)   // 通過サイドカー <db>.trav（試作、設計案 anchor2-traversals）
-app.use('/api', blocksRouter)
 
 // Serve built frontend in production
 const frontendDist = path.join(__dirname, '../../frontend/dist')
@@ -179,6 +177,4 @@ app.listen(PORT, () => {
   // 絞らずフル速度で読む。DB 切り替え時の自動プリウォームは /stats 側で開始し進捗を返す。
   prewarmAtStartup()
   warmRunners()
-  // 木のサイドカー（<db>.synteny）を起動直後に読み込み、根の窓を作っておく（ヒト 3 染色体で 1.4 GB・初回 38 秒。最初に Blocks を開いた人が待たない）
-  setTimeout(() => { try { const dir = getDbDir(); for (const f of fs.readdirSync(dir)) { if (!f.endsWith('.db')) continue; if (!fs.existsSync(path.join(dir, f + '.synteny'))) continue; const t0 = Date.now(); try { warmBlocksRoot(f); console.log(`[synteny] warmed ${f} ${Date.now() - t0} ms`) } catch (e) { console.log(`[synteny] warm ${f} failed: ${String(e)}`) } } } catch { /* */ } }, 2000)   // 常駐 python 実行器（bubble_msa）を立ち上げて import numpy を済ませる（計算ノードでは Lustre から 6〜43 秒）
 })

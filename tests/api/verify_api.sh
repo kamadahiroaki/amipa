@@ -68,12 +68,8 @@ LEAF=$(get "nodes?db=$DB&layer=$ML&$RS&nx=fast" | "$PY" pick.py node)
 # ★/nodes_by_name は SQL に `AND n.layer_index = 1` が固定で入っている（用途が L1 限定）。
 #   他の層の名前を渡すと必ず空が返るので、L1 の名前で試す。
 N1=$(get "nodes?db=$DB&layer=1&x1=-1e9&x2=1e9&y1=-1e9&y2=1e9&nx=fast" | "$PY" pick.py node)
-# MSA の対象は **葉の親**（＝葉数の小さいバブル）。
-#   中層の cluster を渡すと WG では配下の葉が 400 を超え、backend が正しく拒否する
-#   （「選択が大きすぎます」）。chr22 では偶然通っていたので気付けなかった。
-BUB=$(get "node_info?db=$DB&name=$LEAF" | "$PY" pick.py parent)
 RC=$(get "ref_contigs?db=$DB" | "$PY" pick.py refctg)
-echo "  sel=$GID / groups=$GCSV / node=$NAME / leaf=$LEAF / bubble=$BUB / ref contig(id)=$RC"
+echo "  sel=$GID / groups=$GCSV / node=$NAME / leaf=$LEAF / ref contig(id)=$RC"
 
 echo "-- 表示の中核"
 hit "/stats"               "stats?db=$DB"
@@ -111,91 +107,11 @@ if [ -n "$NAME" ]; then
   hit "/variant_track"     "variant_track?db=$DB&node=$NAME" allow-empty
   hit "/read_alignments"   "read_alignments?db=$DB&nodes=$NAME" allow-empty
 fi
-if [ -n "${BUB:-}" ]; then
-  hit "/bubble_msa (葉の親)" "bubble_msa?db=$DB&nodes=$BUB&flank=1"
-elif [ -n "$LEAF" ]; then
-  hit "/bubble_msa (葉)"     "bubble_msa?db=$DB&nodes=$LEAF&flank=1"
-fi
 if [ -n "$LEAF" ]; then
   hit "/node_sequence (葉)" "node_sequence?db=$DB&name=$LEAF"
   hit "/leaf_bases (葉)"    "leaf_bases?db=$DB&layer=$ML&$R"
 fi
 
-echo "-- Blocks（木のサイドカー .synteny がある DB だけ。無ければ SKIP）"
-# ★2026-10-07 の事故: 配信ジョブのローカル複製で distill ディレクトリが空になり、sites / tokranges / bubble_msa が
-#   HTTP 200 の {error:...} で全滅したのに気づけなかった。ここでは木の窓・変異サイト・寄せ先・部分グラフ・トークン範囲・塩基 MSA を
-#   一通り往復し、error キーを失敗にする（judge.py）。範囲は /blocks の応答（total_x）から取る。
-BLK=$(get "blocks?db=$DB")
-BTREE=$("$PY" -c 'import sys,json; j=json.load(sys.stdin); m=j.get("meta",{}); print("1" if m.get("tree") else "0", "1" if m.get("distill") else "0", int(m.get("total_x") or 0), int(m.get("maxlayer") or 0))' <<<"$BLK" 2>/dev/null || echo "0 0 0 0")
-read -r BT BD BX BML <<<"$BTREE"
-if [ "$BT" = 1 ] && [ "$BX" -gt 0 ]; then
-  BX0=$((BX / 2)); BX1=$((BX / 2 + BX / 200))          # 全体の 0.5% 幅の範囲（ecoli50 で ~90 kb）
-  SX0=$((BX / 2)); SX1=$((BX / 2 + BX / 1000))         # 全体の 0.1% 幅（ecoli50 で ~18 kb。大きなノード 1 個に収まらない広さ）
-  hit "/blocks (木)"            "blocks?db=$DB"
-  hit "/blocks/range"           "blocks/range?db=$DB&x0=$BX0&x1=$BX1"
-  hit "/blocks/sites (x0/x1)"   "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" allow-empty   # 変異サイト 0 は全株同一で正常。error は NG
-  hit "/blocks/bbox"            "blocks/bbox?db=$DB&x0=$SX0&x1=$SX1"
-  hit "/blocks/subgraph (葉)"   "blocks/subgraph?db=$DB&layer=$BML&x0=$SX0&x1=$SX1"
-  hit "/blocks/nodemap (POST)"  "blocks/nodemap" "" '{"db":"'"$DB"'","layer":'"$BML"',"names":["n1","n2"]}'
-  # 葉の名前の集合（塩基の窓・接合の塩基）で寄せる／絞る: POST 版の bbox と subgraph（names→atoms は上の層）
-  NB=$(get "blocks/subgraph?db=$DB&layer=$BML&a0=1&a1=1&names=1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); n=j.get("names",[])[:200]; print(json.dumps({"db": sys.argv[1], "names": n, "layer": int(sys.argv[2]), "target": 800}) if n else "")' "$DB" "$BML" 2>/dev/null)
-  [ -n "$NB" ] && hit "/blocks/bbox (POST names)"     "blocks/bbox" "" "$NB"
-  [ -n "$NB" ] && hit "/blocks/subgraph (POST names)" "blocks/subgraph" "" "$NB"
-  BG=$("$PY" -c 'import sys,json; j=json.load(sys.stdin); print("1" if j.get("meta",{}).get("genes") else "0")' <<<"$BLK" 2>/dev/null || echo 0)
-  if [ "$BG" = 1 ]; then
-    GP=$(get "blocks/range?db=$DB&x0=$BX0&x1=$BX1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); L=j["window"]["levels"][0]; c=L["haps"][0]["contigs"][0]; it=c["inst"][0]; print(json.dumps({"db": sys.argv[1], "ranges": [[c["path"], it[6], it[6]+it[2]]]}))' "$DB" 2>/dev/null)
-    [ -n "$GP" ] && hit "/blocks/genes (POST)" "blocks/genes" "" "$GP"
-    hit "/blocks/gene (name)"     "blocks/gene?db=$DB&name=dna" allow-empty
-    GC=$("$PY" -c 'import sys,json; print(json.dumps({"db": sys.argv[1], "c0": int(sys.argv[2]), "c1": int(sys.argv[2]) + 3000}))' "$DB" "$(get "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" | "$PY" -c 'import sys,json; print(json.load(sys.stdin).get("c0", 0))')" 2>/dev/null)
-    [ -n "$GC" ] && hit "/blocks/genes_cols (POST)" "blocks/genes_cols" allow-empty "$GC"
-    # GFF の 1 行の全項目と、1 株の GFF の書き出し（サイドカー format 2。2026-10-16）
-    FEAT=$(get "blocks/feature?db=$DB&gid=1")
-    if "$PY" -c 'import sys,json; j=json.load(sys.stdin); sys.exit(0 if j.get("feature") else 1)' <<<"$FEAT" 2>/dev/null; then
-      hit "/blocks/feature"          "blocks/feature?db=$DB&gid=1"
-      ACC=$("$PY" -c 'import sys,json; print(json.load(sys.stdin)["feature"]["acc"])' <<<"$FEAT")
-      GFF1=$(get "blocks/gff?db=$DB&acc=$ACC" | head -1)
-      if [ "$GFF1" = "##gff-version 3" ]; then PASS=$((PASS+1)); printf "  OK   %-30s %s\n" "/blocks/gff" "$ACC の 1 行目が ##gff-version 3"; else FAIL=$((FAIL+1)); FAILED+=("/blocks/gff"); echo "  NG   /blocks/gff                    1 行目: $GFF1"; fi
-    else
-      echo "  SKIP /blocks/feature, /blocks/gff（遺伝子サイドカーが format 1）"
-    fi
-    hit "/blocks/junctions"       "blocks/junctions?db=$DB"
-    JID=$(get "blocks/junctions?db=$DB" | "$PY" -c 'import sys,json; r=json.load(sys.stdin).get("rows",[]); print(r[0][0] if r else "")' 2>/dev/null)
-    if [ -n "$JID" ]; then hit "/blocks/junction"        "blocks/junction?db=$DB&jid=$JID"; hit "/blocks/junction_base"   "blocks/junction_base?db=$DB&jid=$JID&k=40"; fi
-    SC0=$(get "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" | "$PY" -c 'import sys,json; print(json.load(sys.stdin).get("c0", 0))' 2>/dev/null); SC0=${SC0:-0}
-    [ -n "$JID" ] && hit "/blocks/junction_genes"  "blocks/junction_genes?db=$DB&jid=$JID&n=4"
-    # オルソログ群（見出しの遺伝子トラック）: 列範囲の群・行の差分・運命の表・名前検索
-    hit "/blocks/orth (density)"   "blocks/orth?db=$DB&c0=0&c1=$((SX1+1000000))&max=300" allow-empty
-    hit "/blocks/orth"             "blocks/orth?db=$DB&c0=$SC0&c1=$((SC0+15000))" allow-empty
-    hit "/blocks/orth_rows (POST)" "blocks/orth_rows" allow-empty '{"db":"'"$DB"'","c0":'"$SC0"',"c1":'"$((SC0+15000))"'}'
-    OG=$(get "blocks/orth?db=$DB&c0=$SC0&c1=$((SC0+15000))" | "$PY" -c 'import sys,json; g=json.load(sys.stdin).get("groups") or []; print(g[0][0] if g else "")' 2>/dev/null)
-    [ -n "$OG" ] && hit "/blocks/orth_group"       "blocks/orth_group?db=$DB&og=$OG"
-    hit "/blocks/orth_find"        "blocks/orth_find?db=$DB&q=dna" allow-empty
-    if [ -n "$JID" ]; then   # 接合の塩基の窓の遺伝子（トークン範囲）
-      GT=$(get "blocks/junction_base?db=$DB&jid=$JID&k=40" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); r=j.get("ranges",[])[:10]; print(json.dumps({"db": sys.argv[1], "ranges": r}) if r else "")' "$DB" 2>/dev/null)
-      [ -n "$GT" ] && hit "/blocks/genes_tok (POST)" "blocks/genes_tok" allow-empty "$GT"
-    fi
-  else
-    echo "  SKIP /blocks/genes（遺伝子サイドカー無し）"
-  fi
-  if [ "$BD" = 1 ]; then
-    TK=$(get "blocks/sites?db=$DB&x0=$SX0&x1=$SX1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); print(j.get("c0",""), j.get("c1",""))' 2>/dev/null)
-    read -r TC0 TC1 <<<"$TK"
-    if [ -n "$TC0" ] && [ -n "$TC1" ]; then
-      hit "/blocks/tokranges"     "blocks/tokranges?db=$DB&c0=$TC0&c1=$TC1"
-      BMB=$(get "blocks/tokranges?db=$DB&c0=$TC0&c1=$TC1" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); print(json.dumps({"db": sys.argv[1], "ranges": j.get("ranges") or [], "flank": 0, "cap": 0, "maxLeaves": 2000}))' "$DB" 2>/dev/null)
-      [ -n "$BMB" ] && hit "/bubble_msa/ranges (POST)" "bubble_msa/ranges" "" "$BMB"
-      # 1,200 列（画面が塩基へ降りる上限。葉の上限 12,000 を渡す。2026-10-15 から 1 遺伝子分〜を一度に計算する）
-      BMB2=$(get "blocks/tokranges?db=$DB&c0=$TC0&c1=$((TC0+1199))" | "$PY" -c 'import sys,json; j=json.load(sys.stdin); print(json.dumps({"db": sys.argv[1], "ranges": j.get("ranges") or [], "flank": 0, "cap": 0, "maxLeaves": 12000}) if j.get("ranges") else "")' "$DB" 2>/dev/null)
-      [ -n "$BMB2" ] && hit "/bubble_msa/ranges (POST, 1,200 列)" "bubble_msa/ranges" "" "$BMB2"
-    else
-      FAIL=$((FAIL+1)); FAILED+=("/blocks/sites c0/c1"); echo "  NG   /blocks/sites c0/c1               応答に c0/c1 が無い"
-    fi
-  else
-    echo "  SKIP /blocks/tokranges, /bubble_msa/ranges（distill サイドカー無し）"
-  fi
-else
-  echo "  SKIP Blocks の木（.synteny 無し）"
-fi
 
 echo "-- Traversals（.trav がある DB だけ。無ければ SKIP）"
 #   範囲は /trav/root の座標の数 R から取る（中央の狭い窓と広い窓）。塩基の段の要求は /trav/cols の行（pid・tw0・tw1・dir）から画面と同じ形で組む

@@ -41,33 +41,8 @@ export function distillFor(dbPath: string): string | null {
   return null
 }
 
-bubbleMsaRouter.get('/bubble_msa', (req, res) => {
-  const { db, nodes, samples } = req.query as Record<string, string>
-  if (!db) { res.status(400).json({ error: 'Missing db query parameter' }); return }
-  if (!nodes) { res.status(400).json({ error: 'Missing nodes query parameter' }); return }
-  // ★ `Number(x) || 4` だと flank=0 が 4 に化ける(0 は falsy)。0 を通すため明示的に判定する。
-  const fq = Number(req.query.flank)
-  const flank = String(Number.isFinite(fq) ? Math.max(0, Math.min(12, fq)) : 4)
 
-  const dbPath = path.join(getDbDir(), path.basename(db))
-  if (!fs.existsSync(dbPath)) { res.status(404).json({ error: 'DB が見つかりません' }); return }
-  const distill = distillFor(dbPath)
-  if (!distill) {
-    res.json({ error: 'この DB には MSA 用 distill サイドカーがありません（' +
-      path.basename(dbPath) + '.distill）。emitter を --distill / --distill-sidecar-dir 付きで' +
-      '再実行するか、ln -s <…>.distill で張ってください。' })
-    return
-  }
-  const argv = ['--db', dbPath, '--distill', distill, '--nodes', nodes, '--flank', flank]
-  if (samples) argv.push('--samples', samples)
-  if (MAX_TOKENS > 0) argv.push('--max-tokens', String(MAX_TOKENS))
-  runScript(SCRIPT, argv, '', TIMEOUT_MS).then(r => {
-    if (!r.ok) { res.json({ error: 'MSA 抽出に失敗: ' + r.err.slice(-400) }); return }
-    try { res.json(JSON.parse(r.out)) } catch (e) { res.json({ error: 'MSA 出力を解釈できません: ' + (r.err ? r.err.slice(-400) : String(e)) }) }
-  }).catch(e => res.json({ error: 'MSA 抽出に失敗: ' + String(e?.message ?? e) }))
-})
-
-// Blocks パネルの底からの受け渡し: 各行（パス）のトークン範囲を stdin の JSON で渡し、その範囲の塩基レベル MSA を返す。
+// Traversals の塩基の段（ノード段・塩基段）: 各行（パス）のトークン範囲を stdin の JSON で渡し、その範囲の塩基レベル MSA を返す（11-02 にノード集合で選ぶ GET /bubble_msa と Blocks パネルを外した）。
 //   POST /api/bubble_msa/ranges  body {db, ranges:[[path, s0, e0, dir?], …], label, flank}   dir（任意）＝コンティグの主な向き ±1（行の表示の向き）
 //   S（列）は範囲内のトークンの葉集合、行は与えたパスの範囲だけ。葉の上限は maxLeaves（既定 400、ここで 12,000 まで。画面は 1 遺伝子分〜を一度に出す）。
 bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
@@ -81,14 +56,14 @@ bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
   if (!fs.existsSync(dbPath)) { res.status(404).json({ error: 'DB が見つかりません' }); return }
   const distill = distillFor(dbPath)
   if (!distill) { res.json({ error: 'この DB には MSA 用 distill サイドカーがありません（' + path.basename(dbPath) + '.distill）' }); return }
-  const argv = ['--db', dbPath, '--distill', distill, '--ranges-stdin', '--flank', flank, '--label', String(b.label ?? 'Blocks')]
+  const argv = ['--db', dbPath, '--distill', distill, '--ranges-stdin', '--flank', flank, '--label', String(b.label ?? 'Traversals')]
   { // 合意の並びで行の向きと列の区切りの順を決める（窓の一部しか覆わない行があっても揃う）。.trav の座標を優先し、無ければ古い木の dcol（11-02: 6 窓で列・行とも同一）
     let real = ''; try { real = fs.realpathSync(dbPath) } catch { /* */ }
     const sp = ['.trav', '.synteny'].flatMap(sfx => [dbPath + sfx, real ? real + sfx : '']).find(f => f && fs.existsSync(f)) || ''; if (sp) argv.push('--synteny', sp) }
-  if (b.cap != null && Number.isFinite(Number(b.cap))) argv.push('--cap', String(Math.max(0, Math.floor(Number(b.cap)))))   // 0 = 畳まない（Blocks パネルは画面側で畳む）
+  if (b.cap != null && Number.isFinite(Number(b.cap))) argv.push('--cap', String(Math.max(0, Math.floor(Number(b.cap)))))   // 0 = 畳まない（画面側で畳む）
   if (b.maxLeaves != null && Number.isFinite(Number(b.maxLeaves))) argv.push('--max-leaves', String(Math.max(1, Math.min(12000, Math.floor(Number(b.maxLeaves))))))   // 葉の上限（既定 400。画面は 12,000 を渡す: 1,200 列 ≈ 13 kb を一度に。3,000 列で計算 2 秒・5 MB）
   const t0 = Date.now()
-  runScript(SCRIPT, argv, JSON.stringify({ ranges, label: b.label ?? 'Blocks', ...(b.reads && typeof b.reads === 'object' ? { reads: b.reads } : {}) }), TIMEOUT_MS).then(r => {
+  runScript(SCRIPT, argv, JSON.stringify({ ranges, label: b.label ?? 'Traversals', ...(b.reads && typeof b.reads === 'object' ? { reads: b.reads } : {}) }), TIMEOUT_MS).then(r => {
     if (!r.ok) { res.json({ error: 'MSA 抽出に失敗: ' + r.err.slice(-400) }); return }
     try { const o = JSON.parse(r.out); if (o && typeof o === 'object' && !o.error) o.ms = Date.now() - t0; res.json(o) }
     catch (e) { res.json({ error: 'MSA 出力を解釈できません: ' + (r.err ? r.err.slice(-400) : String(e)) }) }

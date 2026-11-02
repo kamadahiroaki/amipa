@@ -23,7 +23,7 @@ function hslToInt(h: number, sPct: number, lPct: number): number { const sat = s
 const u8 = (b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)); const u16 = (b: string) => { const a = u8(b); return new Uint16Array(a.buffer, a.byteOffset, a.byteLength >> 1) }; const u32 = (b: string) => { const a = u8(b); return new Uint32Array(a.buffer, a.byteOffset, a.byteLength >> 2) }
 
 import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/client'
-import { matchHapToKey } from './blockMsaRender'
+import { matchHapToKey } from './hapKey'
 type Gene = { gid: number; pid: number; hid: number; tr: number; x0: number; x1: number; s0: number; e0: number; start: number; end: number; strand: string; fwd: boolean; type: string; name: string; locus: string; product: string; pseudo: boolean; anchored: boolean; og: number; ch?: [string, number, number][]; nodes?: { names: string[]; cds: { names: string[]; phase: number; strand: string; so: number; eo: number; first: boolean }[]; exon: string[][]; t0: number; t1: number } }   // ch = 子（'cds'|'exon'|'utr', x0, x1）、nodes = 塩基の段用（ノード名）
 type Pres = { cover: number; n0: number; n1: number; n2: number; part: number; absent: number[]; multi: number[]; partial: number[] }
 type OGroup = { para?: string[] | null; og: number; x0: number; x1: number; n: number; nhap: number; name: string; fwd: number; npseudo: number; kind: string; pres?: Pres }   // 見出しの遺伝子トラック（オルソログ群＝錨の共有で結んだ遺伝子）

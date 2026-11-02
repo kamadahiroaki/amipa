@@ -765,37 +765,7 @@ export interface BubbleMsaResp {
   name?: string; bp?: number | null; refname?: string | null; nrow?: number; nallele?: number
   cols?: MsaCol[]; rows?: MsaRow[]; error?: string
 }
-export async function fetchBubbleMsa(
-  dbFile: string, nodes: string[], samples: string[] = [], flank = 0,
-): Promise<BubbleMsaResp> {
-  if (nodes.length === 0) return { error: 'ノードが選択されていません' }
-  const p = new URLSearchParams({ db: dbFile, nodes: nodes.join(','), flank: String(flank) })
-  if (samples.length > 0) p.set('samples', samples.join(','))
-  const res = await fetch(`/api/bubble_msa?${p}`)
-  if (!res.ok) return { error: 'request failed (' + res.status + ')' }
-  return res.json()
-}
-
-// ── 多解像度 MSA（共線ブロック）: backend /api/blocks はサイドカー JSON（functions/msa_lod/70_hier_build.py）をそのまま返す。
-//    中身の型は閲覧側（components/blockMsaRender.ts）で扱うので、ここでは opaque に受ける。
-export interface BlocksData { meta: any; windows: any[]; tree?: any; error?: string }
-export async function fetchBlocks(dbFile: string): Promise<BlocksData> {
-  const res = await fetch(`/api/blocks?db=${encodeURIComponent(dbFile)}`)
-  if (!res.ok) return { meta: null, windows: [], error: 'request failed (' + res.status + ')' }
-  return res.json()
-}
-export async function fetchBlocksHas(dbFile: string): Promise<boolean> {
-  try { const r = await fetch(`/api/blocks/has?db=${encodeURIComponent(dbFile)}`); const j = await r.json(); return !!j.has } catch { return false }
-}
-// ブロック（参照区間）に重なる、表示層のノード名。グラフの強調に使う。
-export async function fetchBlockNodes(dbFile: string, layer: number, contig: number, start: number, end: number): Promise<string[]> {
-  const p = new URLSearchParams({ db: dbFile, layer: String(layer), contig: String(contig), start: String(Math.floor(start)), end: String(Math.ceil(end)) })
-  const res = await fetch(`/api/blocks/nodes?${p}`)
-  if (!res.ok) return []
-  const j = await res.json()
-  return Array.isArray(j.names) ? j.names as string[] : []
-}
-// Blocks の底からの受け渡し: 各行のトークン範囲で塩基レベル MSA（bubble MSA と同じ出力）
+// Traversals の塩基の段: 各行（パス）のトークン範囲で塩基レベル MSA
 export async function fetchBubbleMsaRanges(dbFile: string, ranges: (string | number)[][], label: string, flank = 0, cap?: number, maxLeaves?: number, reads?: { max: number; samples?: string[] }): Promise<BubbleMsaResp> {
   try {
     const res = await fetch('/api/bubble_msa/ranges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(reads ? { reads } : {}), db: dbFile, ranges, label, flank, ...(cap != null ? { cap } : {}), ...(maxLeaves != null ? { maxLeaves } : {}) }) })
@@ -803,73 +773,12 @@ export async function fetchBubbleMsaRanges(dbFile: string, ranges: (string | num
     return res.json()
   } catch (e) { return { error: String(e) } }
 }
-// 逐次計算: 事前計算のサイドカーに無い窓を、backend の常駐 Python ワーカーで計算する。
-//   ranges = 親ブロックの各インスタンスのトークン範囲 [path 名, s0, e0]（blockMsaRender が inst[8..9] から組む）
-export interface BlockDrillRequest { ranges: [string, number, number][]; span: number; afrac: number; label: string; depth: number; parent: number; pblock: number }
-export interface BlockDrillResult { window?: any; error?: string; ms?: number; total_ms?: number; missing?: number; state?: string }
-// アレル行列（変異の段）: 合意列の範囲のサイト × 株のアレル番号（synteny.ts sitesForRange）
-export interface BlockSites { c0: number; c1: number; ncols: number; ncover: number; H: number; haps: string[]; nsites: number; sites: { x: number; c0: number; c1: number; ncols: number; bp: number; nall: number; counts: number[] }[]; cells: string; tooMany?: boolean; error?: string; ms?: number }
-export async function fetchBlockSites(dbFile: string, q: { c0?: number; c1?: number; x0?: number; x1?: number }): Promise<BlockSites | { error: string }> {
-  const p = new URLSearchParams({ db: dbFile }); for (const k of ['c0', 'c1', 'x0', 'x1'] as const) if (q[k] != null) p.set(k, String(Math.round(q[k]!)))
-  try { const res = await fetch(`/api/blocks/sites?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
-}
-// 原子の範囲 → その層のノード名（木の経路。参照座標を使わない）
+// 葉の名前 → グラフが描いている層の祖先の名前（/api/graph/ancestors）
 export async function fetchBlockAncestors(dbFile: string, layer: number, names: string[]): Promise<string[]> {
   try { const res = await fetch(`/api/graph/ancestors?db=${encodeURIComponent(dbFile)}&layer=${layer}&names=${encodeURIComponent(names.slice(0, 200).join(','))}`); if (!res.ok) return names; const j = await res.json(); return Array.isArray(j.names) && j.names.length ? j.names : names } catch { return names }
 }
-export async function fetchBlockNodesTree(dbFile: string, layer: number, a0: number, a1: number): Promise<string[]> {
-  const p = new URLSearchParams({ db: dbFile, layer: String(layer), a0: String(a0), a1: String(a1) })
-  try { const res = await fetch(`/api/blocks/nodes2?${p}`); if (!res.ok) return []; const j = await res.json(); return Array.isArray(j.names) ? j.names as string[] : [] } catch { return [] }
-}
-// ノード → 木の葉（原子）か隙間（グラフ → Blocks）
-export interface BlockLocate { nodes: { name: string; col?: number; x?: number; kind: number; nplace?: number; places?: { atom?: number; gap?: number; x0: number; x1: number }[] }[]; nat: number; error?: string }
-export async function fetchBlockLocate(dbFile: string, names: string[]): Promise<BlockLocate | { error: string }> {
-  const p = new URLSearchParams({ db: dbFile, names: names.join(',') })
-  try { const res = await fetch(`/api/blocks/locate?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
-}
-// 合意列の範囲 → 各パスのトークン範囲（塩基 MSA へ渡す）
-export async function fetchBlockTokRanges(dbFile: string, c0: number, c1: number): Promise<{ ranges?: [string, number, number][]; ncols?: number; error?: string }> {
-  const p = new URLSearchParams({ db: dbFile, c0: String(Math.floor(c0)), c1: String(Math.ceil(c1)) })
-  try { const res = await fetch(`/api/blocks/tokranges?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
-}
-// 木の範囲問い合わせ（<db>.synteny がある DB）: 合意座標 [x0, x1] の窓を backend が木から作る（Python ワーカー不要）
-// 木の範囲（原子 a0..a1）で窓を作る（画面の既定。合意 bp は使わない）
-export async function fetchBlockRangeAtoms(dbFile: string, a0: number, a1: number, label: string, depth: number, parent: number): Promise<BlockDrillResult> {
-  const p = new URLSearchParams({ db: dbFile, a0: String(a0), a1: String(a1), label, depth: String(depth), parent: String(parent), pblock: '-1' })
-  try { const res = await fetch(`/api/blocks/range?${p}`); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
-}
-export async function fetchBlockRange(dbFile: string, x0: number, x1: number, label: string, depth: number, parent: number, pblock: number, tier?: number): Promise<BlockDrillResult> {
-  const p = new URLSearchParams({ db: dbFile, x0: String(Math.floor(x0)), x1: String(Math.ceil(x1)), label, depth: String(depth), parent: String(parent), pblock: String(pblock) })
-  if (tier != null) p.set('tier', String(tier))
-  let res: Response
-  try { res = await fetch(`/api/blocks/range?${p}`) } catch (e) { return { error: String(e) } }
-  let j: BlockDrillResult | null = null
-  try { j = await res.json() } catch { /* ignore */ }
-  if (!res.ok) return { error: (j && j.error) || 'request failed (' + res.status + ')' }
-  return j ?? { error: 'empty response' }
-}
-export async function fetchBlockWindow(dbFile: string, req: BlockDrillRequest): Promise<BlockDrillResult> {
-  let res: Response
-  try {
-    res = await fetch('/api/blocks/window', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ...req }) })
-  } catch (e) { return { error: String(e) } }
-  let j: BlockDrillResult | null = null
-  try { j = await res.json() } catch { /* ignore */ }
-  if (!res.ok) return { error: (j && j.error) || 'request failed (' + res.status + ')' }
-  return j ?? { error: 'empty response' }
-}
-// サイドカーの系統樹の葉の順（ハプロタイプ名）。無ければ空
-export async function fetchBlocksTree(dbFile: string): Promise<string[]> {
-  try { const r = await fetch(`/api/blocks/tree?db=${encodeURIComponent(dbFile)}`); const j = await r.json(); return Array.isArray(j.haps) ? j.haps : [] } catch { return [] }
-}
 // MSA の窓（参照区間）に合うグラフの表示層と、その層のノードの外接箱
 export interface BlockViewFit { layer: number; count: number; counts?: number[]; cx?: number; cy?: number; minx?: number; miny?: number; maxx?: number; maxy?: number; error?: string }
-export async function fetchBlockView(dbFile: string, contig: number, start: number, end: number, target = 800): Promise<BlockViewFit | null> {
-  try {
-    const p = new URLSearchParams({ db: dbFile, contig: String(contig), start: String(Math.floor(start)), end: String(Math.ceil(end)), target: String(target) })
-    const r = await fetch(`/api/blocks/view?${p}`); if (!r.ok) return null; return await r.json()
-  } catch { return null }
-}
 // ノード名 → 全体窓・最細段のブロック番号（-1=不明）。参照座標の無いノードの塗り分けに使う
 export async function fetchBlockNodemap(dbFile: string, layer: number, names: string[]): Promise<{ vals: number[]; fracs: number[] | null; xs: number[] | null; xe: number[] | null; places: number[][] | null; kinds: number[] | null } | null> {
   try {
@@ -879,53 +788,6 @@ export async function fetchBlockNodemap(dbFile: string, layer: number, names: st
     if (Array.isArray(j.atoms)) return { vals: j.atoms as number[], fracs: Array.isArray(j.fracs) ? j.fracs as number[] : null, xs: Array.isArray(j.xs) ? j.xs as number[] : null, xe: Array.isArray(j.xe) ? j.xe as number[] : null, places: Array.isArray(j.places) ? j.places as number[][] : null, kinds: Array.isArray(j.kinds) ? j.kinds as number[] : null }   // xs/xe: 葉の合意座標（上の層は -1）。places: 全場所。kinds: 葉の種類
     return Array.isArray(j.ranks) ? { vals: j.ranks as number[], fracs: null, xs: null, xe: null, places: null, kinds: null } : null
   } catch { return null }
-}
-// 木: 窓の各行のコンティグ範囲の遺伝子（株ごとの GFF）と接合 × 遺伝子の分類（<db>.genes、annot/build_genes.py）
-export interface BlockGenesRow { path: string; s: number; e: number; n?: number; genes: [number, number, number, string, string, string, number][] | null; density: [number, number][] | null; juncs: [number, number, number, string, string, number[], number][] }
-export async function fetchBlockGenes(dbFile: string, ranges: [string, number, number][], maxGenes = 2000): Promise<{ rows: BlockGenesRow[]; error?: string } | null> {
-  try { const res = await fetch('/api/blocks/genes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges, maxGenes }) }); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-// 列範囲（アレル行列・塩基の窓）の遺伝子: 遺伝子 → トークン → 列。行ごとに [gid,name,strand,type,pseudo,start,end,pieces,sn,so,en,eo,part]
-// トークン範囲で開いた塩基の窓（接合の塩基など）の遺伝子: 行ごとに genes_cols と同じ形
-export async function fetchBlockGenesTok(dbFile: string, ranges: [string, number, number][]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
-  try { const res = await fetch('/api/blocks/genes_tok', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, ranges }) }); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-// オルソログ群（見出しの遺伝子トラック）: 列範囲の群、または密度
-export async function fetchBlockOrth(dbFile: string, c0: number, c1: number, max = 3000): Promise<any | null> {
-  try { const res = await fetch(`/api/blocks/orth?db=${encodeURIComponent(dbFile)}&c0=${Math.floor(c0)}&c1=${Math.ceil(c1)}&max=${max}`); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-// 行ごとの差分（持つ群・擬似・逆向き・余分な遺伝子）
-export async function fetchBlockOrthRows(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<any | null> {
-  try { const res = await fetch('/api/blocks/orth_rows', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-export async function fetchBlockOrthGroup(dbFile: string, og: number): Promise<any | null> {
-  try { const res = await fetch(`/api/blocks/orth_group?db=${encodeURIComponent(dbFile)}&og=${og}`); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-export async function fetchBlockOrthFind(dbFile: string, q: string, limit = 30): Promise<any | null> {
-  try { const res = await fetch(`/api/blocks/orth_find?db=${encodeURIComponent(dbFile)}&q=${encodeURIComponent(q)}&limit=${limit}`); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-export async function fetchBlockGenesCols(dbFile: string, c0: number, c1: number, paths?: string[]): Promise<{ rows: { path: string; hap: string; genes: any[] }[]; error?: string } | null> {
-  try { const res = await fetch('/api/blocks/genes_cols', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, c0: Math.floor(c0), c1: Math.ceil(c1), ...(paths ? { paths } : {}) }) }); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-// GFF の 1 行を欠けなく（9 列・属性・親・子・その株の GFF の URL）。fid か gid で
-export async function fetchBlockFeature(dbFile: string, q: { fid?: number; gid?: number }): Promise<any | null> {
-  try { const res = await fetch(`/api/blocks/feature?db=${encodeURIComponent(dbFile)}&${q.fid != null ? 'fid=' + q.fid : 'gid=' + q.gid}`); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-export async function fetchBlockJunction(dbFile: string, jid: number): Promise<any | null> {
-  try { const res = await fetch(`/api/blocks/junction?db=${encodeURIComponent(dbFile)}&jid=${jid}`); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-export async function fetchBlockJunctions(dbFile: string): Promise<{ rows: any[]; error?: string } | null> {
-  try { const res = await fetch(`/api/blocks/junctions?db=${encodeURIComponent(dbFile)}`); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-// 接合の遺伝子近傍の比較（行＝株、接合位置の前後 n 遺伝子、オルソログ群の色）
-export async function fetchBlockJunctionGenes(dbFile: string, jid: number, n = 6): Promise<any | null> {
-  try { const res = await fetch(`/api/blocks/junction_genes?db=${encodeURIComponent(dbFile)}&jid=${jid}&n=${n}`); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-export async function fetchBlockJunctionBase(dbFile: string, jid: number, k = 60): Promise<{ ranges: [string, number, number][]; label: string; error?: string } | null> {
-  try { const res = await fetch(`/api/blocks/junction_base?db=${encodeURIComponent(dbFile)}&jid=${jid}&k=${k}`); if (!res.ok) return null; return await res.json() } catch { return null }
-}
-export async function fetchBlockGene(dbFile: string, q: { gid?: number; name?: string }): Promise<any[]> {
-  try { const p = new URLSearchParams({ db: dbFile }); if (q.gid != null) p.set('gid', String(q.gid)); if (q.name) p.set('name', q.name); const res = await fetch(`/api/blocks/gene?${p}`); if (!res.ok) return []; const j = await res.json(); return j.genes || [] } catch { return [] }
 }
 // 木: 合意座標の範囲 → グラフを寄せる先（層と外接矩形）。参照座標に依らないので、参照に無い島の窓でも正しく寄る
 // 窓の指定（集合の意味）: atoms=原子の番号の範囲 / cols=原子の内側の列範囲 / x=合意座標（旧）
@@ -949,8 +811,4 @@ export async function fetchBlockSubgraph(dbFile: string, layer: number, sel: Blo
   if ('names' in sel) { try { const res = await fetch('/api/graph/subgraph', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db: dbFile, layer, names: sel.names, ...(budget && bbox ? { budget, bbox } : {}) }), signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } } }
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), ...blockSelParams(sel), ...(budget && bbox ? { budget: String(budget), bx1: String(bbox.x1), by1: String(bbox.y1), bx2: String(bbox.x2), by2: String(bbox.y2) } : {}) })
   try { const res = await fetch(`/api/blocks/subgraph?${p}`, { signal }); const j = await res.json(); if (!res.ok) return { error: j.error || ('request failed ' + res.status) }; return j } catch (e) { return { error: String(e) } }
-}
-// ワーカーを起こして Ctx を温める（パネルを開いた時に呼ぶ。初回の降下を速くする）
-export async function warmBlocks(dbFile: string): Promise<{ state: string; error?: string; warm_ms?: number }> {
-  try { const r = await fetch(`/api/blocks/warm?db=${encodeURIComponent(dbFile)}`); return await r.json() } catch (e) { return { state: 'error', error: String(e) } }
 }
