@@ -61,6 +61,23 @@ amipa prep add-reads --out graph.amipa --reads-append --reads HG005=HG005.gaf
 HiFi の GAF ではこれだけで 7 割が消える。全部残したいときは `--reads-keep-tags`、
 容量を詰めたいときは `--reads-level 12`〜`19`（閲覧の速さは変わらない）。
 
+## Traversals の材料（通過・遺伝子・参照注釈）
+
+通過の索引（`graph.db.trav`）はパスがあれば既定で作る。合意座標の向きと染色体の順は `--ref-key` の参照パス
+（名前がこの文字列で始まるパス。無ければ先頭のパス）を手掛かりに決める。要らなければ `--no-trav`。
+
+```bash
+amipa prep run --gfa graph.gfa --out graph.amipa --threads 16 --ref-key GRCh38 \
+    --gff-dir gff/                                  `# 株ごとの GFF（<名前>.gff）` \
+    --ann-rmsk rmsk.txt.gz                          `# RepeatMasker（参照座標）` \
+    --ann-vcf HG002=HG002.vcf.gz --ann-bed HG002=HG002.bed   `# サンプルの変異とベンチマーク領域`
+```
+
+- `--gff-dir`: GFF の名前はパス名の `#` の前（`GRCh38#chr20` → `GRCh38.gff`、`GCF_000148365.1#1#NC_017631.1` → `GCF_000148365.1.gff`）、
+  seqid はパス名の最後の `#` の後。参照だけに注釈がある場合は、ほかのパスへノードの共有で写す
+- リードがあれば、合意座標ごとのリードの深さ（`graph.db.xdepth`）も作る
+- あとから足すときは `--only trav` / `--only genes` / `--only ann` / `--only xdepth` で、その段だけを走らせる
+
 ## 途中からやり直す
 
 ```bash

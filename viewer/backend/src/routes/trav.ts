@@ -124,6 +124,26 @@ travRouter.get('/trav/ann', (req, res) => {
   } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
+// ---- 1 株の GFF を入力どおりに書き出す（<db>.genes の gff_header と feature を元の行番号の順に）。11-02 に Blocks の /api/blocks/gff から移した ----
+//   GET /api/trav/gff?db&acc   acc = パス名の # の前（GFF のファイル名）。写した注釈（genes_project.py、acc が空）は含めない
+function genesFileOf(db: string): string | null { const base = path.join(getDbDir(), path.basename(db)); const cands = [base + '.genes']; try { cands.push(fs.realpathSync(base) + '.genes') } catch { /* ignore */ } return cands.find(c => { try { return fs.existsSync(c) } catch { return false } }) ?? null }
+travRouter.get('/trav/gff', (req, res) => {
+  const q = req.query as Record<string, string>
+  if (!q.db || !q.acc) { res.status(400).json({ error: 'db, acc が要ります' }); return }
+  const gp = genesFileOf(q.db); if (!gp) { res.status(404).json({ error: 'この DB には遺伝子サイドカーがありません' }); return }
+  const d = new Database(gp, { readonly: true })
+  try {
+    if (!d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feature'").get()) { res.status(404).json({ error: 'この遺伝子サイドカーは GFF の行を持っていません（format 1）' }); return }
+    const lines: [number, string][] = []
+    for (const r of d.prepare('SELECT lineno, line FROM gff_header WHERE acc=?').all(q.acc) as any[]) lines.push([r.lineno, r.line])
+    for (const r of d.prepare('SELECT lineno, seqid, source, type, start, end, score, strand, phase, attrs FROM feature WHERE acc=?').all(q.acc) as any[]) lines.push([r.lineno, [r.seqid, r.source, r.type, r.start, r.end, r.score, r.strand, r.phase, r.attrs].join('\t')])
+    if (!lines.length) { res.status(404).json({ error: 'その株の GFF がありません: ' + q.acc }); return }
+    lines.sort((a, b) => a[0] - b[0])
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="' + q.acc.replace(/[^A-Za-z0-9._-]/g, '_') + '.gff"')
+    res.send(lines.map(l => l[1]).join('\n') + '\n')
+  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+})
+
 travRouter.get('/trav/genedensity', (req, res) => {
   const q = req.query as Record<string, string>; if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   try { const t = loadTrav(q.db); if (!t) { res.status(404).json({ error: 'no .trav sidecar' }); return } res.json(travGeneDensity(t, Number(q.x0) || 0, Number(q.x1) || 1e12, Number(q.nbin) || 300, q.minanch != null ? Number(q.minanch) : 50)) } catch (err) { res.status(500).json({ error: String(err) }) }

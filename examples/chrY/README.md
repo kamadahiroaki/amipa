@@ -60,9 +60,12 @@ docker run --rm -p 3001:3001 -v "$PWD/chrY.amipa:/data:ro" amipa-viewer serve
 chrY.amipa/
   manifest.json
   chrY.db            本体（多層 SQLite）
-  chrY.db.distill/   塩基レベル整列（bubble MSA）
+  chrY.db.distill/   パスのウォーク（通過と塩基の段の材料）
+  chrY.db.trav       通過（Traversals パネル）
+  chrY.db.tiled      描画用のタイル索引
   chrY.db.annot      --band/--gene を渡したとき
   chrY.db.reads      --reads を渡したとき
+  chrY.db.xdepth     同上（合意座標ごとのリードの深さ）
   reads/HG002.gaf.zst        同上（実体）
   work/                      中間物とログ。配布時は削ってよい
   state.json
