@@ -59,6 +59,18 @@ else
 fi
 grep -q "RESULT: OK" "$TMP/check.log" || { echo "NG  amipa check が OK でない"; exit 1; }
 
+echo "-- trav（Traversals の錨・通過）"
+"$PY" - "$OUT/$NAME.db.trav" <<'PYEOF' || { echo "NG  .trav が足りない"; exit 1; }
+import sqlite3, sys
+c = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+n = c.execute("select count(*) from trav").fetchone()[0]; arrs = {r[0] for r in c.execute("select name from arrays")}; nsup = c.execute("select count(*) from super").fetchone()[0]
+meta = dict(c.execute("select key, value from meta"))
+need = {"x_of_dense", "dense_of_x", "xbp", "x_fill"}
+print(f"  通過 {n:,}  座標 {meta.get('R')}  錨 強 {meta.get('strong')}  スーパーノード {nsup:,}  配列 {sorted(arrs)}")
+sys.exit(0 if n > 0 and need <= arrs and nsup > 0 else 1)
+PYEOF
+echo "  OK"
+
 echo "-- 再開の判定（もう一度走らせて、全段が「変更なし」で飛ぶか）"
 if [ "$RUNNER" = host ]; then
   "$PY" "$REPO/prep/amipa_prep/cli.py" run --gfa "$GFA" --out "$OUT" --name "$NAME" \
@@ -66,9 +78,9 @@ if [ "$RUNNER" = host ]; then
   # bundle は毎回作り直す仕様なので、それ以外が飛べば正しい
   # ★「[段] 変更なし → 飛ばす」の行も同じ形なので、それを除いた上で段の行が残るかを見る
   #   （以前は除いていなかったので、全段が正しく飛んでも NG と出ていた）。tiled も対象に含める。
-  if grep -E "^\[amipa .*\] \[(distill|decompose|lod|layout|emit|tiled)\]" "$TMP/again.log" | grep -qv "変更なし"; then
+  if grep -E "^\[amipa .*\] \[(distill|decompose|lod|layout|emit|trav|tiled)\]" "$TMP/again.log" | grep -qv "変更なし"; then
     echo "NG  変えていないのに走り直した段がある:"
-    grep -E "\[(distill|decompose|lod|layout|emit|tiled)\]" "$TMP/again.log" | grep -v "変更なし"; exit 1
+    grep -E "\[(distill|decompose|lod|layout|emit|trav|tiled)\]" "$TMP/again.log" | grep -v "変更なし"; exit 1
   fi
   echo "  OK  全段「変更なし」で飛んだ"
 fi

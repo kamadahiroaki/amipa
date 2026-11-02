@@ -57,9 +57,10 @@ DEFAULT_TEMPLATE = PKG / "templates" / "schema.db"
 # povu は PATH 上（コンテナは /usr/local/bin/povu）。AMIPA_POVU で明示指定できる。
 DEFAULT_POVU = Path(os.environ.get("AMIPA_POVU") or os.environ.get("GGB_POVU") or "povu")
 
-# 実行順。annot / reads は入力が指定された時だけ走る。
+# 実行順。annot / reads は入力が指定された時だけ走る。trav（Traversals の錨・通過）はパスがあれば既定で走る（--no-trav で省く）。
+# xdepth（座標ごとのリードの深さ）は reads と trav の両方があるときだけ。genes（株ごとの GFF をパスに写す）は --gff-dir のときだけ。
 # tiled は reads の後: 葉層のリード支持(rs)を edges_t に焼き込むため。reads を後から足したら tiled も作り直す
-STAGES = ["distill", "collapse", "decompose", "lod", "layout", "emit", "annot", "reads", "tiled", "bundle"]
+STAGES = ["distill", "collapse", "decompose", "lod", "layout", "emit", "trav", "genes", "annot", "reads", "xdepth", "tiled", "bundle"]
 
 STATE_VERSION = 1
 
@@ -229,6 +230,9 @@ class Bundle:
           <name>.db.distill/           MSA 用（**実体ディレクトリ**。symlink にしない）
           <name>.db.annot              アノテ（--band/--gene/--region 指定時）
           <name>.db.tiled              描画用タイル索引（既定で作る。--no-tiled で省く）
+          <name>.db.trav               Traversals の錨・座標・通過（既定で作る。--no-trav で省く）
+          <name>.db.xdepth             座標ごとのリードの深さ（--reads と trav があるとき）
+          <name>.db.genes              株ごとの遺伝子（--gff-dir のとき）
           reads/                       リード実体（seekable zstd の GAF。--reads 指定時）
           manifest.json                版・能力・sha256
           work/                        中間物（typed/npz/pvst/tree）と log。部分やり直しに要る
@@ -246,6 +250,9 @@ class Bundle:
         self.distill = Path(str(self.db) + ".distill")
         self.annot = Path(str(self.db) + ".annot")
         self.tiled = Path(str(self.db) + ".tiled")     # 描画用タイル索引（tile_index.py）
+        self.trav = Path(str(self.db) + ".trav")       # Traversals の錨・座標・通過（trav_build.py ほか）
+        self.xdepth = Path(str(self.db) + ".xdepth")   # 座標ごとのリードの深さ（reads_xdepth.py）
+        self.genes = Path(str(self.db) + ".genes")     # 株ごとの遺伝子（genes_build.py → genes_project.py）
         self.reads_dir = self.root / "reads"
         self.state_path = self.root / "state.json"
         self.povu_dir = self.work / "povu"
@@ -528,6 +535,39 @@ def build_stages(b: Bundle, a) -> dict:
         note="多層 DB 化（nametri/配列/リボンを内包。空間索引は tiled 段）",
     )
 
+    # trav（既定で作る）: 錨・座標・通過・境界・反復を distill から作り <db>.trav に書く。続けて錨でない葉（x_fill）とスーパーノード（super、db が要る）の座標を足す。
+    #   種は参照パス（--ref-key で始まる名前のパス。無ければ先頭のパス）。一時ファイルに書いてから置き換える（途中で落ちても古い .trav を壊さない）。
+    #   パスの無いグラフでは作れない（distill の p_names が空なら段を作らない）
+    pn = b.distill / "p_names.txt"
+    has_paths = (not pn.exists()) or pn.stat().st_size > 0
+    if not getattr(a, "no_trav", False) and has_paths:
+        tmp_trav = Path(str(b.trav) + ".tmp")
+        st["trav"] = Stage(
+            "trav",
+            [["rm", "-f", str(tmp_trav)],
+             [py, str(PKG / "trav_build.py"), "--distill", str(b.distill), "--seed-ref", a.ref_key, "--out", str(tmp_trav)],
+             [py, str(PKG / "trav_xfill.py"), str(tmp_trav), str(b.distill)],
+             [py, str(PKG / "trav_super.py"), str(b.db), str(tmp_trav), str(b.distill)],
+             ["mv", "-f", str(tmp_trav), str(b.trav)]],
+            inputs=[b.distill, b.db], outputs=[b.trav],
+            env={**thread_env(1), "NUMBA_NUM_THREADS": "1"},
+            note="Traversals の錨・座標・通過（種は参照パス）",
+        )
+
+    # 遺伝子（--gff-dir のとき）: パス名の先頭を名前にした <gff-dir>/<名前>.gff を各パスのトークン範囲に写す（genes_build.py）。
+    #   続けて、注釈の無いパスへ注釈のあるパスの遺伝子をノードの共有で写す（genes_project.py。全株に注釈があれば何も足さない）
+    if getattr(a, "gff_dir", None):
+        raw = b.work / "genes.raw"
+        st["genes"] = Stage(
+            "genes",
+            [["rm", "-f", str(raw)],
+             [py, str(PKG / "genes_build.py"), "--distill", str(b.distill), "--gff-dir", str(a.gff_dir), "--out", str(raw)],
+             [py, str(PKG / "genes_project.py"), str(raw), str(b.distill), str(b.genes) + ".tmp"],
+             ["mv", "-f", str(b.genes) + ".tmp", str(b.genes)]],
+            inputs=[b.distill, Path(a.gff_dir)], outputs=[b.genes], env=thread_env(1),
+            note="株ごとの遺伝子（GFF → パスのトークン範囲、参照の注釈を写す）",
+        )
+
     # アノテ（任意）: <db>.annot サイドカーへ書き、被覆索引を張る。DB 本体は不変。
     if a.band or a.gene or a.region:
         acmd = [py, str(PKG / "annotate.py"), str(b.db)]
@@ -578,6 +618,16 @@ def build_stages(b: Bundle, a) -> dict:
             "reads", [rcmd], inputs=ins, outputs=[b.reads_dir], env=thread_env(1),
             note=f"リード整列（{len(a.reads)} サンプル, オンデマンド索引"
                  + ("・追記" if getattr(a, "reads_append", False) else "") + "）",
+        )
+
+    # 座標ごとのリードの深さ（reads と trav があるとき）: Traversals のブロック・錨の列の段の厚み
+    if a.reads and "trav" in st:
+        st["xdepth"] = Stage(
+            "xdepth",
+            [[py, str(PKG / "reads_xdepth.py"), "--db", str(b.db), "--tmp", str(tmp)]],
+            inputs=[b.trav, b.reads_dir], outputs=[b.xdepth], env=thread_env(1),
+            key_exclude=["--tmp"],   # 一時領域の場所は出力を変えない（emit と同じ）
+            note="座標ごとのリードの深さ（Traversals 用）",
         )
 
     # タイル索引（既定で作る。★本体は R-Tree を持たないので、viewer にはこれが唯一の空間索引）:
@@ -637,7 +687,7 @@ def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
     con.close()
 
     files = []
-    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
+    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.genes] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
             + sorted(b.root.glob(f"{b.db.name}.nametri")) \
             + sorted(b.root.glob(f"{b.db.name}.reads")):
         if not p.exists():
@@ -845,6 +895,10 @@ def add_common(p, need_gfa=False):
                    help="自明バブルの連鎖を 1 ノードに畳んでからアトラスを作る（可逆）。"
                         "ノードが 4〜6 倍減り、SNP が画素を食わなくなる。"
                         "アレルの差分と元ノードとの対応は <db>.collapse に入る")
+    p.add_argument("--gff-dir", default=None,
+                   help="株ごとの GFF の置き場（<名前>.gff、名前はパス名の # の前）。あれば <name>.db.genes を作る（Traversals の遺伝子）")
+    p.add_argument("--no-trav", action="store_true",
+                   help="Traversals の錨・通過 <name>.db.trav を作らない（既定は作る。パスの無いグラフでは作らない）")
     p.add_argument("--no-tiled", action="store_true",
                    help="描画用タイル索引 <name>.db.tiled を作らない（既定は作る。★本体は R-Tree を持たないので、"
                         "無いと viewer で開けない。試験目的以外では付けない）")
