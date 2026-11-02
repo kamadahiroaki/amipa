@@ -82,7 +82,9 @@ bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
   const distill = distillFor(dbPath)
   if (!distill) { res.json({ error: 'この DB には MSA 用 distill サイドカーがありません（' + path.basename(dbPath) + '.distill）' }); return }
   const argv = ['--db', dbPath, '--distill', distill, '--ranges-stdin', '--flank', flank, '--label', String(b.label ?? 'Blocks')]
-  { const syn = dbPath + '.synteny'; let real = ''; try { real = fs.realpathSync(dbPath) + '.synteny' } catch { /* */ } const sp = fs.existsSync(syn) ? syn : (real && fs.existsSync(real) ? real : ''); if (sp) argv.push('--synteny', sp) }   // 合意列で列を区切る（窓の一部しか覆わない行があっても揃う）
+  { // 合意の並びで行の向きと列の区切りの順を決める（窓の一部しか覆わない行があっても揃う）。.trav の座標を優先し、無ければ古い木の dcol（11-02: 6 窓で列・行とも同一）
+    let real = ''; try { real = fs.realpathSync(dbPath) } catch { /* */ }
+    const sp = ['.trav', '.synteny'].flatMap(sfx => [dbPath + sfx, real ? real + sfx : '']).find(f => f && fs.existsSync(f)) || ''; if (sp) argv.push('--synteny', sp) }
   if (b.cap != null && Number.isFinite(Number(b.cap))) argv.push('--cap', String(Math.max(0, Math.floor(Number(b.cap)))))   // 0 = 畳まない（Blocks パネルは画面側で畳む）
   if (b.maxLeaves != null && Number.isFinite(Number(b.maxLeaves))) argv.push('--max-leaves', String(Math.max(1, Math.min(12000, Math.floor(Number(b.maxLeaves))))))   // 葉の上限（既定 400。画面は 12,000 を渡す: 1,200 列 ≈ 13 kb を一度に。3,000 列で計算 2 秒・5 MB）
   const t0 = Date.now()

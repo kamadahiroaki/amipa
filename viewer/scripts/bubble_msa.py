@@ -42,6 +42,23 @@ MAX_COLS   = 320
 # --max-tokens / backend の env MSA_MAX_TOKENS で調整可。
 MAX_TOKENS = 800_000_000
 
+def _order_array(path):
+    """dense id → 合意の並びの値。<db>.trav（11-02〜）なら座標 x（錨は x_of_dense、錨でない葉は x_fill）、古い木 <db>.synteny なら dcol。
+    使うのは値の大小（行の向き・区切りの順）だけなので、どちらでもよい。無い値は -1"""
+    import sqlite3 as _sq
+    try:
+        con = _sq.connect("file:%s?mode=ro" % path, uri=True)
+        def get(nm):
+            r = con.execute("SELECT dtype, n, blob FROM arrays WHERE name=?", (nm,)).fetchone(); return np.frombuffer(r[2], dtype=np.dtype(r[0])) if r else None
+        if path.endswith(".trav"):
+            x = get("x_of_dense"); xf = get("x_fill")
+            if x is None: con.close(); return None
+            x = x.astype(np.int64)
+            if xf is not None: m = (x < 0) & (xf[:len(x)] >= 0); x[m] = xf[:len(x)][m]
+        else: x = get("dcol")
+        con.close(); return x
+    except Exception: return None
+
 _SYN_CACHE = {}
 def synteny_dcol(path):
     """<db>.synteny の dcol（dense id → 合意列）。常駐実行器で使い回すため sys.modules に置く"""
@@ -51,11 +68,9 @@ def synteny_dcol(path):
     except OSError: return None
     ent = cache.get(path)
     if not ent or ent[0] != mt:
-        try:
-            con = _sq.connect("file:%s?mode=ro" % path, uri=True); row = con.execute("SELECT dtype, n, blob FROM arrays WHERE name='dcol'").fetchone(); con.close()
-        except Exception: return None
-        if not row: return None
-        ent = (mt, np.frombuffer(row[2], dtype=np.dtype(row[0]))); cache[path] = ent
+        arr = _order_array(path)
+        if arr is None: return None
+        ent = (mt, arr); cache[path] = ent
     return ent[1]
 def synteny_cols(path, dense_of_name):
     """<db>.synteny の dcol（dense id → 合意列）でノード名 → 合意列。常駐実行器で使い回すため sys.modules に置く"""
@@ -65,11 +80,9 @@ def synteny_cols(path, dense_of_name):
     except OSError: return None
     ent = cache.get(path)
     if not ent or ent[0] != mt:
-        try:
-            con = _sq.connect("file:%s?mode=ro" % path, uri=True); row = con.execute("SELECT dtype, n, blob FROM arrays WHERE name='dcol'").fetchone(); con.close()
-        except Exception: return None
-        if not row: return None
-        ent = (mt, np.frombuffer(row[2], dtype=np.dtype(row[0]))); cache[path] = ent
+        arr = _order_array(path)
+        if arr is None: return None
+        ent = (mt, arr); cache[path] = ent
     dc = ent[1]
     return {n: int(dc[d]) if 0 <= d < len(dc) else -1 for n, d in dense_of_name.items()}
 
@@ -86,7 +99,7 @@ def main():
                     help="stdin の JSON {ranges:[[path名, s0, e0],…], label} で対象を与える（Blocks パネルの底からの受け渡し）。"
                          "S=範囲内のトークンの葉集合、行=与えたパスの範囲だけ")
     ap.add_argument("--label", default="")
-    ap.add_argument("--synteny", default="", help="木のサイドカー <db>.synteny。あれば列の区切りと順を合意列（dcol）で決める（行が窓の一部しか覆わないときも揃う）")
+    ap.add_argument("--synteny", default="", help="合意の並びのサイドカー（<db>.trav か古い木 <db>.synteny）。あれば行の向きと列の区切りの順を合意の並びで決める（行が窓の一部しか覆わないときも揃う）")
     ap.add_argument("--samples", default="",
                     help="対象 sample/hap/contig キーのカンマ区切り(空=この bubble を通る全パス)。参照は常に含む")
     ap.add_argument("--flank", type=int, default=4)
