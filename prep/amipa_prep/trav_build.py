@@ -15,7 +15,7 @@ import numpy as np
 from numba import njit
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--distill", required=True); ap.add_argument("--seed-synteny", default="", help="向きと同順の種に古い木（.synteny）の dcol を使う。無ければ --seed-ref の参照パスから作る（11-02）"); ap.add_argument("--reorder-blocks", type=int, default=1, help="大きな塊を種の順に並べ直す（11-02）"); ap.add_argument("--seed-ref", default="", help="種にする参照パスの名前の頭（例 GRCh38）。空なら先頭のパス"); ap.add_argument("--out", required=True)
+ap.add_argument("--distill", required=True); ap.add_argument("--seed-synteny", default="", help="向きと同順の種に古い木（.synteny）の dcol を使う。無ければ --seed-ref の参照パスから作る（11-02）"); ap.add_argument("--gap-fill", type=int, default=1, help="強い錨の片で覆われない区間を補間の錨で切り直して片を足す（11-02）"); ap.add_argument("--reorder-blocks", type=int, default=1, help="大きな塊を種の順に並べ直す（11-02）"); ap.add_argument("--seed-ref", default="", help="種にする参照パスの名前の頭（例 GRCh38）。空なら先頭のパス"); ap.add_argument("--out", required=True)
 ap.add_argument("--support-strong", type=float, default=0.5); ap.add_argument("--max-multi", type=float, default=0.1); ap.add_argument("--tol", type=float, default=3.0, help="補間座標のばらつき（強い錨の順位の単位）")
 ap.add_argument("--eps", type=int, default=10); ap.add_argument("--J", type=int, default=2000); ap.add_argument("--min-anchors", type=int, default=10); ap.add_argument("--floor-bp", type=int, default=500)
 ap.add_argument("--contained", type=float, default=0.9, help="他コンティグとこの割合以上を共有するコンティグは冗長として一意性の計算から除く")
@@ -364,18 +364,39 @@ ends = collections.Counter()   # 座標 → 通過の端の支持（ハプロタ
 breaks_rev = []                # (x, hap) 単調性の違反（後ろ向き）による切断の着地点。多くの株が同じ所で跳ぶ＝順序が線形にならない硬い領域
 cov = np.zeros(R + 2, np.int32)
 for pi in range(NP):
-    t = tok(pi); h = phap[pi]; use = (strong[t] if a.seg_anchors == 'strong' else hasx[t]) & ((C[t, h] >= 1) if a.seg_multi else (C[t, h] == 1)) & (not excl[pi]); xs = np.where(use, X[t], -1); vi = np.flatnonzero(xs >= 0)
-    if vi.size < a.min_anchors: continue
-    xv = xs[vi]; cuts, kinds = segment(xv, a.eps, a.J, fold); st = np.concatenate(([0], cuts)); en = np.concatenate((cuts, [vi.size]))
-    for c_, k_ in zip(cuts, kinds):
-        if k_ == 1: breaks_rev.append((int(xv[c_]), int(h)))
+    t = tok(pi); h = phap[pi]; mult_ok = ((C[t, h] >= 1) if a.seg_multi else (C[t, h] == 1)) & (not excl[pi])
+    use = (strong[t] if a.seg_anchors == 'strong' else hasx[t]) & mult_ok; xs = np.where(use, X[t], -1); vi = np.flatnonzero(xs >= 0)
     cum = np.concatenate(([0], np.cumsum(bp[t]))); segs = []
-    for s0, e0 in zip(st, en):
-        if e0 - s0 < a.min_anchors: continue
-        i0, i1 = int(vi[s0]), int(vi[e0 - 1]); x0, x1 = int(xv[s0:e0].min()), int(xv[s0:e0].max()); d = int(np.sign(xv[e0 - 1] - xv[s0])) or 1
-        segs.append([pi, int(h), i0, i1, x0, x1, d, 0, int(e0 - s0), int(cum[i1 + 1] - cum[i0]), int(cum[i0])])   # 末尾: コンティグ上の bp オフセット（i0 の開始）
+    def add_segs(vi_, xv_, cuts_, fill=0):
+        st_ = np.concatenate(([0], cuts_)); en_ = np.concatenate((cuts_, [vi_.size]))
+        for s0, e0 in zip(st_, en_):
+            if e0 - s0 < a.min_anchors: continue
+            i0, i1 = int(vi_[s0]), int(vi_[e0 - 1]); x0, x1 = int(xv_[s0:e0].min()), int(xv_[s0:e0].max()); d = int(np.sign(xv_[e0 - 1] - xv_[s0])) or 1
+            segs.append([pi, int(h), i0, i1, x0, x1, d, 0, int(e0 - s0), int(cum[i1 + 1] - cum[i0]), int(cum[i0]), fill])   # bp0: コンティグ上の bp オフセット（i0 の開始）、fill: 穴埋めの片
+    if vi.size >= a.min_anchors:
+        xv = xs[vi]; cuts, kinds = segment(xv, a.eps, a.J, fold)
+        for c_, k_ in zip(cuts, kinds):
+            if k_ == 1: breaks_rev.append((int(xv[c_]), int(h)))
+        add_segs(vi, xv, cuts)
+    # 隙間の穴埋め（11-02）: 強い錨の片で覆われないトークンの区間を、補間で置いた錨も使って切り直して片を足す。強い錨の無い区間（両隣の片が座標の跳びで
+    #   切れる所）がどの片にも入らず、Traversals の行が抜けた（ecoli50 x 828,098 付近の 9 株、ヒト x 1.64–1.68 M の GRCh38 chr21 など。
+    #   tests/trav/check_coverage.py）。全体を補間の錨で切ると ecoli の通過が 4 倍に細切れになった（v10）ので、穴だけに使う。
+    #   穴埋めの片（fill=1）は行の表示に使うだけで、コピー番号・境界・被覆（＝ブロックの構造）には入れない（入れるとヒトで境界が 2,199 → 6,460、v11）
+    if a.gap_fill and a.seg_anchors == 'strong':
+        xa = np.where(hasx[t] & mult_ok, X[t], -1); va = np.flatnonzero(xa >= 0)
+        if va.size >= a.min_anchors:
+            inside = np.zeros(t.size + 1, np.int32)
+            for sg in segs: inside[sg[2]] += 1; inside[sg[3] + 1] -= 1
+            inside = np.cumsum(inside)[:t.size] > 0; vg = va[~inside[va]]
+            if vg.size >= a.min_anchors:
+                ci = np.cumsum(inside)   # 片を 1 つでも挟めば別の穴
+                grp = np.flatnonzero(ci[vg[1:]] != ci[vg[:-1]]) + 1
+                for g0, g1 in zip(np.concatenate(([0], grp)), np.concatenate((grp, [vg.size]))):
+                    if g1 - g0 < a.min_anchors: continue
+                    vv = vg[g0:g1]; xg = xa[vv]; cg, _kg = segment(xg, a.eps, a.J, fold); add_segs(vv, xg, cg, 1)
+        segs.sort(key=lambda sg: sg[2])
     # コピー番号: 座標区間が 50% 以上重なる通過に、コンティグの中の順で 1, 2, …
-    byx = sorted(range(len(segs)), key=lambda i: segs[i][4]); groups = []
+    byx = sorted((i for i in range(len(segs)) if not segs[i][11]), key=lambda i: segs[i][4]); groups = []
     for i in byx:
         g = None
         for G in groups:
@@ -396,9 +417,10 @@ for pi in range(NP):
                         return (int(sel.min()), int(sel.max())) if sel.size else (seg[2], seg[2])
                     sa, sb = span(A_), span(B_); copies.append((pi, int(h), int(xo0), int(xo1), sa[0], sa[1], sb[0], sb[1], int(cum[sa[1] + 1] - cum[sa[0]]), int(cum[sb[1] + 1] - cum[sb[0]])))
     for sg in segs:
-        trav.append(tuple(sg)); ends[sg[4]] += 1; ends[sg[5] + 1] += 1; cov[sg[4]] += 1; cov[sg[5] + 1] -= 1
+        trav.append(tuple(sg))
+        if not sg[11]: ends[sg[4]] += 1; ends[sg[5] + 1] += 1; cov[sg[4]] += 1; cov[sg[5] + 1] -= 1
 cov = np.cumsum(cov)[:R]
-pt = collections.Counter(t_[1] for t_ in trav); log(f"通過 {len(trav):,}（ハプロタイプあたり中央値 {np.median(list(pt.values())):.0f}、長さ中央値 {np.median([t_[9] for t_ in trav]):,.0f} bp）コピーの重なり {len(copies):,} 組 {sum(c_[8] for c_ in copies)/1e6:.2f} Mb")
+pt = collections.Counter(t_[1] for t_ in trav if not t_[11]); log(f"通過 {sum(1 for t_ in trav if not t_[11]):,}＋穴埋め {sum(1 for t_ in trav if t_[11]):,}（ハプロタイプあたり中央値 {np.median(list(pt.values())):.0f}、長さ中央値 {np.median([t_[9] for t_ in trav if not t_[11]]):,.0f} bp）コピーの重なり {len(copies):,} 組 {sum(c_[8] for c_ in copies)/1e6:.2f} Mb")
 
 # ---- 5. 境界と持続度の木 ----
 dcov = np.diff(np.concatenate(([0], cov))); bpos = np.flatnonzero(dcov != 0); support = np.abs(dcov[bpos])
@@ -460,7 +482,7 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE haps(hid INTEGER PRIMARY KEY, hap TEXT);
 CREATE TABLE paths(pid INTEGER PRIMARY KEY, path TEXT, hid INTEGER, orient INTEGER, relation INTEGER, excluded INTEGER, ntok INTEGER, bp INTEGER);
 CREATE TABLE nodes(dense INTEGER PRIMARY KEY, x INTEGER, kind INTEGER, nuniq INTEGER, nmulti INTEGER, spread REAL);
-CREATE TABLE trav(id INTEGER PRIMARY KEY, pid INTEGER, hid INTEGER, i0 INTEGER, i1 INTEGER, x0 INTEGER, x1 INTEGER, dir INTEGER, copy INTEGER, nanch INTEGER, bp INTEGER, bp0 INTEGER);
+CREATE TABLE trav(id INTEGER PRIMARY KEY, pid INTEGER, hid INTEGER, i0 INTEGER, i1 INTEGER, x0 INTEGER, x1 INTEGER, dir INTEGER, copy INTEGER, nanch INTEGER, bp INTEGER, bp0 INTEGER, fill INTEGER DEFAULT 0);
 CREATE INDEX idx_trav_x ON trav(x0, x1); CREATE INDEX idx_trav_pid ON trav(pid, i0);
 CREATE TABLE bounds(x INTEGER PRIMARY KEY, support INTEGER, persistence REAL);
 CREATE TABLE reps(id INTEGER PRIMARY KEY, pid INTEGER, hid INTEGER, i0 INTEGER, i1 INTEGER, bp INTEGER);
@@ -471,7 +493,7 @@ CREATE TABLE arrays(name TEXT PRIMARY KEY, dtype TEXT, n INTEGER, blob BLOB);
 cur.executemany("INSERT INTO haps VALUES (?,?)", list(enumerate(haps)))
 cur.executemany("INSERT INTO paths VALUES (?,?,?,?,?,?,?,?)", [(pi, names[pi], int(phap[pi]), int(orient[pi]), int(relation[pi]), int(excl[pi]), int(p_off[pi + 1] - p_off[pi]), int(bp[tok(pi)].sum())) for pi in range(NP)])
 nz = np.flatnonzero((kind > 0)); cur.executemany("INSERT INTO nodes VALUES (?,?,?,?,?,?)", [(int(n), int(X[n]), int(kind[n]), int(cnt1[n]), int(cntm[n]), float(spread[n])) for n in nz])
-cur.executemany("INSERT INTO trav VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?)", trav)
+cur.executemany("INSERT INTO trav VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?)", trav)
 cur.executemany("INSERT INTO bounds VALUES (?,?,?)", [(int(edges[q]), int(sup[q]) if sup[q] < 10**9 else 0, float(persist[q])) for q in range(edges.size)])
 cur.executemany("INSERT INTO reps VALUES (NULL,?,?,?,?,?)", reps); cur.executemany("INSERT INTO copies VALUES (NULL,?,?,?,?,?,?,?,?,?,?)", copies); cur.executemany("INSERT INTO atoms VALUES (NULL,?,?,?,?,?)", atoms)
 for nm, arr in (("x_of_dense", X.astype(np.int32)), ("dense_of_x", order.astype(np.int32)), ("xbp", xbp), ("cov", cov.astype(np.int32)), ("kind", kind), ("id_map", id_map)):
