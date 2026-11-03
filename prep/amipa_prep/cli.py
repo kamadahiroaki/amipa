@@ -380,9 +380,12 @@ def thread_env(n: int) -> dict:
     という**一見無関係なメッセージ**で numpy の import 自体が落ちる。
     """
     n = max(1, int(n))
+    # NUMPY_MADVISE_HUGEPAGE=0（2026-11-03）: numpy は大きな配列に MADV_HUGEPAGE を付ける。THP が always・defrag=madvise の計算ノードでは
+    #   確保のたびにカーネルが同期的にメモリを詰め直し、混んだノードで時間が 3 倍・10〜20 倍ぶれた（全ゲノム trav: sys 4,030 s → 72 s、
+    #   壁 1:45 → 0:38、出力は同一）
     return {"OMP_NUM_THREADS": str(n), "OPENBLAS_NUM_THREADS": str(n),
             "MKL_NUM_THREADS": str(n), "NUMEXPR_NUM_THREADS": str(n),
-            "VECLIB_MAXIMUM_THREADS": str(n)}
+            "VECLIB_MAXIMUM_THREADS": str(n), "NUMPY_MADVISE_HUGEPAGE": "0"}
 
 
 def build_stages(b: Bundle, a) -> dict:
@@ -1003,6 +1006,7 @@ def add_common(p, need_gfa=False):
 
 
 def main():
+    os.environ.setdefault("NUMPY_MADVISE_HUGEPAGE", "0")   # 子の段すべてに（thread_env の注記）
     ap = argparse.ArgumentParser(prog="amipa prep", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)

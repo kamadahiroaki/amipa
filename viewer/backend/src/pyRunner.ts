@@ -26,7 +26,7 @@ class PyRunner {
 
   constructor(readonly idx: number) {
     const tag = `[py:${idx}]`
-    this.proc = spawn(AMIPA_PYTHON, [RUNNER], { stdio: ['pipe', 'pipe', 'pipe'] })
+    this.proc = spawn(AMIPA_PYTHON, [RUNNER], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, NUMPY_MADVISE_HUGEPAGE: process.env.NUMPY_MADVISE_HUGEPAGE ?? '0' } })   // numpy の MADV_HUGEPAGE は計算ノードでカーネルの詰め直しに詰まる（prep の thread_env の注記）
     this.proc.stdout.setEncoding('utf8')
     this.proc.stdout.on('data', (chunk: string) => this.onData(chunk))
     this.proc.stderr.setEncoding('utf8')
