@@ -57,21 +57,37 @@ out_g, out_gt, out_f, out_ft = [], [], [], []
 nproj = 0; ncopy2 = 0
 # 各パスが共有する参照パスを先に 1 回の走査で調べ、参照ごとの内側のループをそのパスだけにする（11-02）。以前は参照ごとに全パスのトークンを読み、
 # 計算量が 参照パス数 × 全トークン数（全ゲノムは参照 24 本以上・トークン 44 億）。ノードと、それを含む参照パスの組を全部持つ（参照どうしの共有も落とさない）
-pr_n, pr_r = [], []
-for k_, rp in enumerate(ref_pids):
-    u_ = np.unique(np.asarray(p_tok[int(p_off[rp]):int(p_off[rp + 1])]).astype(np.int64)); pr_n.append(u_); pr_r.append(np.full(u_.size, k_, np.int64))
-pr_n = np.concatenate(pr_n) if pr_n else np.zeros(0, np.int64); pr_r = np.concatenate(pr_r) if pr_r else np.zeros(0, np.int64)
-o_ = np.lexsort((pr_r, pr_n)); pr_n = pr_n[o_]; pr_r = pr_r[o_]
 touch = [[] for _ in ref_pids]   # 参照ごとの、ノードを共有するパス
 refset = set(ref_pids)
-for pi in range(len(p_names)):
-    if pi in refset: continue
-    pa, pb = int(p_off[pi]), int(p_off[pi + 1])
-    if pb - pa < 50 or pr_n.size == 0: continue
-    u_ = np.unique(np.asarray(p_tok[pa:pb]).astype(np.int64)); lo_ = np.searchsorted(pr_n, u_, "left"); hi_ = np.searchsorted(pr_n, u_, "right"); m_ = hi_ > lo_
-    if not m_.any(): continue
-    rs = np.unique(np.concatenate([pr_r[a_:b_] for a_, b_ in zip(lo_[m_], hi_[m_])])) if m_.sum() < 64 else np.unique(pr_r[np.concatenate([np.arange(a_, b_) for a_, b_ in zip(lo_[m_], hi_[m_])])])
-    for k_ in rs.tolist(): touch[k_].append(pi)
+if 0 < len(ref_pids) <= 64:
+    # 11-03: ノード → 含む参照パスのビット（uint64）。各パスは自分のトークンのビットの OR を 1 回取るだけ（全ゲノムで 63 分 → 数分。
+    #   以前はパスごとに np.unique と、共有ノードごとの Python の範囲の連結だった）
+    rmask = np.zeros(N + 1, np.uint64)
+    for k_, rp in enumerate(ref_pids):
+        u_ = np.unique(np.asarray(p_tok[int(p_off[rp]):int(p_off[rp + 1])]).astype(np.int64)); rmask[u_] |= np.uint64(1 << k_)
+    for pi in range(len(p_names)):
+        if pi in refset: continue
+        pa, pb = int(p_off[pi]), int(p_off[pi + 1])
+        if pb - pa < 50: continue
+        bits = int(np.bitwise_or.reduce(rmask[np.asarray(p_tok[pa:pb])]))
+        k_ = 0
+        while bits:
+            if bits & 1: touch[k_].append(pi)
+            bits >>= 1; k_ += 1
+else:
+    pr_n, pr_r = [], []
+    for k_, rp in enumerate(ref_pids):
+        u_ = np.unique(np.asarray(p_tok[int(p_off[rp]):int(p_off[rp + 1])]).astype(np.int64)); pr_n.append(u_); pr_r.append(np.full(u_.size, k_, np.int64))
+    pr_n = np.concatenate(pr_n) if pr_n else np.zeros(0, np.int64); pr_r = np.concatenate(pr_r) if pr_r else np.zeros(0, np.int64)
+    o_ = np.lexsort((pr_r, pr_n)); pr_n = pr_n[o_]; pr_r = pr_r[o_]
+    for pi in range(len(p_names)):
+        if pi in refset: continue
+        pa, pb = int(p_off[pi]), int(p_off[pi + 1])
+        if pb - pa < 50 or pr_n.size == 0: continue
+        u_ = np.unique(np.asarray(p_tok[pa:pb]).astype(np.int64)); lo_ = np.searchsorted(pr_n, u_, "left"); hi_ = np.searchsorted(pr_n, u_, "right"); m_ = hi_ > lo_
+        if not m_.any(): continue
+        rs = np.unique(np.concatenate([pr_r[a_:b_] for a_, b_ in zip(lo_[m_], hi_[m_])])) if m_.sum() < 64 else np.unique(pr_r[np.concatenate([np.arange(a_, b_) for a_, b_ in zip(lo_[m_], hi_[m_])])])
+        for k_ in rs.tolist(): touch[k_].append(pi)
 log(f"参照を共有するパス {sum(len(v) for v in touch):,}（参照 {len(ref_pids)} 本）")
 for k_ref, rp in enumerate(ref_pids):
     ra, rb = int(p_off[rp]), int(p_off[rp + 1]); rtok = np.asarray(p_tok[ra:rb]).astype(np.int64); rori = np.asarray(p_ori[ra:rb])
