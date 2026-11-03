@@ -673,11 +673,37 @@ def build_stages(b: Bundle, a) -> dict:
 
 # ───────────────────────────── 実行 ─────────────────────────────
 
-def run_cmd(cmd, log_path: Path, env_extra: dict, dry: bool) -> None:
+def _tree_vm(pid: int) -> tuple:
+    """pid とその子孫の (VmSize の和, VmRSS の和) を kB で。/proc が無い環境では (0, 0)"""
+    try:
+        kids = {}
+        for d in os.listdir("/proc"):
+            if not d.isdigit(): continue
+            try:
+                with open(f"/proc/{d}/stat") as f: pp = int(f.read().rsplit(")", 1)[1].split()[1])
+                kids.setdefault(pp, []).append(int(d))
+            except (OSError, ValueError, IndexError): pass
+        vm = rss = 0; todo = [pid]
+        while todo:
+            q = todo.pop(); todo.extend(kids.get(q, []))
+            try:
+                with open(f"/proc/{q}/status") as f:
+                    for line in f:
+                        if line.startswith("VmSize:"): vm += int(line.split()[1])
+                        elif line.startswith("VmRSS:"): rss += int(line.split()[1])
+            except OSError: pass
+        return vm, rss
+    except OSError:
+        return 0, 0
+
+
+def run_cmd(cmd, log_path: Path, env_extra: dict, dry: bool) -> dict:
+    """コマンドを流してログに書く。返り値は資源の実測（11-04）: 最大 RSS（wait4、子孫込みの最大）、プロセス木の仮想メモリ・RSS の和の最大
+    （10 秒ごとの標本。スケジューラの s_vmem はこちらを縛る）、user / sys の CPU 秒。見積り（sizing）の較正に使う"""
     printable = " ".join(shlex.quote(str(c)) for c in cmd)
     if dry:
         print(f"  (dry-run) {printable}")
-        return
+        return {}
     env = os.environ.copy()
     env.update({k: str(v) for k, v in env_extra.items()})
     log(f"$ {printable}")
@@ -688,15 +714,28 @@ def run_cmd(cmd, log_path: Path, env_extra: dict, dry: bool) -> None:
         lf.flush()
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
         assert p.stdout is not None
+        import threading
+        peak = {"vm": 0, "rss": 0}; stop = threading.Event()
+        def sample():
+            ts = time.time()
+            while not stop.is_set():
+                vm, rss = _tree_vm(p.pid); peak["vm"] = max(peak["vm"], vm); peak["rss"] = max(peak["rss"], rss)
+                stop.wait(1 if time.time() - ts < 60 else 10)   # 最初の 1 分は 1 秒ごと（短い段の山を逃さない）
+        th = threading.Thread(target=sample, daemon=True); th.start()
         for raw in p.stdout:
             lf.write(raw)
             lf.flush()
             sys.stdout.write("    " + raw.decode(errors="replace"))
             sys.stdout.flush()
-        rc = p.wait()
+        _, status, ru = os.wait4(p.pid, 0); p.returncode = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else (status >> 8)
+        stop.set(); th.join(timeout=5)
+        rc = p.returncode
+    use = {"maxrss_gb": round(ru.ru_maxrss / 1048576, 2), "peak_vm_gb": round(peak["vm"] / 1048576, 2), "peak_rss_tree_gb": round(peak["rss"] / 1048576, 2),
+           "user_s": round(ru.ru_utime, 1), "sys_s": round(ru.ru_stime, 1)}
     if rc != 0:
-        die(f"失敗 (rc={rc}): {printable}\n  ログ: {log_path}")
-    log(f"  ok ({time.time() - t0:.1f}s)")
+        die(f"失敗 (rc={rc}, 最大 RSS {use['maxrss_gb']} GB, 仮想の最大 {use['peak_vm_gb']} GB): {printable}\n  ログ: {log_path}")
+    log(f"  ok ({time.time() - t0:.1f}s, 最大 RSS {use['maxrss_gb']} GB, 仮想の最大 {use['peak_vm_gb']} GB, user {use['user_s']} s, sys {use['sys_s']} s)")
+    return use
 
 
 def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
@@ -801,16 +840,17 @@ def execute(b: Bundle, a, want: list[str]) -> None:
         log(f"[{name}] {s.note}")
         for d in s.mkdirs:
             Path(d).mkdir(parents=True, exist_ok=True)
-        t0 = time.time()
+        t0 = time.time(); usage = {}
         for c in s.cmds:
             if c[0] == "<internal:manifest>":
                 write_manifest(b, a.hash_limit_gb)
             else:
-                run_cmd(c, b.logs / f"{name}.log", s.env, a.dry_run)
+                u = run_cmd(c, b.logs / f"{name}.log", s.env, a.dry_run)
+                for k, v in u.items(): usage[k] = round(usage.get(k, 0) + v, 2) if k.endswith("_s") else max(usage.get(k, 0), v)
         if not s.outputs_ok():
             die(f"[{name}] 出力が揃っていない: {[str(o) for o in s.outputs]}")
         state["stages"][name] = {
-            "status": "done", "key": s.key(), "secs": round(time.time() - t0, 1),
+            "status": "done", "key": s.key(), "secs": round(time.time() - t0, 1), "usage": usage,   # 資源の実測（run_cmd の注記）
             "finished_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             "outputs": [str(o) for o in s.outputs],
             "cmds": [[str(x) for x in c] for c in s.cmds],
@@ -1044,7 +1084,9 @@ def main():
             if not rec:
                 print(f"  {name:<10} {'-':<8}")
                 continue
-            print(f"  {name:<10} {rec['status']:<8} {rec.get('secs', 0):>9.1f}  {rec.get('finished_at','')}")
+            u = rec.get("usage") or {}
+            print(f"  {name:<10} {rec['status']:<8} {rec.get('secs', 0):>9.1f}  {rec.get('finished_at','')}"
+                  + (f"  RSS {u.get('maxrss_gb', 0)} GB / 仮想 {u.get('peak_vm_gb', 0)} GB / sys {u.get('sys_s', 0)} s" if u else ""))
         for extra in ("manifest.json",):
             print(f"  {extra}: {'あり' if (b.root / extra).exists() else 'なし'}")
         return
