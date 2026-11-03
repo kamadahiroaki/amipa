@@ -87,6 +87,23 @@ def _decode(buf, offs, PS, U, cols, kinds, out, rowid, ovf, start):
     return nov
 
 
+@njit(cache=True, nogil=True)
+def _cell_counts(buf, offs):
+    c = np.empty(offs.size, np.int64)
+    for k in range(offs.size): o = offs[k]; c[k] = (buf[o + 3] << 8) | buf[o + 4]
+    return c
+
+
+@njit(cache=True)
+def _scatter(src, srid, cnt, dst0, out, rid):
+    s = 0
+    for k in range(cnt.size):
+        d = dst0[k]
+        for t in range(cnt[k]):
+            for j in range(src.shape[1]): out[d + t, j] = src[s, j]
+            rid[d + t] = srid[s]; s += 1
+
+
 def _page_size(f):
     f.seek(0); h = f.read(100)
     if h[:16] != b"SQLite format 3\x00": raise ValueError("SQLite のファイルでない")
@@ -106,9 +123,10 @@ def leaf_pages(path, root, nio=32):
         level = [root]; leaves = []
         with ThreadPoolExecutor(nio) as ex:
             while level:
-                nxt = []
-                for p, b in ex.map(rd, sorted(level)):
-                    h = 100 if p == 1 else 0; t = b[h]
+                # 読むのは番号の昇順、並びは木の順（層の中で左から右）を保つ。葉は木の順＝rowid の順
+                got = dict(ex.map(rd, sorted(set(level)))); nxt = []
+                for p in level:
+                    b = got[p]; h = 100 if p == 1 else 0; t = b[h]
                     if t == 13: leaves.append(p); continue
                     if t != 5: raise ValueError(f"頁 {p} が表の B 木でない（型 {t}）")
                     n = struct.unpack(">H", b[h + 3:h + 5])[0]
@@ -117,7 +135,7 @@ def leaf_pages(path, root, nio=32):
                     nxt.append(struct.unpack(">I", b[h + 8:h + 12])[0])
                 level = nxt
     finally: os.close(fd)
-    return np.array(sorted(leaves), np.int64), PS, U
+    return np.array(leaves, np.int64), PS, U   # 木の順
 
 
 def scan(path, table, cols, chunk_mb=64, nio=1, nio_interior=16, log=None):
@@ -131,7 +149,9 @@ def scan(path, table, cols, chunk_mb=64, nio=1, nio_interior=16, log=None):
     info = con.execute(f"PRAGMA table_info({table})").fetchall(); idx = {r[1]: r[0] for r in info}
     if any(r[5] == 1 and r[2].upper() == "INTEGER" and sum(1 for x in info if x[5]) == 1 for r in info): raise ValueError("INTEGER PRIMARY KEY（rowid の別名）の表は対象外")
     ci = np.array([idx[c] for c, _ in cols], np.int64); ki = np.array([KIND_INT if k == "int" else KIND_NAME for _, k in cols], np.int64)
-    leaves, PS, U = leaf_pages(path, root[0], nio=nio_interior); log(f"  葉のページ {leaves.size:,}（{leaves.size * PS / 1e9:.1f} GB、内部ページを辿って {time.time() - t0:.1f}s）")
+    tree, PS, U = leaf_pages(path, root[0], nio=nio_interior); leaves = np.sort(tree)
+    trank = np.argsort(tree, kind="stable")   # ファイル順の k 番目の葉 → 木の順の番号
+    log(f"  葉のページ {leaves.size:,}（{leaves.size * PS / 1e9:.1f} GB、内部ページを辿って {time.time() - t0:.1f}s）")
     # 葉の並びを chunk_mb 以内の塊に分け（塊の間の葉の無い所は読まない）、nio 本を同時に順読みして解読する（解読は numba の nogil）。
     # 11-03: 全ゲノム（ストライプ 1 の 213 GB）で 31.5 GB を 1 本の順読みで 81 秒、8 本同時では 680 秒（1 台の OST で順読み同士が崩れた）。既定は 1 本
     from concurrent.futures import ThreadPoolExecutor
@@ -145,13 +165,18 @@ def scan(path, table, cols, chunk_mb=64, nio=1, nio_interior=16, log=None):
         n = _count_cells(buf, offs, PS); out = np.empty((n, len(cols)), np.int64); rid = np.empty(n, np.int64); ovf = np.empty(n, np.int64)
         nov = _decode(buf, offs, PS, U, ci, ki, out, rid, ovf, 0)
         if nov < 0: raise ValueError(f"頁 {int(leaves[i + (-1 - nov)])} が表の葉でない")
-        return out, rid, ovf[:nov], buf.size
-    outs, rids, ovfs = [], [], []; nread = 0
+        return i, j, _cell_counts(buf, offs), out, rid, ovf[:nov], buf.size
+    parts = []; nread = 0; cnt = np.zeros(leaves.size, np.int64)
     try:
         with ThreadPoolExecutor(nio) as ex:
-            for out, rid, ov, nb in ex.map(work, chunks): outs.append(out); rids.append(rid); ovfs.append(ov); nread += nb
+            for i, j, cc, out, rid, ov, nb in ex.map(work, chunks): cnt[i:j + 1] = cc; parts.append((i, j, out, rid, ov)); nread += nb
     finally: os.close(fd)
-    out = np.concatenate(outs) if outs else np.zeros((0, len(cols)), np.int64); rid = np.concatenate(rids) if rids else np.zeros(0, np.int64)
+    # 11-03: 行を rowid で並べ直す argsort（1.5 億行）が全ゲノムで 6.5 分かかった → 葉ごとの行を木の順の位置へ直接書く
+    tcnt = np.zeros(leaves.size, np.int64); tcnt[trank] = cnt; toff = np.concatenate(([0], np.cumsum(tcnt)))
+    total = int(toff[-1]); out = np.empty((total, len(cols)), np.int64); rid = np.empty(total, np.int64); ovfs = []
+    for i, j, o_, r_, ov in parts:
+        _scatter(o_, r_, cnt[i:j + 1], toff[trank[i:j + 1]], out, rid); ovfs.append(ov)
+    del parts
     ovf = np.concatenate(ovfs) if ovfs else np.zeros(0, np.int64)
     log(f"  順読み {nread / 1e9:.1f} GB・{out.shape[0]:,} 行（{time.time() - t0:.1f}s）、溢れの行 {ovf.size:,}")
     if ovf.size:   # 溢れのページを持つ行は SQL で引き直す（名前の符号は Python で）
@@ -160,7 +185,8 @@ def scan(path, table, cols, chunk_mb=64, nio=1, nio_interior=16, log=None):
             row = con.execute(f"SELECT {', '.join(c for c, _ in cols)} FROM {table} WHERE rowid = ?", (r_,)).fetchone()
             out[pos[r_]] = [_enc_py(v, k) for v, (_, k) in zip(row, cols)]
     con.close()
-    o = np.argsort(rid, kind="stable"); return rid[o], out[o]
+    if rid.size > 1 and not (rid[1:] > rid[:-1]).all(): raise ValueError("木の順の rowid が昇順でない")
+    return rid, out
 
 
 def _enc_py(v, kind):
