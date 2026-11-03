@@ -510,7 +510,7 @@ export function travGeneDensity(t: Trav, x0: number, x1: number, nbin: number, m
   if (!D) {
     const T0 = Date.now(); const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
     const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')
-    const gs = gdb.prepare(`SELECT g.gid, g.pid, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid${hasProj ? ' WHERE g.proj IS NULL' : ''}`).all() as { gid: number; pid: number; s0: number; e0: number }[]
+    const gs = gdb.prepare(`SELECT g.gid, g.pid, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid${hasProj ? ' WHERE g.proj IS NULL' : ''} ORDER BY g.pid, k.s0`).all()   /* パスの前から読む（distill のランダム読みを減らす） */ as { gid: number; pid: number; s0: number; e0: number }[]
     const xs = new Float64Array(gs.length).fill(-1)
     gs.forEach((g, i) => { const pi = (dist.names[g.pid] === t.paths[g.pid]?.path) ? g.pid : dist.pidx.get(t.paths[g.pid]?.path); if (pi == null) return
       const tk = dist.read(pi, g.s0, Math.min(g.e0, g.s0 + 300)); for (let k = 0; k < tk.length; k++) { const d = tk[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { xs[i] = X[d]; break } } })
@@ -520,8 +520,18 @@ export function travGeneDensity(t: Trav, x0: number, x1: number, nbin: number, m
       const cnt = new Map<number, Map<number, number>>(); const part = new Set<number>()
       for (const r of gdb.prepare('SELECT proj, pid, frac FROM gene WHERE proj IS NOT NULL').iterate() as Iterable<{ proj: number; pid: number; frac: number }>) {
         const h = t.paths[r.pid]?.hid; if (h == null) continue; let m = cnt.get(r.proj); if (!m) { m = new Map(); cnt.set(r.proj, m) } m.set(h, (m.get(h) || 0) + 1); if (r.frac < 0.8) part.add(r.proj) }
-      const qc = t.db.prepare('SELECT DISTINCT hid FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ?')
-      gs.forEach((g, i) => { if (xs[i] < 0) return; const m = cnt.get(g.gid) || new Map(); const self = t.paths[g.pid]?.hid; const cover = (qc.all(xs[i], xs[i], minAnchors) as { hid: number }[]).map(r => r.hid)
+      // 座標 x を覆うハプロタイプ（11-03）: 以前は遺伝子ごとに SELECT DISTINCT hid FROM trav WHERE x0 <= x AND x1 >= x を投げ、索引が x0 側しか絞れず
+      //   1 回に最大 23 万行をなめた（全ゲノム 6.3 万遺伝子で 360 秒）。ハプロタイプごとに x0 順の区間と x1 の累積最大を持ち、二分探索で引く（結果は同じ）
+      const byH = new Map<number, { x0: Float64Array; mx: Float64Array }>()
+      { const rows = t.db.prepare('SELECT hid, x0, x1 FROM trav WHERE nanch >= ? ORDER BY hid, x0').all(minAnchors) as { hid: number; x0: number; x1: number }[]
+        for (let a = 0; a < rows.length;) { let b = a; while (b < rows.length && rows[b].hid === rows[a].hid) b++
+          const x0s = new Float64Array(b - a), mx = new Float64Array(b - a); let m = -Infinity
+          for (let k = a; k < b; k++) { x0s[k - a] = rows[k].x0; m = Math.max(m, rows[k].x1); mx[k - a] = m }
+          byH.set(rows[a].hid, { x0: x0s, mx }); a = b } }
+      const coverOf = (x: number): number[] => { const out: number[] = []
+        for (const [h, I] of byH) { let lo = 0, hi = I.x0.length; while (lo < hi) { const md = (lo + hi) >> 1; if (I.x0[md] <= x) lo = md + 1; else hi = md } if (lo > 0 && I.mx[lo - 1] >= x) out.push(h) }
+        return out }
+      gs.forEach((g, i) => { if (xs[i] < 0) return; const m = cnt.get(g.gid) || new Map(); const self = t.paths[g.pid]?.hid; const cover = coverOf(xs[i])
         let v = part.has(g.gid); for (const h of cover) { const c = (m.get(h) || 0) + (h === self ? 1 : 0); if (c !== 1) { v = true; break } } varFlag[i] = v ? 1 : 0 })
     }
     D = { x: xs, nPerHap: hasProj ? 1 : nPaths, varFlag }; (t as any).__gdens = D
