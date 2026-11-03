@@ -863,6 +863,11 @@ def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
         # 実測: WG トリオ(GAF.gz 60GB) ピーク RSS 16.2GiB。--reads-chunk-visits で下げられる。
         "reads":     dict(slots=1, total=clamp(0.3 * g + 8, 8, 48),
                           hours=0.2 + q / 50),
+        # trav は 11-02 の実測: 全ゲノム MC(GFA 48GB・44 億トークン) 最大 RSS 43GB・2.9h / chr20-22(250M トークン) 2.9GB。
+        "trav":      dict(slots=1, total=clamp(1.0 * g + 4, 8, 160), hours=0.1 + g / 16),
+        "genes":     dict(slots=1, total=clamp(0.3 * g + 8, 8, 48), hours=0.1 + g / 100),
+        "ann":       dict(slots=1, total=8, hours=0.1),
+        "xdepth":    dict(slots=1, total=clamp(0.3 * g + 8, 8, 48), hours=0.1 + g / 50),
         "bundle":    dict(slots=1, total=8, hours=0.1),
     }
 
