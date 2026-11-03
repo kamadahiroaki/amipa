@@ -25,7 +25,7 @@ enc = lambda col: f"(CASE substr({col},1,1) WHEN 'n' THEN 0 WHEN 'G' THEN 1 WHEN
 import os
 _st = os.stat(a.db); _tag = f"{_st.st_size}_{int(_st.st_mtime)}"
 _wd = a.cache_dir or os.path.join(os.path.dirname(os.path.abspath(a.db)), 'work'); _cache = os.path.join(_wd, f'super_nodes.{_tag}.npy')
-if os.path.exists(_cache):
+if os.path.exists(_cache) and not a.no_cache:   # --no-cache は読みも書きもしない（11-03 に読みだけ効いていなかった）
     A_ = np.load(_cache); print(f'ノード表をキャッシュから読む {_cache}', file=sys.stderr)
 else:
     A_ = None
