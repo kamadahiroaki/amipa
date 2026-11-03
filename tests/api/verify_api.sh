@@ -136,9 +136,16 @@ if [ "${TRN:-0}" -gt 0 ]; then
     hit "/trav/genedensity"      "trav/genedensity?db=$DB&x0=0&x1=$TRN&nbin=200" allow-empty
     hit "/trav/findgene"         "trav/findgene?db=$DB&q=a" allow-empty
     # 1 株の GFF の書き出し（株の名前はパス名の # の前、# の無い GRCh38.chr1 は最初の . の前＝genes_build.py と同じ。遺伝子の検索結果のパスから取る）
-    GACC=$(get "trav/findgene?db=$DB&q=a" | "$PY" -c 'import sys,json; h=json.load(sys.stdin).get("hits") or []; p=h[0]["path"] if h else ""; print(p.split("#")[0] if "#" in p else p.split(".")[0])' 2>/dev/null)
-    if [ -n "$GACC" ]; then GFF1=$(curl -sS --max-time 120 "$API/trav/gff?db=$DB&acc=$GACC" | head -c 200 | head -1)
-      if [ "$GFF1" = "##gff-version 3" ]; then PASS=$((PASS+1)); printf "  OK   %-30s %s\n" "/trav/gff" "$GACC の 1 行目が ##gff-version 3"; else FAIL=$((FAIL+1)); FAILED+=("/trav/gff"); echo "  NG   /trav/gff                      1 行目: ${GFF1:0:80}"; fi
+    # 写した注釈（genes_project）だけの株は自分の GFF を持たないので、検索結果の株を順に試し、元の GFF を持つ株で確かめる（11-04: fly16 は参照だけが注釈を持つ）
+    GACCS=$(get "trav/findgene?db=$DB&q=a" | "$PY" -c 'import sys,json; h=json.load(sys.stdin).get("hits") or []; seen=[]
+for x in h:
+    p=x["path"]; a=p.split("#")[0] if "#" in p else p.split(".")[0]
+    if a not in seen: seen.append(a)
+print(" ".join(seen[:20]))' 2>/dev/null)
+    GACC=""; GFF1=""
+    for a in $GACCS; do GFF1=$(curl -sS --max-time 120 "$API/trav/gff?db=$DB&acc=$a" | head -c 200 | head -1); if [ "$GFF1" = "##gff-version 3" ]; then GACC=$a; break; fi; done
+    if [ -n "$GACCS" ]; then
+      if [ -n "$GACC" ]; then PASS=$((PASS+1)); printf "  OK   %-30s %s\n" "/trav/gff" "$GACC の 1 行目が ##gff-version 3"; else FAIL=$((FAIL+1)); FAILED+=("/trav/gff"); echo "  NG   /trav/gff                      検索結果の株（$GACCS）のどれも GFF を返さない: ${GFF1:0:80}"; fi
     fi
   fi
   if [ "$THR" = 1 ]; then
