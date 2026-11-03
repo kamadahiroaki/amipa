@@ -106,6 +106,13 @@ travRouter.get('/trav/findgene', (req, res) => {
 function annPathOf(db: string): string | null { const base = path.join(getDbDir(), path.basename(db)); const cands = [base + '.ann']; try { cands.push(fs.realpathSync(base) + '.ann') } catch { /* ignore */ } return cands.find(c => { try { return fs.existsSync(c) } catch { return false } }) ?? null }
 const annDbs = new Map<string, Database.Database | null>()
 function annDbOf(db: string): Database.Database | null { if (!annDbs.has(db)) { const f = annPathOf(db); annDbs.set(db, f ? new Database(f, { readonly: true }) : null) } return annDbs.get(db)! }
+// 参照の名前の形の違いを吸収する（11-03）: 注釈の contig は chr1 の形。パス名は PanSN（GRCh38#chr1 → 最後の # の後）か、# の無い P 行（全ゲノム MC の
+//   GRCh38.chr1 → 最初の . の後）。そのまま無ければ順に試す
+function annContigOf(d: Database.Database, c: string): string {
+  const cands = [c, c.slice(c.lastIndexOf('#') + 1)]; if (!c.includes('#') && c.includes('.')) cands.push(c.slice(c.indexOf('.') + 1))
+  for (const x of cands) if (d.prepare('SELECT 1 FROM rmsk WHERE contig = ? LIMIT 1').get(x) || d.prepare('SELECT 1 FROM var WHERE contig = ? LIMIT 1').get(x)) return x
+  return c
+}
 travRouter.get('/trav/ann', (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db || !q.contig) { res.status(400).json({ error: 'Missing db/contig' }); return }
@@ -115,12 +122,13 @@ travRouter.get('/trav/ann', (req, res) => {
   try {
     const meta = Object.fromEntries((d.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]).map(r => [r.key, r.value]))
     const ml = Number(meta.maxlen_rmsk) || 0, mb = Number(meta.maxlen_bench) || 0
-    const rmsk = ml ? d.prepare('SELECT s, e, strand, name, cls, fam, div FROM rmsk WHERE contig = ? AND s >= ? AND s < ? AND e > ? ORDER BY s').all(q.contig, s - ml, e, s) : []
-    const vars = d.prepare('SELECT sample, pos, ref, alt, gt FROM var WHERE contig = ? AND pos >= ? AND pos < ? ORDER BY pos').all(q.contig, s - 200, e)
+    const contig = annContigOf(d, q.contig)
+    const rmsk = ml ? d.prepare('SELECT s, e, strand, name, cls, fam, div FROM rmsk WHERE contig = ? AND s >= ? AND s < ? AND e > ? ORDER BY s').all(contig, s - ml, e, s) : []
+    const vars = d.prepare('SELECT sample, pos, ref, alt, gt FROM var WHERE contig = ? AND pos >= ? AND pos < ? ORDER BY pos').all(contig, s - 200, e)
     const samples = (d.prepare('SELECT DISTINCT sample FROM bench').all() as { sample: string }[]).map(r => r.sample)
     const bench: Record<string, [number, number][]> = {}
-    for (const sm of samples) bench[sm] = (d.prepare('SELECT s, e FROM bench WHERE sample = ? AND contig = ? AND s >= ? AND s < ? AND e > ? ORDER BY s').all(sm, q.contig, s - mb, e, s) as { s: number; e: number }[]).map(r => [r.s, r.e])
-    res.json({ ref: meta.ref_key, contig: q.contig, s, e, rmsk, vars, bench, samples, src: { rmsk: meta.src_rmsk, vcf: samples.map(sm => meta['src_vcf_' + sm]) } })
+    for (const sm of samples) bench[sm] = (d.prepare('SELECT s, e FROM bench WHERE sample = ? AND contig = ? AND s >= ? AND s < ? AND e > ? ORDER BY s').all(sm, contig, s - mb, e, s) as { s: number; e: number }[]).map(r => [r.s, r.e])
+    res.json({ ref: meta.ref_key, contig, s, e, rmsk, vars, bench, samples, src: { rmsk: meta.src_rmsk, vcf: samples.map(sm => meta['src_vcf_' + sm]) } })
   } catch (err) { res.status(500).json({ error: String(err) }) }
 })
 
@@ -134,14 +142,19 @@ travRouter.get('/trav/gff', (req, res) => {
   const d = new Database(gp, { readonly: true })
   try {
     if (!d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feature'").get()) { res.status(404).json({ error: 'この遺伝子サイドカーは GFF の行を持っていません（format 1）' }); return }
-    const lines: [number, string][] = []
-    for (const r of d.prepare('SELECT lineno, line FROM gff_header WHERE acc=?').all(q.acc) as any[]) lines.push([r.lineno, r.line])
-    for (const r of d.prepare('SELECT lineno, seqid, source, type, start, end, score, strand, phase, attrs FROM feature WHERE acc=?').all(q.acc) as any[]) lines.push([r.lineno, [r.seqid, r.source, r.type, r.start, r.end, r.score, r.strand, r.phase, r.attrs].join('\t')])
-    if (!lines.length) { res.status(404).json({ error: 'その株の GFF がありません: ' + q.acc }); return }
-    lines.sort((a, b) => a[0] - b[0])
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="' + q.acc.replace(/[^A-Za-z0-9._-]/g, '_') + '.gff"')
-    res.send(lines.map(l => l[1]).join('\n') + '\n')
-  } catch (err) { res.status(500).json({ error: String(err) }) } finally { d.close() }
+    // 株の名前は genes_build.py と同じ規則（# の前。# の無い GRCh38.chr1 は最初の . の前）。パス名をそのまま渡されても引けるように直す（11-03）
+    let acc = q.acc; if (!d.prepare('SELECT 1 FROM feature WHERE acc = ? LIMIT 1').get(acc)) { const a2 = acc.includes('#') ? acc.split('#')[0] : acc.split('.')[0]; if (d.prepare('SELECT 1 FROM feature WHERE acc = ? LIMIT 1').get(a2)) acc = a2 }
+    // 11-03: 全ゲノムの GENCODE は 346 万行。全行を配列に集めて並べると重いので、行番号の順に流しながら 4 MB ずつ書く（ヘッダ行は少ないので先に集めて差し込む）
+    const hdr = (d.prepare('SELECT lineno, line FROM gff_header WHERE acc=? ORDER BY lineno').all(acc) as { lineno: number; line: string }[])
+    const it = d.prepare('SELECT lineno, seqid, source, type, start, end, score, strand, phase, attrs FROM feature WHERE acc=? ORDER BY lineno').iterate(acc) as Iterable<any>
+    let hi = 0, buf: string[] = [], size = 0, n = 0
+    const flush = () => { if (buf.length) { res.write(buf.join('')); buf = []; size = 0 } }
+    const put = (line: string) => { if (!n++) { res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="' + acc.replace(/[^A-Za-z0-9._-]/g, '_') + '.gff"') } buf.push(line, '\n'); size += line.length + 1; if (size > 4 << 20) flush() }
+    for (const r of it) { while (hi < hdr.length && hdr[hi].lineno < r.lineno) put(hdr[hi++].line); put([r.seqid, r.source, r.type, r.start, r.end, r.score, r.strand, r.phase, r.attrs].join('\t')) }
+    while (hi < hdr.length) put(hdr[hi++].line)
+    if (!n) { res.status(404).json({ error: 'その株の GFF がありません: ' + q.acc }); return }
+    flush(); res.end()
+  } catch (err) { if (res.headersSent) res.end(); else res.status(500).json({ error: String(err) }) } finally { d.close() }
 })
 
 travRouter.get('/trav/genedensity', (req, res) => {

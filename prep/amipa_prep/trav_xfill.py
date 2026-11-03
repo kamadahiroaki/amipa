@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """錨でない葉ノードに座標を与える（x_fill）。各パスで「直前の錨の x」（先頭は次の錨）を前方に埋め、ノードごとに bp 加重で最大の桶（1,000 錨）の加重平均を採る。
 <db>.trav の arrays に x_fill（int32、dense 添字、無ければ -1）を足す。使い方: trav_xfill.py <db.trav> <distill_dir> [--bin 1000]"""
-import sys, sqlite3, time, argparse
+import os, sys, sqlite3, time, argparse
 import numpy as np
 ap = argparse.ArgumentParser(); ap.add_argument('trav'); ap.add_argument('distill'); ap.add_argument('--bin', type=int, default=1000)
 a = ap.parse_args(); t0 = time.time(); B = a.bin
@@ -36,5 +36,6 @@ node = uk // nbin
 order = np.lexsort((-wsum, node)); firstm = np.ones(len(order), bool); firstm[1:] = node[order][1:] != node[order][:-1]; best = order[firstm]
 xfill = np.full(N1, -1, np.int32); xfill[node[best]] = np.round(xw[best] / np.maximum(1, wsum[best])).astype(np.int32)
 filled = (xfill >= 0).sum(); nonanchor = ((X < 0)).sum() - 1
-cur = T.cursor(); cur.execute("DELETE FROM arrays WHERE name='x_fill'"); cur.execute("INSERT INTO arrays VALUES ('x_fill', 'int32', ?, ?)", (int(N1), xfill.tobytes())); cur.execute("INSERT OR REPLACE INTO meta VALUES ('xfill_bin', ?)", (str(B),)); T.commit()
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); from trav_arrays import put_array
+cur = T.cursor(); put_array(cur, 'x_fill', xfill); cur.execute("INSERT OR REPLACE INTO meta VALUES ('xfill_bin', ?)", (str(B),)); T.commit()
 print(f'x_fill: 錨でない葉 {nonanchor:,} のうち {filled:,} に座標 ({time.time()-t0:.0f}s)', file=sys.stderr)

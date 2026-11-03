@@ -49,7 +49,8 @@ def _order_array(path):
     try:
         con = _sq.connect("file:%s?mode=ro" % path, uri=True)
         def get(nm):
-            r = con.execute("SELECT dtype, n, blob FROM arrays WHERE name=?", (nm,)).fetchone(); return np.frombuffer(r[2], dtype=np.dtype(r[0])) if r else None
+            rows = sorted(con.execute("SELECT name, dtype, blob FROM arrays WHERE name = ? OR name GLOB ?", (nm, nm + "#*")).fetchall(), key=lambda r: 0 if r[0] == nm else int(r[0].rsplit("#", 1)[1]))   # 大きな配列は name#k の行に分けてある（prep の trav_arrays.py）
+            return np.frombuffer(b"".join(r[2] for r in rows), dtype=np.dtype(rows[0][1])) if rows else None
         if path.endswith(".trav"):
             x = get("x_of_dense"); xf = get("x_fill")
             if x is None: con.close(); return None

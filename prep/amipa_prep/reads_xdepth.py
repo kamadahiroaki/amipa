@@ -34,7 +34,8 @@ def main():
     out = a.out or a.db + ".xdepth"
     tr = sqlite3.connect(f"file:{a.db}.trav?mode=ro", uri=True)
     def arr(n):
-        dt, b = tr.execute("SELECT dtype, blob FROM arrays WHERE name=?", (n,)).fetchone(); return np.frombuffer(b, np.dtype(dt))
+        rows = sorted(tr.execute("SELECT name, dtype, blob FROM arrays WHERE name = ? OR name GLOB ?", (n, n + "#*")).fetchall(), key=lambda r: 0 if r[0] == n else int(r[0].rsplit("#", 1)[1]))   # 大きな配列は name#k の行に分けてある（trav_arrays.py）
+        return np.frombuffer(b"".join(r[2] for r in rows), np.dtype(rows[0][1]))
     xod = arr("x_of_dense"); idm = arr("id_map"); R = len(arr("dense_of_x"))
     order = np.argsort(idm, kind="stable"); ids_sorted = idm[order]   # gfa id → dense（dense = 添字 + 1）
     rc = sqlite3.connect(f"file:{a.db}.reads?mode=ro", uri=True)

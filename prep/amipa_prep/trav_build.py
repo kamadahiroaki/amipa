@@ -11,6 +11,7 @@
 続けて trav_xfill.py（錨でない葉の座標）と trav_super.py（スーパーノードの座標）が同じ .trav に表を足す
 """
 import argparse, collections, heapq, json, os, sqlite3, sys, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); from trav_arrays import put_array
 import numpy as np
 from numba import njit
 
@@ -612,7 +613,7 @@ cur.executemany("INSERT INTO trav VALUES (NULL,?,?,?,?,?,?,?,?,?,?,?,?)", trav)
 cur.executemany("INSERT INTO bounds VALUES (?,?,?)", [(int(edges[q]), int(sup[q]) if sup[q] < 10**9 else 0, float(persist[q])) for q in range(edges.size)])
 cur.executemany("INSERT INTO reps VALUES (NULL,?,?,?,?,?)", reps); cur.executemany("INSERT INTO copies VALUES (NULL,?,?,?,?,?,?,?,?,?,?)", copies); cur.executemany("INSERT INTO atoms VALUES (NULL,?,?,?,?,?)", atoms)
 for nm, arr in (("x_of_dense", X.astype(np.int32)), ("dense_of_x", order.astype(np.int32)), ("xbp", xbp), ("cov", cov.astype(np.int32)), ("kind", kind), ("id_map", id_map)):
-    cur.execute("INSERT INTO arrays VALUES (?,?,?,?)", (nm, str(arr.dtype), int(arr.size), np.ascontiguousarray(arr).tobytes()))
+    put_array(cur, nm, arr)   # 256 MiB ごとの行に分ける（trav_arrays.py。viewer は 1 値 537 MB までしか読めない）
 meta = dict(version=4, nfold=int(fold.sum()), N=N, H=H, NP=NP, R=R, params=vars(a), strong=int(strong.sum()), interp=int(consistent.sum()), inconsistent=int((kind == 3).sum()), ntrav=len(trav), nbounds=int(bx.size), nreps=len(reps), ncopies=len(copies), natoms=len(atoms), built=time.strftime("%Y-%m-%d %H:%M"))
 cur.executemany("INSERT INTO meta VALUES (?,?)", [(k_, json.dumps(v_, ensure_ascii=False)) for k_, v_ in meta.items()]); con.commit(); con.close()
 log(f"→ {a.out} ({os.path.getsize(a.out)/1e6:.0f} MB)")

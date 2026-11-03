@@ -135,8 +135,8 @@ if [ "${TRN:-0}" -gt 0 ]; then
     hit "/trav/genes"            "trav/genes?db=$DB&x0=$WX0&x1=$WX1&minanch=50" allow-empty
     hit "/trav/genedensity"      "trav/genedensity?db=$DB&x0=0&x1=$TRN&nbin=200" allow-empty
     hit "/trav/findgene"         "trav/findgene?db=$DB&q=a" allow-empty
-    # 1 株の GFF の書き出し（株の名前はパス名の # の前。遺伝子の検索結果のパスから取る）
-    GACC=$(get "trav/findgene?db=$DB&q=a" | "$PY" -c 'import sys,json; h=json.load(sys.stdin).get("hits") or []; print(h[0]["path"].split("#")[0] if h else "")' 2>/dev/null)
+    # 1 株の GFF の書き出し（株の名前はパス名の # の前、# の無い GRCh38.chr1 は最初の . の前＝genes_build.py と同じ。遺伝子の検索結果のパスから取る）
+    GACC=$(get "trav/findgene?db=$DB&q=a" | "$PY" -c 'import sys,json; h=json.load(sys.stdin).get("hits") or []; p=h[0]["path"] if h else ""; print(p.split("#")[0] if "#" in p else p.split(".")[0])' 2>/dev/null)
     if [ -n "$GACC" ]; then GFF1=$(curl -sS --max-time 120 "$API/trav/gff?db=$DB&acc=$GACC" | head -c 200 | head -1)
       if [ "$GFF1" = "##gff-version 3" ]; then PASS=$((PASS+1)); printf "  OK   %-30s %s\n" "/trav/gff" "$GACC の 1 行目が ##gff-version 3"; else FAIL=$((FAIL+1)); FAILED+=("/trav/gff"); echo "  NG   /trav/gff                      1 行目: ${GFF1:0:80}"; fi
     fi

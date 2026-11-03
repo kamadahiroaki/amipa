@@ -38,6 +38,17 @@ export interface Trav {
 
 const cache = new Map<string, Trav>()
 
+// arrays 表の 1 配列（11-03）: 大きな配列は name, name#1, name#2, … の行に分けてある（prep の trav_arrays.py）。better-sqlite3 は 1 値を約 537 MB までしか
+//   読めない（Node の文字列の上限に合わせて SQLITE_LIMIT_LENGTH を下げている）ため、全ゲノムの id_map（651 MB）で "string or blob too big" になった
+export function arrRow(db: Database.Database, name: string): { blob: Buffer } | undefined {
+  const rows = db.prepare('SELECT name, blob FROM arrays WHERE name = ? OR name GLOB ?').all(name, name + '#*') as { name: string; blob: Buffer }[]
+  if (!rows.length) return undefined
+  if (rows.length === 1) return { blob: rows[0].blob }
+  const part = (r: { name: string }) => r.name === name ? 0 : Number(r.name.slice(r.name.lastIndexOf('#') + 1))
+  rows.sort((a, b) => part(a) - part(b))
+  return { blob: Buffer.concat(rows.map(r => r.blob)) }
+}
+
 export function loadTrav(dbFile: string): Trav | null {
   const p = travPath(dbFile)
   if (!p) return null
@@ -53,7 +64,7 @@ export function loadTrav(dbFile: string): Trav | null {
   const paths = db.prepare('SELECT pid, path, hid, orient, relation, excluded, ntok, bp FROM paths ORDER BY pid').all() as TravPath[]
   const atoms = db.prepare('SELECT * FROM atoms ORDER BY x0').all() as TravAtom[]   // ntangle は version 3 から
   const bounds = db.prepare('SELECT x, support, persistence FROM bounds ORDER BY x').all() as TravBound[]
-  const xb = db.prepare("SELECT blob FROM arrays WHERE name='xbp'").get() as { blob: Buffer } | undefined
+  const xb = arrRow(db, 'xbp')
   let xbp = new Float64Array(0)
   if (xb) { const big = new BigInt64Array(xb.blob.buffer, xb.blob.byteOffset, xb.blob.byteLength / 8); xbp = new Float64Array(big.length); for (let i = 0; i < big.length; i++) xbp[i] = Number(big[i]) }
   const hapPaths: number[][] = haps.map(() => []); for (const r of paths) hapPaths[r.hid].push(r.pid)
@@ -140,8 +151,8 @@ export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; 
 
 // 座標区間の錨のノード名（グラフの強調用）。dense_of_x と id_map から n{元 id}
 export function nodeNamesForRange(t: Trav, x0: number, x1: number, max = 5000): string[] {
-  const dx = t.db.prepare("SELECT blob FROM arrays WHERE name='dense_of_x'").get() as { blob: Buffer } | undefined
-  const im = t.db.prepare("SELECT blob FROM arrays WHERE name='id_map'").get() as { blob: Buffer } | undefined
+  const dx = arrRow(t.db, 'dense_of_x')
+  const im = arrRow(t.db, 'id_map')
   if (!dx || !im) return []
   const dense = new Int32Array(dx.blob.buffer, dx.blob.byteOffset, dx.blob.byteLength / 4); const idmap = new BigInt64Array(im.blob.buffer, im.blob.byteOffset, im.blob.byteLength / 8)
   const a = Math.max(0, x0), b = Math.min(dense.length - 1, x1); const n = b - a + 1; if (n <= 0) return []
@@ -160,8 +171,8 @@ function b64(buf: ArrayBufferView): string { return Buffer.from(buf.buffer, buf.
 function ensureCols(t: Trav): boolean {
   if (t.xOfDense && t.kindOfDense && t.bpOfDense && t.dist) return true
   if (t.dist === null) return false
-  const xd = t.db.prepare("SELECT blob FROM arrays WHERE name='x_of_dense'").get() as { blob: Buffer } | undefined
-  const kd = t.db.prepare("SELECT blob FROM arrays WHERE name='kind'").get() as { blob: Buffer } | undefined
+  const xd = arrRow(t.db, 'x_of_dense')
+  const kd = arrRow(t.db, 'kind')
   const dir = distillFor(path.join(getDbDir(), path.basename(t.dbFile)))
   if (!xd || !kd || !dir) { t.dist = null; return false }
   t.xOfDense = new Int32Array(xd.blob.buffer.slice(xd.blob.byteOffset, xd.blob.byteOffset + xd.blob.byteLength))
@@ -250,7 +261,7 @@ function markRepeats(t: Trav, rows: TravRow[]): void {
 }
 function idMapOf(t: Trav): BigInt64Array {
   const c = (t as any).__idmap as BigInt64Array | undefined; if (c) return c
-  const im = t.db.prepare("SELECT blob FROM arrays WHERE name='id_map'").get() as { blob: Buffer } | undefined
+  const im = arrRow(t.db, 'id_map')
   const arr = im ? new BigInt64Array(im.blob.buffer.slice(im.blob.byteOffset, im.blob.byteOffset + im.blob.byteLength)) : new BigInt64Array(0)
   ;(t as any).__idmap = arr; return arr
 }
@@ -458,7 +469,7 @@ export function travLocate(t: Trav, names: string[]): any {
   const hasSuper = (() => { const c = (t as any).__hasSuper; if (c != null) return c; const r = t.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='super'").get() as { n: number }; (t as any).__hasSuper = r.n > 0; return r.n > 0 })()
   const qs = hasSuper ? t.db.prepare('SELECT x, frac, bp, xmin, xmax FROM super WHERE name = ?') : null
   // 錨でない葉の座標（x_fill: 同じパスで直前の錨の x の bp 多数決。xfill_build.py が足す）
-  const XF: Int32Array | null = (() => { const c = (t as any).__xfill; if (c !== undefined) return c; const r = t.db.prepare("SELECT blob FROM arrays WHERE name='x_fill'").get() as { blob: Buffer } | undefined; const v = r ? new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)) : null; (t as any).__xfill = v; return v })()
+  const XF: Int32Array | null = (() => { const c = (t as any).__xfill; if (c !== undefined) return c; const r = arrRow(t.db, 'x_fill'); const v = r ? new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)) : null; (t as any).__xfill = v; return v })()
   const nodes = names.slice(0, 5000).map(nm => {
     const m = /^n(\d+)$/.exec(nm)
     if (!m) { const r = qs ? (qs.get(nm) as { x: number; frac: number; bp: number; xmin: number; xmax: number } | undefined) : undefined; return r ? { name: nm, x: r.x, kind: -2, frac: r.frac, bp: r.bp, xmin: r.xmin, xmax: r.xmax } : { name: nm, x: -1, kind: -1 } }
@@ -543,7 +554,7 @@ function readsDbOf(t: Trav): ReadsDb | null {
 }
 function denseOfX(t: Trav): Int32Array {
   const c = (t as any).__dox as Int32Array | undefined; if (c) return c
-  const dx = t.db.prepare("SELECT blob FROM arrays WHERE name='dense_of_x'").get() as { blob: Buffer } | undefined
+  const dx = arrRow(t.db, 'dense_of_x')
   const arr = dx ? new Int32Array(dx.blob.buffer.slice(dx.blob.byteOffset, dx.blob.byteOffset + dx.blob.byteLength)) : new Int32Array(0)
   ;(t as any).__dox = arr; return arr
 }
@@ -614,7 +625,7 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
 // 段の自動切替（ノード段に降りてよいか）に使う。塩基の段が実際に集める葉（通過のトークンのノード）とほぼ同じ
 export function travNLeaf(t: Trav, x0: number, x1: number): number | null {
   let s = (t as any).__xfs as Int32Array | null | undefined
-  if (s === undefined) { const r = t.db.prepare("SELECT blob FROM arrays WHERE name='x_fill'").get() as { blob: Buffer } | undefined
+  if (s === undefined) { const r = arrRow(t.db, 'x_fill')
     if (!r) s = null; else { const a = new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)); s = a.filter(v => v >= 0).sort() }
     ;(t as any).__xfs = s }
   if (!s) return null
