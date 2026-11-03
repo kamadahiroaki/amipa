@@ -5,7 +5,7 @@ x ＝ 子孫の葉のうち bp 合計が最大の派閥（x を 1,000 錨の桶�
 """
 import sys, sqlite3, time, argparse
 import numpy as np
-ap = argparse.ArgumentParser(); ap.add_argument('db'); ap.add_argument('trav'); ap.add_argument('distill'); ap.add_argument('--bin', type=int, default=1000)
+ap = argparse.ArgumentParser(); ap.add_argument('db'); ap.add_argument('trav'); ap.add_argument('distill'); ap.add_argument('--bin', type=int, default=1000); ap.add_argument('--cache-dir', default=''); ap.add_argument('--no-cache', action='store_true')
 a = ap.parse_args(); t0 = time.time()
 T = sqlite3.connect(a.trav)
 X = np.frombuffer(T.execute("select blob from arrays where name='x_of_dense'").fetchone()[0], np.int32).copy()
@@ -20,14 +20,25 @@ print(f'trav/distill 読み込み {time.time()-t0:.1f}s', file=sys.stderr)
 # 葉ごと・層ごとに Python のループだった。名前は「接頭辞（n 葉 / G / S）＋整数」なので SQL の中で整数の符号に直し、本体を 1 回順に読む
 PFX = {'n': 0, 'G': 1, 'S': 2}; SH = 1 << 40
 enc = lambda col: f"(CASE substr({col},1,1) WHEN 'n' THEN 0 WHEN 'G' THEN 1 WHEN 'S' THEN 2 ELSE 3 END) * {SH} + CAST(substr({col},2) AS INTEGER)"
-D = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
-cs = D.execute(f"SELECT layer_index, {enc('node_name')}, CASE WHEN parent_name IS NULL OR parent_name = '' THEN -1 ELSE {enc('parent_name')} END FROM nodes NOT INDEXED")
-parts = []
-while True:
-    rows = cs.fetchmany(1_000_000)
-    if not rows: break
-    parts.append(np.array(rows, np.int64))
-A_ = np.concatenate(parts); del parts
+# 11-03: 読んだ表（層・名前・親の符号）を <db> の隣の work/ に .npy で残し、DB の大きさと更新時刻が同じなら次からそれを読む。
+# 全ゲノムの本体（213 GB、ストライプ 1）では nodes の走査がランダム読み（9 MB/s）になり 29 分かかった（先に dd で順読みしても縮まなかった）
+import os
+_st = os.stat(a.db); _tag = f"{_st.st_size}_{int(_st.st_mtime)}"
+_wd = a.cache_dir or os.path.join(os.path.dirname(os.path.abspath(a.db)), 'work'); _cache = os.path.join(_wd, f'super_nodes.{_tag}.npy')
+if os.path.exists(_cache):
+    A_ = np.load(_cache); print(f'ノード表をキャッシュから読む {_cache}', file=sys.stderr)
+else:
+    D = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
+    cs = D.execute(f"SELECT layer_index, {enc('node_name')}, CASE WHEN parent_name IS NULL OR parent_name = '' THEN -1 ELSE {enc('parent_name')} END FROM nodes NOT INDEXED")
+    parts = []
+    while True:
+        rows = cs.fetchmany(1_000_000)
+        if not rows: break
+        parts.append(np.array(rows, np.int64))
+    A_ = np.concatenate(parts); del parts
+    if os.path.isdir(_wd) and not a.no_cache:
+        try: np.save(_cache + '.tmp.npy', A_); os.replace(_cache + '.tmp.npy', _cache); print(f'ノード表をキャッシュに保存 {_cache}', file=sys.stderr)
+        except OSError as e: print(f'キャッシュを保存できない: {e}', file=sys.stderr)
 if ((A_[:, 1] >> 40) == 3).any() or ((A_[:, 2] >= 0) & ((A_[:, 2] >> 40) == 3)).any(): sys.exit('ノード名が n/G/S＋整数の形でない（trav_super は対応していない）')
 maxL = int(A_[:, 0].max()); print(f'ノード表 {A_.shape[0]:,} 行・層 0–{maxL}（{time.time()-t0:.1f}s）', file=sys.stderr)
 o_ = np.argsort(A_[:, 0], kind='stable'); A_ = A_[o_]; lb = np.searchsorted(A_[:, 0], np.arange(maxL + 2))

@@ -22,7 +22,7 @@ ap.add_argument("--contained", type=float, default=0.9, help="他コンティグ
 ap.add_argument("--consist", type=float, default=0.1, help="順序一貫の選別: 後ろ向き・跳びがこの割合を超える株で起きる錨を外す"); ap.add_argument("--rounds", type=int, default=3); ap.add_argument("--reloc-rounds", type=int, default=10, help="挿入片の置き直しの最大回数（0 で無効）"); ap.add_argument("--seg-multi", type=int, default=1, help="通過の切り出しに、そのハプロタイプが 2 回以上通る錨も使う（11-02。0 で旧来の 1 回だけ。座標を作る段は常に 1 回だけ）。2 回通るハプロタイプの区間が通過として残らず、行が出なかった")
 ap.add_argument("--seg-anchors", default="strong", help="通過の切り出しに使う錨: strong（強い錨だけ）| all（補間で置いた錨も）"); ap.add_argument("--rep-gap", type=int, default=20); ap.add_argument("--rep-gap-bp", type=int, default=500); ap.add_argument("--rep-min-bp", type=int, default=500)
 a = ap.parse_args(); T0 = time.time()
-ADJ_BATCH = 5_000_000   # 隣接の組を足し込む単位（int64 で 40 MB）。11-02: 5,000 万（400 MB）だと混んだ計算ノードで一時配列の確保（np.unique の複製）が遅く、1 回の集計が 13 秒〜245 秒とばらついた
+OVF_BATCH = 5_000_000; ADJ_BATCH = OVF_BATCH   # 隣接の組を足し込む単位（int64 で 40 MB）。11-02: 5,000 万（400 MB）だと混んだ計算ノードで一時配列の確保（np.unique の複製）が遅く、1 回の集計が 13 秒〜245 秒とばらついた
 def _mem():   # 現在の常駐メモリと最大値（GB）。段ごとのメモリを測る（11-02、全ゲノムの見積もり用）
     try:
         st = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith(("VmRSS", "VmHWM"))); return f"RSS {int(st['VmRSS'].split()[0]) / 1e6:.1f}/{int(st['VmHWM'].split()[0]) / 1e6:.1f}G"
@@ -203,14 +203,30 @@ def _kahn(snodes, indeg, start, eb, crank, dcol, by_dcol, pos_of, N):
             o = np.argsort(-dcol[la], kind="mergesort"); local = [np.int64(0)]; local.pop()
             for k in range(o.size): local.append(la[o[k]])
     return rank, stalls, far
+# 隣接する強い錨の組 (a, b) を数える（11-03）。錨ごとに後続の欄を 2 つ持ち、最初に現れた 2 種類の後続はその欄で数える。3 種類目以降だけを
+# 溢れの配列に入れ、溢れが一杯になったら並べて足し込む。以前は 500 万組ごとに累計（全ゲノムで 7,000 万組）と連結して並べ直し、全ゲノムの 1 回の
+# 走査が 13〜26 分（4 回で 81 分）かかった。数は元と同じ（組ごとの整数の和）
+@njit(cache=True)
+def _pair_count(s, succ, cnt, ovf, novf, N1):
+    for k in range(s.size - 1):
+        u = s[k]; v = s[k + 1]
+        if succ[u, 0] == v: cnt[u, 0] += 1
+        elif succ[u, 0] < 0: succ[u, 0] = v; cnt[u, 0] = 1
+        elif succ[u, 1] == v: cnt[u, 1] += 1
+        elif succ[u, 1] < 0: succ[u, 1] = v; cnt[u, 1] = 1
+        else:
+            if novf[0] >= ovf.size: return k   # 溢れが一杯: ここから先は呼び出し側が足し込んでから続ける
+            ovf[novf[0]] = u * N1 + v; novf[0] += 1
+    return -1
 def build_order(strong):
     """コンティグの向きを揃え、隣接する強い錨の組の多数決で有向グラフを作り、トポロジカル順を返す（閉路は dcol の小さい方を先に）"""
-    orient = np.ones(NP, np.int8); keys = []; nkeys = [0]; acc = [np.zeros(0, np.int64), np.zeros(0, np.int64)]
-    # 隣接する強い錨の組を、パスを読みながら一定量ごとに数えて足し込む（11-02）。以前は全パスの組を 1 本の配列に集めてから np.unique で、
-    # 全ゲノムでは 10 億組超（パス数・トークン数に比例）。足し込みなら組の種類数（錨の数の程度）で頭打ち
-    def fold_keys():
-        if not keys: return
-        k_ = np.concatenate(keys); keys.clear(); nkeys[0] = 0; k_.sort(); b_ = np.flatnonzero(np.concatenate(([True], k_[1:] != k_[:-1]))); u_ = k_[b_]; c_ = np.diff(np.concatenate((b_, [k_.size]))); del k_
+    orient = np.ones(NP, np.int8)
+    succ = np.full((N + 1, 2), -1, np.int32); cntp = np.zeros((N + 1, 2), np.int32)   # 強い錨は株ごとに 1 回なので組の数はパス数以下
+    ovf = np.empty(OVF_BATCH, np.int64); novf = np.zeros(1, np.int64); acc = [np.zeros(0, np.int64), np.zeros(0, np.int64)]
+    def fold_ovf():
+        n_ = int(novf[0]); novf[0] = 0
+        if not n_: return
+        k_ = np.sort(ovf[:n_]); b_ = np.flatnonzero(np.concatenate(([True], k_[1:] != k_[:-1]))); u_ = k_[b_]; c_ = np.diff(np.concatenate((b_, [k_.size])))
         if acc[0].size: k2 = np.concatenate((acc[0], u_)); c2 = np.concatenate((acc[1], c_)); o_ = np.argsort(k2, kind="stable"); k2 = k2[o_]; c2 = c2[o_]
         else: k2, c2 = u_, c_
         st_ = np.flatnonzero(np.concatenate(([True], k2[1:] != k2[:-1]))); acc[0] = k2[st_]; acc[1] = np.add.reduceat(c2, st_)
@@ -219,9 +235,16 @@ def build_order(strong):
         t = tok(pi); h = phap[pi]; m = strong[t] & once(t, h); s_ = t[m].astype(np.int64)
         if s_.size < 2: continue
         if np.mean(np.diff(dcol[s_]) > 0) < 0.5: orient[pi] = -1; s_ = s_[::-1]
-        keys.append(s_[:-1] * (N + 1) + s_[1:]); nkeys[0] += keys[-1].size
-        if nkeys[0] >= ADJ_BATCH: fold_keys()
-    fold_keys(); uk, cnt = acc[0], acc[1]; ea = uk // (N + 1); eb = uk % (N + 1); log(f'  [順序] パスの走査と隣接の集計（組 {uk.size:,}）')
+        while True:
+            k = _pair_count(s_, succ, cntp, ovf, novf, N + 1)
+            if k < 0: break
+            fold_ovf(); s_ = s_[k:]
+    fold_ovf()
+    # 欄の組と溢れの組は重ならない（欄が埋まった後の新しい後続だけが溢れる）ので、連結して並べるだけ
+    has0 = succ[:, 0] >= 0; has1 = succ[:, 1] >= 0; ar = np.arange(N + 1, dtype=np.int64)
+    k_all = np.concatenate((ar[has0] * (N + 1) + succ[has0, 0].astype(np.int64), ar[has1] * (N + 1) + succ[has1, 1].astype(np.int64), acc[0])); c_all = np.concatenate((cntp[has0, 0].astype(np.int64), cntp[has1, 1].astype(np.int64), acc[1]))
+    del succ, cntp, ovf; o_ = np.argsort(k_all, kind="stable"); uk = k_all[o_]; cnt = c_all[o_]; del k_all, c_all, o_
+    ea = uk // (N + 1); eb = uk % (N + 1); log(f'  [順序] パスの走査と隣接の集計（組 {uk.size:,}）')
     rk = eb * (N + 1) + ea; idx = np.searchsorted(uk, rk); has = (idx < uk.size) & (uk[np.minimum(idx, uk.size - 1)] == rk); crev = np.where(has, cnt[np.minimum(idx, uk.size - 1)], 0)
     keep = (cnt > crev) | ((cnt == crev) & (dcol[ea] < dcol[eb])); ea, eb = ea[keep], eb[keep]; o = np.argsort(ea, kind="stable"); ea, eb = ea[o], eb[o]
     indeg = np.bincount(eb, minlength=N + 1); start = np.searchsorted(ea, np.arange(N + 2)); snodes = np.flatnonzero(strong); rank = np.full(N + 1, -1.0); done = np.zeros(N + 1, bool)
