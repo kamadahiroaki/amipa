@@ -135,25 +135,38 @@ travRouter.get('/trav/ann', (req, res) => {
 // ---- 1 株の GFF を入力どおりに書き出す（<db>.genes の gff_header と feature を元の行番号の順に）。11-02 に Blocks の /api/blocks/gff から移した ----
 //   GET /api/trav/gff?db&acc   acc = パス名の # の前（GFF のファイル名）。写した注釈（genes_project.py、acc が空）は含めない
 function genesFileOf(db: string): string | null { const base = path.join(getDbDir(), path.basename(db)); const cands = [base + '.genes']; try { cands.push(fs.realpathSync(base) + '.genes') } catch { /* ignore */ } return cands.find(c => { try { return fs.existsSync(c) } catch { return false } }) ?? null }
-travRouter.get('/trav/gff', (req, res) => {
+travRouter.get('/trav/gff', async (req, res) => {
   const q = req.query as Record<string, string>
   if (!q.db || !q.acc) { res.status(400).json({ error: 'db, acc が要ります' }); return }
   const gp = genesFileOf(q.db); if (!gp) { res.status(404).json({ error: 'この DB には遺伝子サイドカーがありません' }); return }
   const d = new Database(gp, { readonly: true })
+  let closed = false; res.on('close', () => { closed = true })
   try {
     if (!d.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='feature'").get()) { res.status(404).json({ error: 'この遺伝子サイドカーは GFF の行を持っていません（format 1）' }); return }
     // 株の名前は genes_build.py と同じ規則（# の前。# の無い GRCh38.chr1 は最初の . の前）。パス名をそのまま渡されても引けるように直す（11-03）
     let acc = q.acc; if (!d.prepare('SELECT 1 FROM feature WHERE acc = ? LIMIT 1').get(acc)) { const a2 = acc.includes('#') ? acc.split('#')[0] : acc.split('.')[0]; if (d.prepare('SELECT 1 FROM feature WHERE acc = ? LIMIT 1').get(a2)) acc = a2 }
-    // 11-03: 全ゲノムの GENCODE は 346 万行。全行を配列に集めて並べると重いので、行番号の順に流しながら 4 MB ずつ書く（ヘッダ行は少ないので先に集めて差し込む）
     const hdr = (d.prepare('SELECT lineno, line FROM gff_header WHERE acc=? ORDER BY lineno').all(acc) as { lineno: number; line: string }[])
-    const it = d.prepare('SELECT lineno, seqid, source, type, start, end, score, strand, phase, attrs FROM feature WHERE acc=? ORDER BY lineno').iterate(acc) as Iterable<any>
-    let hi = 0, buf: string[] = [], size = 0, n = 0
-    const flush = () => { if (buf.length) { res.write(buf.join('')); buf = []; size = 0 } }
-    const put = (line: string) => { if (!n++) { res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="' + acc.replace(/[^A-Za-z0-9._-]/g, '_') + '.gff"') } buf.push(line, '\n'); size += line.length + 1; if (size > 4 << 20) flush() }
-    for (const r of it) { while (hi < hdr.length && hdr[hi].lineno < r.lineno) put(hdr[hi++].line); put([r.seqid, r.source, r.type, r.start, r.end, r.score, r.strand, r.phase, r.attrs].join('\t')) }
+    if (!hdr.length && !d.prepare('SELECT 1 FROM feature WHERE acc = ? LIMIT 1').get(acc)) { res.status(404).json({ error: 'その株の GFF がありません: ' + q.acc }); return }
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.setHeader('Content-Disposition', 'attachment; filename="' + acc.replace(/[^A-Za-z0-9._-]/g, '_') + '.gff"')
+    // 11-03: 全ゲノムの GENCODE は 346 万行・1.6 GB（cold の読み出しに 90 秒）。行番号の順（索引 acc, lineno）に流し、4 MB ごとに書いて event loop に返す。
+    //   同期のループで全部読んでから送ると、終わるまで 1 バイトも出ず、他の要求も止まり、5 分で接続が切れた
+    const it = (d.prepare('SELECT lineno, seqid, source, type, start, end, score, strand, phase, attrs FROM feature WHERE acc=? ORDER BY lineno').iterate(acc) as IterableIterator<any>)
+    let hi = 0, buf: string[] = [], size = 0
+    const put = (line: string) => { buf.push(line, '\n'); size += line.length + 1 }
+    for (;;) {
+      const r = it.next()
+      if (r.done) break
+      const v = r.value; while (hi < hdr.length && hdr[hi].lineno < v.lineno) put(hdr[hi++].line)
+      put([v.seqid, v.source, v.type, v.start, v.end, v.score, v.strand, v.phase, v.attrs].join('\t'))
+      if (size > 4 << 20) {
+        const ok = res.write(buf.join('')); buf = []; size = 0
+        if (closed) { it.return?.(); return }
+        await new Promise<void>(resolve => { if (ok) setImmediate(resolve); else { res.once('drain', () => resolve()); res.once('close', () => resolve()) } })
+        if (closed) { it.return?.(); return }
+      }
+    }
     while (hi < hdr.length) put(hdr[hi++].line)
-    if (!n) { res.status(404).json({ error: 'その株の GFF がありません: ' + q.acc }); return }
-    flush(); res.end()
+    if (buf.length) res.write(buf.join('')); res.end()
   } catch (err) { if (res.headersSent) res.end(); else res.status(500).json({ error: String(err) }) } finally { d.close() }
 })
 

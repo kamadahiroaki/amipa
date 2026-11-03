@@ -171,7 +171,7 @@ def main():
         # 行の範囲を、窓に出るノード（全行の範囲の和）まで延ばす（2026-10-19）。行ごとの範囲は「窓の列に入るトークンの最初〜最後」なので、
         # 合意列の並びの都合で他の行の範囲だけが少し先まで届くと、その列をこの行は通っているのに「範囲の外」になった（HG01978#2 の n73207588）。
         # 端から外へ、和集合に入るノードを辿って延ばす（和集合に無いノードが 64 個続いたら止める。最大 20,000 トークン）
-        EXT, GAPMAX = 20000, 64
+        EXT, GAPMAX, STEP = 20000, 64, 512
         parts = [np.asarray(p_tok[int(p_off[pi]) + s0:int(p_off[pi]) + e0]) for pi, rs in RNG.items() for s0, e0 in rs]
         Sall = np.unique(np.concatenate(parts)) if parts else np.zeros(0, p_tok.dtype)
         for _pass in range(2):
@@ -179,20 +179,25 @@ def main():
             for pi, rs in RNG.items():
                 a0 = int(p_off[pi]); n_ = int(p_off[pi + 1]) - a0; out_ = []
                 for s0, e0 in rs:
-                    lo = max(0, s0 - EXT); seg = np.asarray(p_tok[a0 + lo:a0 + s0]); m = np.isin(seg, Sall)
-                    ns0 = s0; miss = 0
-                    for k in range(len(seg) - 1, -1, -1):
-                        if m[k]: ns0 = lo + k; miss = 0
-                        else:
-                            miss += 1
-                            if miss > GAPMAX: break
-                    hi = min(n_, e0 + EXT); seg = np.asarray(p_tok[a0 + e0:a0 + hi]); m = np.isin(seg, Sall)
-                    ne0 = e0; miss = 0
-                    for k in range(len(seg)):
-                        if m[k]: ne0 = e0 + k + 1; miss = 0
-                        else:
-                            miss += 1
-                            if miss > GAPMAX: break
+                    # 11-03: 端から STEP トークンずつ読んで止まるまで延ばす（以前は毎回 2 万トークン＝80 KB を読み、全ゲノムの cold で p_tok のランダム読みが 6 秒）
+                    ns0 = s0; miss = 0; pos = s0; lim = max(0, s0 - EXT)
+                    while pos > lim and miss <= GAPMAX:
+                        lo = max(lim, pos - STEP); seg = np.asarray(p_tok[a0 + lo:a0 + pos]); m = np.isin(seg, Sall)
+                        for k in range(len(seg) - 1, -1, -1):
+                            if m[k]: ns0 = lo + k; miss = 0
+                            else:
+                                miss += 1
+                                if miss > GAPMAX: break
+                        pos = lo
+                    ne0 = e0; miss = 0; pos = e0; lim = min(n_, e0 + EXT)
+                    while pos < lim and miss <= GAPMAX:
+                        hi = min(lim, pos + STEP); seg = np.asarray(p_tok[a0 + pos:a0 + hi]); m = np.isin(seg, Sall)
+                        for k in range(len(seg)):
+                            if m[k]: ne0 = pos + k + 1; miss = 0
+                            else:
+                                miss += 1
+                                if miss > GAPMAX: break
+                        pos = hi
                     if ns0 != s0 or ne0 != e0: grew = True
                     out_.append((ns0, ne0))
                 RNG[pi] = out_
