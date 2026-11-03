@@ -20,7 +20,7 @@ KIND_INT, KIND_NAME = 0, 1
 SH = 1 << 40
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _varint(b, o):
     v = 0
     for i in range(8):
@@ -29,7 +29,7 @@ def _varint(b, o):
     v = (v << 8) | b[o + 8]; return v, o + 9
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _count_cells(buf, offs, PS):
     n = 0
     for k in range(offs.size):
@@ -37,7 +37,7 @@ def _count_cells(buf, offs, PS):
     return n
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def _decode(buf, offs, PS, U, cols, kinds, out, rowid, ovf, start):
     """buf の中の葉のページ（先頭の位置 offs）を解読して out[start:] に書く。溢れのある行は ovf に rowid を書き、out の行は -2 で埋める"""
     r = start; X = U - 35; nov = 0; ncol = cols.size
@@ -95,25 +95,32 @@ def _page_size(f):
     return ps, ps - h[20]
 
 
-def leaf_pages(path, root):
-    """表の B 木の葉のページ番号（昇順）。内部ページは層ごとに番号の昇順で読む"""
-    with open(path, "rb", buffering=0) as f:
-        PS, U = _page_size(f); level = [root]; leaves = []
-        while level:
-            nxt = []
-            for p in sorted(level):
-                f.seek((p - 1) * PS); b = f.read(PS); h = 100 if p == 1 else 0; t = b[h]
-                if t == 13: leaves.append(p); continue
-                if t != 5: raise ValueError(f"頁 {p} が表の B 木でない（型 {t}）")
-                n = struct.unpack(">H", b[h + 3:h + 5])[0]
-                for i in range(n):
-                    o = struct.unpack(">H", b[h + 12 + 2 * i:h + 14 + 2 * i])[0]; nxt.append(struct.unpack(">I", b[o:o + 4])[0])
-                nxt.append(struct.unpack(">I", b[h + 8:h + 12])[0])
-            level = nxt
+def leaf_pages(path, root, nio=32):
+    """表の B 木の葉のページ番号（昇順）。内部ページは層ごとに、nio 本の読みを同時に出す（11-03: 1 本ずつだと全ゲノムで 1.2 万ページに
+    419 秒＝1 回 35 ms。Lustre のランダム読みは待ち時間で決まるので、同時に出せば重なる）"""
+    from concurrent.futures import ThreadPoolExecutor
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        with open(path, "rb") as f: PS, U = _page_size(f)
+        def rd(p): return p, os.pread(fd, PS, (p - 1) * PS)
+        level = [root]; leaves = []
+        with ThreadPoolExecutor(nio) as ex:
+            while level:
+                nxt = []
+                for p, b in ex.map(rd, sorted(level)):
+                    h = 100 if p == 1 else 0; t = b[h]
+                    if t == 13: leaves.append(p); continue
+                    if t != 5: raise ValueError(f"頁 {p} が表の B 木でない（型 {t}）")
+                    n = struct.unpack(">H", b[h + 3:h + 5])[0]
+                    for i in range(n):
+                        o = struct.unpack(">H", b[h + 12 + 2 * i:h + 14 + 2 * i])[0]; nxt.append(struct.unpack(">I", b[o:o + 4])[0])
+                    nxt.append(struct.unpack(">I", b[h + 8:h + 12])[0])
+                level = nxt
+    finally: os.close(fd)
     return np.array(sorted(leaves), np.int64), PS, U
 
 
-def scan(path, table, cols, chunk_mb=64, gap_mb=256, log=None):
+def scan(path, table, cols, chunk_mb=64, nio=1, nio_interior=16, log=None):
     """cols = [(列名, 'int'|'name'), ...] → (rowid, 値の表 int64 [行, 列])。rowid の昇順"""
     t0 = time.time(); log = log or (lambda *x: None)
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -124,21 +131,26 @@ def scan(path, table, cols, chunk_mb=64, gap_mb=256, log=None):
     info = con.execute(f"PRAGMA table_info({table})").fetchall(); idx = {r[1]: r[0] for r in info}
     if any(r[5] == 1 and r[2].upper() == "INTEGER" and sum(1 for x in info if x[5]) == 1 for r in info): raise ValueError("INTEGER PRIMARY KEY（rowid の別名）の表は対象外")
     ci = np.array([idx[c] for c, _ in cols], np.int64); ki = np.array([KIND_INT if k == "int" else KIND_NAME for _, k in cols], np.int64)
-    leaves, PS, U = leaf_pages(path, root[0]); log(f"  葉のページ {leaves.size:,}（{leaves.size * PS / 1e9:.1f} GB、内部ページを辿って {time.time() - t0:.1f}s）")
-    # 葉の並びを「間が gap_mb 未満の連なり」に分け、連なりごとに chunk_mb ずつ順に読む
-    gap = max(1, gap_mb * (1 << 20) // PS); per = max(1, chunk_mb * (1 << 20) // PS)
+    leaves, PS, U = leaf_pages(path, root[0], nio=nio_interior); log(f"  葉のページ {leaves.size:,}（{leaves.size * PS / 1e9:.1f} GB、内部ページを辿って {time.time() - t0:.1f}s）")
+    # 葉の並びを chunk_mb 以内の塊に分け（塊の間の葉の無い所は読まない）、nio 本を同時に順読みして解読する（解読は numba の nogil）。
+    # 11-03: 全ゲノム（ストライプ 1 の 213 GB）で 31.5 GB を 1 本の順読みで 81 秒、8 本同時では 680 秒（1 台の OST で順読み同士が崩れた）。既定は 1 本
+    from concurrent.futures import ThreadPoolExecutor
+    per = max(1, chunk_mb * (1 << 20) // PS); chunks = []; i = 0
+    while i < leaves.size:
+        j = int(np.searchsorted(leaves, leaves[i] + per, side="left")) - 1; chunks.append((i, max(i, j))); i = max(i, j) + 1
+    fd = os.open(path, os.O_RDONLY)
+    def work(ij):
+        i, j = ij; lo, hi = int(leaves[i]), int(leaves[j])
+        buf = np.frombuffer(os.pread(fd, (hi - lo + 1) * PS, (lo - 1) * PS), np.uint8); offs = (leaves[i:j + 1] - lo) * PS
+        n = _count_cells(buf, offs, PS); out = np.empty((n, len(cols)), np.int64); rid = np.empty(n, np.int64); ovf = np.empty(n, np.int64)
+        nov = _decode(buf, offs, PS, U, ci, ki, out, rid, ovf, 0)
+        if nov < 0: raise ValueError(f"頁 {int(leaves[i + (-1 - nov)])} が表の葉でない")
+        return out, rid, ovf[:nov], buf.size
     outs, rids, ovfs = [], [], []; nread = 0
-    with open(path, "rb", buffering=0) as f:
-        i = 0
-        while i < leaves.size:
-            p0 = leaves[i]; j = i
-            while j + 1 < leaves.size and leaves[j + 1] - p0 < per and leaves[j + 1] - leaves[j] < gap: j += 1
-            lo, hi = p0, leaves[j]; f.seek((lo - 1) * PS); buf = np.frombuffer(f.read((hi - lo + 1) * PS), np.uint8); nread += buf.size
-            offs = (leaves[i:j + 1] - lo) * PS
-            n = _count_cells(buf, offs, PS); out = np.empty((n, len(cols)), np.int64); rid = np.empty(n, np.int64); ovf = np.empty(n, np.int64)
-            nov = _decode(buf, offs, PS, U, ci, ki, out, rid, ovf, 0)
-            if nov < 0: raise ValueError(f"頁 {int(leaves[i - 1 - nov])} が表の葉でない")
-            outs.append(out); rids.append(rid); ovfs.append(ovf[:nov]); i = j + 1
+    try:
+        with ThreadPoolExecutor(nio) as ex:
+            for out, rid, ov, nb in ex.map(work, chunks): outs.append(out); rids.append(rid); ovfs.append(ov); nread += nb
+    finally: os.close(fd)
     out = np.concatenate(outs) if outs else np.zeros((0, len(cols)), np.int64); rid = np.concatenate(rids) if rids else np.zeros(0, np.int64)
     ovf = np.concatenate(ovfs) if ovfs else np.zeros(0, np.int64)
     log(f"  順読み {nread / 1e9:.1f} GB・{out.shape[0]:,} 行（{time.time() - t0:.1f}s）、溢れの行 {ovf.size:,}")
