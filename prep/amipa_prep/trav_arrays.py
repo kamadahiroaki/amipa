@@ -39,7 +39,7 @@ def split_file(path, out=None):
     dst_path = out or path
     tmp = dst_path + ".split.tmp"
     if os.path.exists(tmp): os.remove(tmp)
-    dst = sqlite3.connect(tmp); dst.execute("PRAGMA journal_mode=OFF"); dst.execute("PRAGMA synchronous=OFF"); dst.execute("ATTACH ? AS s", (f"file:{path}?mode=ro",))
+    dst = sqlite3.connect(f"file:{tmp}", uri=True); dst.execute("PRAGMA journal_mode=OFF"); dst.execute("PRAGMA synchronous=OFF"); dst.execute("ATTACH ? AS s", (f"file:{path}?mode=ro",))
     for name, sql in src.execute("SELECT name, sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL").fetchall():
         dst.execute(sql)
         if name != "arrays": dst.execute(f'INSERT INTO main."{name}" SELECT * FROM s."{name}"')
