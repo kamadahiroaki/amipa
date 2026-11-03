@@ -5,7 +5,7 @@ x ＝ 子孫の葉のうち bp 合計が最大の派閥（x を 1,000 錨の桶�
 """
 import sys, sqlite3, time, argparse
 import numpy as np
-ap = argparse.ArgumentParser(); ap.add_argument('db'); ap.add_argument('trav'); ap.add_argument('distill'); ap.add_argument('--bin', type=int, default=1000); ap.add_argument('--cache-dir', default=''); ap.add_argument('--no-cache', action='store_true')
+ap = argparse.ArgumentParser(); ap.add_argument('db'); ap.add_argument('trav'); ap.add_argument('distill'); ap.add_argument('--bin', type=int, default=1000); ap.add_argument('--cache-dir', default=''); ap.add_argument('--no-cache', action='store_true'); ap.add_argument('--sql-scan', action='store_true', help='ノード表を SQLite の走査で読む（順読みの解読を使わない）')
 a = ap.parse_args(); t0 = time.time()
 T = sqlite3.connect(a.trav)
 X = np.frombuffer(T.execute("select blob from arrays where name='x_of_dense'").fetchone()[0], np.int32).copy()
@@ -28,14 +28,22 @@ _wd = a.cache_dir or os.path.join(os.path.dirname(os.path.abspath(a.db)), 'work'
 if os.path.exists(_cache):
     A_ = np.load(_cache); print(f'ノード表をキャッシュから読む {_cache}', file=sys.stderr)
 else:
-    D = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
-    cs = D.execute(f"SELECT layer_index, {enc('node_name')}, CASE WHEN parent_name IS NULL OR parent_name = '' THEN -1 ELSE {enc('parent_name')} END FROM nodes NOT INDEXED")
-    parts = []
-    while True:
-        rows = cs.fetchmany(1_000_000)
-        if not rows: break
-        parts.append(np.array(rows, np.int64))
-    A_ = np.concatenate(parts); del parts
+    A_ = None
+    if not a.sql_scan:
+        # 11-03: SQLite を通さずにファイルを順読みして nodes の葉のページだけ解読する（sqlite_seqscan.py）。全ゲノムで 29 分 → 順読みの時間
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import sqlite_seqscan
+            _, A_ = sqlite_seqscan.scan(a.db, 'nodes', [('layer_index', 'int'), ('node_name', 'name'), ('parent_name', 'name')], log=lambda *x: print(*x, file=sys.stderr, flush=True))
+        except Exception as e: print(f'順読みに失敗したので SQLite で走査する: {e}', file=sys.stderr); A_ = None
+    if A_ is None:
+        D = sqlite3.connect(f"file:{a.db}?mode=ro", uri=True)
+        cs = D.execute(f"SELECT layer_index, {enc('node_name')}, CASE WHEN parent_name IS NULL OR parent_name = '' THEN -1 ELSE {enc('parent_name')} END FROM nodes NOT INDEXED")
+        parts = []
+        while True:
+            rows = cs.fetchmany(1_000_000)
+            if not rows: break
+            parts.append(np.array(rows, np.int64))
+        A_ = np.concatenate(parts); del parts
     if os.path.isdir(_wd) and not a.no_cache:
         try: np.save(_cache + '.tmp.npy', A_); os.replace(_cache + '.tmp.npy', _cache); print(f'ノード表をキャッシュに保存 {_cache}', file=sys.stderr)
         except OSError as e: print(f'キャッシュを保存できない: {e}', file=sys.stderr)
