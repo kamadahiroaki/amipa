@@ -23,10 +23,10 @@
   gff_header(acc, lineno, line)                                            … '#' で始まる行（##gff-version、##sequence-region など）そのまま
   → 1 株の GFF は gff_header ∪ feature を lineno 順に並べれば元のとおりに戻る（backend GET /api/blocks/gff）。
 閾値: 分断・片端は 1 bp（2026-10-08 決定）。near は距離を持ち既定 1,000 bp。"""
-import sys, os, sqlite3, glob, collections, time, argparse
+import sys, os, re, json, sqlite3, glob, collections, time, argparse
 import numpy as np
 ap = argparse.ArgumentParser(); ap.add_argument("--distill", required=True); ap.add_argument("--gff-dir", required=True); ap.add_argument("--out", required=True)
-ap.add_argument("--synteny", default="", help="古い木 <db>.synteny（任意）。あれば gene_atom と junc_gene も作る")
+ap.add_argument("--gfa", default="", help="W 行の開始位置（SeqStart）を読む GFA（distill に p_start.npy が無いとき。既定は distill の meta.json の gfa）"); ap.add_argument("--synteny", default="", help="古い木 <db>.synteny（任意）。あれば gene_atom と junc_gene も作る")
 A = ap.parse_args(); G = A.gff_dir; NEAR = 1000
 t0 = time.time()
 syn = sqlite3.connect(f"file:{A.synteny}?mode=ro", uri=True) if A.synteny else None
@@ -37,6 +37,39 @@ p_ori = np.load(f"{dist}/p_ori.npy", mmap_mode="r")   # トークンの向き（
 # パスの一覧: pid は distill の順（.trav・.synteny の pid と同じ。ecoli50・chr202122v2 で全数一致を確認）。長さ L は古い木があればその値（検算用）
 paths = {pid: (path, int(bp)) for pid, path, bp in syn.execute("SELECT pid, path, bp FROM paths")} if syn else {i: (nm, None) for i, nm in enumerate(p_names)}
 out = A.out; tmp = out + ".tmp"
+p_iswalk = np.load(f"{dist}/p_iswalk.npy") if os.path.exists(f"{dist}/p_iswalk.npy") else np.zeros(len(p_names), np.uint8)
+def path_starts():
+    """パスがコンティグのどこから始まるか（0 始まり）。W 行は SeqStart、P 行は名前の [a-b] の a（無ければ 0）（11-04）。
+    minigraph-cactus の GenBank 版アセンブリは 1 本のコンティグが SeqStart の違う W 行に分かれる（ダイズ: 同じ名前が最大 118 本）。
+    distill の p_start.npy（11-04〜）を読み、無ければ GFA の W 行から作って distill に置く"""
+    f = f"{dist}/p_start.npy"
+    if os.path.exists(f): return np.load(f)
+    st = np.zeros(len(p_names), np.int64)
+    for i, nm in enumerate(p_names):
+        m = re.search(r"\[(\d+)[-:]\d+\]$", nm)
+        if m: st[i] = int(m.group(1))
+    need = [i for i in ann_idx if p_iswalk[i]]   # 開始位置が要るのは注釈のある W 行だけ
+    gfa = A.gfa or json.load(open(f"{dist}/meta.json")).get("gfa")
+    if need and not (gfa and os.path.exists(gfa)):
+        # GFA が無い（コンテナの中の名前で記録されている等）。注釈のあるパスが断片に分かれていなければ、従来どおり開始 0 とみなす
+        dup = collections.Counter(acc_seqid(p_names[i]) for i in ann_idx)
+        if any(v > 1 for v in dup.values()): sys.exit(f"注釈のあるコンティグが断片に分かれているが、開始位置を読む GFA が無い: {gfa}（--gfa で渡す）")
+        print(f"GFA が無いので、注釈のある W 行 {len(need)} 本の開始位置を 0 とみなす（断片は無い）: {gfa}", file=sys.stderr); return st
+    if need:
+        k = 0
+        print(f"p_start.npy が無いので GFA の W 行から作る: {gfa}", file=sys.stderr)
+        with open(gfa, "rb") as fh:
+            for line in fh:
+                c = line[:1]
+                if c == b"P": k += 1
+                elif c == b"W":
+                    q = line.split(b"\t", 6)
+                    if len(q) >= 7: st[k] = int(q[4]) if q[4] != b"*" else 0; k += 1
+        if k != len(p_names): sys.exit(f"GFA のパス {k} 本と distill の {len(p_names)} 本が合わない")
+        try: np.save(f + ".tmp.npy", st); os.replace(f + ".tmp.npy", f)
+        except OSError: pass
+    return st
+p_start = None   # 注釈のあるパスがあるときだけ作る（下）
 if os.path.exists(tmp): os.remove(tmp)
 con = sqlite3.connect(tmp); cur = con.cursor()
 cur.executescript("""
@@ -75,12 +108,36 @@ def load_gff(acc):
     cur.executemany("INSERT INTO gff_header VALUES (?,?,?)", hdr)
     acc_recs[acc] = (recs, feats); return acc_recs[acc]
 KEEP = {"gene", "pseudogene", "rRNA", "tRNA", "ncRNA", "tmRNA", "SRP_RNA", "RNase_P_RNA", "antisense_RNA", "riboswitch", "mobile_element", "repeat_region", "regulatory_region"}
-gid = 0; genes_by_pid = {}; n_cds = 0; fid2gid = {}; seq2pid = {}
+gid = 0; genes_by_pid = {}; n_cds = 0; fid2gid = {}; fid2pid = {}; n_cross = 0
+def acc_seqid(path):
+    if "#" in path: return path.split("#")[0], path.split("#")[-1].split("[")[0]   # 最後の # 区切りが seqid（`GRCh38#chr20` は 2 項、`GCF#1#NZ_…` は 3 項）。部分範囲 [a-b] は落とす
+    acc, _, seqid = path.partition("."); return acc, (seqid or path).split("[")[0]   # # の無い名前（全ゲノム MC の `GRCh38.chr1`）は最初の . で sample と seqid に分ける（11-02）
+def dpid(pid, path): return pid if syn is None else pidx.get(path)   # distill の添字（★名前は重複しうるので、distill 由来の一覧なら pid そのもの）
+# 同じコンティグの断片（11-04）: (acc, seqid) → [(開始, 終わり, pid)]。注釈の行は、自分を丸ごと含む断片にだけ付ける（座標は断片の開始を引いて使う）
+frags = collections.defaultdict(list); pstart = {}
+annotated = [pid for pid, (path, L) in paths.items() if os.path.exists(f"{G}/{acc_seqid(path)[0]}.gff")]
+ann_idx = [dpid(pid, paths[pid][0]) for pid in annotated]; ann_idx = [i for i in ann_idx if i is not None]
+if annotated:
+    p_start = path_starts()
+    for pid in annotated:
+        path = paths[pid][0]; i = dpid(pid, path)
+        if i is None: continue
+        off = int(p_off[i]); n_ = int(p_off[i + 1] - p_off[i]); blen = int(s_bp[np.asarray(p_tok[off:off + n_], dtype=np.int64) - 1].sum())
+        a0 = int(p_start[i]); frags[acc_seqid(path)].append((a0, a0 + blen, pid)); pstart[pid] = a0
+for k in frags: frags[k].sort()
+nfr = sum(1 for v in frags.values() if len(v) > 1)
+if nfr: print(f"断片に分かれたコンティグ {nfr}（断片 {sum(len(v) for v in frags.values() if len(v) > 1):,}）", file=sys.stderr)
 for pid, (path, L) in paths.items():
-    if "#" in path: acc = path.split("#")[0]; seqid = path.split("#")[-1].split("[")[0]   # 最後の # 区切りが seqid（`GRCh38#chr20` は 2 項、`GCF#1#NZ_…` は 3 項）。部分範囲 [a-b] は落とす
-    else: acc, _, seqid = path.partition("."); seqid = (seqid or path).split("[")[0]   # # の無い名前（全ゲノム MC の `GRCh38.chr1`）は最初の . で sample と seqid に分ける（11-02）
-    seq2pid[(acc, seqid)] = pid
-    feats = load_gff(acc)[1].get(seqid, [])
+    acc, seqid = acc_seqid(path)
+    if pid not in pstart: genes_by_pid[pid] = []; continue
+    fr = frags[(acc, seqid)]; a0 = pstart[pid]; a1 = next(e_ for s_, e_, p_ in fr if p_ == pid)
+    # この断片に丸ごと入る行（GFF は 1 始まり両端含む → 0 始まり [start-1, end)）。断片をまたぐ行は捨てる（数える）
+    allf = load_gff(acc)[1].get(seqid, [])
+    # 断片が 1 本だけなら従来どおり全部（環状ゲノムの原点をまたぐ遺伝子は end がコンティグ長を超える。ecoli50 で 14 遺伝子）
+    feats = allf if len(fr) == 1 else [r for r in allf if a0 <= r.start - 1 and r.end <= a1]
+    if len(fr) > 1 and pid == fr[0][2]:
+        n_cross += sum(1 for r in allf if not any(s_ <= r.start - 1 and r.end <= e_ for s_, e_, _ in fr))
+    for r in feats: fid2pid[r.fid] = pid
     cds = collections.defaultdict(list); rows = []
     byid = {r.a["ID"]: r for r in feats if "ID" in r.a}
     def gene_of(r):
@@ -125,7 +182,7 @@ for acc, (recs, feats) in acc_recs.items():
         r.gid = g
     rows_f = []
     for r in recs:
-        pid = seq2pid.get((acc, r.seqid))
+        pid = fid2pid.get(r.fid)
         rows_f.append((r.fid, pid, acc, r.seqid, r.source, r.type, r.start, r.end, r.score, r.strand, r.phase, r.attrs, r.a.get("ID"), r.parent, r.gid, r.lineno))
         if pid is not None: feat_by_pid[pid].append((r.fid, r.start, r.end))
     cur.executemany("INSERT INTO feature VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows_f); n_feat += len(rows_f)
@@ -145,21 +202,22 @@ def tok_range(cum, n_, s, e, toks=None, ori=None):
         if not ori[k0]: so = L0 - 1 - so
         if not ori[k1 - 1]: eo = L1 - 1 - eo
     return k0, k1, so, eo
+if n_cross: print(f"断片をまたぐので捨てた GFF の行 {n_cross:,}", file=sys.stderr)
 for pid, (path, L) in paths.items():
-    i = pidx.get(path); lst = genes_by_pid.get(pid, []); fl = feat_by_pid.get(pid, [])
+    i = dpid(pid, path); lst = genes_by_pid.get(pid, []); fl = feat_by_pid.get(pid, []); a0 = pstart.get(pid, 0)
     if i is None or not (lst or fl): continue
     off = int(p_off[i]); n_ = int(p_off[i + 1] - p_off[i]) if i + 1 < len(p_off) else int(len(p_tok) - off)
     toks = np.asarray(p_tok[off:off + n_], dtype=np.int64); bp = s_bp[toks - 1]; ori = np.asarray(p_ori[off:off + n_])
     cum = np.concatenate(([0], np.cumsum(bp)))                      # cum[k] = トークン k の 0-based 開始（ノード長は distill の s_bp。列の無いトークンも数える）
-    if L is not None and int(cum[-1]) != L: n_badlen += 1
+    if L is not None and int(cum[-1]) != L: n_badlen += 1   # （断片のときは断片の長さ）
     its = sorted(inst[pid]); its_s = np.array([x[0] for x in its]); its_e = np.array([x[1] for x in its]); its_a = np.array([x[2] for x in its])
     for g in lst:
-        k0, k1, so, eo = tok_range(cum, n_, g[2] - 1, g[3], toks, ori)
+        k0, k1, so, eo = tok_range(cum, n_, g[2] - 1 - a0, g[3] - a0, toks, ori)
         rows_tok.append((g[0], k0, k1, so, eo))
         sel = np.flatnonzero((its_s < k1) & (its_e > k0))
         if sel.size: rows_atom.append((g[0], int(its_a[sel].min()), int(its_a[sel].max())))
     for fid, s, e in fl:
-        k0, k1, so, eo = tok_range(cum, n_, s - 1, e, toks, ori); rows_ftok.append((fid, k0, k1, so, eo))
+        k0, k1, so, eo = tok_range(cum, n_, s - 1 - a0, e - a0, toks, ori); rows_ftok.append((fid, k0, k1, so, eo))
 cur.executemany("INSERT INTO gene_tok VALUES (?,?,?,?,?)", rows_tok); cur.executemany("INSERT INTO gene_atom VALUES (?,?,?)", rows_atom)
 cur.executemany("INSERT INTO feature_tok VALUES (?,?,?,?,?)", rows_ftok)
 print(f"gene_tok {len(rows_tok):,}, gene_atom {len(rows_atom):,}, feature_tok {len(rows_ftok):,}, 長さの検算 NG {n_badlen} パス, {time.time()-t0:.1f}s", file=sys.stderr)

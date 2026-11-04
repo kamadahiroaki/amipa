@@ -35,6 +35,7 @@
 """
 import argparse
 import json
+import re
 import os
 import sys
 import time
@@ -103,6 +104,7 @@ def main():
     p_len = []            # 各 path の token 数(向き記号バイト個数で厳密カウント=parse_p_ids/ori の長さと一致)
     p_names = []          # path 名
     p_iswalk = []         # W なら 1
+    p_start = []          # コンティグ上の開始（W は SeqStart、P は名前の [a-b] の a、無ければ 0）（11-04）
     n_p = n_w = 0
     import re
     W_RE = re.compile(r"[<>](\d+)")
@@ -133,6 +135,7 @@ def main():
                 if len(parts) < 3:
                     continue
                 p_names.append(parts[1])
+                _m = re.search(r"\[(\d+)[-:]\d+\]$", parts[1]); p_start.append(int(_m.group(1)) if _m else 0)
                 # token 数 = '+'/'-' バイト個数(各 token に符号 1 個 → parse_p_ids/parse_p_ori の長さと厳密一致)
                 p_len.append(parts[2].count("+") + parts[2].count("-"))
                 p_iswalk.append(0); n_p += 1
@@ -141,6 +144,7 @@ def main():
                 if len(parts) < 7:
                     continue
                 p_names.append(f"{parts[1]}#{parts[2]}#{parts[3]}")
+                p_start.append(int(parts[4]) if parts[4] != "*" else 0)   # 同じコンティグが SeqStart の違う W 行に分かれる（minigraph-cactus の断片）
                 # token 数 = '>'/'<' バイト個数(各 token に向き記号 1 個 → W_RE.findall の個数と厳密一致)
                 p_len.append(parts[6].count(">") + parts[6].count("<"))
                 p_iswalk.append(1); n_w += 1
@@ -228,6 +232,7 @@ def main():
     w.flush(); del w
     wo.flush(); del wo
     sv("p_iswalk.npy", np.asarray(p_iswalk, np.uint8))
+    sv("p_start.npy", np.asarray(p_start, np.int64))
     sv("id_map.npy", id_map)
     if args.emit_seq:
         # s_seq.bin(連結生bytes)は上で streaming 済。off は N+1(file order, s_id/s_bp と並列)。
