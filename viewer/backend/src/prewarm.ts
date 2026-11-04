@@ -74,8 +74,13 @@ function safeName(db: string): string | null {
 //   `/edges` が `rd.edge_read_support`（1.2 億行・18GB）を葉層で毎回引くため。
 //   本体だけ温めても一番痛い所が冷たいままなので、隣のサイドカーも順に読む。
 const SIDECARS = ['.tiled', '.reads', '.annot', '.hapidx', '.nametri']   // .tiled が描画の主役なので先頭
+// 11-04: Traversals の材料（.trav・.genes・.ann・.xdepth と distill のパスの表・向き）を先頭に。全ゲノムで計 約 37 GB（30 秒前後）。
+//   以前は本体とサイドカー（293 GB）だけで、パネルの cold（遺伝子 17 秒・錨の列 8 秒など）は温まらなかった
+const TRAV_FILES = ['.trav', '.genes', '.ann', '.xdepth', '.distill/p_tok.npy', '.distill/p_ori.npy']
 function prewarmFiles(real: string): string[] {
-  const out = [real]
+  const out: string[] = []
+  for (const suf of TRAV_FILES) { const f = real + suf; try { if (fs.statSync(f).isFile()) out.push(f) } catch { /* 無ければ飛ばす */ } }
+  out.push(real)
   for (const suf of SIDECARS) {
     const f = real + suf
     try { if (fs.statSync(f).isFile()) out.push(f) } catch { /* 無ければ飛ばす */ }
@@ -204,7 +209,15 @@ export function prewarmAtStartup() {
     console.log('[prewarm] 無効（AMIPA_PREWARM=off）')
     return
   }
-  let list = raw.split(',').map(s => s.trim()).filter(Boolean)
+  // 11-04: 指定が無ければ、DB の置き場がネットワークのファイルシステム（Lustre・NFS・GPFS など）のときだけ温める。
+  //   ローカルの SSD/HDD（ラップトップなど）では、全部を読み流すのは無駄で、起動直後の I/O を奪うだけ
+  if (!raw || raw === 'auto') {
+    const NETFS: Record<number, string> = { 0x0bd00bd0: 'lustre', 0x6969: 'nfs', 0x47504653: 'gpfs', 0xff534d42: 'cifs', 0xfe534d42: 'smb2', 0x65735546: 'fuse', 0x19830326: 'fhgfs' }
+    let ty = -1; try { ty = Number((fs as any).statfsSync(fs.realpathSync(getDbDir())).type) } catch { /* 判定できなければ温める（従来どおり） */ }
+    if (ty >= 0 && !NETFS[ty]) { console.log(`[prewarm] DB の置き場がローカルのファイルシステム（type 0x${ty.toString(16)}）なので温めない。温めるなら AMIPA_PREWARM=<DB 名>`); return }
+    if (ty >= 0) console.log(`[prewarm] DB の置き場は ${NETFS[ty]}`)
+  }
+  let list = (raw === 'auto' ? '' : raw).split(',').map(s => s.trim()).filter(Boolean)
   if (!list.length) {
     // 既定: DB_DIR にあるアトラス本体を全部。ここに来るのは配信を始めた直後だけ。
     try {
