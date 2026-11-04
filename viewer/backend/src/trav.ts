@@ -184,6 +184,9 @@ function ensureCols(t: Trav): boolean {
     const n = sz / w; const out = new Float64Array(n)
     if (w === 8) { const v = new BigInt64Array(buf.buffer, buf.byteOffset, n); for (let i = 0; i < n; i++) out[i] = Number(v[i]) } else { const v = new Int32Array(buf.buffer, buf.byteOffset, n); out.set(v) }
     return out }
+  // 11-04: 前処理（trav_build）が .trav に bp（dense → bp、int32）を入れていればそれを使う。無ければ distill の s_id/s_bp（全ゲノムで各 650 MB の Float64 に展開）から作る
+  const bpa = arrRow(t.db, 'bp')
+  if (bpa && bpa.blob.byteLength === N * 4) { t.bpOfDense = new Int32Array(bpa.blob.buffer.slice(bpa.blob.byteOffset, bpa.blob.byteOffset + bpa.blob.byteLength)); return true }
   try { const sid = rd('s_id.npy'), sbp = rd('s_bp.npy'); for (let i = 0; i < sid.length; i++) { const d = sid[i]; if (d >= 0 && d < N) bp[d] = sbp[i] } } catch (e) { console.log('[trav] s_bp read failed: ' + String(e)) }
   t.bpOfDense = bp
   return true
@@ -413,13 +416,20 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
       geneAnch.push(acc)
     }
   }
+  const T1 = Date.now()
   // オルソログ群: 同じ種類（タンパク質コード＋擬似／RNA／その他）の遺伝子で、錨（ノード）を 2 個以上、または小さい方の 10% 以上共有するものを結ぶ（連結成分）
   const kindOf = (g: any) => (g.pseudo || /pseudo/i.test(g.type)) ? 'cds' : /^(cds|gene|mrna|protein_coding|protein-coding)$/i.test(g.type) ? 'cds' : /rna/i.test(g.type) ? 'rna' : 'other'
   const par = out.map((_, i) => i); const find = (i: number): number => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i] } return i }
   const byNode = new Map<number, number[]>(); out.forEach((g, i) => { for (const d of geneAnch[i]) { const a = byNode.get(d); if (a) a.push(i); else byNode.set(d, [i]) } })
-  const shared = new Map<string, number>()   // "i:j" → 共有する錨の数
-  for (const lst of byNode.values()) { if (lst.length < 2 || lst.length > 400) continue; for (let a = 0; a < lst.length; a++) for (let b = a + 1; b < lst.length; b++) { const i = lst[a], j = lst[b]; if (i === j || out[i].hid === out[j].hid && out[i].tr === out[j].tr) continue; const key = i < j ? i + ':' + j : j + ':' + i; shared.set(key, (shared.get(key) || 0) + 1) } }
-  for (const [key, n] of shared) { const [i, j] = key.split(':').map(Number); if (kindOf(out[i]) !== kindOf(out[j])) continue; const minA = Math.min(geneAnch[i].length, geneAnch[j].length); if (n >= 2 || n >= 0.1 * minA) { const a = find(i), b = find(j); if (a !== b) par[a] = b } }
+  // 11-04: 組ごとの共有数を文字列のキーで全部数えてから結んでいた（全ゲノムの広い窓 2 万遺伝子で 48〜56 秒）。数値のキーにし、すでに同じ群の組は数えない。
+  //   結ぶ条件（共有 2 以上、または小さい方の錨の 10% 以上）は共有数について単調なので、閾値に届いた時点で結んでも最終の群は同じ
+  const NG = out.length; const kinds = out.map(kindOf); const nA = geneAnch.map(a => a.length)
+  const shared = new Map<number, number>()   // i * NG + j（i < j）→ 共有する錨の数
+  for (const lst of byNode.values()) { if (lst.length < 2 || lst.length > 400) continue
+    for (let a = 0; a < lst.length; a++) for (let b = a + 1; b < lst.length; b++) { let i = lst[a], j = lst[b]; if (i === j || out[i].hid === out[j].hid && out[i].tr === out[j].tr) continue
+      if (kinds[i] !== kinds[j]) continue; const ri = find(i), rj = find(j); if (ri === rj) continue
+      if (i > j) { const tmp = i; i = j; j = tmp } const key = i * NG + j; const n = (shared.get(key) || 0) + 1; shared.set(key, n)
+      if (n >= 2 || n >= 0.1 * Math.min(nA[i], nA[j])) par[ri] = rj } }
   const groups = new Map<number, { og: number; x0: number; x1: number; n: number; haps: Set<number>; names: Map<string, number>; fwd: number; npseudo: number; kind: string; members: number[] }>()
   out.forEach((g, i) => { const r = find(i); let G = groups.get(r); if (!G) { G = { og: groups.size, x0: g.x0, x1: g.x1, n: 0, haps: new Set(), names: new Map(), fwd: 0, npseudo: 0, kind: kindOf(g), members: [] }; groups.set(r, G) }
     G.x0 = Math.min(G.x0, g.x0); G.x1 = Math.max(G.x1, g.x1); G.n++; G.haps.add(g.hid); if (g.name) G.names.set(g.name, (G.names.get(g.name) || 0) + 1); if (g.fwd) G.fwd++; if (g.pseudo) G.npseudo++; G.members.push(g.gid); g.og = G.og })
@@ -446,7 +456,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
       if (na !== nb && (A.x1 < B.x0 || B.x1 < A.x0)) { names.add(na); names.add(nb) } }
     return names.size >= 2 ? [...names].slice(0, 6) : null }
   const ogs = [...groups.values()].map(G => ({ para: paraOf(G), pres: presOf({ ...G, src: srcRep(G) }), og: G.og, x0: G.x0, x1: G.x1, n: G.n, nhap: G.haps.size, name: [...G.names.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || '', fwd: G.fwd, npseudo: G.npseudo, kind: G.kind })).sort((a, b) => a.x0 - b.x0)
-  return { x0, x1, n: out.length, ms: Date.now() - T0, genes: out, groups: ogs, srcPres: hasProj ? srcList : null }
+  return { x0, x1, n: out.length, ms: Date.now() - T0, msScan: T1 - T0, msGroup: Date.now() - T1, nrows: rows.length, genes: out, groups: ogs, srcPres: hasProj ? srcList : null }
 }
 
 // ---- 窓のノード集合（グラフをこの範囲に絞る用）: 窓に当たる錨と、その錨に付く錨でないノードの名前（葉）。最大 max 個 ----
