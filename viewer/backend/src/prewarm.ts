@@ -78,13 +78,12 @@ const SIDECARS = ['.tiled', '.reads', '.annot', '.hapidx', '.nametri']   // .til
 //   ★最後に読む: ページキャッシュは 1 回しか触っていないページから捨てるので、先に読むと後の 294 GB（本体・サイドカー）に押し出された
 //   （先頭に置いた版では、先読みの完了後も新しい窓の遺伝子が 9〜13 秒。同じノードで dd 直後なら 1.7〜2.4 秒）
 const TRAV_FILES = ['.distill/p_ori.npy', '.distill/p_tok.npy', '.xdepth', '.ann', '.genes', '.trav']
-function prewarmFiles(real: string): string[] {
+// alt: DB_DIR の中の名前（本体がリンクのとき、サイドカーは実体の隣でなくバンドルの中にあることがある。11-04 ecoli50）
+function prewarmFiles(real: string, alt?: string): string[] {
   const out: string[] = [real]
-  for (const suf of SIDECARS) {
-    const f = real + suf
-    try { if (fs.statSync(f).isFile()) out.push(f) } catch { /* 無ければ飛ばす */ }
-  }
-  for (const suf of TRAV_FILES) { const f = real + suf; try { if (fs.statSync(f).isFile()) out.push(f) } catch { /* 無ければ飛ばす */ } }
+  const pick = (suf: string) => { for (const b of [real, alt]) { if (!b) continue; const f = b + suf; try { if (fs.statSync(f).isFile() && fs.statSync(f).size > 0) { out.push(f); return } } catch { /* 無ければ次 */ } } }
+  for (const suf of SIDECARS) pick(suf)
+  for (const suf of TRAV_FILES) pick(suf)
   return out
 }
 function totalBytes(files: string[]): number {
@@ -119,7 +118,7 @@ function runNext() {
 
   st.running = true
   st.startedAt = Date.now()
-  const files = prewarmFiles(real)
+  const files = prewarmFiles(real, path.join(getDbDir(), db))
   let idx = 0
   let base = 0            // ここまでのファイルで読んだ総バイト（dd の報告は 1 ファイル内の値）
   const state: PrewarmState = st   // 入れ子関数の中では narrowing が効かないので束ね直す
@@ -185,7 +184,7 @@ export function startPrewarm(db: string): PrewarmState | null {
   const existing = states.get(name)
   if (existing) return existing            // 実行中 or 完了済み or 失敗（再試行はしない）
   let total = 0
-  try { total = totalBytes(prewarmFiles(fs.realpathSync(path.join(getDbDir(), name)))) }
+  try { total = totalBytes(prewarmFiles(fs.realpathSync(path.join(getDbDir(), name)), path.join(getDbDir(), name))) }
   catch { return null }
   if (total < MIN_BYTES) return null       // 小さい DB は対象外
   const st: PrewarmState = { db: name, total, done: 0, rate: 0, running: false,

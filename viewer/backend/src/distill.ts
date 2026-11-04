@@ -20,10 +20,11 @@ function openNpy(file: string): Npy {
 
 export class Distill {
   private ori: Npy | null | undefined
+  private tokMem: Buffer | null = null; private oriMem: Buffer | null | undefined
   dir: string; tok: Npy; off: BigInt64Array | Int32Array; names: string[]; pidx: Map<string, number>
   constructor(dir: string) {
     this.dir = dir
-    this.tok = openNpy(path.join(dir, 'p_tok.npy'))
+    this.tok = openNpy(path.join(dir, 'p_tok.npy')); this.tokMem = loadWhole(this.tok)
     const o = openNpy(path.join(dir, 'p_off.npy')); const ob = Buffer.alloc(o.n * o.itemsize); fs.readSync(o.fd, ob, 0, ob.length, o.dataOffset); fs.closeSync(o.fd)
     this.off = o.itemsize === 8 ? new BigInt64Array(ob.buffer, ob.byteOffset, o.n) : new Int32Array(ob.buffer, ob.byteOffset, o.n)
     this.names = fs.readFileSync(path.join(dir, 'p_names.txt'), 'utf8').split('\n').filter(x => x.length)
@@ -33,7 +34,9 @@ export class Distill {
   // パス pi のトークン [s0, e0) を dense id の配列で（Float64Array で返す: int64 も安全に表せる範囲）
   read(pi: number, s0: number, e0: number): Float64Array {
     const base = Number(this.off[pi]); const n = Math.max(0, e0 - s0); const out = new Float64Array(n); if (!n) return out
-    const buf = Buffer.alloc(n * this.tok.itemsize); fs.readSync(this.tok.fd, buf, 0, buf.length, this.tok.dataOffset + (base + s0) * this.tok.itemsize)
+    let buf: Buffer
+    if (this.tokMem) { const a = (base + s0) * this.tok.itemsize; buf = Buffer.from(this.tokMem.subarray(a, a + n * this.tok.itemsize)) }   // 揃った位置の写し（型付き配列の境界のため）
+    else { buf = Buffer.alloc(n * this.tok.itemsize); fs.readSync(this.tok.fd, buf, 0, buf.length, this.tok.dataOffset + (base + s0) * this.tok.itemsize) }
     if (this.tok.itemsize === 8) { const v = new BigInt64Array(buf.buffer, buf.byteOffset, n); for (let i = 0; i < n; i++) out[i] = Number(v[i]) }
     else if (this.tok.dtype === 'uint32') { const v = new Uint32Array(buf.buffer, buf.byteOffset, n); out.set(v) }
     else { const v = new Int32Array(buf.buffer, buf.byteOffset, n); out.set(v) }
@@ -41,10 +44,19 @@ export class Distill {
   }
   // パス pi のトークン [s0, e0) の向き（p_ori.npy、1 = 格納向き）。11-04（gene_lof を TS に移すため）
   readOri(pi: number, s0: number, e0: number): Uint8Array {
-    if (this.ori === undefined) { try { this.ori = openNpy(path.join(this.dir, 'p_ori.npy')) } catch { this.ori = null } }
+    if (this.ori === undefined) { try { this.ori = openNpy(path.join(this.dir, 'p_ori.npy')); this.oriMem = loadWhole(this.ori) } catch { this.ori = null } }
     const n = Math.max(0, e0 - s0); const out = new Uint8Array(n); if (!n || !this.ori) return out.fill(1)
-    const base = Number(this.off[pi]); fs.readSync(this.ori.fd, out, 0, n, this.ori.dataOffset + (base + s0) * this.ori.itemsize); return out
+    const base = Number(this.off[pi]); const a = (base + s0) * this.ori.itemsize
+    if (this.oriMem) { out.set(this.oriMem.subarray(a, a + n)); return out }
+    fs.readSync(this.ori.fd, out, 0, n, this.ori.dataOffset + a); return out
   }
+}
+// 11-04: パスの表（p_tok）と向き（p_ori）が小さければプロセスのメモリに丸ごと読む（既定 2 GB 以下、AMIPA_DISTILL_MEM_MAX で変える。0 で無効）。
+//   ショウジョウバエ（333 MB）では、配信ノードのページキャッシュから押し出されると、窓ごとの読み出しが Lustre のランダム読みで 2〜5 秒になった
+const MEM_MAX = (() => { const v = Number(process.env.AMIPA_DISTILL_MEM_MAX); return Number.isFinite(v) && v >= 0 ? v : 2e9 })()
+function loadWhole(n: Npy): Buffer | null {
+  const bytes = n.n * n.itemsize; if (!MEM_MAX || bytes > MEM_MAX) return null
+  const b = Buffer.allocUnsafe(bytes); let o = 0; while (o < bytes) { const k = fs.readSync(n.fd, b, o, Math.min(1 << 28, bytes - o), n.dataOffset + o); if (k <= 0) break; o += k } return b
 }
 const cache = new Map<string, Distill>()
 export function openDistill(dir: string): Distill { let d = cache.get(dir); if (!d) { d = new Distill(dir); cache.set(dir, d) } return d }

@@ -51,6 +51,14 @@ export function arrRow(db: Database.Database, name: string): { blob: Buffer } | 
   return { blob: Buffer.concat(rows.map(r => r.blob)) }
 }
 
+
+// 11-04: 小さなサイドカー（.trav・.genes。既定 1 GB 以下、AMIPA_SIDECAR_MEM_MAX で変える。0 で無効）はメモリに読み込んで開く。
+//   ページキャッシュから押し出されると、窓ごとの SQLite のページ読みが Lustre のランダム読みになる（ショウジョウバエで 2〜5 秒）
+const SIDECAR_MEM_MAX = (() => { const v = Number(process.env.AMIPA_SIDECAR_MEM_MAX); return Number.isFinite(v) && v >= 0 ? v : 1e9 })()
+function openSidecar(f: string): Database.Database {
+  try { const sz = fs.statSync(f).size; if (SIDECAR_MEM_MAX && sz <= SIDECAR_MEM_MAX) return new Database(fs.readFileSync(f)) } catch { /* 読めなければ普通に開く */ }
+  return new Database(f, { readonly: true })
+}
 export function loadTrav(dbFile: string): Trav | null {
   const p = travPath(dbFile)
   if (!p) return null
@@ -59,7 +67,7 @@ export function loadTrav(dbFile: string): Trav | null {
   const c = cache.get(p)
   if (c && c.mtime === mtime) return c
   if (c) { try { c.db.close() } catch { /* ignore */ } }
-  const db = new Database(p, { readonly: true })
+  const db = openSidecar(p)
   const meta: Record<string, any> = {}
   for (const r of db.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]) { try { meta[r.key] = JSON.parse(r.value) } catch { meta[r.key] = r.value } }
   const haps = (db.prepare('SELECT hid, hap FROM haps ORDER BY hid').all() as { hid: number; hap: string }[]).map(r => r.hap)
@@ -338,7 +346,7 @@ function genesDbOf(t: Trav): Database.Database | null {
   const base = path.join(getDbDir(), path.basename(t.dbFile)); const cands = [base + '.genes']
   try { cands.push(fs.realpathSync(base) + '.genes') } catch { /* ignore */ }
   const f = cands.find(c => { try { return fs.existsSync(c) } catch { return false } })
-  t.genesDb = f ? new Database(f, { readonly: true }) : null
+  t.genesDb = f ? openSidecar(f) : null
   return t.genesDb
 }
 const GENES_MAX = Number(process.env.AMIPA_TRAV_GENES_MAX) || 30_000
