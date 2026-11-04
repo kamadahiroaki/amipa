@@ -9,6 +9,8 @@ import path from 'path'
 import { getDbDir, getDb } from './db'
 import { distillFor } from './routes/bubbleMsa'
 import { openDistill, Distill } from './distill'
+import { bubbleMsaRanges } from './msa'
+import { readsSourceFor } from './msaReads'
 
 export const TRAV_SUFFIX = '.trav'
 
@@ -751,4 +753,19 @@ export function travGeneLof(t: Trav, gids: number[]): any {
     res[gid] = { st, aa: s.aa, ref: ref ? ref.aa : null, src }
   }
   return { genes: res, n: Object.keys(res).length }
+}
+
+// ---- 塩基の段（11-04 に bubble_msa.py の範囲モードから移した。msa.ts）----
+// 合意の並び（python 版の _order_array と同じ）: 錨は x_of_dense、錨でない葉は x_fill
+function orderArray(t: Trav): Float64Array | null {
+  const c = (t as any).__order; if (c !== undefined) return c
+  if (!ensureCols(t)) { (t as any).__order = null; return null }
+  const X = t.xOfDense!; const xf = arrRow(t.db, 'x_fill'); const XF = xf ? new Int32Array(xf.blob.buffer.slice(xf.blob.byteOffset, xf.blob.byteOffset + xf.blob.byteLength)) : null
+  const o = new Float64Array(X.length); for (let i = 0; i < X.length; i++) { const x = X[i]; o[i] = x < 0 && XF && i < XF.length && XF[i] >= 0 ? XF[i] : x }
+  ;(t as any).__order = o; return o
+}
+export function travMsa(t: Trav, req: any, opt: { label?: string; flank?: number; cap?: number | null; maxLeaves?: number | null; maxTokens?: number }): any {
+  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
+  const reads = req && req.reads ? readsSourceFor(path.join(getDbDir(), path.basename(t.dbFile))) : null
+  return bubbleMsaRanges({ dbFile: t.dbFile, dist: t.dist!, idOf: idOf(t), denseOf: denseOf(t), order: orderArray(t), reads }, req, opt)
 }

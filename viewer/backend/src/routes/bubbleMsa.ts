@@ -4,6 +4,7 @@ import fs from 'fs'
 import { getDb, getDbDir } from '../db'
 import { amipaScript } from '../pyenv'
 import { runScript } from '../pyRunner'
+import { sendTrav } from '../travClient'
 
 export const bubbleMsaRouter = Router()
 
@@ -62,6 +63,13 @@ bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
     const sp = ['.trav', '.synteny'].flatMap(sfx => [dbPath + sfx, real ? real + sfx : '']).find(f => f && fs.existsSync(f)) || ''; if (sp) argv.push('--synteny', sp) }
   if (b.cap != null && Number.isFinite(Number(b.cap))) argv.push('--cap', String(Math.max(0, Math.floor(Number(b.cap)))))   // 0 = 畳まない（画面側で畳む）
   if (b.maxLeaves != null && Number.isFinite(Number(b.maxLeaves))) argv.push('--max-leaves', String(Math.max(1, Math.min(12000, Math.floor(Number(b.maxLeaves))))))   // 葉の上限（既定 400。画面は 12,000 を渡す: 1,200 列 ≈ 13 kb を一度に。3,000 列で計算 2 秒・5 MB）
+  // 11-04: .trav があれば Traversals の worker の TS 版（msa.ts）で計算する（python 版と 4 グラフ×8 窓で出力同一、5〜10 倍速い）。
+  //   .trav が無い古い DB と AMIPA_MSA_TS=0 のときだけ常駐の python（bubble_msa.py）
+  if ((process.env.AMIPA_MSA_TS ?? '1') !== '0' && argv.includes('--synteny') && argv[argv.indexOf('--synteny') + 1].endsWith('.trav')) {
+    sendTrav(res, 'msa', { db, req: { ranges, label: b.label ?? 'Traversals', ...(b.reads && typeof b.reads === 'object' ? { reads: b.reads } : {}) }, label: String(b.label ?? 'Traversals'), flank: Number(flank),
+      cap: argv.includes('--cap') ? Number(argv[argv.indexOf('--cap') + 1]) : null, maxLeaves: argv.includes('--max-leaves') ? Number(argv[argv.indexOf('--max-leaves') + 1]) : null })
+    return
+  }
   const t0 = Date.now()
   runScript(SCRIPT, argv, JSON.stringify({ ranges, label: b.label ?? 'Traversals', ...(b.reads && typeof b.reads === 'object' ? { reads: b.reads } : {}) }), TIMEOUT_MS).then(r => {
     if (!r.ok) { res.json({ error: 'MSA 抽出に失敗: ' + r.err.slice(-400) }); return }
