@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import zlib from 'zlib'
 import fs from 'fs'
 import path from 'path'
-import { getDbDir } from './db'
+import { getDbDir, getDb } from './db'
 import { distillFor } from './routes/bubbleMsa'
 import { openDistill, Distill } from './distill'
 
@@ -151,13 +151,11 @@ export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; 
 
 // 座標区間の錨のノード名（グラフの強調用）。dense_of_x と id_map から n{元 id}
 export function nodeNamesForRange(t: Trav, x0: number, x1: number, max = 5000): string[] {
-  const dx = arrRow(t.db, 'dense_of_x')
-  const im = arrRow(t.db, 'id_map')
-  if (!dx || !im) return []
-  const dense = new Int32Array(dx.blob.buffer, dx.blob.byteOffset, dx.blob.byteLength / 4); const idmap = new BigInt64Array(im.blob.buffer, im.blob.byteOffset, im.blob.byteLength / 8)
+  // 11-04: 以前は要求ごとに dense_of_x と id_map（全ゲノムで計 0.9 GB）を SQLite から読み直していた。読み込み済みの配列を使う
+  const dense = denseOfX(t); if (!dense.length) return []; const idf = idOf(t)
   const a = Math.max(0, x0), b = Math.min(dense.length - 1, x1); const n = b - a + 1; if (n <= 0) return []
   const step = n > max ? n / max : 1; const out: string[] = []
-  for (let k = 0; k < Math.min(n, max); k++) { const x = a + Math.floor(k * step); const d = dense[x]; if (d >= 1) out.push('n' + idmap[d - 1].toString()) }
+  for (let k = 0; k < Math.min(n, max); k++) { const x = a + Math.floor(k * step); const d = dense[x]; if (d >= 1) out.push('n' + idf(d)) }
   return out
 }
 
@@ -259,6 +257,19 @@ function markRepeats(t: Trav, rows: TravRow[]): void {
     }
   }
 }
+// dense → 元の GFA id（11-04）: .trav の meta.id_identity（trav_build が書く。id_map が 1..N の連番）なら配列を持たずに d そのもの。
+//   全ゲノム MC は連番で、id_map（651 MB）を読み込まずに済む
+function idOf(t: Trav): (d: number) => number {
+  if (t.meta.id_identity === true || t.meta.id_identity === 'true' || t.meta.id_identity === 1) return d => d
+  const im = idMapOf(t); return d => Number(im[d - 1])
+}
+// 元の id → dense（無ければ -1）
+function denseOf(t: Trav): (v: number) => number {
+  const N = t.xOfDense ? t.xOfDense.length - 1 : 0
+  if (t.meta.id_identity === true || t.meta.id_identity === 'true' || t.meta.id_identity === 1) return v => (v >= 1 && v <= N ? v : -1)
+  const { ids, order } = origIndex(t)
+  return v => { let lo = 0, hi = order.length - 1; while (lo <= hi) { const mid = (lo + hi) >> 1; const vv = ids[order[mid]]; if (vv === v) return order[mid] + 1; if (vv < v) lo = mid + 1; else hi = mid - 1 } return -1 }
+}
 function idMapOf(t: Trav): BigInt64Array {
   const c = (t as any).__idmap as BigInt64Array | undefined; if (c) return c
   const im = arrRow(t.db, 'id_map')
@@ -334,8 +345,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, effFloor(minAnchors, x0, x1)) as TravRow[]
   const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')   // 参照の注釈を写した遺伝子（genes_project.py）: proj＝元の gid、frac＝一致率
   const q = gdb.prepare(`SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0${hasProj ? ', g.proj, g.frac' : ''} FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?`)
-  const qch = gdb.prepare("SELECT f.type, f.phase, f.strand, f.parent, f.start, f.end, t.s0, t.e0, t.so, t.eo FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds','exon','five_prime_UTR','three_prime_UTR','UTR') ORDER BY t.s0")   // 子（エキソン・CDS・UTR）のトークン範囲と読み枠
-  const idmapG = withNodes ? idMapOf(t) : null
+  const idmapG = withNodes ? idOf(t) : null
   const out: any[] = []; let n = 0; const T0 = Date.now()
   // まず件数だけ数え、多すぎる範囲（全景など）はトークンを読まずに断る
   const qn = gdb.prepare('SELECT count(*) AS n FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.pid = ? AND k.e0 > ? AND k.s0 < ?')
@@ -344,8 +354,8 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
     const pad = Math.max(2000, 0.2 * (fb - fa) * Lt + 0.02 * Lt); return [Math.max(r.i0, Math.floor(r.i0 + fa * Lt - pad)), Math.min(r.i1 + 1, Math.ceil(r.i0 + fb * Lt + pad))] }
   let est = 0; for (const r of rows) { const [ta, tb] = winOf(r); est += (qn.get(r.pid, ta, tb) as { n: number }).n; if (est > GENES_MAX) return { tooMany: true, n: est, max: GENES_MAX, genes: [] } }
   // トークン [a, b) の中の錨: x の最小・最大と錨の dense id（オルソログ群＝ノード共有の材料）
-  const anchorsIn = (pi: number, a: number, b: number, acc: number[]): [number, number] => {
-    const toks = dist.read(pi, a, b); let lo = 1e18, hi = -1
+  const anchorsIn = (rd: (a: number, b: number) => ArrayLike<number>, a: number, b: number, acc: number[]): [number, number] => {
+    const toks = rd(a, b); let lo = 1e18, hi = -1
     for (let k = 0; k < toks.length; k++) { const d = toks[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) { const x = X[d]; if (x < lo) lo = x; if (x > hi) hi = x; acc.push(d) } }
     return hi < 0 ? [-1, -1] : [lo, hi]
   }
@@ -355,10 +365,18 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
     // 窓に当たるトークン区間の見積もり（x が錨の番号に比例）。余白を広めに取り、遺伝子ごとの x で絞る
     const Lt = r.i1 - r.i0 + 1; const span = Math.max(1, r.x1 - r.x0); const [ta, tb] = winOf(r)
     const gs = q.all(r.pid, ta, tb) as any[]
+    // 11-04: この通過の遺伝子が掛かるトークンを 1 回で読み、遺伝子ごとの読み（錨・子の位置・ノード名で 3 回）はその切り出しにする（cold の Lustre ではランダム読みの回数が時間）
+    let cLo = Infinity, cHi = -1; for (const g of gs) { if (g.s0 < cLo) cLo = g.s0; if (g.e0 > cHi) cHi = g.e0 }
+    const cache = gs.length > 1 && cHi > cLo && cHi - cLo <= 3_000_000 ? { lo: cLo, toks: dist.read(pi, cLo, cHi) } : null
+    const rd = (a: number, b: number): ArrayLike<number> => (cache && a >= cache.lo && b <= cache.lo + cache.toks.length ? cache.toks.subarray(a - cache.lo, b - cache.lo) : dist.read(pi, a, b))
+    // 子（エキソン・CDS・UTR）もこの通過の遺伝子の分をまとめて引く（以前は遺伝子ごとに 1 回）
+    const chMap = new Map<number, any[]>()
+    if (rows.length <= 400 && gs.length) { const ids = gs.map(g => g.gid); for (let i = 0; i < ids.length; i += 900) { const part = ids.slice(i, i + 900)
+      for (const c of gdb.prepare(`SELECT f.gid, f.type, f.phase, f.strand, f.parent, f.start, f.end, t.s0, t.e0, t.so, t.eo FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid IN (${part.map(() => '?').join(',')}) AND f.type IN ('CDS','cds','exon','five_prime_UTR','three_prime_UTR','UTR') ORDER BY f.gid, t.s0`).all(...part) as any[]) { const a = chMap.get(c.gid); if (a) a.push(c); else chMap.set(c.gid, [c]) } } }
     for (const g of gs) {
       if (++n > GENES_MAX) return { tooMany: true, n, max: GENES_MAX, genes: [] }
       const s0 = Math.max(r.i0, g.s0), e0 = Math.min(r.i1 + 1, g.e0); if (e0 <= s0) continue
-      const acc: number[] = []; const A = anchorsIn(pi, s0, Math.min(e0, s0 + 1500), acc); const B = e0 - 1500 > s0 + 1500 ? anchorsIn(pi, Math.max(s0, e0 - 1500), e0, acc) : [-1, -1]
+      const acc: number[] = []; const A = anchorsIn(rd, s0, Math.min(e0, s0 + 1500), acc); const B = e0 - 1500 > s0 + 1500 ? anchorsIn(rd, Math.max(s0, e0 - 1500), e0, acc) : [-1, -1]
       let gx0 = Math.min(A[0] < 0 ? 1e18 : A[0], B[0] < 0 ? 1e18 : B[0]), gx1 = Math.max(A[1], B[1])
       if (gx1 < 0) {   // 錨が無い: 通過の中の位置から補間
         const f0 = (s0 - r.i0) / Lt, f1 = (e0 - r.i0) / Lt; const [u0, u1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]; gx0 = Math.round(r.x0 + u0 * span); gx1 = Math.round(r.x0 + u1 * span)
@@ -372,16 +390,16 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
         // 株固有の挿入・欠失のある遺伝子でエキソンが別の座標に描かれ、欠失した株の空白の中にエキソンが出た。FAM227A の 5.6 kb の挿入）
         const propX = (tok: number) => { const f = Math.max(0, Math.min(1, (tok - g.s0) / L)); return rev ? gx1 - f * span2 : gx0 + f * span2 }
         let xAt: Float64Array | null = null
-        if (L <= 200000) { const tk = dist.read(pi, g.s0, g.e0); xAt = new Float64Array(tk.length).fill(-1); let last = -1
+        if (L <= 200000) { const tk = rd(g.s0, g.e0); xAt = new Float64Array(tk.length).fill(-1); let last = -1
           for (let k = 0; k < tk.length; k++) { const d = tk[k]; const kd = K[d]; if ((kd === 1 || kd === 2) && X[d] >= 0) last = X[d]; xAt[k] = last }
           let nxt = -1; for (let k = tk.length - 1; k >= 0; k--) { if (xAt[k] >= 0 && (k === 0 || xAt[k] !== xAt[k - 1] || nxt < 0)) { /* keep */ } if (xAt[k] < 0) xAt[k] = nxt; else nxt = xAt[k] } }
         const toX = (tok: number) => { if (xAt) { const k = Math.max(0, Math.min(xAt.length - 1, tok - g.s0)); if (xAt[k] >= 0) return xAt[k] } return propX(tok) }
         const per = new Map<string, [number, number][]>()
-        const chs = qch.all(g.gid) as { type: string; phase: string; strand: string; parent: number | null; start: number; end: number; s0: number; e0: number; so: number; eo: number }[]
+        const chs = (chMap.get(g.gid) ?? []) as { type: string; phase: string; strand: string; parent: number | null; start: number; end: number; s0: number; e0: number; so: number; eo: number }[]
         for (const c of chs) { const kind = /cds/i.test(c.type) ? 'cds' : /utr/i.test(c.type) ? 'utr' : 'exon'; const a = toX(c.s0), b = toX(c.e0); const lo = Math.round(Math.min(a, b)), hi = Math.round(Math.max(a, b)); if (!per.has(kind)) per.set(kind, []); per.get(kind)!.push([lo, hi]) }
         // 塩基の段用: 遺伝子（と CDS の片）のトークンのノード名。窓に当たる分だけ（通過のトークン区間の中）、1 遺伝子 6,000 個まで
         if (withNodes && idmapG && out.length < 5000) {
-          const ta = Math.max(s0, g.s0), tb = Math.min(e0, g.e0); const toks = dist.read(pi, ta, Math.min(tb, ta + 6000)); const names: string[] = []; for (let k = 0; k < toks.length; k++) names.push('n' + idmapG[toks[k] - 1].toString())
+          const ta = Math.max(s0, g.s0), tb = Math.min(e0, g.e0); const toks = rd(ta, Math.min(tb, ta + 6000)); const names: string[] = []; for (let k = 0; k < toks.length; k++) names.push('n' + idmapG(toks[k]))
           // CDS の片は転写産物 1 本（親 parent ごとに合計 bp が最大のもの）に絞る。GENCODE は転写産物が複数あり、混ぜると読み枠が壊れて全行が変異・終止になる（APOBEC3B は 4 転写産物 28 片）
           const byParent = new Map<string, { len: number; parts: typeof chs }>(); for (const c of chs) { if (!/cds/i.test(c.type)) continue; const k = c.parent == null ? '' : String(c.parent); const e = byParent.get(k) || { len: 0, parts: [] }; e.len += Math.max(0, c.end - c.start + 1); e.parts.push(c); byParent.set(k, e) }
           let bestP: typeof chs = []; let bestLen = -1; for (const e of byParent.values()) if (e.len > bestLen) { bestLen = e.len; bestP = e.parts }
@@ -434,7 +452,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
 // ---- 窓のノード集合（グラフをこの範囲に絞る用）: 窓に当たる錨と、その錨に付く錨でないノードの名前（葉）。最大 max 個 ----
 export function travNodeSet(t: Trav, x0: number, x1: number, minAnchors = 50, max = 20000): any {
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', names: [] }
-  const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!; const idmap = idMapOf(t)
+  const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!; const idf = idOf(t)
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); if (x1 < x0) return { error: 'empty', names: [] }
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, effFloor(minAnchors, x0, x1)) as TravRow[]
   let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
@@ -443,7 +461,7 @@ export function travNodeSet(t: Trav, x0: number, x1: number, minAnchors = 50, ma
   outer: for (const r of rows) {
     const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
     const wt = windowTokens(t, r, pi, x0, x1); let full = false
-    forEachWindowToken(r, wt.toks, wt.s0, x0, x1, X, K, (d, _isA, xa) => { if (full || seen[d]) return; seen[d] = 1; if (names.length >= max) { truncated = true; full = true; return } names.push('n' + idmap[d - 1].toString()); xs.push(xa) })   // xs = 付いている錨の座標（塗り分け用）
+    forEachWindowToken(r, wt.toks, wt.s0, x0, x1, X, K, (d, _isA, xa) => { if (full || seen[d]) return; seen[d] = 1; if (names.length >= max) { truncated = true; full = true; return } names.push('n' + idf(d)); xs.push(xa) })   // xs = 付いている錨の座標（塗り分け用）
     if (full) break outer
   }
   return { x0, x1, n: names.length, truncated, ms: Date.now() - T0, names, xs }
@@ -464,7 +482,7 @@ function origIndex(t: Trav): { ids: Float64Array; order: Uint32Array } {
 }
 export function travLocate(t: Trav, names: string[]): any {
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', nodes: [] }
-  const { ids, order } = origIndex(t); const X = t.xOfDense!, K = t.kindOfDense!
+  const dof = denseOf(t); const X = t.xOfDense!, K = t.kindOfDense!
   // スーパーノード（上の層の名前）: super 表（super_build.py が足す。子孫の葉のうち bp 合計が最大の派閥の x）
   const hasSuper = (() => { const c = (t as any).__hasSuper; if (c != null) return c; const r = t.db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='super'").get() as { n: number }; (t as any).__hasSuper = r.n > 0; return r.n > 0 })()
   const qs = hasSuper ? t.db.prepare('SELECT x, frac, bp, xmin, xmax FROM super WHERE name = ?') : null
@@ -473,10 +491,9 @@ export function travLocate(t: Trav, names: string[]): any {
   const nodes = names.slice(0, 5000).map(nm => {
     const m = /^n(\d+)$/.exec(nm)
     if (!m) { const r = qs ? (qs.get(nm) as { x: number; frac: number; bp: number; xmin: number; xmax: number } | undefined) : undefined; return r ? { name: nm, x: r.x, kind: -2, frac: r.frac, bp: r.bp, xmin: r.xmin, xmax: r.xmax } : { name: nm, x: -1, kind: -1 } }
-    const v = Number(m[1]); let lo = 0, hi = order.length - 1, found = -1
-    while (lo <= hi) { const mid = (lo + hi) >> 1; const vv = ids[order[mid]]; if (vv === v) { found = order[mid]; break } if (vv < v) lo = mid + 1; else hi = mid - 1 }
-    if (found < 0) return { name: nm, x: -1, kind: -1 }
-    const d = found + 1; if (X[d] >= 0) return { name: nm, x: X[d], kind: K[d] }; if (XF && XF[d] >= 0) return { name: nm, x: XF[d], kind: 6 }; return { name: nm, x: -1, kind: K[d] }   // kind 6 ＝ 錨でない葉に直前の錨の座標を与えたもの
+    const d = dof(Number(m[1]))
+    if (d < 0) return { name: nm, x: -1, kind: -1 }
+    if (X[d] >= 0) return { name: nm, x: X[d], kind: K[d] }; if (XF && XF[d] >= 0) return { name: nm, x: XF[d], kind: 6 }; return { name: nm, x: -1, kind: K[d] }   // kind 6 ＝ 錨でない葉に直前の錨の座標を与えたもの
   })
   return { nodes, R: t.R, hasSuper, hasFill: !!XF }
 }
@@ -487,6 +504,20 @@ export function travFindGene(t: Trav, q: string, limit = 60): any {
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', hits: [] }
   const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
   const qq = q.trim(); if (!qq) return { hits: [] }
+  // 11-04: 前処理の gene_name（参照の注釈だけの名前の表）と gene_x（座標）があれば、それで引く。以前は写しを含む全行（全ゲノム 547 万）を LIKE でなめ、
+  //   当たった遺伝子ごとに distill を読んで座標を出していた（38 秒）
+  if (gdb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gene_name'").get() && gdb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gene_x'").get()) {
+    const T0 = Date.now(); const hidOf = new Map(t.paths.map(p => [p.pid, p.hid]))
+    const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')
+    const canon = gdb.prepare("SELECT gid FROM gene_name WHERE name LIKE ? COLLATE NOCASE OR locus LIKE ? COLLATE NOCASE OR product LIKE ? COLLATE NOCASE ORDER BY (name LIKE ? COLLATE NOCASE) DESC, name, pid LIMIT ?")
+      .raw().all(qq + '%', qq + '%', '%' + qq + '%', qq + '%', limit) as [number][]
+    const one = gdb.prepare('SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, x.x0, x.x1 FROM gene g JOIN gene_x x ON x.gid = g.gid WHERE g.gid = ?')
+    const copies = hasProj ? gdb.prepare('SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, x.x0, x.x1 FROM gene g JOIN gene_x x ON x.gid = g.gid WHERE g.proj = ? ORDER BY g.pid') : null
+    const rows2: any[] = []
+    for (const [gid] of canon) { if (rows2.length >= limit) break; const r = one.get(gid); if (r) rows2.push(r); if (copies) for (const c of copies.all(gid) as any[]) { if (rows2.length >= limit) break; rows2.push(c) } }
+    const hits = rows2.map(g => ({ gid: g.gid, pid: g.pid, hid: hidOf.get(g.pid), hap: t.haps[hidOf.get(g.pid) ?? 0], path: t.paths[g.pid].path, start: g.start, end: g.end, strand: g.strand, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, x0: g.x0, x1: g.x1 }))
+    return { q: qq, n: hits.length, truncated: canon.length >= limit || rows2.length >= limit, ms: Date.now() - T0, hits }
+  }
   const rows = gdb.prepare("SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0 FROM gene g JOIN gene_tok k ON k.gid = g.gid WHERE g.name LIKE ? COLLATE NOCASE OR g.locus LIKE ? COLLATE NOCASE OR g.product LIKE ? COLLATE NOCASE ORDER BY (g.name LIKE ? COLLATE NOCASE) DESC, g.name, g.pid LIMIT ?")
     .all(qq + '%', qq + '%', '%' + qq + '%', qq + '%', limit) as any[]
   const hidOf = new Map(t.paths.map(p => [p.pid, p.hid])); const T0 = Date.now()
@@ -507,6 +538,17 @@ export function travGeneDensity(t: Trav, x0: number, x1: number, nbin: number, m
   const gdb = genesDbOf(t); if (!gdb) return { error: 'この DB には .genes サイドカーが無い' }
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
   let D = (t as any).__gdens as GeneDens | undefined
+  // 11-04: 前処理（genes_index.py）が gene_x に密度の位置と印を前計算していればそれを読む（全ゲノムで 74〜81 秒 → 1 秒未満）
+  if (!D && gdb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gene_x'").get()) {
+    const meta = Object.fromEntries((gdb.prepare("SELECT key, value FROM meta WHERE key LIKE 'gene_x_%'").all() as { key: string; value: string }[]).map(r => [r.key, r.value]))
+    if (Number(meta.gene_x_minanch) === minAnchors) {
+      const T0 = Date.now(); const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')
+      const rs = gdb.prepare(`SELECT x.xd, x.var FROM gene_x x JOIN gene g ON g.gid = x.gid${hasProj ? ' WHERE g.proj IS NULL' : ''}`).raw().all() as [number, number][]
+      const xs = new Float64Array(rs.length), vf = new Uint8Array(rs.length); rs.forEach((r, i) => { xs[i] = r[0]; vf[i] = r[1] })
+      D = { x: xs, nPerHap: hasProj ? 1 : Math.max(1, Number(meta.gene_x_nperhap) || 1), varFlag: vf }; (t as any).__gdens = D
+      console.log(`[trav/genedensity] gene_x から ${rs.length} 遺伝子 ${Date.now() - T0} ms`)
+    }
+  }
   if (!D) {
     const T0 = Date.now(); const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
     const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')
@@ -603,15 +645,15 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
   const want = only && only.length ? new Set(only) : null   // 選んだサンプルだけ（10-30）。null＝全部
   const keep = (sn: number) => !want || want.has(R.samples[sn])
   const XD = xdepthOf(t)
-  const dox = denseOfX(t), idmap = idMapOf(t); const W = x1 - x0 + 1; ncol = Math.max(4, Math.min(1500, Math.floor(ncol), W))
+  const dox = denseOfX(t), idf = idOf(t), NX = t.xOfDense ? t.xOfDense.length : Infinity; const W = x1 - x0 + 1; ncol = Math.max(4, Math.min(1500, Math.floor(ncol), W))
   const GAP = 3; const S = R.samples.length; const dep = Array.from({ length: S }, () => new Uint16Array(ncol))
   const pieces = new Map<number, number[]>(); let overflow = false; const t0 = Date.now()
   const wide = !!XD && W > PIECE_MAX_W; if (wide) overflow = true
   for (let c = 0; c < ncol && !wide; c++) {
     const xa = Math.floor(x0 + c * W / ncol), xb = Math.max(xa, Math.floor(x0 + (c + 1) * W / ncol) - 1); const mid = (xa + xb) >> 1
     let d = -1; for (let k = 0; k <= Math.min(16, xb - xa); k++) { for (const x of [mid + k, mid - k]) { if (x < xa || x > xb || x < 0 || x >= dox.length) continue; if (dox[x] >= 1) { d = dox[x]; break } } if (d >= 1) break }
-    if (d < 1 || d - 1 >= idmap.length) continue
-    for (const row of R.stmt.all(Number(idmap[d - 1])) as { chunk_no: number; postings: Buffer }[]) {
+    if (d < 1 || d >= NX) continue
+    for (const row of R.stmt.all(idf(d)) as { chunk_no: number; postings: Buffer }[]) {
       const ch = R.chunk.get(row.chunk_no); if (!ch || !keep(ch.sn)) continue; const buf = row.postings; let shift = 0, cur = 0, prev = ch.base, n = 0
       for (let i = 0; i < buf.length; i++) { const b = buf[i]; cur += (b & 0x7f) * 2 ** shift; if (b & 0x80) { shift += 7; continue } prev += cur; cur = 0; shift = 0; n++
         if (overflow) continue
@@ -641,4 +683,62 @@ export function travNLeaf(t: Trav, x0: number, x1: number): number | null {
   if (!s) return null
   const lb = (v: number) => { let lo = 0, hi = s!.length; while (lo < hi) { const m = (lo + hi) >> 1; if (s![m] < v) lo = m + 1; else hi = m } return lo }
   return lb(Math.floor(x1) + 1) - lb(Math.floor(x0))
+}
+
+// ---- 機能喪失の目安（11-04 に viewer/scripts/gene_lof.py から移した。常駐の python と違い、読み込み済みの配列と distill の読み手を共有する）----
+// 遺伝子の写し（またはその株の注釈）ごとに、CDS を株の配列から組み立てて翻訳し、状態を返す:
+//   ok / trunc（参照の 9 割未満で止まる）/ fs（CDS の長さが 3 の剰余で参照と違う）/ nostart（開始コドンが無い・参照にはある）/ nocds（CDS が写っていない）
+// CDS は遺伝子ごとに CDS の合計 bp が最大の転写産物（親）の片をウォークの順に並べ、先頭の片はノード内オフセット so、末尾は eo で切る。鎖が − なら逆相補にしてから読む
+const COMP: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A', N: 'N', a: 't', c: 'g', g: 'c', t: 'a', n: 'n' }
+const rcSeq = (s: string) => { let o = ''; for (let i = s.length - 1; i >= 0; i--) o += COMP[s[i]] ?? s[i]; return o }
+const CODON: Record<string, string> = (() => { const b = 'TCAG', aas = 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG'; const m: Record<string, string> = {}
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) m[b[i] + b[j] + b[k]] = aas[16 * i + 4 * j + k]; return m })()
+export function travGeneLof(t: Trav, gids: number[]): any {
+  const gdb = genesDbOf(t); if (!gdb) return { error: 'この DB には .genes サイドカーが無い' }
+  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
+  const dist = t.dist!; const idf = idOf(t); const mdb = getDb(t.dbFile)
+  const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')
+  const qParts = gdb.prepare("SELECT f.parent, f.pid, t.s0, t.e0, t.so, t.eo, f.start, f.end FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds')")
+  const piOf = (pid: number) => (dist.names[pid] === t.paths[pid]?.path ? pid : dist.pidx.get(t.paths[pid]?.path ?? ''))
+  const assemble = (gid: number, strand: string): string | null => {
+    const rows = qParts.all(gid) as any[]; if (!rows.length) return null
+    const by = new Map<string, any[]>(); for (const r of rows) { const k = String(r.parent); const a = by.get(k); if (a) a.push(r); else by.set(k, [r]) }
+    let best: any[] = []; let bestLen = -1; for (const v of by.values()) { const L = v.reduce((s, x) => s + x.end - x.start + 1, 0); if (L > bestLen) { bestLen = L; best = v } }   // 同点は先に出た親（python の max と同じ）
+    best.sort((a, b) => a.s0 - b.s0); const pi = piOf(best[0].pid); if (pi == null) return null
+    const segs = best.map(r => ({ tk: dist.read(pi, r.s0, r.e0), oo: dist.readOri(pi, r.s0, r.e0), so: r.so as number, eo: r.eo as number }))
+    const need = new Set<number>(); for (const s of segs) for (let i = 0; i < s.tk.length; i++) need.add(idf(s.tk[i]))
+    const seq = new Map<number, string>(); const ids = [...need]
+    for (let i = 0; i < ids.length; i += 500) { const ch = ids.slice(i, i + 500); for (const r of mdb.prepare(`SELECT leaf_id, seq FROM leaf_seq WHERE leaf_id IN (${ch.map(() => '?').join(',')})`).all(...ch) as { leaf_id: number; seq: any }[]) seq.set(Number(r.leaf_id), typeof r.seq === 'string' ? r.seq : Buffer.from(r.seq).toString('latin1')) }
+    const out: string[] = []
+    for (const sg of segs) {
+      const L = (d: number) => (seq.get(idf(d)) ?? '').length
+      let so = sg.so, eo = sg.eo
+      if (sg.tk.length) { so = sg.oo[0] ? so : L(sg.tk[0]) - 1 - so; eo = sg.oo[sg.tk.length - 1] ? eo : L(sg.tk[sg.tk.length - 1]) - 1 - eo }
+      const ss: string[] = []; for (let i = 0; i < sg.tk.length; i++) { const s = seq.get(idf(sg.tk[i])) ?? 'N'; ss.push(sg.oo[i] ? s : rcSeq(s)) }
+      if (!ss.length) continue
+      ss[ss.length - 1] = ss[ss.length - 1].slice(0, Math.max(0, eo) + 1)
+      ss[0] = ss.length > 1 ? ss[0].slice(Math.max(0, so || 0)) : ss[0].slice(Math.max(0, so || 0), Math.max(0, eo) + 1)
+      out.push(ss.join(''))
+    }
+    const cds = out.join('').toUpperCase(); return strand === '-' ? rcSeq(cds) : cds
+  }
+  const translate = (cds: string) => { let aa = ''; for (let i = 0; i + 2 < cds.length; i += 3) { const x = CODON[cds.slice(i, i + 3)] ?? 'X'; aa += x; if (x === '*') break } return aa }
+  const cache = new Map<number, { L: number; aa: number; stop: boolean; start: boolean } | null>()
+  const summary = (gid: number, strand: string) => { if (cache.has(gid)) return cache.get(gid)!; let cds: string | null = null; try { cds = assemble(gid, strand) } catch { cds = null }
+    if (!cds) { cache.set(gid, null); return null } const p = translate(cds); const stop = p.endsWith('*'); const r = { L: cds.length, aa: p.length - (stop ? 1 : 0), stop, start: ['ATG', 'GTG', 'TTG'].includes(cds.slice(0, 3)) }; cache.set(gid, r); return r }
+  const list = gids.slice(0, 5000); const info = new Map<number, [string, number | null]>()
+  for (let i = 0; i < list.length; i += 900) { const ch = list.slice(i, i + 900); for (const r of gdb.prepare(`SELECT gid, strand${hasProj ? ', proj' : ', NULL AS proj'} FROM gene WHERE gid IN (${ch.map(() => '?').join(',')})`).all(...ch) as any[]) info.set(r.gid, [r.strand, r.proj]) }
+  const qStrand = gdb.prepare('SELECT strand FROM gene WHERE gid = ?')
+  const res: Record<number, any> = {}
+  for (const gid of list) {
+    const inf = info.get(gid); if (!inf) continue; const [strand, src] = inf
+    const s = summary(gid, strand); if (!s) { res[gid] = { st: 'nocds', src }; continue }
+    let ref: ReturnType<typeof summary> = null
+    if (src != null) { const rs = qStrand.get(src) as { strand: string } | undefined; ref = rs ? summary(src, rs.strand) : null }
+    let st = 'ok'
+    if (ref) { if ((((s.L - ref.L) % 3) + 3) % 3 !== 0) st = 'fs'; else if (s.aa < 0.9 * ref.aa) st = 'trunc'; else if (ref.start && !s.start) st = 'nostart' }
+    else { const exp = Math.floor(s.L / 3) - 1; if (!s.start) st = 'nostart'; else if (s.aa < 0.9 * exp) st = 'trunc' }
+    res[gid] = { st, aa: s.aa, ref: ref ? ref.aa : null, src }
+  }
+  return { genes: res, n: Object.keys(res).length }
 }

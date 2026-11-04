@@ -569,8 +569,10 @@ def build_stages(b: Bundle, a) -> dict:
             [["rm", "-f", str(raw)],
              [py, str(PKG / "genes_build.py"), "--distill", str(b.distill), "--gff-dir", str(a.gff_dir), "--out", str(raw)],
              [py, str(PKG / "genes_project.py"), str(raw), str(b.distill), str(b.genes) + ".tmp"],
+             # 11-04: viewer が初回に計算していた遺伝子の座標・密度の印・名前の表を前計算（genes_index.py）。.trav の座標を使うので trav を入力に
+             [py, str(PKG / "genes_index.py"), str(b.genes) + ".tmp", str(b.trav), str(b.distill)],
              ["mv", "-f", str(b.genes) + ".tmp", str(b.genes)]],
-            inputs=[b.distill, Path(a.gff_dir)], outputs=[b.genes], env=thread_env(1),
+            inputs=[b.distill, Path(a.gff_dir)] + ([b.trav] if "trav" in st else []), outputs=[b.genes], env=thread_env(1),
             note="株ごとの遺伝子（GFF → パスのトークン範囲、参照の注釈を写す）",
         )
 

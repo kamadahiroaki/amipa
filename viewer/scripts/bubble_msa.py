@@ -90,6 +90,39 @@ def synteny_cols(path, dense_of_name):
 def die(msg):
     print(json.dumps({"error": msg})); sys.exit(0)
 
+
+class NpyRange:
+    """.npy（1 次元）を、切り出し [a:b] のときだけ pread で読む（mmap しない）。len() と dtype も持つ"""
+    def __init__(self, path):
+        with open(path, "rb") as f:
+            ver = np.lib.format.read_magic(f)
+            shape, fortran, dtype = (np.lib.format.read_array_header_1_0 if ver == (1, 0) else np.lib.format.read_array_header_2_0)(f)
+            self.off = f.tell()
+        self.fd = os.open(path, os.O_RDONLY); self.dtype = np.dtype(dtype); self.n = int(shape[0])
+    def __len__(self): return self.n
+    def __getitem__(self, k):
+        if isinstance(k, slice):
+            a, b, st = k.indices(self.n)
+            if b <= a: return np.zeros(0, self.dtype)
+            buf = os.pread(self.fd, (b - a) * self.dtype.itemsize, self.off + a * self.dtype.itemsize)
+            v = np.frombuffer(buf, self.dtype)
+            return v[::st] if st != 1 else v
+        k = int(k); k = k + self.n if k < 0 else k
+        return np.frombuffer(os.pread(self.fd, self.dtype.itemsize, self.off + k * self.dtype.itemsize), self.dtype)[0]
+    def __del__(self):
+        try: os.close(self.fd)
+        except Exception: pass
+
+
+class _IdentityIdMap:
+    """id_map が 1..N の連番のとき（distill の meta.json の dense_identity）の代わり: id_map[i] = i + 1"""
+    def __init__(self, tok): self.n = 1 << 62
+    def __len__(self): return self.n
+    def __getitem__(self, k):
+        if isinstance(k, np.ndarray): return k.astype(np.int64) + 1
+        return int(k) + 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db", required=True)
@@ -122,9 +155,13 @@ def main():
     try:
         p_off = np.load(args.distill + "/p_off.npy")
         p_names = open(args.distill + "/p_names.txt").read().splitlines()
-        p_tok = np.load(args.distill + "/p_tok.npy", mmap_mode="r")
-        p_ori = np.load(args.distill + "/p_ori.npy", mmap_mode="r")   # 1='+'(格納配列) 0='-'(逆相補)
-        id_map = np.load(args.distill + "/id_map.npy", mmap_mode="r")
+        # 11-04: mmap をやめ、要る範囲だけ pread で読む（NpyRange）。mmap はファイル全体（全ゲノムの p_tok 17.6 GB など）を仮想メモリに数えるので、
+        #   常駐の python 2 本で配信ジョブの仮想メモリの上限（s_vmem）を超え、配信ごと止められた
+        p_tok = NpyRange(args.distill + "/p_tok.npy")
+        p_ori = NpyRange(args.distill + "/p_ori.npy")   # 1='+'(格納配列) 0='-'(逆相補)
+        try: _ident = bool(json.load(open(args.distill + "/meta.json")).get("dense_identity"))
+        except Exception: _ident = False
+        id_map = _IdentityIdMap(p_tok) if _ident else np.load(args.distill + "/id_map.npy", mmap_mode="r")   # 連番（id = dense）なら表を開かない
     except Exception as e:
         die("distill を読めません: " + str(e))
     def nname(tok): return "n" + str(int(id_map[tok - 1]))   # dense は 1-based: id_map[tok-1]=元 id
@@ -138,6 +175,7 @@ def main():
         want = np.array(sorted(orig_ids), dtype=np.int64)
         if want.size == 0:
             return {}
+        if isinstance(id_map, _IdentityIdMap): return {int(w): int(w) for w in want}   # 連番: 元 id = dense
         pos = np.clip(np.searchsorted(id_map, want), 0, len(id_map) - 1)
         got = np.asarray(id_map[pos])
         if bool((got == want).all()):

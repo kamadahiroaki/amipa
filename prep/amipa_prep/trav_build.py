@@ -614,6 +614,6 @@ cur.executemany("INSERT INTO bounds VALUES (?,?,?)", [(int(edges[q]), int(sup[q]
 cur.executemany("INSERT INTO reps VALUES (NULL,?,?,?,?,?)", reps); cur.executemany("INSERT INTO copies VALUES (NULL,?,?,?,?,?,?,?,?,?,?)", copies); cur.executemany("INSERT INTO atoms VALUES (NULL,?,?,?,?,?)", atoms)
 for nm, arr in (("x_of_dense", X.astype(np.int32)), ("dense_of_x", order.astype(np.int32)), ("xbp", xbp), ("cov", cov.astype(np.int32)), ("kind", kind), ("id_map", id_map)):
     put_array(cur, nm, arr)   # 256 MiB ごとの行に分ける（trav_arrays.py。viewer は 1 値 537 MB までしか読めない）
-meta = dict(version=4, nfold=int(fold.sum()), N=N, H=H, NP=NP, R=R, params=vars(a), strong=int(strong.sum()), interp=int(consistent.sum()), inconsistent=int((kind == 3).sum()), ntrav=len(trav), nbounds=int(bx.size), nreps=len(reps), ncopies=len(copies), natoms=len(atoms), built=time.strftime("%Y-%m-%d %H:%M"))
+meta = dict(version=4, id_identity=bool(id_map.size == N and np.array_equal(id_map, np.arange(1, N + 1))), nfold=int(fold.sum()), N=N, H=H, NP=NP, R=R, params=vars(a), strong=int(strong.sum()), interp=int(consistent.sum()), inconsistent=int((kind == 3).sum()), ntrav=len(trav), nbounds=int(bx.size), nreps=len(reps), ncopies=len(copies), natoms=len(atoms), built=time.strftime("%Y-%m-%d %H:%M"))
 cur.executemany("INSERT INTO meta VALUES (?,?)", [(k_, json.dumps(v_, ensure_ascii=False)) for k_, v_ in meta.items()]); con.commit(); con.close()
 log(f"→ {a.out} ({os.path.getsize(a.out)/1e6:.0f} MB)")

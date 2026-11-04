@@ -19,6 +19,7 @@ function openNpy(file: string): Npy {
 }
 
 export class Distill {
+  private ori: Npy | null | undefined
   dir: string; tok: Npy; off: BigInt64Array | Int32Array; names: string[]; pidx: Map<string, number>
   constructor(dir: string) {
     this.dir = dir
@@ -37,6 +38,12 @@ export class Distill {
     else if (this.tok.dtype === 'uint32') { const v = new Uint32Array(buf.buffer, buf.byteOffset, n); out.set(v) }
     else { const v = new Int32Array(buf.buffer, buf.byteOffset, n); out.set(v) }
     return out
+  }
+  // パス pi のトークン [s0, e0) の向き（p_ori.npy、1 = 格納向き）。11-04（gene_lof を TS に移すため）
+  readOri(pi: number, s0: number, e0: number): Uint8Array {
+    if (this.ori === undefined) { try { this.ori = openNpy(path.join(this.dir, 'p_ori.npy')) } catch { this.ori = null } }
+    const n = Math.max(0, e0 - s0); const out = new Uint8Array(n); if (!n || !this.ori) return out.fill(1)
+    const base = Number(this.off[pi]); fs.readSync(this.ori.fd, out, 0, n, this.ori.dataOffset + (base + s0) * this.ori.itemsize); return out
   }
 }
 const cache = new Map<string, Distill>()
