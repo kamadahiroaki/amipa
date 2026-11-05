@@ -86,7 +86,58 @@ export function loadTrav(dbFile: string): Trav | null {
 // 根: メタ・ハプロタイプ・原子・境界（持続度つき）・コンティグの関係の要約
 export function travRoot(t: Trav): any {
   const perHap = t.haps.map((hap, hid) => { const ps = t.hapPaths[hid]; return { hid, hap, ncontig: ps.length, nexcl: ps.filter(pid => t.paths[pid].excluded).length, bp: ps.reduce((a, pid) => a + t.paths[pid].bp, 0) } })
-  return { meta: t.meta, H: t.H, R: t.R, total_bp: t.xbp.length ? t.xbp[t.xbp.length - 1] : 0, haps: perHap, atoms: t.atoms, bounds: t.bounds }
+  const refHid = refHidOf(t)
+  return { meta: t.meta, H: t.H, R: t.R, total_bp: t.xbp.length ? t.xbp[t.xbp.length - 1] : 0, haps: perHap, atoms: t.atoms, bounds: t.bounds, refHid, refHap: refHid >= 0 ? t.haps[refHid] : null }
+}
+
+// 参照（座標の種）のハプロタイプ（11-05）: 前処理が記録した --seed-ref（meta.params.seed_ref、パス名の頭）に当たるパスの株。無ければ先頭のパスの株
+//   （trav_build.py と同じ規則）。以前は閲覧側が GRCh38/CHM13 を決め打ちしていて、ショウジョウバエ（dm6）・大腸菌で参照の位置が出なかった
+export function refHidOf(t: Trav): number {
+  const c = (t as any).__refHid; if (c != null) return c
+  const pre = String(t.meta?.params?.seed_ref ?? '')
+  const p = (pre ? t.paths.find(q => q.path.startsWith(pre)) : null) ?? t.paths[0]
+  const h = p ? p.hid : -1; (t as any).__refHid = h; return h
+}
+
+// 染色体の区切り（11-05、Traversals の全体図）: 合意座標を原子ごとに名前で塗り、同じ名前の連なりを 1 区間にする。名前の決め方は
+//   (1) 参照（種）のパスが通っていれば、そのパス名のコンティグ部分（最後の # の後。例 chr3R）
+//   (2) 参照が通らない所は、通る通過（錨 1,000 以上）のコンティグ名の多数決（chr を除き小文字で比べる。過半数のときだけ）
+//   (3) どちらも無ければ空（画面側で「区間 k」）。参照の無い短い隙間（全長の 0.2% 未満）で同じ名前に挟まれたものは前後に吸収する
+export function travChroms(t: Trav): { x0: number; x1: number; name: string; ref: boolean }[] {
+  const c = (t as any).__chroms; if (c) return c
+  // コンティグ名＝最後の # の後。頭にサンプル名が付く形（GRCh38#0#GRCh38.chr1）はそれを外す
+  //   （# の無い参照のパス名 GRCh38.chr1 も、株の名前 GRCh38#0 のサンプル部分を頭から外す）
+  const contig = (p: string) => { const c = p.slice(p.lastIndexOf('#') + 1); const smp = p.includes('#') ? p.split('#')[0] : ''; if (smp && c.startsWith(smp + '.')) return c.slice(smp.length + 1); if (!p.includes('#')) { const d = c.indexOf('.'); if (d > 0 && t.haps.some(h => h.split('#')[0] === c.slice(0, d))) return c.slice(d + 1) } return c }
+  const key = (p: string) => contig(p).replace(/^chr/i, '').toLowerCase()
+  const refHid = refHidOf(t)
+  let rows = t.db.prepare('SELECT pid, hid, x0, x1, nanch FROM trav WHERE nanch >= 1000 ORDER BY x0').all() as { pid: number; hid: number; x0: number; x1: number; nanch: number }[]
+  if (!rows.length) rows = t.db.prepare('SELECT pid, hid, x0, x1, nanch FROM trav WHERE nanch >= 10 ORDER BY x0').all() as any[]
+  const lab: { name: string; ref: boolean }[] = []; let k = 0; let act: typeof rows = []
+  for (const a of t.atoms) {
+    const m = (a.x0 + a.x1) / 2
+    while (k < rows.length && rows[k].x0 <= m) act.push(rows[k++])
+    act = act.filter(r => r.x1 >= m)
+    let best: (typeof rows)[number] | null = null
+    for (const r of act) if (r.hid === refHid && (!best || r.nanch > best.nanch)) best = r
+    if (best) { lab.push({ name: contig(t.paths[best.pid].path), ref: true }); continue }
+    const cnt = new Map<string, number>(), show = new Map<string, string>()
+    for (const r of act) { const p = t.paths[r.pid].path; const kk = key(p); cnt.set(kk, (cnt.get(kk) || 0) + 1); if (!show.has(kk)) show.set(kk, contig(p)) }
+    let top = '', n = 0; for (const [kk, v] of cnt) if (v > n) { top = kk; n = v }
+    lab.push({ name: n >= 3 && n * 2 > act.length && top ? show.get(top)! : '', ref: false })   // 3 本以上かつ過半数（株ごとに名前が違うアセンブリのコンティグ名が 1 本だけで選ばれないように）
+  }
+  const out: { x0: number; x1: number; name: string; ref: boolean }[] = []
+  t.atoms.forEach((a, i) => { const L = lab[i]; const last = out[out.length - 1]
+    const same = last && (last.name === L.name || key(last.name) === key(L.name)) && !!last.name === !!L.name
+    if (same) { last.x1 = a.x1; if (L.ref && !last.ref) last.name = L.name; last.ref = last.ref || L.ref } else out.push({ x0: a.x0, x1: a.x1, name: L.name, ref: L.ref }) })   // 名前は参照のもの（chrX）を優先
+  // 参照に無い挿入（名前の無い区間）が同じ名前に挟まれていれば、その染色体の一部として吸収する（大腸菌で 1 本の染色体が挿入ごとに 24 区間に割れた）。
+  // 両端の名前の無い短い区間（全長の 1% 未満）も隣に吸収する
+  for (let i = 1; i + 1 < out.length; i++) if (!out[i].name && out[i - 1].name && key(out[i - 1].name) === key(out[i + 1].name)) { out[i - 1].x1 = out[i + 1].x1; out[i - 1].ref = out[i - 1].ref || out[i + 1].ref; out.splice(i, 2); i-- }
+  const tiny = Math.max(1, t.R * 0.002)   // 染色体の継ぎ目の名前の無い小片（数〜数百座標）は前の区間に付ける
+  for (let i = 1; i < out.length; i++) if (!out[i].name && out[i].x1 - out[i].x0 < tiny) { out[i - 1].x1 = out[i].x1; out.splice(i, 1); i-- }
+  const small = Math.max(1, t.R * 0.01)
+  if (out.length > 1 && !out[0].name && out[0].x1 - out[0].x0 < small) { out[1].x0 = out[0].x0; out.shift() }
+  if (out.length > 1 && !out[out.length - 1].name && out[out.length - 1].x1 - out[out.length - 1].x0 < small) { out[out.length - 2].x1 = out[out.length - 1].x1; out.pop() }
+  ;(t as any).__chroms = out; return out
 }
 
 // 座標区間 [x0, x1] に重なる通過とコピー。ハプロタイプごとの通過数（×n の材料）も返す

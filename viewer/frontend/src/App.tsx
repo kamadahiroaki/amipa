@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback, useId, useMemo, Fragment } from 'react'
 import GraphCanvas, { GraphCanvasHandle, PATH_COLORS, RibbonData , BlockColorMap } from './components/GraphCanvas'
 import Minimap from './components/Minimap'
+import TravPeaksOverlay from './components/TravPeaksOverlay'
+import type { OvPeak } from './components/travOverview'
 import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, INTRON_COLOR } from './annotColors'
 import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
 import TravPanel from './components/TravPanel'
@@ -320,6 +322,7 @@ export default function App() {
   const [pendingNode, setPendingNode] = useState<NodeData | null>(null)
   const alignRowNextId = useRef(0)
   const [mapViewport, setMapViewport] = useState<Rect>({ x1: 0, x2: 1, y1: 0, y2: 1 })
+  const mapViewportRef = useRef<Rect>(mapViewport); useEffect(() => { mapViewportRef.current = mapViewport }, [mapViewport])
   // リボン取得用にデバウンスしたビューポート。パンの度に fetch せず、settle 後 250ms でのみ更新する。
   const [ribbonViewport, setRibbonViewport] = useState<Rect>({ x1: 0, x2: 1, y1: 0, y2: 1 })
   const [mapLayer, setMapLayer] = useState(0)
@@ -1015,6 +1018,17 @@ export default function App() {
     if (!names.length) { showHint('グラフに見えているノードがありません'); return }
     travApiRef.current?.openNames(names)
   }, [showHint])
+  // Traversals の全体図の山（A・B・C…）とグラフ側の札（11-05）。札・全体図のどちらでカーソルを当てても、その山のノードをグラフで強調する
+  const [trvPeaks, setTrvPeaks] = useState<OvPeak[] | null>(null)
+  const [trvPeakHov, setTrvPeakHov] = useState<string | null>(null)
+  const trvPeaksRef = useRef<OvPeak[] | null>(null); useEffect(() => { trvPeaksRef.current = trvPeaks }, [trvPeaks])
+  const onTravPeakHover = useCallback((letter: string | null, names: string[] | null) => {
+    setTrvPeakHov(letter); ++trvHovReq.current; setTrvHov(names && names.length ? new Set(names) : null)   // 名前はグラフが描いている層のもの（祖先は引かない）
+  }, [])
+  const onPeakBadgeHover = useCallback((letter: string | null) => {
+    travApiRef.current?.hoverPeak(letter); const p = letter ? trvPeaksRef.current?.find(q => q.letter === letter) : null
+    onTravPeakHover(letter, p ? p.names : null)
+  }, [onTravPeakHover])
   const selHapMarks = useMemo(() => { const m = new Map<string, string>(); for (const [k, v] of ribbonSel) m.set(k, '#' + v.color.toString(16).padStart(6, '0')); return m }, [ribbonSel])
   const trvHoverSet = useMemo(() => (trvHov && trvHov.size ? trvHov : null), [trvHov])   // Traversals の塩基の段でホバー中のノード（グラフでマゼンタ）
 
@@ -2561,6 +2575,10 @@ export default function App() {
                 )}
 
 
+                {trvH > 0 && trvPeaks && (
+                  <TravPeaksOverlay peaks={trvPeaks} viewport={mapViewport} hover={trvPeakHov}
+                    onHover={onPeakBadgeHover} onPick={l => { onPeakBadgeHover(null); travApiRef.current?.goPeak(l) }} />
+                )}
                 {showOverlays && (
                   <Minimap
                     key={`${selectedDb}-${mapReloadKey}`}
@@ -2989,10 +3007,14 @@ export default function App() {
             db={selectedDb}
             onRange={onTravRange}
             getVisibleNames={() => graphRef.current?.getVisibleNames?.() ?? []}
+            getVisibleNodes={() => graphRef.current?.getVisibleNodes?.() ?? []}
+            getGraphViewport={() => mapViewportRef.current}
+            onPeaks={setTrvPeaks}
+            onPeakHover={onTravPeakHover}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
             onSelectHaps={onTravSelectHaps}
             onGraphRange={onTravGraphRange}
-            onReady={h => { travApiRef.current = h; if (h && pendingTravState.current) { const st = pendingTravState.current; pendingTravState.current = null; setTimeout(() => h.setState(st), 1500) } if (!h) { setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null) } }}
+            onReady={h => { travApiRef.current = h; if (h && pendingTravState.current) { const st = pendingTravState.current; pendingTravState.current = null; setTimeout(() => h.setState(st), 1500) } if (!h) { setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null); setTrvPeaks(null); setTrvPeakHov(null) } }}
             onHoverNodes={onTravHover}
             hapMarks={selHapMarks}
           />

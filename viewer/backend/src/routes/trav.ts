@@ -10,7 +10,7 @@ import { annPathOf } from '../travOps'
 export const travRouter = Router()
 
 // 11-04: 計算は travWorker（travOps.ts）で。メインは要求を渡して返事をそのまま返すだけ
-for (const op of ['root', 'range', 'path', 'atoms', 'nodes', 'cols', 'nleaf', 'reads', 'genes', 'nodeset', 'locate', 'findgene', 'genedensity'])
+for (const op of ['root', 'range', 'path', 'atoms', 'chroms', 'nodes', 'cols', 'nleaf', 'reads', 'genes', 'nodeset', 'locate', 'findgene', 'genedensity'])
   travRouter.get('/trav/' + op, (req, res) => sendTrav(res, op, req.query as Record<string, string>))
 travRouter.post('/trav/locate', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; if (!b.db) { res.status(400).json({ error: 'Missing db' }); return } sendTrav(res, 'locate', { db: String(b.db), names: Array.isArray(b.names) ? b.names : [] }) })
 

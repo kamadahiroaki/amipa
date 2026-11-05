@@ -241,6 +241,7 @@ export interface GraphCanvasHandle {
   fitBounds: (minx: number, miny: number, maxx: number, maxy: number, targetLayer?: number) => void
   fitSub: () => void   // 絞りモード: 次に届く部分グラフ（範囲のノード）に寄せる（外れ値を除いた矩形）
   getVisibleNames: () => string[]   // 今描いているノードの名前（Traversals の「グラフの範囲を開く」）
+  getVisibleNodes: () => { name: string; x: number; y: number }[]   // 同じノードの world 座標（Traversals の全体図の山・札の位置）
   getSelectedNodes: () => NodeData[]
   // フェッチ済み(可視)サブグラフ上で A,B 間のノード名を返す(source/sink なら bubble 内部)。DB 非依存・即時。
   nodesBetween: (a: string, b: string) => string[]
@@ -673,7 +674,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       navigateRef.current?.(cx, cy, highlightId, targetLayer),
     fitBounds: (minx, miny, maxx, maxy, targetLayer?) => fitBoundsRef.current?.(minx, miny, maxx, maxy, targetLayer),
     fitSub: () => fitSubRef.current?.(),
-    getVisibleNames: () => visibleNodesRef.current.map(n => n.node_name).slice(0, 120000),   // 描画のたびに更新される配列から（visibleNamesRef は編集のドラッグ時にしか入らない）
+    getVisibleNames: () => visibleNodesRef.current.map(n => n.node_name).slice(0, 120000),
+    getVisibleNodes: () => visibleNodesRef.current.slice(0, 120000).map(n => ({ name: n.node_name, x: n.xCoord, y: n.yCoord })),   // 描画のたびに更新される配列から（visibleNamesRef は編集のドラッグ時にしか入らない）
     getSelectedNodes: () => getSelectedNodesRef.current?.() ?? [],
     nodesBetween: (a, b) => nodesBetweenRef.current?.(a, b) ?? [],
     graphCounts: () => graphCountsRef.current?.() ?? { nodes: 0, edges: 0 },

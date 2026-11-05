@@ -4,7 +4,7 @@
 import path from 'path'
 import fs from 'fs'
 import { getDbDir } from './db'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, travReads, travNLeaf, travReadSamples, travGeneLof, travMsa, type Trav } from './trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, travReads, travNLeaf, travReadSamples, travGeneLof, travMsa, travChroms, type Trav } from './trav'
 
 export interface OpResult { status: number; json: any }
 type Q = Record<string, any>
@@ -29,6 +29,7 @@ export const OPS: Record<string, (q: Q) => OpResult> = {
   range: q => { const r = range(q); if (!r) return bad('bad x0/x1'); return withT(q, t => travRange(t, Math.floor(r[0]), Math.floor(r[1]), { minOverlap: Number(q.min) || 0, minAnchors: minanch(q) })) },
   path: q => withT(q, t => { const pid = Number(q.pid); return { path: t.paths[pid], trav: travOfPath(t, pid), reps: repsOfRange(t, [pid]) } }),
   atoms: q => withT(q, t => travAtomStats(t, minanch(q))),
+  chroms: q => withT(q, t => { const t0 = Date.now(); const bands = travChroms(t); return { bands, ms: Date.now() - t0 } }),
   nodes: q => withT(q, t => ({ names: nodeNamesForRange(t, Math.floor(Number(q.x0)), Math.floor(Number(q.x1)), Number(q.max) || 5000) })),
   cols: q => { const r = range(q); if (!r) return bad('bad x0/x1'); return withT(q, t => { const o: any = travCols(t, r[0], r[1], Number(q.ncol) || 1000, minanch(q)); if (o.nleaf == null) o.nleaf = travNLeaf(t, r[0], r[1]); return o }) },
   nleaf: q => withT(q, t => ({ nleaf: travNLeaf(t, Number(q.x0), Number(q.x1)) })),
