@@ -583,6 +583,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const colsNamesRef        = useRef<{ key: string; set: Set<string> | null; loading: boolean }>({ key: '', set: null, loading: false })   // アレル行列の窓: 列範囲のノード名集合（塗り分け用）
   const visibleNamesRef     = useRef<string[]>([])
   const visibleNodesRef     = useRef<NodeData[]>([])
+  const getViewportRef      = useRef<(() => Rect) | null>(null)   // 今の表示範囲（world）。getVisibleNodes が使う
   const onVisibleAtomsRef   = useRef<((atoms: [number, number, number, number][]) => void) | undefined>(undefined); onVisibleAtomsRef.current = onVisibleAtoms
   const visAtomsTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const visAtomsKeyRef      = useRef<string>('')
@@ -676,7 +677,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     fitBounds: (minx, miny, maxx, maxy, targetLayer?) => fitBoundsRef.current?.(minx, miny, maxx, maxy, targetLayer),
     fitSub: () => fitSubRef.current?.(),
     getVisibleNames: () => visibleNodesRef.current.map(n => n.node_name).slice(0, 120000),
-    getVisibleNodes: () => visibleNodesRef.current.slice(0, 120000).map(n => ({ name: n.node_name, x: n.xCoord, y: n.yCoord })),   // 描画のたびに更新される配列から（visibleNamesRef は編集のドラッグ時にしか入らない）
+    // 画面に見えているノード（11-05）: 表示範囲（ミニマップの赤い枠と同じ）にかかるものだけ。visibleNodesRef は描画のために読んだタイルの全ノードで、
+    //   画面の外のタイル 1 枚分（表示幅の約 0.4 倍）まで含み、Traversals の全体図の山が画面の外の染色体まで数えていた
+    getVisibleNodes: () => { const v = getViewportRef.current?.(); const out: { name: string; x: number; y: number }[] = []
+      for (const n of visibleNodesRef.current) { if (v) { const r = n.radius || 0; if (n.xCoord + r < v.x1 || n.xCoord - r > v.x2 || n.yCoord + r < v.y1 || n.yCoord - r > v.y2) continue } out.push({ name: n.node_name, x: n.xCoord, y: n.yCoord }); if (out.length >= 120000) break }
+      return out },   // 描画のたびに更新される配列から（visibleNamesRef は編集のドラッグ時にしか入らない）
     getSelectedNodes: () => getSelectedNodesRef.current?.() ?? [],
     nodesBetween: (a, b) => nodesBetweenRef.current?.(a, b) ?? [],
     graphCounts: () => graphCountsRef.current?.() ?? { nodes: 0, edges: 0 },
@@ -1221,6 +1226,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const { width, height } = app.screen
       return { x1: -px/z, x2: (width-px)/z, y1: -py/z, y2: (height-py)/z }
     }
+    getViewportRef.current = getViewport
     function screenToWorld(sx: number, sy: number) {
       const z = world.scale.x
       return { x: (sx - world.position.x) / z, y: (sy - world.position.y) / z }
