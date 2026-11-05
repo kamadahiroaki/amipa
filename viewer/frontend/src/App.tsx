@@ -2212,7 +2212,7 @@ export default function App() {
             <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)', zIndex: 20, background: '#e7f5ff', border: '1px solid #74c0fc', borderRadius: 4, padding: '2px 8px', fontSize: 12, color: '#1864ab' }}
               title="Traversals パネルの「グラフを絞る」が入っているので、表示範囲に属するノードとパスリボンだけを描いている">
               Traversals の範囲に絞り込み中{lodClamp ? `（表示予算超過のため layer ${lodClamp.served}）` : ''}
-              {' · '}<span style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }} onClick={() => { setTrvFilter(null) }}>解除</span>
+              {' · '}<span style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }} onClick={() => { setTrvFilter(null); travApiRef.current?.setFilter(false) }}>解除</span>
             </div>
           )}
           {selectedDb && maxLayer !== null
@@ -2455,6 +2455,16 @@ export default function App() {
                     <div style={{ background: '#fff4e6', border: '1px solid #ffd8a8', borderRadius: 3,
                       padding: '3px 5px', fontSize: 11, color: '#a8620a', lineHeight: 1.35 }}>
                       表示予算超過のため <b>layer {lodClamp.served}</b> を表示中（拡大に応じた層は {lodClamp.requested}）
+                      {trvH > 0 && !trvColors?.filter && (
+                        <>
+                          {' · '}
+                          <span onClick={() => { travApiRef.current?.setFilter(true) }}
+                            title="Traversals パネルで開いている範囲に属するノードだけを描く（パネルの「グラフを絞る」を入れる）。範囲外を描かないので、同じ予算でより深い層を出せる"
+                            style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }}>
+                            Traversals の範囲だけ描く
+                          </span>
+                        </>
+                      )}
                       {hapIdx && (
                         <>
                           {' · '}
