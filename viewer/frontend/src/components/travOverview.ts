@@ -4,7 +4,7 @@
 //   ・分布の山に A・B・C…（重い順、6 個まで）。グラフ側の同じ文字の札と対応する（App の TravPeaksOverlay）
 //   ・操作: 山のクリック＝その山の範囲へ、帯のドラッグ＝任意の範囲へ、帯のクリック＝今の幅のままそこへ、印（▼ グラフでクリックしたノード）のクリック＝その位置へ
 export type OvBand = { x0: number; x1: number; name: string; ref: boolean }
-export type OvPoint = { x: number; w: number; name: string; wx: number; wy: number }
+export type OvPoint = { x: number; w: number; name: string; wx: number; wy: number; a?: number; b?: number }   // a–b＝座標の張り（スーパーノード。無ければ x の 1 点）
 export type OvPeak = { letter: string; x0: number; x1: number; xm: number; n: number; w: number; share: number; label: string; names: string[]; wx: number; wy: number; box: [number, number, number, number]; full: [number, number, number, number]; inView: boolean }
 export interface OverviewDeps {
   R: () => number
@@ -26,15 +26,17 @@ const fmtbp = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(2) + ' Mb' : n >= 1e3 
 //   文字は前回の山と座標が重なるものには前と同じ文字を引き継ぐ（グラフを動かすたびに A と B が入れ替わらないように）
 export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => string, view: [number, number], bandOf: (x: number) => number = () => 0, prev: OvPeak[] = []): OvPeak[] {
   if (!pts.length) return []
-  const s = pts.slice().sort((a, b) => a.x - b.x); const G = Math.max(2000, Math.round(R * 0.005))
+  // 11-05: 点は張り（a–b）の区間として繋ぐ。粗い層のスーパーノードを 1 点で数えると、全体表示で点が疎になり 1 染色体が数十の山に割れた
+  const lo = (p: OvPoint) => p.a ?? p.x, hi = (p: OvPoint) => p.b ?? p.x
+  const s = pts.slice().sort((a, b) => lo(a) - lo(b)); const G = Math.max(2000, Math.round(R * 0.005))
   const runs: OvPoint[][] = []; let cur: OvPoint[] = [s[0]]
-  let bPrev = bandOf(s[0].x)
-  for (let i = 1; i < s.length; i++) { const bi = bandOf(s[i].x); if (s[i].x - s[i - 1].x > G || bi !== bPrev) { runs.push(cur); cur = [] } bPrev = bi; cur.push(s[i]) } runs.push(cur)
+  let bPrev = bandOf(s[0].x), end = hi(s[0])
+  for (let i = 1; i < s.length; i++) { const bi = bandOf(s[i].x); if (lo(s[i]) - end > G || bi !== bPrev) { runs.push(cur); cur = []; end = -Infinity } bPrev = bi; end = Math.max(end, hi(s[i])); cur.push(s[i]) } runs.push(cur)
   const tot = s.reduce((a, p) => a + p.w, 0) || 1
   const pc = (a: number[], f: number) => a[Math.min(a.length - 1, Math.max(0, Math.round(f * (a.length - 1))))]
   const peaks = runs.map(r => {
-    const w = r.reduce((a, p) => a + p.w, 0); const xs = r.map(p => p.x); const wx = r.map(p => p.wx).sort((a, b) => a - b), wy = r.map(p => p.wy).sort((a, b) => a - b)
-    const x0 = xs[0], x1 = xs[xs.length - 1]; let acc = 0, xm = x0; for (const p of r) { acc += p.w; if (acc >= w / 2) { xm = p.x; break } }
+    const w = r.reduce((a, p) => a + p.w, 0); const wx = r.map(p => p.wx).sort((a, b) => a - b), wy = r.map(p => p.wy).sort((a, b) => a - b)
+    const x0 = Math.min(...r.map(lo)), x1 = Math.max(...r.map(hi)); const byX = r.slice().sort((a, b) => a.x - b.x); let acc = 0, xm = x0; for (const p of byX) { acc += p.w; if (acc >= w / 2) { xm = p.x; break } }
     return { letter: '', x0, x1, xm, n: r.length, w, share: w / tot, label: labelOf(xm), names: r.map(p => p.name), wx: pc(wx, 0.5), wy: pc(wy, 0.5), box: [pc(wx, 0.1), pc(wy, 0.1), pc(wx, 0.9), pc(wy, 0.9)] as [number, number, number, number], full: [pc(wx, 0.02), pc(wy, 0.02), pc(wx, 0.98), pc(wy, 0.98)] as [number, number, number, number], inView: x1 >= view[0] && x0 <= view[1] }
   }).sort((a, b) => b.w - a.w)
   const cand = peaks.filter(p => p.share >= 0.02).slice(0, LETTERS.length); const used = new Set<string>()
@@ -71,7 +73,7 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
       const nm = b.name || `区間 ${k}`; const tw = g.measureText(nm).width; if (c - a >= tw + 6) { g.fillStyle = b.name ? '#333' : '#888'; g.fillText(nm, a + 3, BAND / 2 + 1) } }
     if (!bands.length) { g.fillStyle = '#eceef1'; g.fillRect(4, 0, w - 8, BAND) }
     // 分布（画素の列ごとの重みの和。高さは平方根で）
-    if (pts.length) { const cols = new Float64Array(Math.ceil(w)); for (const p of pts) { const i = Math.max(0, Math.min(cols.length - 1, Math.floor(px(p.x)))); cols[i] += p.w }
+    if (pts.length) { const cols = new Float64Array(Math.ceil(w)); for (const p of pts) { const i0 = Math.max(0, Math.min(cols.length - 1, Math.floor(px(p.a ?? p.x)))), i1 = Math.max(i0, Math.min(cols.length - 1, Math.floor(px(p.b ?? p.x)))); const v = p.w / (i1 - i0 + 1); for (let i = i0; i <= i1; i++) cols[i] += v }   // 張りのある点は区間に均して積む
       let mx = 0; for (const v of cols) if (v > mx) mx = v
       const hovPk = hovL ? pks.find(p => p.letter === hovL) : null
       for (let i = 0; i < cols.length; i++) { if (!cols[i]) continue; const h = Math.max(1, Math.sqrt(cols[i] / mx) * (HIST1 - HIST0)); const x = xOf(i + 0.5); g.fillStyle = hovPk && x >= hovPk.x0 - 1 && x <= hovPk.x1 + 1 ? '#000' : '#6b7280'; g.fillRect(i, HIST1 - h, 1, h) } }

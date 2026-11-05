@@ -321,9 +321,13 @@ async function refreshOverview(): Promise<OvPeak[]> {
   const cx = vp ? (vp.x1 + vp.x2) / 2 : 0, cy = vp ? (vp.y1 + vp.y2) / 2 : 0, hw = vp ? Math.max(1e-12, (vp.x2 - vp.x1) / 2) : 1, hh = vp ? Math.max(1e-12, (vp.y2 - vp.y1) / 2) : 1
   const pts: OvPoint[] = []; let nNo = 0, nWide = 0
   j.nodes.forEach((n, i) => {
-    if (n.x < 0) { nNo++; return } if (n.kind === -2 && (n.frac ?? 1) < 0.5) { nWide++; return }   // 子孫の座標が散らばるスーパーノード（多数派が過半でない）は場所を決めない
+    if (n.x < 0) { nNo++; return }
+    // スーパーノードは子孫の座標の張り（xmin–xmax）の区間として数える（11-05: 多数派が過半でないものを除いていたら、全体表示（layer 0）で 835 個中 673 個が落ち、
+    //   残りの疎な点で染色体が数十の山に割れた）。張りが全長の 2% を超えるもの（染色体をまたぐなど）だけ除く
+    let a: number | undefined, b: number | undefined, x = n.x
+    if (n.kind === -2 && n.xmin != null && n.xmax != null && n.xmax >= n.xmin) { if (n.xmax - n.xmin > 0.02 * root!.R) { nWide++; return } a = n.xmin; b = n.xmax; if ((n.frac ?? 1) < 0.5) x = Math.round((a + b) / 2) }
     const v = vis[i]; const w = vp ? Math.exp(-2 * (((v.x - cx) / hw) ** 2 + ((v.y - cy) / hh) ** 2)) : 1
-    pts.push({ x: n.x, w, name: n.name, wx: v.x, wy: v.y })
+    pts.push({ x, a, b, w, name: n.name, wx: v.x, wy: v.y })
   })
   const peaks = computePeaks(pts, root.R, chromLabel, view, x => { const b = bandAt(x); return b ? bands.indexOf(b) : -1 }, lastPeaks); lastPeaks = peaks
   const lettered = peaks.filter(p => p.letter).sort((a, b) => a.letter.localeCompare(b.letter))
