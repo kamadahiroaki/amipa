@@ -251,6 +251,7 @@ export interface GraphCanvasHandle {
   exportSvg: () => void               // 8.1 図版モード: 現ビューを SVG(レイヤ付き・物理寸法)で書き出す
 }
 
+const FETCH_ROWS_FACTOR = 8   // タイル取得の行数の上限＝予算 × これ（先読みの範囲は画面の約 4 倍＋格子。11-05）
 const HOV_FEW = 20         // ホバーの強調: 該当がこれ以下ならリングも付け、これを超えたら他のノードを薄くする（11-05）
 const FETCH_MARGIN  = 0.5   // プリフェッチ: ビューポートを各辺 50% 拡張
 const RENDER_MARGIN = 0.05  // 描画範囲: ビューポートを各辺 5% 拡張
@@ -2530,7 +2531,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const bbox: Rect = { x1: ux1, y1: uy1, x2: ux2, y2: uy2 }
       const mapq = mapMapqRef.current
       const sel = hapSelRef.current
-      const mr = maxRowsRef.current
+      // 11-05: 取得の行数の上限は予算（画面に出す数）ではなく、先読みの範囲（画面の約 4 倍＋タイル格子）に見合う量に。予算のまま渡すと、
+      //   画面の数で選んだ層で先読みの範囲が予算を超え、'rows' で打ち切った応答を確定させてグラフの一部が空のまま残った（fly16、予算 20,000）
+      const mr = maxRowsRef.current ? maxRowsRef.current * FETCH_ROWS_FACTOR : 0
       const ctrl = new AbortController()
       const entry: InFlight = { ctrl, layer, bbox, gz, table, tiles }
       inFlight.add(entry)

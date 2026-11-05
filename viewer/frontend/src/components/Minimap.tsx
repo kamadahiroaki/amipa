@@ -324,8 +324,17 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
   // ── 全体マップ: DB切替時に1回 fetch ─────────────────────────────────
   useEffect(() => {
     const big: Rect = { x1: -0.5, x2: 1.5, y1: -0.5, y2: 1.5 }
-    Promise.all([fetchNodes(0, big, dbFile), fetchEdges(0, big, dbFile)])
+    // 11-05: 中断（cancel）・時間ガードで途中までの応答なら採用せず取り直す（最大 4 回）。以前は途中までの辺をそのまま描いていた
+    let live = true
+    const load = (tries: number): Promise<[NodeData[], EdgeData[]]> => {
+      const gn: GuardSink = { truncated: null }, ge: GuardSink = { truncated: null }
+      return Promise.all([fetchNodes(0, big, dbFile, 0, '', '', 0, undefined, undefined, gn), fetchEdges(0, big, dbFile, 0, '', 0, undefined, undefined, ge)])
+        .then(r => ((gn.truncated && gn.truncated !== 'rows') || (ge.truncated && ge.truncated !== 'rows')) && tries > 0 && live
+          ? new Promise<[NodeData[], EdgeData[]]>(res => setTimeout(() => res(load(tries - 1)), 800)) : r)
+    }
+    load(4)
       .then(([nodes, edges]) => {
+        if (!live) return
         ovNodes.current = nodes
         ovEdges.current = edges
         if (nodes.length > 0) {
@@ -345,6 +354,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
         redrawOv()
       })
       .catch(e => console.error('minimap overview fetch failed:', e))
+    return () => { live = false }
   }, [dbFile])
 
   // canvas 高さ変更は bitmap をクリアし、最小化からの復帰は canvas を再マウントするので、
