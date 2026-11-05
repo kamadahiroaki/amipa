@@ -87,7 +87,18 @@ export function loadTrav(dbFile: string): Trav | null {
 export function travRoot(t: Trav): any {
   const perHap = t.haps.map((hap, hid) => { const ps = t.hapPaths[hid]; return { hid, hap, ncontig: ps.length, nexcl: ps.filter(pid => t.paths[pid].excluded).length, bp: ps.reduce((a, pid) => a + t.paths[pid].bp, 0) } })
   const refHid = refHidOf(t)
-  return { meta: t.meta, H: t.H, R: t.R, total_bp: t.xbp.length ? t.xbp[t.xbp.length - 1] : 0, haps: perHap, atoms: t.atoms, bounds: t.bounds, refHid, refHap: refHid >= 0 ? t.haps[refHid] : null }
+  return { meta: t.meta, H: t.H, R: t.R, total_bp: t.xbp.length ? t.xbp[t.xbp.length - 1] : 0, haps: perHap, atoms: t.atoms, bounds: t.bounds, refHid, refHap: refHid >= 0 ? t.haps[refHid] : null, cdir: contigDirs(t) }
+}
+
+// コンティグの主な向き（11-05）: pid → +1/−1。同じ株・同じパス名の断片（minigraph-cactus はクリップした区間でコンティグを W 行の断片に切る。fly16 の A2#0#3R は 26 本）を
+//   合わせ、全通過の向きを bp で重み付けした和の符号。以前は画面側が「表示範囲に入っている通過」だけで断片ごとに決めていたため、逆位が断片の多数になる所
+//   （A2 の 3R の 8 Mb 逆位）や、逆位の近くだけを表示したときに、逆位の片に印が付かなかった
+export function contigDirs(t: Trav): number[] {
+  const c = (t as any).__cdir; if (c) return c
+  const sum = new Float64Array(t.paths.length)
+  for (const r of t.db.prepare('SELECT pid, dir, bp FROM trav').raw().iterate() as Iterable<[number, number, number]>) sum[r[0]] += r[1] * r[2]
+  const byKey = new Map<string, number>(); t.paths.forEach((p, pid) => { const k = p.hid + '\t' + p.path; byKey.set(k, (byKey.get(k) || 0) + sum[pid]) })
+  const out = t.paths.map(p => (byKey.get(p.hid + '\t' + p.path) || 0) >= 0 ? 1 : -1); (t as any).__cdir = out; return out
 }
 
 // 参照（座標の種）のハプロタイプ（11-05）: 前処理が記録した --seed-ref（meta.params.seed_ref、パス名の頭）に当たるパスの株。無ければ先頭のパスの株
