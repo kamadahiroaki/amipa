@@ -508,7 +508,8 @@ export function travLocate(t: Trav, names: string[]): any {
   const qs = hasSuper ? t.db.prepare('SELECT x, frac, bp, xmin, xmax FROM super WHERE name = ?') : null
   // 錨でない葉の座標（x_fill: 同じパスで直前の錨の x の bp 多数決。xfill_build.py が足す）
   const XF: Int32Array | null = (() => { const c = (t as any).__xfill; if (c !== undefined) return c; const r = arrRow(t.db, 'x_fill'); const v = r ? new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)) : null; (t as any).__xfill = v; return v })()
-  const nodes = names.slice(0, 5000).map(nm => {
+  // 上限は画面側の送る上限（120,000）と同じに（11-05: 5,000 で切っていたため、見えているノードが多い広い表示で 6 割が灰色のままだった。fly16 全体 12,303 個）
+  const nodes = names.slice(0, 120000).map(nm => {
     const m = /^n(\d+)$/.exec(nm)
     if (!m) { const r = qs ? (qs.get(nm) as { x: number; frac: number; bp: number; xmin: number; xmax: number } | undefined) : undefined; return r ? { name: nm, x: r.x, kind: -2, frac: r.frac, bp: r.bp, xmin: r.xmin, xmax: r.xmax } : { name: nm, x: -1, kind: -1 } }
     const d = dof(Number(m[1]))

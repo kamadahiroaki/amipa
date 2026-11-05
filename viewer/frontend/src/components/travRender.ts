@@ -1183,6 +1183,15 @@ function treeClick(e: MouseEvent): boolean {
   if (!best) return false
   const haps = best.c.leaves.map(h => root!.haps[h].hap); const on = !haps.every(h => markOf(h)); cb.onSelectHaps?.(haps, on); return true
 }
+// 上段のブロックを画面の x から引く（11-05）: 各行の並びでは上段のブロックを行の列の位置（rowColPx）に描くので、合意座標の xOfPx で引くと
+// 左のブロックの情報が出ていた（ホバーの原子・bp、ダブルクリックで開く範囲）
+function topBlockAt(px: number): number {
+  if (($('mode') as HTMLSelectElement).value === 'rows' && rowColPx && rowColPx.length === blocks.length + 1) {
+    if (px < rowColPx[0] || px > rowColPx[blocks.length]) return -1
+    let lo = 0, hi = blocks.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (rowColPx[m] <= px) lo = m; else hi = m - 1 } return lo
+  }
+  return blockAt(xOfPx(px))
+}
 cv.addEventListener('mousedown', e => {
   if (treeClick(e)) return
   if (base) {   // 塩基の段: 上段のドラッグ＝その範囲を画面幅に、行のドラッグ＝横に動かす、行ラベル＝主画面のパス群の選択
@@ -1212,7 +1221,7 @@ cv.addEventListener('mousemove', e => {
         return `遺伝子群 ${o.name || names}  ${o.nhap}/${H2} 株（遺伝子 ${o.n}${o.npseudo ? `、擬似 ${o.npseudo}` : ''}${o.n > o.nhap ? `、1 株に複数 ${mem.length - o.nhap} 個` : ''}）  向き +${o.fwd}/−${o.n - o.fwd}  座標 ${fmt(o.x0)}–${fmt(o.x1)}${names && names !== o.name ? `  別名 ${names}` : ''}${prod ? `\n  ${prod}` : ''}${o.para ? `\n  旁系を含む（別の座位の遺伝子が配列の共有で 1 群になった。有無は遺伝子ごとに見る）: ${o.para.join(', ')}` : ''}${presTxt}` }).join('\n')
       return
     }
-    const b = blocks[blockAt(x)]; if (!b) { tip.style.display = 'none'; return }
+    const b = blocks[topBlockAt(e.offsetX)]; if (!b) { tip.style.display = 'none'; return }
     const multi: string[] = []; for (let a = b.a0; a <= b.a1; a++) { const st = atomStats[a]; if (!st || st.tangled) continue; for (const [h, n] of Object.entries(st.counts)) if (n >= 2) multi.push(`${root!.haps[Number(h)].hap} ×${n}`) }
     tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'
     tip.textContent = `ブロック ${b.id + 1}/${blocks.length}  座標 ${fmt(b.x0)}–${fmt(b.x1)}  ${fmtbp(b.bp)}  原子 #${b.a0 + 1}–#${b.a1 + 1}  通るハプロタイプ ${b.nhap}/${root.H}  ${refPos(b.x0)}${b.tangled ? '  【もつれ: 順序が線形にならない領域を含む】' : ''}` + (multi.length ? `\n2 回以上: ${[...new Set(multi)].slice(0, 12).join(', ')}` : '')
@@ -1243,7 +1252,7 @@ const onWinUp = (e: MouseEvent) => {
   if (b - a < 4) { if (base) { const k = baseItemAt(a - LAB + base.sx); if (k != null && base.items[k].kind === 'col') { const ci = (base.items[k] as any).ci as number; const i = base.sortCi.indexOf(ci); if (i >= 0) base.sortCi.splice(i, 1); else base.sortCi.push(ci); draw() } else if (k != null) { const it = base.items[k] as any; const ci = it.ci0 as number; const i = base.sortCi.indexOf(ci); if (i >= 0) base.sortCi.splice(i, 1); else base.sortCi.push(ci); draw() } } return }
   if (base) { const k0 = baseItemAt(a - LAB + base.sx), k1 = baseItemAt(b - LAB + base.sx); if (k0 == null || k1 == null) return; const i0 = base.items[k0].kind === 'col' ? (base.items[k0] as any).ci : (base.items[k0] as any).ci0, i1 = base.items[k1].kind === 'col' ? (base.items[k1] as any).ci : (base.items[k1] as any).ci1; baseZoomToCols(i0, i1); return }
   pushHist(); view = [xOfPx(a), xOfPx(b)]; sel = [a, b]; userMoved = true; draw(); loadRange() }; window.addEventListener('mouseup', onWinUp)
-cv.addEventListener('dblclick', e => { if (!root) return; if (base) { if (e.offsetX >= LAB) baseZoomStep(2, e.offsetX - LAB); return } userMoved = true; pushHist(); if (e.offsetY < TOP && e.offsetX >= LAB) { const b = blocks[blockAt(xOfPx(e.offsetX))]; view = b ? [b.x0, b.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
+cv.addEventListener('dblclick', e => { if (!root) return; if (base) { if (e.offsetX >= LAB) baseZoomStep(2, e.offsetX - LAB); return } userMoved = true; pushHist(); if (e.offsetY < TOP && e.offsetX >= LAB) { const b = blocks[topBlockAt(e.offsetX)]; view = b ? [b.x0, b.x1] : [0, root.R - 1] } else view = [0, root.R - 1]; loadRange() })
 cv.addEventListener('wheel', e => {
   if (base && e.offsetX >= LAB) {   // 塩基の段: Ctrl＋ホイール＝拡大縮小、横向きのホイール（横スワイプ・Shift＋ホイール）＝横に動かす、縦のホイール＝ページの縦スクロール（10-30: 他の段と同じに）
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); baseZoomStep(e.deltaY < 0 ? 1 : -1, e.offsetX - LAB); return }

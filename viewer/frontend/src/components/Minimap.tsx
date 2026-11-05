@@ -48,19 +48,28 @@ function c2w(cx: number, cy: number, r: Rect, cw: number, ch: number) {
 //     ・レターボックスの空白が消える
 //     ・クリック→ナビゲーションが余白で矩形外に外れる問題も消える
 //     ・グリッドのセルが world 上でほぼ正方になり、drawGeometry の 1 セル≒1 画素前提と揃う
-function makeContextRect(vp: Rect): Rect {
-  const cx = (vp.x1 + vp.x2) / 2, cy = (vp.y1 + vp.y2) / 2
+function makeContextRect(vp: Rect, bounds?: Rect): Rect {
+  let cx = (vp.x1 + vp.x2) / 2, cy = (vp.y1 + vp.y2) / 2
   let hw = (vp.x2 - vp.x1) * CONTEXT_SCALE
   let hh = (vp.y2 - vp.y1) * CONTEXT_SCALE
+  // グラフ全体（全体マップの範囲）より広くしない（11-05）: 小さなグラフでは全体に近い表示でも層が 4 以上になり、
+  // ±4 倍の矩形がワールドの何倍にもなって、下段の絵が中央の小さな点になっていた（fly16、vw 0.72）
+  if (bounds) { hw = Math.min(hw, (bounds.x2 - bounds.x1) / 2); hh = Math.min(hh, (bounds.y2 - bounds.y1) / 2) }
   const A = MINIMAP_W / CONTEXT_H            // canvas の縦横比
   if (hw / hh < A) hw = hh * A               // 縦長すぎ → 横を広げる
   else             hh = hw / A               // 横長すぎ → 縦を広げる
+  // 矩形がグラフ全体の外へはみ出す分は中心を寄せて戻す（収まらない軸は全体の中央）
+  if (bounds) {
+    const fit = (c: number, h: number, a: number, b: number) => 2 * h >= b - a ? (a + b) / 2 : Math.max(a + h, Math.min(b - h, c))
+    cx = fit(cx, hw, bounds.x1, bounds.x2); cy = fit(cy, hh, bounds.y1, bounds.y2)
+  }
   return { x1: cx - hw, x2: cx + hw, y1: cy - hh, y2: cy + hh }
 }
 
 // ビューポート中心が rect の中央 50% 内にあるか
-function inMiddle50(vp: Rect, r: Rect): boolean {
-  const cx = (vp.x1 + vp.x2) / 2, cy = (vp.y1 + vp.y2) / 2
+// （11-05: 比べる中心は「いまの表示から作る矩形」の中心。グラフの端で中心を寄せた矩形と表示の中心を比べると、パンのたびに取り直していた）
+function inMiddle50(vp: Rect, r: Rect, bounds?: Rect): boolean {
+  const want = makeContextRect(vp, bounds); const cx = (want.x1 + want.x2) / 2, cy = (want.y1 + want.y2) / 2
   return Math.abs(cx - (r.x1 + r.x2) / 2) < (r.x2 - r.x1) / 4
       && Math.abs(cy - (r.y1 + r.y2) / 2) < (r.y2 - r.y1) / 4
 }
@@ -256,6 +265,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
   const ovNodes  = useRef<NodeData[]>([])
   const ovEdges  = useRef<EdgeData[]>([])
   const ovBounds = useRef<Rect>({ x1: 0, x2: 1, y1: 0, y2: 1 })
+  const ovReady  = useRef(false)   // 全体マップの範囲が届いたか（届く前は下段の矩形をグラフ全体で切らない）
 
   // コンテキストマップデータ。ノード行ではなく **グリッド集約セル** を持つ（/nodes_grid）。
   // 以前は /nodes と /edges を上限なしで叩いており、chr22 最密領域で 76,898 ノード(24.7MB)＋
@@ -328,6 +338,8 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
           // canvas 高さを world 縦横比に合わせる（箱=グラフ形状に）。細すぎ/高すぎは 28..110 でクランプ。
           const aspect = (rw + 2 * mx) / (rh + 2 * my)
           setOvH(Math.round(Math.min(110, Math.max(28, MINIMAP_W / aspect))))
+          ovReady.current = true
+          ctxLayerRef.current = -1; setCtxRetry(v => v + 1)   // 全体の範囲で切った矩形で下段を取り直す
         }
         rebuildOv()
         redrawOv()
@@ -349,10 +361,10 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     const newCtxLayer = Math.max(0, layer - CONTEXT_OFFSET)
     const needsNewData = newCtxLayer !== ctxLayerRef.current
       || sel !== ctxSelRef.current
-      || !inMiddle50(viewport, ctxRect.current)
+      || !inMiddle50(viewport, ctxRect.current, ovReady.current ? ovBounds.current : undefined)
 
     if (needsNewData && !ctxBusy.current) {
-      const newRect = makeContextRect(viewport)
+      const newRect = makeContextRect(viewport, ovReady.current ? ovBounds.current : undefined)
       ctxPendingRect.current = newRect
       ctxLayerRef.current    = newCtxLayer
       ctxSelRef.current      = sel
