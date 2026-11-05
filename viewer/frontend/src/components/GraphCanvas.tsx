@@ -1343,8 +1343,15 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       // 色で塗っているときの辺の薄さ（10-30）: 画面のノード（グリフ）が 2,000 以上は薄い灰 0.3、400 以下は元の色と濃さ、間は数の対数で連続に。
       // ノードの短辺が 24 px 以上でも元の濃さ。小さいノードが密集すると 1 px の辺がノードと同じ面積になって色が濁るが、
       // 拡大してノードが少ないと薄い辺ではつながりが見えない（ノードの厚みは拡大してもあまり太らないので、太さだけでは決められない）
-      const nGlyph = visibleNodes.length
-      const edgeFade = !blockColorsRef.current ? 1 : Math.max(Math.max(0, Math.min(1, Math.log(2000 / Math.max(1, nGlyph)) / Math.log(2000 / 400))), Math.max(0, Math.min(1, (2 * constHalfThick * zoom - 8) / 16)))
+      // 11-05: 数は画面にかかるノードだけ（以前は読み込んだタイルの全ノードで画面の外まで数え、拡大しても薄いままだった）、大きさは画面上のノードの長さの中央値で。
+      //   1,200 個以上で最も薄く 300 個以下で元の濃さ、または長さの中央値が 6 px から 16 px で元の濃さ（以前は最も細いノードの厚みで 8〜24 px）
+      let edgeFade = 1
+      if (blockColorsRef.current) {
+        const vp = viewport; const lens: number[] = []; let nOn = 0
+        for (const n of visibleNodes) { if (n.xCoord < vp.x1 || n.xCoord > vp.x2 || n.yCoord < vp.y1 || n.yCoord > vp.y2) continue; nOn++; if (lens.length < 4000) lens.push(n.radius * 2 * zoom) }
+        lens.sort((a, b) => a - b); const medPx = lens.length ? lens[lens.length >> 1] : 0
+        edgeFade = Math.max(Math.max(0, Math.min(1, Math.log(1200 / Math.max(1, nOn)) / Math.log(1200 / 300))), Math.max(0, Math.min(1, (medPx - 6) / 10)))
+      }
       const edgeBase = (alpha: number) => edgeLayer.lineStyle(1, lerpColor(0xced4da, 0xadb5bd, edgeFade), 0.3 + (alpha - 0.3) * edgeFade, 0.5, true)
 
       // Build hidden sets for coverage threshold filter
