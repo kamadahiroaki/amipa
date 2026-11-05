@@ -2787,15 +2787,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       return clamp(a + layerOffsetRef.current, 0, maxLayer)
     }
 
-    // タイル格子に整列させた矩形。小さなパンで「同じタイル集合」のままなら安全弁の判定結果が
-    // 変わらない（＝backend 側 memo にも当たる）ようにするための量子化。
-    function alignedRect(gz: number, r: Rect): Rect {
-      const w = 1 / Math.pow(2, gz)
-      return {
-        x1: Math.floor(r.x1 / w) * w, x2: (Math.floor(r.x2 / w) + 1) * w,
-        y1: Math.floor(r.y1 / w) * w, y2: (Math.floor(r.y2 / w) + 1) * w,
-      }
-    }
     // 非同期 settle の世代。古い pick_layer 応答を適用しないためのガード。
     let settleGen = 0
 
@@ -2815,7 +2806,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         return
       }
       const gen = ++settleGen
-      const rect = alignedRect(curGridZ(), expandRect(viewport, FETCH_MARGIN))
+      // 11-05: 予算の判定は画面（描画範囲＝表示範囲＋5%）の中の数で。以前は先読みの範囲（各辺 50% 広げ、さらにタイル格子に合わせる）で数えていて、
+      //   小さなグラフでは全体を数えて「予算超過」にしていた（fly16: 画面に約 2.5 万個の層を、全体 5.4 万で棄却）
+      const rect = expandRect(viewport, RENDER_MARGIN)
       fetchPickLayer(dbFile, L, rect, mr, hapSelRef.current).then(r => {
         if (gen !== settleGen) return          // 待っている間に次の settle が来た → 破棄
         const served = r && Number.isInteger(r.layer) ? clamp(r.layer, 0, maxLayer) : L
