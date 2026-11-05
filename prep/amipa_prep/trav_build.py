@@ -448,11 +448,19 @@ if a.reorder_blocks and seed_bounds is not None and len(seed_bounds) > 2:
     # 塊の単位は「どの参照パス（染色体）の種か」。1 本の参照の中の並び（参照株自身の逆位・転座）は持ち込まない（ecoli で全体が細切れになった）。
     # 錨ごとに種の属する参照パスの番号を付け、同じ番号の連なりを塊にする。小さな連なり（R の 0.5% 未満）は直前の塊に含める。塊は（番号、種の中央値）の順
     sv = dcol[order]; lab = np.searchsorted(seed_bounds, sv, side="right") - 1; MINB = max(1000, int(0.005 * order.size))
-    cut_ = np.flatnonzero(np.diff(lab) != 0) + 1; st_ = np.concatenate(([0], cut_)); en_ = np.concatenate((cut_, [order.size]))
+    # 11-05: 番号は細かく入れ替わる（染色体の継ぎ目・参照に無い区間の前埋め）。以前は錨ごとの連なりで切り、MINB 未満の連なりを直前の塊に足していたため、
+    #   細切れの連なりが続く染色体が丸ごと前の塊に飲まれた（fly16: chrX の本体 105 万座標が chr3L の塊に入り、chrX の末端 7.6 万だけが chr3R の後ろに出た）。
+    #   区画（MINB の 1/8）ごとの多数決の番号で連なりを作ってから、小さな連なりを前に付ける
+    B_ = max(200, MINB // 8); nb_ = (order.size + B_ - 1) // B_; L_ = int(lab.max()) + 2
+    blab = np.array([int(np.bincount(lab[k * B_:(k + 1) * B_] + 1, minlength=L_).argmax()) - 1 for k in range(nb_)])
+    nsw_ = int((np.diff(lab) != 0).sum()); nswb_ = int((np.diff(blab) != 0).sum())
+    cut_ = (np.flatnonzero(np.diff(blab) != 0) + 1) * B_; st_ = np.concatenate(([0], cut_)); en_ = np.concatenate((cut_, [order.size]))
     runs = []
     for p_, q_ in zip(st_, en_):
-        if runs and (q_ - p_ < MINB or lab[p_] == runs[-1][2]): runs[-1][1] = q_
-        else: runs.append([p_, q_, int(lab[p_])])
+        lb_ = int(blab[p_ // B_])
+        if runs and (q_ - p_ < MINB or lb_ == runs[-1][2]): runs[-1][1] = q_
+        else: runs.append([p_, q_, lb_])
+    log(f"塊の番号: 錨ごとの切り替わり {nsw_:,} → 区画（{B_:,} 錨）の多数決で {nswb_:,}")
     key_ = [(r_[2], float(np.median(sv[r_[0]:r_[1]]))) for r_ in runs]; ob = sorted(range(len(runs)), key=lambda i: key_[i])
     order = np.concatenate([order[runs[i][0]:runs[i][1]] for i in ob]); X[order] = np.arange(order.size)
     log(f"大きな塊の並べ直し（参照パスの単位）: 塊 {len(runs)}、並び " + " ".join(f"{runs[i][2]}:{runs[i][1] - runs[i][0]:,}" for i in ob))

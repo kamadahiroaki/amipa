@@ -23,12 +23,13 @@ interface Props {
   getGraphViewport?: () => { x1: number; x2: number; y1: number; y2: number } | null
   onPeaks?: (peaks: OvPeak[] | null) => void        // 全体図の山（文字つき）
   onPeakHover?: (letter: string | null, names: string[] | null) => void
+  onPeakPicked?: (peak: OvPeak) => void
 }
-export default function TravPanel({ db, onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover }: Props) {
+export default function TravPanel({ db, onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover, onPeakPicked }: Props) {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const hRef = useRef<TravHandle | null>(null)
-  const cbRef = useRef({ onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover })
-  useEffect(() => { cbRef.current = { onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover } }, [onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover])
+  const cbRef = useRef({ onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover, onPeakPicked })
+  useEffect(() => { cbRef.current = { onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover, onPeakPicked } }, [onVisible, onSelectHap, onSelectHaps, onFilter, onGraphRange, onReady, onHoverNodes, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover, onPeakPicked])
   useEffect(() => { hRef.current?.setHapMarks(hapMarks ?? new Map()) }, [hapMarks])
   useEffect(() => {
     hRef.current?.destroy(); hRef.current = null; cbRef.current.onReady?.(null)
@@ -46,6 +47,7 @@ export default function TravPanel({ db, onVisible, onSelectHap, onSelectHaps, on
       getGraphViewport: () => cbRef.current.getGraphViewport?.() ?? null,
       onPeaks: p => cbRef.current.onPeaks?.(p),
       onPeakHover: (l, n) => cbRef.current.onPeakHover?.(l, n),
+      onPeakPicked: q => cbRef.current.onPeakPicked?.(q),
     })
     hRef.current.setHapMarks(hapMarks ?? new Map())
     cbRef.current.onReady?.(hRef.current)

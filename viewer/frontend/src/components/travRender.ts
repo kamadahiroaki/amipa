@@ -42,6 +42,7 @@ export interface TravCallbacks {
   getGraphViewport?: () => { x1: number; x2: number; y1: number; y2: number } | null   // グラフの表示範囲（world。全体図の「中央を重く」）
   onPeaks?: (peaks: OvPeak[] | null) => void                                   // 全体図の山（文字つき）→ グラフ側の札
   onPeakHover?: (letter: string | null, names: string[] | null) => void        // 全体図で山にカーソル → グラフでその山のノードを強調
+  onPeakPicked?: (peak: OvPeak) => void                                        // 山（全体図・札）を選んだ → グラフをその山の塊に寄せる（塊が画面より十分小さいとき）
 }
 export interface TravOpts { db: string; params?: URLSearchParams; page?: boolean }   // page: 試作ページ（window のエラー表示、説明を開いたまま、グラフ連動なし）
 export interface TravHandle { setDb(db: string): void; destroy(): void; locateNodes(names: string[]): void; openNames(names: string[]): void; setHapMarks(m: Map<string, string>): void; resetLinks(): void; graphMoved(): void; getState(): any; setState(st: any): void; hoverPeak(letter: string | null): void; goPeak(letter: string): void }
@@ -192,7 +193,7 @@ async function loadRoot() {
   const refHid = (root as any).refHid as number | undefined   // 参照（種）の株を先頭に（11-05: 以前は GRCh38/CHM13 などの名前で決め打ち）
   const refLike = (hid: number) => (refHid != null && refHid >= 0 ? hid === refHid : /^(GRCh38|CHM13|GCF_000148365)/.test(root!.haps[hid].hap)) ? 0 : 1
   baseOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(a) - refLike(b) || root!.haps[a].hap.localeCompare(root!.haps[b].hap)); hapOrder = baseOrder.slice()
-  bands = []; locCache.clear(); ovw.setMarker(null); ovw.setPoints([], [], '')
+  bands = []; locCache.clear(); lastPeaks = []; ovw.setMarker(null); ovw.setPoints([], [], '')
   try { const rb = await getJson(`/api/trav/chroms?db=${encodeURIComponent(db)}`); if (rb.ok) bands = (await rb.json()).bands || [] } catch { /* 区切りは無くてもよい */ }
   ovw.setBands(bands)
   atomStats = []; await loadAtoms(); await loadRange()
@@ -267,7 +268,7 @@ async function loadRange() {
       if (hideOn) {
         const rf = await getJson(`/api/trav/nodeset?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}&max=150000`)
         if (my !== loading) return
-        const jf = await rf.json(); if (!(jf.tooBig || jf.error)) { setNames = jf.names as string[]; if (jf.truncated) $('info').textContent += ` | 範囲のノード ${fmt(jf.n)} で打ち切り` } else if (hideOn) $('info').textContent += ` | グラフを絞る: ${jf.error || '範囲が広すぎる'}`
+        const jf = await rf.json(); if (!(jf.tooBig || jf.error || jf.truncated)) setNames = jf.names as string[]; else if (hideOn) $('info').textContent += ` | グラフを絞る: ${jf.error || `範囲が広すぎるので絞らない（ノード ${fmt(jf.n ?? 0)} 個以上。塗り分けだけ）`}`   /* 11-05: 打ち切った集合で絞ると範囲の先頭だけが残り、残りが消えた（fly16 の chrX 全体） */
       }
       // 絞り（非表示）と塗り分けは別の通り道（10-28: 絞ると塗りが消え、塩基の段の見える範囲を送ると絞りが外れて上の層に戻っていた）
       if (hideOn && setNames) { rangeMode = 'set'; cb.onRange({ names: setNames, colors: null, fit: false, hide: true, fitNames }); await rangeByLocate(my) }
@@ -305,6 +306,7 @@ const ovw: OverviewHandle = mountOverview($('ovw'), LAB, {
   labelOf: chromLabel, view: () => view,
   stripe: () => base ? [] : blocks.map(b => ({ x0: b.x0, x1: b.x1, color: `hsl(${hue(b.id)}, 70%, 46%)` })),
   onGo: (x0, x1, fit) => goRange(x0, x1, fit),
+  onGoPeak: q => goPeakQ(q),
   onHoverPeak: q => cb.onPeakHover?.(q ? q.letter : null, q ? q.names : null),
 }, () => { void refreshOverview() })
 // 全体図の山を引き直す。見えているノードを座標に引き、山（文字つき）を全体図とグラフ側の札（onPeaks）に送る
@@ -321,12 +323,17 @@ async function refreshOverview(): Promise<OvPeak[]> {
     const v = vis[i]; const w = vp ? Math.exp(-2 * (((v.x - cx) / hw) ** 2 + ((v.y - cy) / hh) ** 2)) : 1
     pts.push({ x: n.x, w, name: n.name, wx: v.x, wy: v.y })
   })
-  const peaks = computePeaks(pts, root.R, chromLabel, view, x => { const b = bandAt(x); return b ? bands.indexOf(b) : -1 }); lastPeaks = peaks
-  const lettered = peaks.filter(p => p.letter)
+  const peaks = computePeaks(pts, root.R, chromLabel, view, x => { const b = bandAt(x); return b ? bands.indexOf(b) : -1 }, lastPeaks); lastPeaks = peaks
+  const lettered = peaks.filter(p => p.letter).sort((a, b) => a.letter.localeCompare(b.letter))
   const note = `見えている ${fmt(vis.length)}・山 ${lettered.length}${peaks.length > lettered.length ? `（ほか小さな ${peaks.length - lettered.length}）` : ''}${nNo ? `・座標なし ${fmt(nNo)}` : ''}${nWide ? `・張りが広い ${fmt(nWide)}` : ''}`
   ovw.setPoints(pts, peaks, note); cb.onPeaks?.(lettered.length ? lettered : null)
   return peaks
 }
+// 山へ（全体図・札のクリック）: パネルは山の範囲へ（グラフの範囲の寄せはしない）。グラフは App が山の塊の外接箱に寄せる（11-05: 全体を見ているとき札をクリックしても
+//   グラフが全体のまま、絞り込みで他が消えるだけだった）
+function goPeakQ(q: OvPeak) {   // 余白は山の染色体の中に留める（11-05: 5% の余白で隣の chr4 まで開いた）
+  if (!root) return; const pad = Math.max(50, Math.round((q.x1 - q.x0) * 0.05)); const b0 = bandAt(q.x0), b1 = bandAt(q.x1)
+  goRange(Math.max(b0 ? b0.x0 : 0, q.x0 - pad), Math.min(b1 ? b1.x1 : root.R - 1, q.x1 + pad), false); cb.onPeakPicked?.(q) }
 // 全体図・札からの移動。fit＝グラフをその範囲に寄せる（帯のドラッグ・クリックは寄せる。山・印は既にグラフに見えている所なので寄せない）
 function goRange(x0: number, x1: number, fit: boolean) {
   if (!root) return; if (base) { base = null; $('basegrp').style.display = 'none'; $('bscroll').style.display = 'none' }
@@ -1515,7 +1522,7 @@ function setState(st: any, tries = 0) { if (!st) return; if (!root || (st.db && 
   if (Array.isArray(st.rsamp)) { readSel = st.rsamp.map(String); readSelLabel() }
   if (st.base) { baseAutoState = true; pendingMode = st.bmode2 === 'base' ? 'base' : 'node' } blocks = makeBlocks(); void loadRange() }
 let baseAutoState = false
-return { getState, setState, setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked) reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; void refreshOverview(); if (rangeMode === 'none' || base) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (!q || !root) return; const pad = Math.max(50, Math.round((q.x1 - q.x0) * 0.05)); goRange(Math.max(0, q.x0 - pad), Math.min(root.R - 1, q.x1 + pad), false) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { loading++; ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
+return { getState, setState, setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked) reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; void refreshOverview(); if (rangeMode === 'none' || base) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { loading++; ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
 
 }
 

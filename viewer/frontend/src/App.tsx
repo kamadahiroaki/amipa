@@ -3011,6 +3011,10 @@ export default function App() {
             getGraphViewport={() => mapViewportRef.current}
             onPeaks={setTrvPeaks}
             onPeakHover={onTravPeakHover}
+            onPeakPicked={q => {   // 山を選んだら、グラフをその山のノードの塊（2–98 パーセンタイル）に寄せる（11-05: 塊が画面の半分以上だと寄せない、にしていたら、全体表示で chrX を選んでも動かなかった）
+              const [a, b, c, d] = q.full; const bw = Math.max(c - a, 1e-9), bh = Math.max(d - b, 1e-9); const px = bw * 0.15, py = bh * 0.15
+              graphRef.current?.fitBounds(a - px, b - py, c + px, d + py)
+            }}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
             onSelectHaps={onTravSelectHaps}
             onGraphRange={onTravGraphRange}

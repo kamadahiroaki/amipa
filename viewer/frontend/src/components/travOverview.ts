@@ -5,7 +5,7 @@
 //   ・操作: 山のクリック＝その山の範囲へ、帯のドラッグ＝任意の範囲へ、帯のクリック＝今の幅のままそこへ、印（▼ グラフでクリックしたノード）のクリック＝その位置へ
 export type OvBand = { x0: number; x1: number; name: string; ref: boolean }
 export type OvPoint = { x: number; w: number; name: string; wx: number; wy: number }
-export type OvPeak = { letter: string; x0: number; x1: number; xm: number; n: number; w: number; share: number; label: string; names: string[]; wx: number; wy: number; box: [number, number, number, number]; inView: boolean }
+export type OvPeak = { letter: string; x0: number; x1: number; xm: number; n: number; w: number; share: number; label: string; names: string[]; wx: number; wy: number; box: [number, number, number, number]; full: [number, number, number, number]; inView: boolean }
 export interface OverviewDeps {
   R: () => number
   bpOfX: (x: number) => number
@@ -15,6 +15,7 @@ export interface OverviewDeps {
   view: () => [number, number]
   stripe: () => { x0: number; x1: number; color: string }[]   // 開いている範囲のブロックの色
   onGo: (x0: number, x1: number, fit: boolean) => void
+  onGoPeak: (q: OvPeak) => void                           // 山のクリック（パネルを山の範囲へ、グラフは山の塊が小さければ寄せる）
   onHoverPeak: (p: OvPeak | null) => void
 }
 export const LETTERS = 'ABCDEF'
@@ -22,7 +23,8 @@ const fmtbp = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(2) + ' Mb' : n >= 1e3 
 
 // 山: 座標の隙間（全長の 0.5%、下限 2,000）と染色体の境目で連なりに分け、重い順に文字。全体の 2% 未満の連なりは文字を付けない（帯には描く）
 //   （染色体で分けないと、合意座標で隣り合う chrX と chr3R が 1 つの山になった）
-export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => string, view: [number, number], bandOf: (x: number) => number = () => 0): OvPeak[] {
+//   文字は前回の山と座標が重なるものには前と同じ文字を引き継ぐ（グラフを動かすたびに A と B が入れ替わらないように）
+export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => string, view: [number, number], bandOf: (x: number) => number = () => 0, prev: OvPeak[] = []): OvPeak[] {
   if (!pts.length) return []
   const s = pts.slice().sort((a, b) => a.x - b.x); const G = Math.max(2000, Math.round(R * 0.005))
   const runs: OvPoint[][] = []; let cur: OvPoint[] = [s[0]]
@@ -33,9 +35,11 @@ export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => 
   const peaks = runs.map(r => {
     const w = r.reduce((a, p) => a + p.w, 0); const xs = r.map(p => p.x); const wx = r.map(p => p.wx).sort((a, b) => a - b), wy = r.map(p => p.wy).sort((a, b) => a - b)
     const x0 = xs[0], x1 = xs[xs.length - 1]; let acc = 0, xm = x0; for (const p of r) { acc += p.w; if (acc >= w / 2) { xm = p.x; break } }
-    return { letter: '', x0, x1, xm, n: r.length, w, share: w / tot, label: labelOf(xm), names: r.map(p => p.name), wx: pc(wx, 0.5), wy: pc(wy, 0.5), box: [pc(wx, 0.1), pc(wy, 0.1), pc(wx, 0.9), pc(wy, 0.9)] as [number, number, number, number], inView: x1 >= view[0] && x0 <= view[1] }
+    return { letter: '', x0, x1, xm, n: r.length, w, share: w / tot, label: labelOf(xm), names: r.map(p => p.name), wx: pc(wx, 0.5), wy: pc(wy, 0.5), box: [pc(wx, 0.1), pc(wy, 0.1), pc(wx, 0.9), pc(wy, 0.9)] as [number, number, number, number], full: [pc(wx, 0.02), pc(wy, 0.02), pc(wx, 0.98), pc(wy, 0.98)] as [number, number, number, number], inView: x1 >= view[0] && x0 <= view[1] }
   }).sort((a, b) => b.w - a.w)
-  let k = 0; for (const p of peaks) { if (k < LETTERS.length && p.share >= 0.02) p.letter = LETTERS[k++] }
+  const cand = peaks.filter(p => p.share >= 0.02).slice(0, LETTERS.length); const used = new Set<string>()
+  for (const p of cand) { const o = prev.filter(q => q.letter && !used.has(q.letter) && q.x1 >= p.x0 && q.x0 <= p.x1).sort((a, b) => b.w - a.w)[0]; if (o) { p.letter = o.letter; used.add(o.letter) } }
+  for (const p of cand) { if (p.letter) continue; const l = [...LETTERS].find(c => !used.has(c)); if (l) { p.letter = l; used.add(l) } }
   return peaks
 }
 
@@ -100,7 +104,7 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
     if (!drag) return; const d = drag; drag = null; const r = cv.getBoundingClientRect(); const p1 = e.clientX - r.left
     if (Math.abs(p1 - d[0]) >= 4) { const l = Math.min(d[0], p1), h = Math.max(d[0], p1); deps.onGo(Math.max(0, Math.floor(xOf(l))), Math.min(deps.R() - 1, Math.ceil(xOf(h))), true); draw(); return }
     if (marker && Math.abs(px(marker.x) - d[0]) <= 6) { deps.onGo(marker.x, marker.x, false); draw(); return }
-    const q = peakAt(d[0]); if (q) { const pad = Math.max(50, Math.round((q.x1 - q.x0) * 0.05)); deps.onGo(Math.max(0, q.x0 - pad), Math.min(deps.R() - 1, q.x1 + pad), false); draw(); return }
+    const q = peakAt(d[0]); if (q) { deps.onGoPeak(q); draw(); return }
     const [v0, v1] = deps.view(); const half = (v1 - v0) / 2; const x = xOf(d[0]); deps.onGo(Math.max(0, Math.floor(x - half)), Math.min(deps.R() - 1, Math.ceil(x + half)), true); draw()
   }
   window.addEventListener('mouseup', onUp)
