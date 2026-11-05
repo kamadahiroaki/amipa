@@ -251,6 +251,7 @@ export interface GraphCanvasHandle {
   exportSvg: () => void               // 8.1 図版モード: 現ビューを SVG(レイヤ付き・物理寸法)で書き出す
 }
 
+const HOV_FEW = 20         // ホバーの強調: 該当がこれ以下ならリングも付け、これを超えたら他のノードを薄くする（11-05）
 const FETCH_MARGIN  = 0.5   // プリフェッチ: ビューポートを各辺 50% 拡張
 const RENDER_MARGIN = 0.05  // 描画範囲: ビューポートを各辺 5% 拡張
 
@@ -1518,14 +1519,20 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         }
       }
 
+      // ホバー中のノードの強調（11-05）: リングをやめ、該当ノードを濃いマゼンタで塗る（厚みも最低 3 px）。該当が多い（山・ブロック）ときは他を薄くする
+      //   （拡大率が低く小さなノードが多いと、固定の大きさのリングが重なって塊になった）。リングは該当が少なく大きく描かれるときだけ（uiLayer 側）
+      const hovSet = msaHoverRef.current && msaHoverRef.current.size ? msaHoverRef.current : null
+      const hovMany = !!hovSet && hovSet.size > HOV_FEW
+      edgeLayer.alpha = hovMany ? 0.2 : 1   // 他を薄くするときは辺も
       for (const n of visibleNodes) {
         if (hiddenNodeIds.has(n.id)) continue
+        const isHovN = !!hovSet && hovSet.has(n.node_name)
         const w  = Math.max(n.radius * 2 * nodeScl, minW)
         const hw = w / 2, bound = hw * 1.4
         if (n.xCoord + bound < renderRect.x1 || n.xCoord - bound > renderRect.x2) continue
         if (n.yCoord + bound < renderRect.y1 || n.yCoord - bound > renderRect.y2) continue
         drawnCount++
-        const hh  = Math.min(constHalfThick, hw)   // 厚み一定(長さに依らず)。短すぎるノードは長さで頭打ち
+        const hh  = isHovN ? Math.max(Math.min(constHalfThick, hw), 1.5 / zoom) : Math.min(constHalfThick, hw)   // 厚み一定(長さに依らず)。短すぎるノードは長さで頭打ち（ホバー中は最低 3 px）
         // side1(+hw,3'/exit)側を尖端(5点目=接続点)にし、両肩を inset だけ内側へ寄せて向きを示す。
         // 葉は lang、集約(スーパーノード)は符号解決済み PCA 軸(emitter §4d')で angle が向きを持つ。
         const inset = hw * NODE_TIP_INSET
@@ -1585,7 +1592,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           : regionModeRef.current ? regionToColor(n.region_class, regionDictRef.current)
           : geneModeRef.current   ? geneCountToColor(n.gene_count, n.ref_bp, n.ref_bp_end)
           : null
-        const fillColor = floodFill != null ? floodFill
+        const fillColor = isHovN ? 0xe0157a
+                        : floodFill != null ? floodFill
                         : linkColor != null ? linkColor
                         : shouldGrey ? 0xe9ecef
                         : blockColor !== undefined ? (blockColor ?? 0xe9ecef)
@@ -1599,7 +1607,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
                         : 0x1864ab
 
         {
-          if (isSelected) {
+          if (isHovN) { nodeLayer.lineStyle(0); nodeLayer.beginFill(fillColor, 1.0) }
+          else if (hovMany) { nodeLayer.lineStyle(0); nodeLayer.beginFill(fillColor, 0.15) }   // 他を薄く
+          else if (isSelected) {
             nodeLayer.lineStyle(2 / zoom, 0xf08c00, 1.0, 0.5, true)
             nodeLayer.beginFill(fillColor === 0x228be6 ? 0x74c0fc : fillColor, 1.0)
           } else {
@@ -2292,11 +2302,17 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           if (!isHi && !isHov) continue
           const s = worldToScreen(n.xCoord, n.yCoord)
           if (isHov) {
-            uiLayer.lineStyle(0)
-            uiLayer.beginFill(0xff1493, 0.30); uiLayer.drawCircle(s.x, s.y, 25); uiLayer.endFill()   // ハロー
-            uiLayer.lineStyle(2.5, 0xffffff, 0.95); uiLayer.beginFill(0, 0); uiLayer.drawCircle(s.x, s.y, 22); uiLayer.endFill()
-            uiLayer.lineStyle(4, 0xff1493, 1.0); uiLayer.beginFill(0, 0); uiLayer.drawCircle(s.x, s.y, 19); uiLayer.endFill()
-          } else {
+            // 11-05: リングは該当が少なく（HOV_FEW 個以下）、画面で半径 6 px 以上に描かれるノードだけ。大きさはノードに合わせる（塗りの強調はノードの描画側）
+            const rpx = Math.max(n.radius * nodeScaleRef.current * world.scale.x, 1.5)
+            if (msaHov!.size > HOV_FEW || rpx < 6) { if (!isHi) continue }
+            else {
+              const R0 = rpx + 5
+              uiLayer.lineStyle(2, 0xffffff, 0.95); uiLayer.beginFill(0, 0); uiLayer.drawCircle(s.x, s.y, R0 + 2); uiLayer.endFill()
+              uiLayer.lineStyle(3, 0xe0157a, 1.0); uiLayer.beginFill(0, 0); uiLayer.drawCircle(s.x, s.y, R0); uiLayer.endFill()
+              if (!isHi) continue
+            }
+          }
+          {
             uiLayer.lineStyle(2, 0xffffff, 0.9); uiLayer.beginFill(0, 0); uiLayer.drawCircle(s.x, s.y, 17); uiLayer.endFill()
             uiLayer.lineStyle(3.5, 0xff7a00, 1.0); uiLayer.beginFill(0, 0); uiLayer.drawCircle(s.x, s.y, 15); uiLayer.endFill()
           }
