@@ -2080,6 +2080,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       if (subOn() && !subF) return
       const keepId = subF ? new Set(subF.nodes.filter(n => !subF.outerIds.has(n.id)).map(n => n.id)) : null
       const keepNm = subF ? new Set(subF.nodes.filter(n => !subF.outerNames.has(n.node_name)).map(n => n.node_name)) : null
+      // 参照座標はグラフ用に読んだノードから名前で引く（リボンのデータには無い）。逆位のあるリボンがあるときだけ作る
+      const rbByName = new Map<string, number>()   // 参照座標（ref_bp と ref_bp_end の中点）。矢羽根の向き
+      if (ribs.some(r => r.nodes.some(n => n.inv))) for (const vn of visibleNodesRef.current) { if (vn.ref_bp != null && Number(vn.ref_bp) >= 0 && !vn.ref_multi) rbByName.set(vn.node_name, (Number(vn.ref_bp) + Number(vn.ref_bp_end ?? vn.ref_bp)) / 2) }
+      let chevTotal = 0; const MAX_CHEV = 3000
       ribs.forEach((rib0, ri) => {
         let rib = rib0
         if (keepId && keepNm) { const nodes = rib0.nodes.filter(n => keepId.has(n.id) || keepNm.has(n.name)); const ids = new Set(nodes.map(n => n.id))
@@ -2105,6 +2109,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           return !(n.x + nb < rr.x1 || n.x - nb > rr.x2 || n.y + nb < rr.y1 || n.y - nb > rr.y2)
         }
         rl.lineStyle(0)
+        // 逆位の区間の暗い縁（本体の下に、本体より左右 1.2 px ずつ太く敷く。11-05）
+        const invStart: number[] = []
+        if (rib.edges.some(e => e.inv) || rib.nodes.some(n => n.inv)) {
+          invStart.push(1); rl.beginFill(0x1b1b1b, 0.9); const hb = half + 1.2 / zoom
+          for (const e of rib.edges) { if (!e.inv) continue; const { sx, sy, ex, ey } = edgeXY(e); if (!edgeVisible(sx, sy, ex, ey)) continue; addSeg(sx, sy + off, ex, ey + off, hb) }
+          for (const n of rib.nodes) { if (!n.inv || !nodeVisible(n)) continue; const nb = n.r * scale; const dx = Math.cos(n.a) * nb, dy = Math.sin(n.a) * nb; addSeg(n.x - dx, n.y - dy + off, n.x + dx, n.y + dy + off, hb) }
+          rl.endFill()
+        }
         // 本体色(全セグメント。off は縦方向ステガー=複数リボンを隙間付きで平行に上下配置。順序は ri で固定
         // ＝入れ替わらない。継ぎ目ずれも無い)
         rl.beginFill(rib.color, 0.9)
@@ -2121,27 +2133,42 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           addSeg(n.x - dx, n.y - dy + off, n.x + dx, n.y + dy + off)
         }
         rl.endFill()
-        // 逆位マーカー(非色チャネル・非方向): ref 方向は別途矢印で示すので向きは不要＝逆位であることだけ示せば十分。
-        // 逆位ノード/エッジを「本体より太い暗色帯」(本体幅×1.7)で上塗りし、連続した膨らんだ暗色帯として逆位区間を
-        // 明示。幅は W 相対(=画面固定)＋最小長 W 保証なので、ノードが小さく密でも縮まず消えない。隙間(STAGGER=W×1.6)
-        // 内に収まるので複数サンプルでも通常は隣に滲まない(塗りなので深層でも消えない; lineStyle 不使用)。
-        const hasInv = rib.edges.some(e => e.inv) || rib.nodes.some(n => n.inv)
-        if (hasInv) {
-          const invH = half * 1.7            // 本体(half)より太い＝逆位区間が膨らんで目立つ
-          rl.beginFill(0x111111, 0.95)
+        // 逆位（11-05）: 黒い上塗りをやめ、リボンの色のまま「暗い縁（本体の下に敷く）＋参照と反対向きの矢羽根」で示す。
+        //   向きは DB のノードの ref_strand（参照がそのノードを通る向き。1＝ノードの角度 a の向き、0＝逆）。逆位は参照が通るノードにしか付かないので向きは決まる。
+        //   辺は両端のノードの参照の向きに合わせる。矢羽根は画面上 16 px ごと、1 回の描画で上限 MAX_CHEV
+        if (invStart.length) {
+          // 向きは辺の両端の参照座標（ref_bp の中点）の大小から: 参照は ref_bp が増える向きなので、逆位のコンティグはその反対へ進む。
+          //   位置は画面の S×S のマス目ごとに 1 個（辺の中点の平均・向きは長さで重み付けた平均）。小さなノードごとに描くと潰れ、ノードの角度は線の向きと無関係だった
+          const S = 22 / zoom, Lc = 8 / zoom, Hc = 5.5 / zoom
+          const chev: [number, number, number, number][] = []
+          const byId = new Map(rib.nodes.map(n => [n.id, n]))
+          const cells = new Map<string, [number, number, number, number, number]>()   // sx, sy, vx, vy, w
           for (const e of rib.edges) {
             if (!e.inv) continue
-            const { sx, sy, ex, ey } = edgeXY(e)
-            if (!edgeVisible(sx, sy, ex, ey)) continue
-            addSeg(sx, sy + off, ex, ey + off, invH)
+            const a = byId.get(e.su), b = byId.get(e.tv); if (!a || !b) continue
+            const ra = rbByName.get(a.name), rbv = rbByName.get(b.name); if (ra == null || rbv == null || ra === rbv) continue
+            const { sx, sy, ex, ey } = edgeXY(e); if (!edgeVisible(sx, sy, ex, ey)) continue
+            const L = Math.hypot(ex - sx, ey - sy); if (L < 1e-12) continue
+            const sg = rbv > ra ? -1 : 1; const ux = (ex - sx) / L * sg, uy = (ey - sy) / L * sg
+            const mx = (sx + ex) / 2, my = (sy + ey) / 2 + off; const key = Math.floor(mx / S) + ',' + Math.floor(my / S)
+            const c = cells.get(key); if (c) { c[0] += mx * L; c[1] += my * L; c[2] += ux * L; c[3] += uy * L; c[4] += L } else cells.set(key, [mx * L, my * L, ux * L, uy * L, L])
           }
-          for (const n of rib.nodes) {
-            if (!n.inv || !nodeVisible(n)) continue
-            const nb = n.r * scale
-            const dx = Math.cos(n.a) * nb, dy = Math.sin(n.a) * nb
-            addSeg(n.x - dx, n.y - dy + off, n.x + dx, n.y + dy + off, invH)
+          for (const c of cells.values()) {
+            if (chevTotal >= MAX_CHEV) break
+            const vl = Math.hypot(c[2], c[3]); if (vl < 0.5 * c[4]) continue   // マスの中で向きがそろわない（折り返し・もつれ）ときは描かない
+            chev.push([c[0] / c[4], c[1] / c[4], c[2] / vl, c[3] / vl]); chevTotal++
           }
-          rl.endFill()
+          const drawChev = (k: number, col: number) => {
+            rl.beginFill(col, 1)
+            for (const [cx, cy, ux, uy] of chev) {
+              const L2 = Lc * k / 2, H = Hc * k, px = -uy, py = ux
+              const tx = cx + ux * L2, ty = cy + uy * L2, bx = cx - ux * L2, by = cy - uy * L2
+              rl.drawPolygon([tx - originX, ty - originY, bx + px * H - originX, by + py * H - originY,
+                              bx + ux * Lc * 0.45 * k - originX, by + uy * Lc * 0.45 * k - originY, bx - px * H - originX, by - py * H - originY])
+            }
+            rl.endFill()
+          }
+          if (chev.length) { drawChev(1.35, 0x1b1b1b); drawChev(1, rib.color) }   // 暗い縁取りの上にリボンの色の矢羽根
         }
       })
       markDirty()
