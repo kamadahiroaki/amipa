@@ -172,6 +172,19 @@ function refPos(x: number): string {   // 参照（種）の株・染色体・�
 // ---- 染色体の区切り（/api/trav/chroms）と全体図 ----
 let bands: OvBand[] = []
 function bandAt(x: number): OvBand | null { let lo = 0, hi = bands.length - 1; if (hi < 0) return null; while (lo < hi) { const m = (lo + hi) >> 1; if (bands[m].x1 < x) lo = m + 1; else hi = m } const b = bands[lo]; return b && b.x0 <= x && b.x1 >= x ? b : null }
+// 全体図の山の札（11-06）: 染色体と参照の位置で「chr3R:13.7M」。桁は参照の全長の 0.2% 程度の刻み（ハエ 100 kb・ヒト 1 Mb・大腸菌 10 kb）、
+//   extra で 1 桁ずつ細かく（同じ札が 2 つできたとき）。参照に無い区間は合意の bp に「~」を付ける。どの解像度でも同じ場所は同じ名前
+//   山が染色体の 8 割以上を覆うときは染色体の名前だけ（全体表示で「chr2L」）。山は染色体の境目で切るので、これも 1 つに決まる
+function peakTag(x: number, extra: number, x0 = x, x1 = x): string {
+  const b = bandAt(x); const nm = b ? (b.name || `区間${bands.indexOf(b) + 1}`) : ''
+  if (b && extra === 0 && x1 - x0 >= 0.8 * (b.x1 - b.x0)) return nm
+  const rb = refBpAt(x); const v = rb != null ? rb : bpOfX(x)
+  const tot = root && root.atoms.length ? atomCum[atomCum.length - 1] + root.atoms[root.atoms.length - 1].bp : 1
+  const step = Math.pow(10, Math.floor(Math.log10(Math.max(1000, tot * 0.002))) - extra)
+  const unit = v >= 1e6 ? 1e6 : v >= 1e3 ? 1e3 : 1; const dec = Math.max(0, Math.ceil(Math.log10(unit / step) - 1e-9))
+  const val = (Math.round(v / step) * step / unit).toFixed(dec) + (unit === 1e6 ? 'M' : unit === 1e3 ? 'k' : '')
+  return `${nm}${nm ? ':' : ''}${rb != null ? '' : '~'}${val}`
+}
 function chromLabel(x: number): string {
   const b = bandAt(x); const nm = b ? (b.name || `区間 ${bands.indexOf(b) + 1}`) : `x ${fmt(Math.round(x))}`
   const bp = refBpAt(x); return bp != null ? `${nm} ${fmtbp(bp)}` : `${nm}（参照に無い区間、x ${fmt(Math.round(x))}）`
@@ -339,8 +352,8 @@ async function refreshOverview(): Promise<OvPeak[]> {
     const v = vis[i]; const w = vp ? Math.exp(-2 * (((v.x - cx) / hw) ** 2 + ((v.y - cy) / hh) ** 2)) : 1
     pts.push({ x, a, b, w, name: n.name, wx: v.x, wy: v.y })
   })
-  const peaks = computePeaks(pts, root.R, chromLabel, view, x => { const b = bandAt(x); return b ? bands.indexOf(b) : -1 }, lastPeaks); lastPeaks = peaks
-  const lettered = peaks.filter(p => p.letter).sort((a, b) => a.letter.localeCompare(b.letter))
+  const peaks = computePeaks(pts, root.R, chromLabel, view, x => { const b = bandAt(x); return b ? bands.indexOf(b) : -1 }, peakTag); lastPeaks = peaks
+  const lettered = peaks.filter(p => p.letter).sort((a, b) => a.xm - b.xm)
   const note = `見えている ${fmt(vis.length)}・山 ${lettered.length}${peaks.length > lettered.length ? `（ほか小さな ${peaks.length - lettered.length}）` : ''}${nNo ? `・座標なし ${fmt(nNo)}` : ''}${nWide ? `・張りが広い ${fmt(nWide)}` : ''}`
   ovw.setPoints(pts, peaks, note); cb.onPeaks?.(lettered.length ? lettered : null)
   return peaks
@@ -1489,7 +1502,7 @@ async function locate(names: string[], single: boolean) {
   const peaks = await refreshOverview(); const lt = peaks.filter(p => p.letter)
   if (!lt.length) { $('info').textContent = 'グラフ → パネル: 見えているノードに座標を持つものが無い（粗い層なら拡大すると引ける）'; $('info').style.color = '#c0392b'; return }
   if (lt.length === 1 || lt[0].share >= 0.8) { const q = lt[0]; const pad = Math.max(50, Math.round((q.x1 - q.x0) * 0.05)); goRange(Math.max(0, q.x0 - pad), Math.min(root.R - 1, q.x1 + pad), false); return }
-  $('info').style.color = ''; $('info').textContent = `グラフに見えているノードは ${lt.length} か所に分かれる（${lt.map(p => `${p.letter} ${p.label} ${Math.round(p.share * 100)}%`).join('・')}）。全体図の山かグラフの札をクリックして選ぶ`
+  $('info').style.color = ''; $('info').textContent = `グラフに見えているノードは ${lt.length} か所に分かれる（${lt.map(p => `${p.letter} ${Math.round(p.share * 100)}%`).join('・')}）。全体図の山かグラフの札をクリックして選ぶ`
   const el = $('ovw'); el.style.outline = '2px solid #111'; setTimeout(() => { el.style.outline = '' }, 1200)
 }
 // 遺伝子の有無の一覧（10-27）: 表示範囲の遺伝子群のうち、範囲を通る株の中で無し・2 コピー以上・一部だけの株がある群を、変化の大きい順に。行のクリックでその群に寄る
