@@ -1826,11 +1826,11 @@ export default function App() {
               </div>
               {ribbonLevel !== 'none' && (
                 <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                  {devMode && <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                     <span title="super-node の総塩基の θ% 以上を通れば通過。既定 0=少しでも通れば通過（表示フィルタと同じ基準）。上げると混雑は減るが、バブルは 1 ハプロタイプが総塩基の 1/アリル数しか覆えないためリボンが落ちやすい">θ {Math.round(ribbonTheta * 100)}%</span>
                     <input type="range" min={0} max={100} value={Math.round(ribbonTheta * 100)}
                       onChange={e => setRibbonTheta(Number(e.target.value) / 100)} style={{ flex: 1 }} />
-                  </div>
+                  </div>}
                   <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
                     <input type="text" placeholder="絞り込み…" value={ribbonSearch}
                       onChange={e => setRibbonSearch(e.target.value)}

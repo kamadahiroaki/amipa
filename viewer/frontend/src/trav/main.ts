@@ -1,4 +1,5 @@
 // 通過の試作ページ: DB 選択 ＋ Traversals パネル（components/travRender.ts）。主画面と同じ部品を単体で確かめるためのページ
+import '../ui.css'
 import { mountTrav, TravHandle } from '../components/travRender'
 const sel = document.getElementById('db') as HTMLSelectElement; let h: TravHandle | null = null
 const params = new URLSearchParams(location.search)

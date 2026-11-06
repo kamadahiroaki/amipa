@@ -52,7 +52,7 @@ export interface OverviewHandle { draw(): void; setBands(b: OvBand[]): void; set
 export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps, onCenterToggle: () => void): OverviewHandle {
   host.innerHTML = `<div style="display:flex;align-items:stretch;border-bottom:1px solid #ddd;background:#fff">
     <div style="width:${LAB}px;flex-shrink:0;padding:2px 6px;box-sizing:border-box;font:11px system-ui;color:#555;overflow:hidden">
-      <div><b style="color:#333">全体図</b> <label title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"><input type="checkbox" class="ovc"> 中央を重く</label></div>
+      <div><b style="color:#333">全体図</b> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
       <div class="ovn" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
       <div class="ovh" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#222"></div>
     </div>
