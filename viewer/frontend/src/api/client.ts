@@ -190,7 +190,9 @@ export interface VersionInfo {
     // rtree_built_at: R-Tree(高速経路が読む実体)を作った時刻。built_at(=④ emit の時刻)とは別。
     // rad=false は radius を矩形から導出する古い R-Tree（深層で相対 174% 過大＝表示がずれる）。
     rtree_built_at?: string | null; rad?: boolean
-         features: { seq: boolean; inv: boolean; mult: boolean; contigcov: boolean } }
+         features: { seq: boolean; inv: boolean; mult: boolean; contigcov: boolean }
+         // 付属データの有無と使えない理由（無い backend では undefined＝従来どおり使える扱い）
+         avail?: import('../avail').AvailMap }
 }
 // この画面が要求する backend の API 段階。3 = 木の根（meta.tree/genes）・接合（junction/junctions/junction_base）・genes_cols
 export const API_LEVEL_REQUIRED = 3

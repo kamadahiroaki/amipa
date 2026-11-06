@@ -4,6 +4,7 @@
 import path from 'path'
 import fs from 'fs'
 import { getDbDir } from './db'
+import { dataAvail } from './availability'
 import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, travReads, travNLeaf, travReadSamples, travGeneLof, travMsa, travChroms, type Trav } from './trav'
 
 export interface OpResult { status: number; json: any }
@@ -24,6 +25,7 @@ export const OPS: Record<string, (q: Q) => OpResult> = {
   root: q => withT(q, t => {
     const r: any = travRoot(t)
     try { const base = path.join(getDbDir(), path.basename(String(q.db))); r.hasReads = fs.existsSync(base + '.reads') || (() => { try { return fs.existsSync(fs.realpathSync(base) + '.reads') } catch { return false } })(); r.hasAnn = !!annPathOf(String(q.db)); if (r.hasReads) r.readSamples = travReadSamples(t) } catch { /* */ }
+    try { r.avail = dataAvail(String(q.db)); if (r.hasReads && !r.avail.reads.ok) r.hasReads = false } catch { /* 無くても従来どおり */ }
     return r
   }),
   range: q => { const r = range(q); if (!r) return bad('bad x0/x1'); return withT(q, t => travRange(t, Math.floor(r[0]), Math.floor(r[1]), { minOverlap: Number(q.min) || 0, minAnchors: minanch(q) })) },

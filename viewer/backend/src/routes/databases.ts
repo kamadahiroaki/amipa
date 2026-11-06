@@ -2,7 +2,8 @@ import { Router } from 'express'
 import fs from 'fs'
 import { execSync } from 'child_process'
 import { READONLY } from '../config'
-import { getDb, getDbDir } from '../db'
+import { getDb, getDbDir, readsSchema } from '../db'
+import { dataAvail } from '../availability'
 import { tiledInfo, TILED_OFF } from '../tiled'
 
 export const databasesRouter = Router()
@@ -80,6 +81,13 @@ databasesRouter.get('/version', (req, res) => {
           mult: has('node_hap_mult'),
           contigcov: has('node_contig_cov'),
         },
+        avail: (() => {
+          const v = { ...dataAvail(db) }
+          // 旧 DB は本体の中にリード索引・注釈を持つことがある
+          if (!v.reads.ok && readsSchema(d) === 'main') v.reads = { ...v.reads, ok: true, why: undefined }
+          if (!v.annot.ok && has('node_annot')) v.annot = { ...v.annot, ok: true, why: undefined }
+          return v
+        })(),
       }
     } catch (e) { out.db = { name: db, error: String(e) } }
   }

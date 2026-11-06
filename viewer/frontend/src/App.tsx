@@ -3,6 +3,7 @@ import GraphCanvas, { GraphCanvasHandle, PATH_COLORS, RibbonData , BlockColorMap
 import Minimap from './components/Minimap'
 import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, INTRON_COLOR } from './annotColors'
 import AlignmentView, { AlignRow, MoveDest } from './components/AlignmentView'
+import { naReason, naTag, AvailMap } from './avail'
 import TravPanel from './components/TravPanel'
 import type { TravHandle } from './components/travRender'
 import { matchHapToKey } from './components/hapKey'
@@ -344,6 +345,9 @@ export default function App() {
   // 配信側で DB 書き換えを塞いである配信（AMIPA_READONLY=1）。編集操作そのものは許すが
   // Save だけ無効にする＝「動かして繋がりを確かめる」用途はデモでもそのまま使える。
   const saveDisabled = versionInfo?.readonly === true
+  const avail = versionInfo?.db?.avail as AvailMap | undefined   // 付属データの有無（使えない機能は隠さず理由を出す）
+  const naOf = (k: string) => { const why = naReason(avail, k); return why ? { why, tag: naTag(avail, k) ?? '使えない' } : null }
+  const naReads = naOf('reads'), naTrav = naOf('trav'), naAnnot = naOf('annot')
   const seqAvail = versionInfo?.db?.features.seq ?? false   // leaf_seq あり（配列表示モード可）
   const [showRefPos, setShowRefPos] = useState(true)       // 参照上の概算 bp 位置ラベルを重畳（既定ON）
   const [refContigs, setRefContigs] = useState<Map<number, RefContig>>(new Map())  // contig_id -> 表示名/長さ
@@ -1357,7 +1361,12 @@ export default function App() {
   }
 
   // メニューの 1 行のチェック（11-06 UI 見直し）。on のとき青いチェック
-  const menuCheck = (label: React.ReactNode, on: boolean, onClick: () => void, title?: string) => (
+  // na: この DB では使えない（データが無い）。押すと理由を出すだけ
+  const menuCheck = (label: React.ReactNode, on: boolean, onClick: () => void, title?: string, na?: { why: string; tag: string } | null) => na ? (
+    <button className="ui-menu-item is-na" role="menuitemcheckbox" aria-checked={false} aria-disabled="true" title={na.why} onClick={() => showHint(na.why)}>
+      <span className="ui-check" /><span>{label}</span><span className="ui-na-tag">{na.tag}</span>
+    </button>
+  ) : (
     <button className={'ui-menu-item' + (on ? ' is-on' : '')} role="menuitemcheckbox" aria-checked={on} onClick={onClick} title={title}>
       <span className="ui-check">{on ? '✓' : ''}</span><span>{label}</span>
     </button>
@@ -1458,11 +1467,13 @@ export default function App() {
                       { key: 'off' as const, label: '一定', show: true, hint: '' },
                       { key: 'paths' as const, label: '通る株の数', show: hbAvail, hint: '辺の太さ = その辺を通るハプロタイプの数。太い = 多い' },
                       { key: 'reads' as const, label: 'リード数', show: true, hint: '辺の太さ = その辺をまたぐリードの数' },
-                    ].filter(s => s.show)).map(s => (
+                    ].filter(s => s.show)).map(s => { const na = s.key === 'reads' ? naReads : null; return na ? (
+                      <button key={s.key} role="radio" aria-checked={false} aria-disabled="true" className="is-na" title={na.why} onClick={() => showHint(na.why)}>{s.label}</button>
+                    ) : (
                       <button key={s.key} role="radio" aria-checked={edgeWidthMode === s.key} className={edgeWidthMode === s.key ? 'is-on' : ''}
                         title={s.hint || '辺の太さを一定にする'}
                         onClick={() => { setEdgeWidthMode(s.key); if (s.key !== edgeWidthMode && s.hint) showHint(s.hint) }}>{s.label}</button>
-                    ))}
+                    ) })}
                   </div>
                 </div>
                 {devMode && edgeWidthMode === 'reads' && (
@@ -1548,7 +1559,7 @@ export default function App() {
                 {refposAvail && menuCheck(`参照の位置${refKey ? `（${refKey}）` : ''}`, showRefPos, () => setShowRefPos(v => !v), '参照上のおおよその bp 位置を代表のノードの近くに書く')}
                 {menuCheck('深さ（リード数）', coverageTextMode,
                   () => setCoverageTextMode(m => { if (!m) showHint('拡大してノードの幅が 20px 以上になると、ノードの上にリード数を書きます。'); return !m }),
-                  '拡大したとき、ノードの上にリードの数を書く')}
+                  '拡大したとき、ノードの上にリードの数を書く', naReads)}
                 {multAvail && (<>
                   <div className="ui-menu-title">コピー数（選んだパスどうし）</div>
                   {(['all', 'diff'] as const).map(mode => (
@@ -1562,6 +1573,10 @@ export default function App() {
                         mode === 'all' ? '選んだパスすべての、ノードごとのコピー数をリボンと同じ色で書く' : '選んだパスの間でコピー数が違うノードだけ書く（隠れた CNV）')}
                     </Fragment>
                   ))}
+                </>)}
+                {naAnnot && !(bandAvail || regionAvail || geneAvail) && (<>
+                  <div className="ui-menu-title">注釈の名前</div>
+                  {menuCheck('バンド・遺伝子など', false, () => {}, undefined, naAnnot)}
                 </>)}
                 {(bandAvail || regionAvail || geneAvail) && (<>
                   <div className="ui-menu-title">注釈の名前</div>
@@ -1621,9 +1636,13 @@ export default function App() {
                 return 220
               })
             }}>Alignment</button>
+          {naTrav && trvH === 0 ? (
+            <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why} onClick={() => showHint(naTrav.why)}>Traversals</button>
+          ) : (
           <button className={'ui-btn' + (trvH > 0 ? ' is-on' : '')} aria-pressed={trvH > 0}
-            title="Traversals パネル（錨と通過に基づくシンテニー）。<db>.trav のある DB だけ"
+            title="Traversals パネル（錨と通過に基づくシンテニー）"
             onClick={() => setTrvH(h => h > 0 ? 0 : 360)}>Traversals</button>
+          )}
           <button className={'ui-btn' + (editMode ? ' is-on' : '')} aria-pressed={editMode}
             title="ノードを動かす・回す。配置を DB に保存できる（閲覧専用の配信では保存しない）"
             onClick={() => setEditMode(m => { if (!m) showHint('編集: クリックで選択、ドラッグで移動、Shift で複数選択、黄色の丸で回転。Space＋ドラッグで画面を動かす。'); return !m })}>編集</button>
@@ -2302,10 +2321,11 @@ export default function App() {
               <div style={{ display: 'flex', gap: 6 }}>
                 <input id="read-q" className="ui-input ui-select-sm" value={readQuery} onChange={e => setReadQuery(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') runReadSearch(readQuery) }}
-                  placeholder={devMode ? 'リード名 または aln_id' : 'リード名'} disabled={!selectedDb}
+                  placeholder={naReads ? naReads.tag : devMode ? 'リード名 または aln_id' : 'リード名'} disabled={!selectedDb || !!naReads}
                   style={{ flex: 1, minWidth: 0, fontFamily: 'var(--ui-mono)', fontSize: 'var(--ui-fs-sm)' }} />
-                <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(readQuery)} disabled={!selectedDb || !readQuery.trim()}>検索</button>
+                <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(readQuery)} disabled={!selectedDb || !readQuery.trim() || !!naReads}>検索</button>
               </div>
+              {naReads && <div className="ui-na-note">{naReads.why}</div>}
               {readSearching && <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-muted)', marginTop: 4 }}>検索中…</div>}
               {readResults && !readSearching && readResults.length === 0 &&
                 <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-warn)', marginTop: 4 }}>見つからない</div>}

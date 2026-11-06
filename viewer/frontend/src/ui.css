@@ -168,3 +168,12 @@
   .ui-search { flex-basis: 200px; min-width: 150px; }
   .ui-divider { margin: 0 1px; }
 }
+
+/* 使えない機能（この DB にデータが無い）: 隠さず、押せない見た目で理由の札を付ける */
+.is-na { color: var(--ui-faint) !important; cursor: help !important; }
+.ui-menu-item.is-na:hover { background: var(--ui-hover); }
+.ui-menu-item.is-na .ui-check { border-style: dashed; background: transparent !important; }
+.ui-na-tag { margin-left: auto; padding: 0 6px; border: 1px dashed var(--ui-border-strong); border-radius: 999px; font-size: var(--ui-fs-xs); color: var(--ui-muted); white-space: nowrap; font-weight: 400; }
+.ui-btn.is-na { background: var(--ui-surface); border-style: dashed; }
+.ui-seg button.is-na { border-style: dashed; }
+.ui-na-note { margin-top: 6px; padding: 6px 8px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); font-size: var(--ui-fs-xs); color: var(--ui-muted); line-height: 1.5; }

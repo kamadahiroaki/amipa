@@ -24,6 +24,7 @@ const u8 = (b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)); cons
 
 import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/client'
 import { matchHapToKey } from './hapKey'
+import { naReason, naTag, AvailMap } from '../avail'
 import { mountOverview, computePeaks, OvBand, OvPoint, OvPeak, OverviewHandle } from './travOverview'
 type Gene = { proj?: number | null; frac?: number; gid: number; pid: number; hid: number; tr: number; x0: number; x1: number; s0: number; e0: number; start: number; end: number; strand: string; fwd: boolean; type: string; name: string; locus: string; product: string; pseudo: boolean; anchored: boolean; og: number; ch?: [string, number, number][]; nodes?: { names: string[]; cds: { names: string[]; phase: number; strand: string; so: number; eo: number; first: boolean }[]; exon: string[][]; t0: number; t1: number } }   // ch = 子（'cds'|'exon'|'utr', x0, x1）、nodes = 塩基の段用（ノード名）
 type Pres = { cover: number; n0: number; n1: number; n2: number; part: number; absent: number[]; multi: number[]; partial: number[] }
@@ -207,10 +208,26 @@ function makeBlocks(): Block[] {
 function blockAt(x: number): number { let lo = 0, hi = blocks.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (blocks[m].x1 < x) lo = m + 1; else hi = m } return lo }
 
 // ---- 読み込み ----
+// この DB に無いデータの操作は隠さず、押せない形で理由を付ける（11-06。取り込み失敗を「機能が無い」と取り違えないため）
+const NA_INPUTS: [string, string][] = [['treads', 'reads'], ['rsamp', 'reads'], ['breads', 'reads'], ['breadmax', 'reads'], ['bann', 'ann'], ['genes', 'genes'], ['gsrc', 'genes']]
+function applyNA() {
+  const av = (root as any)?.avail as AvailMap | undefined
+  for (const [id, key] of NA_INPUTS) {
+    const el = document.getElementById('tv_' + id) as HTMLInputElement | null; if (!el) continue
+    const why = naReason(av, key); const lab = (el.closest('label') as HTMLElement | null) ?? el
+    if (lab.dataset.tip == null) lab.dataset.tip = lab.title || ''
+    el.disabled = !!why; lab.classList.toggle('is-na', !!why); lab.title = why ?? lab.dataset.tip
+    if (el.type === 'checkbox') { if (why && el.checked) { el.checked = false; el.dataset.naOff = '1' } else if (!why && el.dataset.naOff) { el.checked = true; delete el.dataset.naOff } }
+    lab.querySelector('.ui-na-tag')?.remove()
+    if (why && lab !== el) { const t = document.createElement('span'); t.className = 'ui-na-tag'; t.style.marginLeft = '4px'; t.textContent = naTag(av, key) ?? '使えない'; lab.appendChild(t) }
+  }
+}
+host.addEventListener('click', e => { const na = (e.target as HTMLElement).closest?.('.is-na') as HTMLElement | null; if (na && na.title) $('info').textContent = na.title })
+
 async function loadRoot() {
   const r = await getJson(`/api/trav/root?db=${encodeURIComponent(db)}`)
   if (!r.ok) { root = null; $('info').textContent = `${db}: .trav が無い（${r.status}）`; draw(); return }
-  root = await r.json(); view = [0, root!.R - 1]; hist = []
+  root = await r.json(); view = [0, root!.R - 1]; hist = []; applyNA()
   const vq = PARAMS.get('view'); if (vq) { const [a, b] = vq.split('-').map(Number); if (Number.isFinite(a) && Number.isFinite(b)) view = [Math.max(0, a), Math.min(root!.R - 1, b)]; userMoved = true }   /* URL の範囲は寄せる（10-28: 全景のまま絞られて真っ白） */
   atomCum = []; let c = 0; for (const a of root!.atoms) { atomCum.push(c); c += a.bp }
   const refHid = (root as any).refHid as number | undefined   // 参照（種）の株を先頭に（11-05: 以前は GRCh38/CHM13 などの名前で決め打ち）
@@ -410,7 +427,6 @@ function updateNav() {
   up.disabled = i <= 0; up.title = i > 0 ? `${RUNG_NAME[RUNG_ORDER[i - 1]]}の段へ（浅く）` : 'いちばん浅い段'
   const nx = RUNG_ORDER[i + 1]; const why = nx ? rungWhy(nx) : 'いちばん深い段'; dn.disabled = !!why; dn.title = why ? `使えない: ${why}` : `${RUNG_NAME[nx]}の段へ（深く）`
   if (root) { const b0 = bpOfX(view[0]), b1 = bpOfX(view[1] + 1); const full = view[0] <= 0 && view[1] >= root.R - 1; const rg = document.getElementById('tv_rng'); if (rg) rg.textContent = `範囲 ${full ? '全体' : b1 - b0 < 1e6 ? `${(b0 / 1e6).toFixed(3)}–${(b1 / 1e6).toFixed(3)} Mb` : `${fmtbp(b0)}–${fmtbp(b1)}`}（${fmtbp(b1 - b0)}${cols?.nleaf != null && wantCols() ? `・葉 ${fmt(cols.nleaf)}` : ''}）` }
-  $('lanereads').style.display = (root as any)?.hasReads ? '' : 'none'
   ;($('back') as HTMLButtonElement).disabled = !hist.length && !base; ($('wide') as HTMLButtonElement).disabled = !!root && view[0] <= 0 && view[1] >= root.R - 1
 }
 function goRung(t: Rung) {
