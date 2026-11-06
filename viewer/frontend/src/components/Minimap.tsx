@@ -15,6 +15,10 @@ const OVERVIEW_H     = 55
 const CONTEXT_H      = 110
 const CONTEXT_OFFSET = 3    // currentLayer - N をコンテキストレイヤとする
 const CONTEXT_SCALE  = 4    // 中心 ± N × ビューポート幅を表示範囲とする
+// 下段（周辺マップ）を出すズーム倍率（グラフ全体 ÷ 表示範囲、縦横の小さい方）。11-06: 以前は layer > 3 で出しており、
+// 小さなグラフでは殆ど拡大していなくても二段になっていた。出し入れのちらつきを避けるため消す側は少し低く（履歴つき）
+const CTX_ZOOM_ON    = 12
+const CTX_ZOOM_OFF   = 9
 
 // ── 座標変換 ──────────────────────────────────────────────────────────────
 // アスペクト比を保って world 矩形を canvas に収める（x/y 同一スケール＋センタリング）。
@@ -288,6 +292,15 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
 
   const [pendingTarget, setPendingTarget] = useState<{ x: number; y: number } | null>(null)
 
+  // ズーム倍率（グラフ全体の範囲 ÷ 表示範囲）。全体の範囲が届く前は 1 とみなす
+  const ob = ovBounds.current
+  const zoom = ovReady.current
+    ? Math.min((ob.x2 - ob.x1) / Math.max(1e-12, viewport.x2 - viewport.x1), (ob.y2 - ob.y1) / Math.max(1e-12, viewport.y2 - viewport.y1))
+    : 1
+  const showCtxRef = useRef(false)
+  const showCtx = zoom >= (showCtxRef.current ? CTX_ZOOM_OFF : CTX_ZOOM_ON)
+  showCtxRef.current = showCtx
+
   useEffect(() => { targetRef.current = pendingTarget }, [pendingTarget])
 
   // ── 描画関数 ─────────────────────────────────────────────────────────
@@ -364,7 +377,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     if (collapsed) return
     rebuildOv(); rebuildCtx()
     redrawOv(); redrawCtx()
-  }, [ovH, collapsed])
+  }, [ovH, collapsed, showCtx])
 
   // ── ビューポート/レイヤ変化時: コンテキスト更新判定 + 再描画 ────────────
   useEffect(() => {
@@ -373,7 +386,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       || sel !== ctxSelRef.current
       || !inMiddle50(viewport, ctxRect.current, ovReady.current ? ovBounds.current : undefined)
 
-    if (needsNewData && !ctxBusy.current) {
+    if (showCtx && needsNewData && !ctxBusy.current) {
       const newRect = makeContextRect(viewport, ovReady.current ? ovBounds.current : undefined)
       ctxPendingRect.current = newRect
       ctxLayerRef.current    = newCtxLayer
@@ -417,7 +430,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     // ノード数に依らず O(1)（以前はここで全ノードを描き直していた）。
     redrawOv()
     redrawCtx()
-  }, [viewport, layer, dbFile, sel, pendingTarget, ctxRetry])
+  }, [viewport, layer, dbFile, sel, pendingTarget, ctxRetry, showCtx])
 
   // ── クリックハンドラ ──────────────────────────────────────────────────
   function handleCanvasClick(
@@ -470,11 +483,11 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
         onClick={e => { if (ovRef.current) handleCanvasClick(ovRef.current, ovBounds.current, e) }}
       />
 
-      {/* コンテキストマップ: layer 4以上のみ表示 */}
-      {layer > CONTEXT_OFFSET && (
+      {/* コンテキストマップ: ズーム倍率が CTX_ZOOM_ON 以上のときだけ表示 */}
+      {showCtx && (
         <>
           <div style={{ ...labelStyle, borderTop: '1px solid #e9ecef' }}>
-            layer {layer - CONTEXT_OFFSET}
+            周辺（×{Math.round(zoom)}）· layer {Math.max(0, layer - CONTEXT_OFFSET)}
           </div>
           <canvas
             ref={ctxRef}
