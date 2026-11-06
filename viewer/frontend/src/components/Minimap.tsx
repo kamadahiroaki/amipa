@@ -14,6 +14,7 @@ const MINIMAP_W      = 180
 const OVERVIEW_H     = 55
 const CONTEXT_H      = 110
 const CONTEXT_OFFSET = 3    // currentLayer - N をコンテキストレイヤとする
+const VP_MIN_PX      = 12   // 現在位置の枠がこれより小さいと十字の点線を足す（11-06、老眼でも見える目印）
 const CONTEXT_SCALE  = 4    // 中心 ± N × ビューポート幅を表示範囲とする
 // 下段（周辺マップ）を出すズーム倍率（グラフ全体 ÷ 表示範囲、縦横の小さい方）。11-06: 以前は layer > 3 で出しており、
 // 小さなグラフでは殆ど拡大していなくても二段になっていた。出し入れのちらつきを避けるため消す側は少し低く（履歴つき）
@@ -222,14 +223,30 @@ function composite(
   const p1 = w2c(vp.x1, vp.y1, worldRect, cw, ch)
   const p2 = w2c(vp.x2, vp.y2, worldRect, cw, ch)
   const bw = Math.max(2, p2.x - p1.x)
-  const bh = Math.max(1, p2.y - p1.y)
+  const bh = Math.max(2, p2.y - p1.y)
   ctx.globalAlpha = 0.12
   ctx.fillStyle = '#e03131'
   ctx.fillRect(p1.x, p1.y, bw, bh)
-  ctx.globalAlpha = 0.9
-  ctx.strokeStyle = '#e03131'
-  ctx.lineWidth = 1.5
+  // 11-06: 線 2 px＋外側に白い縁（濃い灰のノードの上でもコントラストを保つ）。以前は 1.5 px・最小 2×1 px で、拡大すると点になった
+  ctx.globalAlpha = 1
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 4
   ctx.strokeRect(p1.x, p1.y, bw, bh)
+  ctx.strokeStyle = '#e03131'; ctx.lineWidth = 2
+  ctx.strokeRect(p1.x, p1.y, bw, bh)
+  // 枠が小さい（どちらかの辺が VP_MIN_PX 未満）ときは、枠を実寸のまま、中心を通る十字の点線をミニマップの端から端まで引く（枠の周り GAP は空ける）。
+  //   枠を大きく描くと表示範囲を実際より広く見せるので、大きさは変えずに位置だけ目立たせる
+  if (bw < VP_MIN_PX || bh < VP_MIN_PX) {
+    const cx = p1.x + bw / 2, cy = p1.y + bh / 2, GAP = 5
+    const segs: [number, number, number, number][] = [
+      [0, cy, p1.x - GAP, cy], [p1.x + bw + GAP, cy, cw, cy],
+      [cx, 0, cx, p1.y - GAP], [cx, p1.y + bh + GAP, cx, ch]]
+    ctx.save(); ctx.setLineDash([4, 3]); ctx.lineCap = 'butt'
+    for (const [lw, col] of [[3.5, 'rgba(255,255,255,0.9)'], [1.5, '#e03131']] as [number, string][]) {
+      ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath()
+      for (const [x1, y1, x2, y2] of segs) { if (Math.hypot(x2 - x1, y2 - y1) < 1) continue; ctx.moveTo(x1, y1); ctx.lineTo(x2, y2) }
+      ctx.stroke() }
+    ctx.restore()
+  }
 
   if (target) {
     const tp = w2c(target.x, target.y, worldRect, cw, ch)
