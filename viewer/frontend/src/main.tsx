@@ -1,4 +1,5 @@
 import ReactDOM from 'react-dom/client'
+import './ui.css'
 import App from './App'
 import ErrorBoundary from './ErrorBoundary'
 

@@ -477,6 +477,13 @@ export default function App() {
   const labelsMenuRef = useRef<HTMLDivElement>(null)
   // Export ポップオーバー（8.3 持ち出せる出力: 部分グラフ GFA / ノード BED）。
   const [showExportMenu, setShowExportMenu] = useState(false)
+  // 11-06 UI 見直し: 「表示」メニュー・設定の引き出し・開発用の表示（URL に ?dev=1）
+  const [showViewMenu, setShowViewMenu] = useState(false)
+  const viewMenuRef = useRef<HTMLDivElement>(null)
+  const [showSettings, setShowSettings] = useState(false)
+  const devMode = useMemo(() => { try { return new URLSearchParams(window.location.search).has('dev') } catch { return false } }, [])
+  // Traversals のブロックの数（設定の引き出しから。パネルへは travApiRef で渡す）
+  const [travNBlocks, setTravNBlocksRaw] = useState<number>(() => { try { const v = Number(localStorage.getItem('amipa.trav.nblk')); if (v >= 1 && v <= 500) return v } catch { /* 保存できない環境 */ } return 30 })
   const exportMenuRef = useRef<HTMLDivElement>(null)
 
   // パスパネル
@@ -557,6 +564,8 @@ export default function App() {
         setShowLabelsMenu(false)
       if (!exportMenuRef.current?.contains(e.target as Node))
         setShowExportMenu(false)
+      if (!viewMenuRef.current?.contains(e.target as Node))
+        setShowViewMenu(false)
     }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
@@ -967,6 +976,7 @@ export default function App() {
   useEffect(() => { const p = pendingHapsRef.current; if (!p || pathGroups.length === 0) return; pendingHapsRef.current = null; applyHaps(p.haps, p.on) }, [pathGroups, applyHaps])
   // Traversals パネル: グラフをその範囲のノード集合に絞る（葉の名前。GraphCanvas が /api/graph/subgraph の POST で層に直す）、グラフ → パネル（locateNodes / openNames）
   const travApiRef = useRef<TravHandle | null>(null)
+  const setTravNBlocks = useCallback((v: number) => { setTravNBlocksRaw(v); try { localStorage.setItem('amipa.trav.nblk', String(v)) } catch { /* 保存できない環境 */ } travApiRef.current?.setNBlocks(v) }, [])
   const pendingTravState = useRef<any>(null)   // Share view の復元: パネルが用意できたら適用する Traversals の状態
   const [trvColors, setTrvColors] = useState<BlockColorMap | null>(null)
   const onTravFilter = useCallback((sel: { names: string[] } | null) => {
@@ -1346,27 +1356,11 @@ export default function App() {
     setShowExportMenu(false)
   }
 
-  // ── ツールバー共通の描画ヘルパ（多数の同型ボタンを DRY 化）──
-  // トグルボタン: active でアクセント色に反転。
-  const toggleBtn = (active: boolean, onClick: () => void, label: React.ReactNode,
-                     accent = '#1971c2', bg = '#e7f5ff', title?: string) => (
-    <button onClick={onClick} title={title} style={{
-      fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px', border: '1px solid',
-      borderColor: active ? accent : '#adb5bd', borderRadius: 4,
-      background: active ? bg : '#f8f9fa', color: active ? accent : '#495057',
-      cursor: 'pointer', fontWeight: active ? 600 : 400, whiteSpace: 'nowrap',
-    }}>{label}</button>
-  )
-  // グループ間の細い縦仕切り（折り返しても関係が読み取れるように）。
-  const divider = () => <span style={{ alignSelf: 'stretch', width: 1, background: '#e9ecef', margin: '2px 0' }} />
-  // Labels ポップオーバー内の 1 行トグル。
-  const labelRow = (label: string, active: boolean, onClick: () => void, title?: string) => (
-    <button onClick={onClick} title={title} style={{
-      display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left',
-      padding: '4px 8px', border: '1px solid', borderColor: active ? '#1971c2' : '#e9ecef',
-      borderRadius: 4, background: active ? '#e7f5ff' : '#fff', color: active ? '#1971c2' : '#495057',
-      cursor: 'pointer', fontFamily: 'sans-serif', fontSize: 13, fontWeight: active ? 600 : 400,
-    }}><span style={{ width: 12, textAlign: 'center' }}>{active ? '✓' : ''}</span>{label}</button>
+  // メニューの 1 行のチェック（11-06 UI 見直し）。on のとき青いチェック
+  const menuCheck = (label: React.ReactNode, on: boolean, onClick: () => void, title?: string) => (
+    <button className={'ui-menu-item' + (on ? ' is-on' : '')} role="menuitemcheckbox" aria-checked={on} onClick={onClick} title={title}>
+      <span className="ui-check">{on ? '✓' : ''}</span><span>{label}</span>
+    </button>
   )
   const anyLabelOn = showNodeNames || showNodeBp || seqMode || showRefPos || coverageTextMode || cnvMode !== 'off'
 
@@ -1375,616 +1369,360 @@ export default function App() {
   )
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', background: '#f0f2f5' }}>
+    <div className="ui-root" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh', background: 'var(--ui-bg)' }}>
 
-      {/* ── Toolbar ───────────────────────────────────────────────── */}
-      {/* ボタンが多く1行に収まらない時は、48px 固定で下（canvas 上）にはみ出すのではなく
-          折り返して縦に伸ばす（flexWrap + minHeight, 固定 height を外す）。はみ出したボタンの
-          当たり判定がグラフを覆ってノードを掴めなくなる不具合を防ぐ。
-          （overflow:hidden は検索候補ドロップダウンを切ってしまうので付けない） */}
-      <div style={{
-        minHeight: 48, flexShrink: 0,
-        background: '#ffffff', borderBottom: '1px solid #e0e0e0',
-        display: 'flex', alignItems: 'center', flexWrap: 'wrap', padding: '4px 16px', gap: 8,
-        position: 'relative', zIndex: 50,
-      }}>
-        <label htmlFor="db-select" style={{ fontFamily: 'sans-serif', fontSize: 14, color: '#333', whiteSpace: 'nowrap' }}>
-          Database:
-        </label>
-        <select
-          id="db-select"
-          value={selectedDb ?? ''}
-          onChange={e => setSelectedDb(e.target.value)}
-          style={{ fontFamily: 'sans-serif', fontSize: 14, padding: '3px 8px' }}
-        >
+      {/* ── 上部バー（11-06 UI 見直し 案 A）─────────────────────────────
+          常に出すのは DB・検索・表示/ラベル/書き出しのメニュー・パネルの切り替え・設定・使い方だけ。
+          細かい調整は「表示」「ラベル」のメニューと設定の引き出し（⚙）へ、版や内部の状態は設定の「このアプリについて」と ?dev=1 へ。
+          ★折り返しても canvas の上に被らないよう、固定の高さにせず縦に伸ばす（以前の不具合の対策を引き継ぐ） */}
+      <header className="ui-topbar">
+        <span className="ui-brand">AMIPA</span>
+        <label htmlFor="db-select" className="ui-sr">データベース</label>
+        <select id="db-select" className="ui-select" value={selectedDb ?? ''} onChange={e => setSelectedDb(e.target.value)}
+          title="表示するデータベース">
           {databases.map(db => <option key={db} value={db}>{db}</option>)}
         </select>
-
-        {/* 版表示: viewer(git rev) と 選択 DB のビルド由来 + 機能フラグ。staleness/機能有無の確認用。 */}
         {versionInfo && (versionInfo.api_level ?? 0) < API_LEVEL_REQUIRED && (
-          <span style={{ fontSize: 11, color: '#fff', background: '#e03131', padding: '2px 8px', borderRadius: 4, whiteSpace: 'nowrap' }}
-            title={`この画面は backend の API 段階 ${API_LEVEL_REQUIRED} 以上を要求しますが、繋いでいる配信は ${versionInfo.api_level ?? 0} です。古い配信ジョブに繋いでいるか、backend を再起動していません（amipa-serve status で確認し restart）`}>
-            ⚠ backend が古い（API {versionInfo.api_level ?? 0} &lt; {API_LEVEL_REQUIRED}）: 配信ジョブを確認
+          <span className="ui-chip ui-chip-danger"
+            title={`この画面は backend の API 段階 ${API_LEVEL_REQUIRED} 以上を要求しますが、繋いでいる配信は ${versionInfo.api_level ?? 0} です。古い配信に繋いでいるか、backend を再起動していません。ページを再読み込みしても直らなければ配信を上げ直してください`}>
+            ⚠ 配信が古い
           </span>
         )}
-        {versionInfo && (
-          <span style={{ fontFamily: 'monospace', fontSize: 11, color: '#868e96', whiteSpace: 'nowrap',
-            display: 'inline-flex', alignItems: 'center', gap: 8 }}
-            title={'viewer=git rev / db=ビルド時刻・emitter rev・含む機能(seq/inv/mult)'
-              + (versionInfo.db?.rtree_built_at
-                ? `\nR-Tree(描画の高速経路が読む実体): ${versionInfo.db.rtree_built_at}`
-                  + `\nrad 列: ${versionInfo.db.rad
-                    ? 'あり (radius は真値)'
-                    : 'なし → radius を矩形から導出＝深層で過大。ノード/エッジがリボンに対してずれる'}`
-                : '')}>
-            <span>viewer <b style={{ color: '#495057' }}>{versionInfo.viewer}</b></span>
-            {/* 使い方。★この版に固定した URL を作る（docsLink.ts）。動いているビルドと
-                説明が食い違わないため。外部サイトが開くので別タブにする。 */}
-            <a
-              href={docsUrl('viewer', versionInfo.viewer)}
-              target="_blank" rel="noreferrer"
-              title="使い方を開く（この版のドキュメント。GitHub が別タブで開きます）"
-              style={{
-                fontFamily: 'sans-serif', fontSize: 11, lineHeight: '14px', fontWeight: 700,
-                width: 16, height: 16, borderRadius: 8, textAlign: 'center',
-                border: '1px solid #adb5bd', color: '#495057', textDecoration: 'none',
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              }}
-            >?</a>
-            {/* ★速いときは何も出さない（常時出ていると意味を失う）。遅くなる設定を
-                自分で入れている間だけ、**何が原因で・どうすれば戻るか**を出す。 */}
-            {!fastPath.on && (
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6,
-                color: '#e8590c', fontWeight: 600, fontFamily: 'sans-serif' }}
-                title={'この設定はノード 1 個ずつの詳細を読む必要があるため、'
-                  + '大きいグラフの深いズームでは表示に時間がかかります。'
-                  + '解除すると描画用の索引だけを読む速い経路に戻ります。'}>
-                ⚠ 表示が遅くなる設定:
-                {fastPath.cause === 'nodebp' ? 'Node bp' : 'Proximity'}
-                <button
-                  onClick={() => { if (fastPath.cause === 'nodebp') setShowNodeBp(false)
-                                   else { setFloodMode(false); setFloodResult(null); setFloodSeedComp(null) } }}
-                  style={{ fontSize: 11, padding: '1px 8px', cursor: 'pointer', borderRadius: 3,
-                    border: '1px solid #e8590c', background: '#fff4e6', color: '#e8590c',
-                    fontFamily: 'sans-serif', fontWeight: 600 }}>
-                  解除して速くする
-                </button>
-              </span>
-            )}
-            {versionInfo.db && (
-              <span>db <b style={{ color: '#495057' }}>{versionInfo.db.built_at ?? (versionInfo.db.mtime?.slice(0, 16).replace('T', ' ') ?? '?')}</b>
-                {versionInfo.db.emitter_rev ? ` @${versionInfo.db.emitter_rev}` : ''}
-                {/* ★R-Tree は built_at とは別に作り直されることがある（hapidx だけ回した場合）。
-                    描画の高速経路が読む実体はこちらなので、built_at と食い違うときだけ併記する。
-                    rad 無し = radius を矩形から導出＝深層で相対 174% 過大なので赤で警告する。 */}
-                {versionInfo.db.rtree_built_at
-                  && versionInfo.db.rtree_built_at !== versionInfo.db.built_at && (
-                  <> rtree <b style={{ color: '#495057' }}>{versionInfo.db.rtree_built_at}</b></>
-                )}
-                {versionInfo.db.rad === false && <b style={{ color: '#c92a2a' }}> ⚠rad無</b>}
-                {/* プリウォーム: DB を開くと backend が順読みでページキャッシュに載せる。
-                    終わるまでビューポート取得は cold（1 枚 1-4 秒）、終われば 9ms 台になる。 */}
-                {/* アノテーション辞書の取得中。WG では cold で 14 秒かかるうえ backend が
-                    同期実行なのでその間ほぼ無反応になる。黙って固まらないよう明示する。 */}
-                {annotLoading && (
-                  <b style={{ color: '#e8590c' }} title={
-                    'アノテーション辞書を取得しています。WG では十数秒かかることがあります。'}>
-                    {' ⏳annot'}
-                  </b>
-                )}
-                {prewarm && (prewarm.running || prewarm.finished) && (
-                  <b style={{ color: prewarm.finished ? '#2b8a3e' : '#e8590c' }} title={
-                    'DB ファイルを順読みしてページキャッシュに載せています。\n'
-                    + 'これが終わるまで表示範囲の取得は cold（1 枚あたり 1〜4 秒）で、\n'
-                    + '終わると同じ範囲が 10 ミリ秒程度になります（実測 98 倍）。\n'
-                    + '進行中は他の取得が 1.4 倍ほど遅くなります。'}>
-                    {prewarm.finished
-                      ? ' ✓warm'
-                      : ` ⏳warm ${Math.floor(100 * prewarm.done / Math.max(1, prewarm.total))}%`
-                        + (prewarm.rate > 0 ? ` ${(prewarm.rate / 1e9).toFixed(1)}GB/s` : '')}
-                  </b>
-                )}
-                {' ['}{(['seq', 'inv', 'mult'] as const).filter(f => versionInfo.db!.features[f]).join(' ') || '—'}{']'}
-              </span>
-            )}
+        {/* ★速いときは何も出さない。遅くなる設定を自分で入れている間だけ、原因と戻し方を出す */}
+        {!fastPath.on && (
+          <span className="ui-chip ui-chip-warn"
+            title="この設定はノード 1 個ずつの詳細を読むので、大きいグラフの深い拡大では表示に時間がかかる。解除すると描画用の索引だけを読む速い経路に戻る">
+            表示が遅くなる設定: {fastPath.cause === 'nodebp' ? 'ノードの bp' : '近さの色分け'}
+            <button className="ui-link" onClick={() => {
+              if (fastPath.cause === 'nodebp') setShowNodeBp(false)
+              else { setFloodMode(false); setFloodResult(null); setFloodSeedComp(null) } }}>解除</button>
+          </span>
+        )}
+        {annotLoading && <span className="ui-chip" title="注釈の辞書を取得している。全ゲノムでは十数秒かかることがある">注釈を読み込み中…</span>}
+        {prewarm && prewarm.running && !prewarm.finished && (
+          <span className="ui-chip" title={'DB ファイルを順に読んでキャッシュに載せている。終わるまで表示範囲の取得が遅い（1 枚 1〜4 秒）'}>
+            DB を準備中 {Math.floor(100 * prewarm.done / Math.max(1, prewarm.total))}%
           </span>
         )}
 
-        {/* 統合 Find: 検索対象（Node / Position / Gene）を左のセレクタで切替、入力・Go は共用 */}
-        <div ref={searchWrapRef} style={{ position: 'relative', marginLeft: 16, display: 'flex', gap: 0 }}>
-          <select
-            value={findScope}
-            onChange={e => { setFindScope(e.target.value as 'node' | 'pos' | 'gene'); setShowSearchDropdown(false); setSearchStatus('idle') }}
-            title="検索対象を選択"
-            style={{ fontFamily: 'sans-serif', fontSize: 13, padding: '4px 6px',
-              border: '1px solid #adb5bd', borderRight: 'none', borderRadius: '4px 0 0 4px',
-              background: '#f1f3f5', color: '#495057', outline: 'none', cursor: 'pointer' }}
-          >
-            <option value="node">Node</option>
-            {refposAvail && <option value="pos">Position</option>}
-            {geneAvail && <option value="gene">Gene</option>}
+        {/* 検索: 種類（ノード／位置／遺伝子）＋入力＋検索を 1 つの枠に */}
+        <div ref={searchWrapRef} className="ui-search">
+          <label htmlFor="find-scope" className="ui-sr">検索の種類</label>
+          <select id="find-scope" value={findScope}
+            onChange={e => { setFindScope(e.target.value as 'node' | 'pos' | 'gene'); setShowSearchDropdown(false); setSearchStatus('idle') }}>
+            <option value="node">ノード</option>
+            {refposAvail && <option value="pos">位置</option>}
+            {geneAvail && <option value="gene">遺伝子</option>}
           </select>
-          <input
-            type="text"
+          <label htmlFor="find-q" className="ui-sr">検索語</label>
+          <input id="find-q" type="text"
             list={findScope === 'gene' ? 'geneGotoList' : undefined}
-            placeholder={findScope === 'node' ? 'Search node name…'
-              : findScope === 'pos' ? 'chr:bp (e.g. chrY:12,300,000)'
-              : 'Gene name (e.g. UTY)'}
+            placeholder={findScope === 'node' ? 'ノード名' : findScope === 'pos' ? 'chr:bp（例 chrY:12,300,000）' : '遺伝子名（例 UTY）'}
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && submitFind()}
-            style={{ fontFamily: findScope === 'pos' ? 'monospace' : 'sans-serif', fontSize: 13,
-              padding: '4px 10px', width: 200,
-              border: '1px solid #adb5bd', borderRadius: 0, outline: 'none' }}
-          />
-          <button
-            onClick={submitFind}
-            disabled={searchStatus === 'searching'}
-            style={{ padding: '4px 10px', fontFamily: 'sans-serif', fontSize: 13,
-              background: '#f1f3f5', border: '1px solid #adb5bd', borderLeft: 'none',
-              borderRadius: '0 4px 4px 0', cursor: searchStatus === 'searching' ? 'default' : 'pointer',
-              color: '#495057', whiteSpace: 'nowrap' }}
-          >
-            {searchStatus === 'searching' ? '…' : 'Go'}
-          </button>
-          {/* 補完候補は入力に応じて動的に作る。以前は「非 ENSG の先頭 3000 件」を固定で出しており、
-              WG(非 ENSG 43,440 件)では **候補の約 93% が出てこなかった**（正確な名前を打てば当たる
-              ので機能不全ではないが、実質「知っている遺伝子しか引けない」状態だった）。
-              入力で絞ってから上位 GENE_MENU_MAX 件だけ描くので、全件を対象にしつつ DOM は軽い。 */}
+            style={{ fontFamily: findScope === 'pos' ? 'var(--ui-mono)' : undefined }} />
+          <button onClick={submitFind} disabled={searchStatus === 'searching'}>{searchStatus === 'searching' ? '…' : '検索'}</button>
+          {/* 補完候補は入力で絞ってから上位 GENE_MENU_MAX 件だけ描く（全件を対象にしつつ DOM は軽い） */}
           {geneAvail && findScope === 'gene' && (
             <datalist id="geneGotoList">
-              {matchGenes(searchQuery).map(g => (
-                <option key={g.name} value={g.name} />
-              ))}
+              {matchGenes(searchQuery).map(g => <option key={g.name} value={g.name} />)}
             </datalist>
           )}
-          {searchStatus === 'notfound' && (
-            <span style={{ marginLeft: 6, fontSize: 12, color: '#e03131',
-              fontFamily: 'sans-serif', whiteSpace: 'nowrap', alignSelf: 'center' }}>
-              Not found
-            </span>
-          )}
+          {searchStatus === 'notfound' && <span className="ui-search-status">見つからない</span>}
           {findScope === 'node' && showSearchDropdown && searchResults.length > 0 && (
-            <div style={{
-              position: 'absolute', top: '100%', left: 0, marginTop: 2, zIndex: 200,
-              background: '#fff', border: '1px solid #dee2e6', borderRadius: 4,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.12)', minWidth: 240, maxHeight: 240, overflowY: 'auto',
-            }}>
+            <div className="ui-menu ui-menu-left" style={{ minWidth: 260, maxHeight: 260 }}>
               {searchResults.map(n => (
-                <div
-                  key={n.id}
-                  onMouseDown={() => handleSearchSelect(n)}
-                  style={{ padding: '5px 12px', fontFamily: 'sans-serif', fontSize: 13, cursor: 'pointer',
-                    borderBottom: '1px solid #f1f3f5', color: '#333',
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
-                  onMouseEnter={e => (e.currentTarget.style.background = '#f8f9fa')}
-                  onMouseLeave={e => (e.currentTarget.style.background = '')}
-                >
-                  <span style={{ wordBreak: 'break-all' }}>{n.node_name}</span>
-                  {n.layer !== undefined && (
-                    <span style={{ fontSize: 11, color: '#adb5bd', whiteSpace: 'nowrap' }}>
-                      L{n.layer}
-                    </span>
-                  )}
-                </div>
+                <button key={n.id} className="ui-menu-item" onMouseDown={() => handleSearchSelect(n)}>
+                  <span style={{ flex: 1, wordBreak: 'break-all' }}>{n.node_name}</span>
+                  {devMode && n.layer !== undefined && <span style={{ fontSize: 11, color: 'var(--ui-faint)' }}>L{n.layer}</span>}
+                </button>
               ))}
             </div>
           )}
         </div>
 
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', rowGap: 6 }}>
-          {/* ── Edge width: エッジ太さに乗せる量（排他・一度に1つ）── */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'sans-serif', fontSize: 13 }}>
-            <span style={{ color: '#495057', whiteSpace: 'nowrap' }}
-              title="エッジの太さに乗せる量を1つ選ぶ。Paths=通過ハプロタイプ数（パス多重度）/ Reads=ノードをまたぐリード数（read_support）">Edge width</span>
-            <div style={{ display: 'flex', border: '1px solid #adb5bd', borderRadius: 4, overflow: 'hidden' }}>
-              {([
-                { key: 'off' as const, label: 'Off', accent: '#495057', show: true,
-                  hint: '' },
-                { key: 'paths' as const, label: 'Paths', accent: '#0b3d91', show: hbAvail,
-                  hint: 'エッジ太さ = 通過ハプロタイプ数（パス多重度 = distinct haplotype 数）。太い=多い。ノード色は不変。' },
-                { key: 'reads' as const, label: 'Reads', accent: '#e67700', show: true,
-                  hint: 'エッジ太さ = ノードをまたぐリード数（read_support）。「px,reads」で最大幅と基準リード数を指定（例 10,100 = 100リードで10px）。' },
-              ].filter(s => s.show)).map((s, i) => {
-                const active = edgeWidthMode === s.key
-                return (
-                  <button key={s.key}
-                    onClick={() => { setEdgeWidthMode(active ? 'off' : s.key); if (!active && s.hint) showHint(s.hint) }}
-                    title={s.hint || 'エッジ太さを使わない'}
-                    style={{ padding: '4px 12px', border: 'none', borderLeft: i === 0 ? 'none' : '1px solid #dee2e6',
-                      fontFamily: 'sans-serif', fontSize: 13, cursor: 'pointer',
-                      background: active ? s.accent : '#f8f9fa', color: active ? '#fff' : '#495057',
-                      fontWeight: active ? 600 : 400 }}>
-                    {s.label}
-                  </button>
-                )
-              })}
-            </div>
-            {edgeWidthMode === 'reads' && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                <span style={{ color: '#e67700', whiteSpace: 'nowrap' }}>px,reads:</span>
-                <input
-                  type="text"
-                  value={detailParamInput}
-                  onChange={e => setDetailParamInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') applyDetailParams() }}
-                  onBlur={applyDetailParams}
-                  style={{ width: 72, padding: '3px 6px', fontFamily: 'monospace', fontSize: 12,
-                    border: '1px solid #e67700', borderRadius: 4, outline: 'none',
-                    background: '#fff4e6', color: '#e67700' }}
-                />
-              </span>
-            )}
-          </div>
-          {divider()}
-          {/* ── Tools: 選択・近接・アライン連動 ── */}
-          {toggleBtn(nodeGreyMode,
-            () => setNodeGreyMode(m => { if (!m) showHint('パスを選択した状態でONにすると、パスに含まれないノードをグレー表示します。'); return !m }),
-            'Dim off-path', '#1971c2', '#e7f5ff', 'パス選択時、パスに含まれないノードを淡色化する')}
-          {toggleBtn(floodMode,
-            () => setFloodMode(m => {
-              const nm = !m
-              if (!nm) { setFloodResult(null); setFloodSeedComp(null) }
-              else showHint('ノードをクリックすると、そこからグラフ距離が近いグリフを着色します（濃青=近い→淡青=D手、同一成分の未到達=青灰＝連結だが遠い、別成分=灰＝ただ近接）。融合か近接かの確認に。背景クリックで解除。')
-              return nm
-            }),
-            'Proximity', '#1971c2', '#e7f5ff', 'ONにしてノードをクリック→グラフ距離が近いグリフを着色（融合か近接かの確認）')}
-          {floodMode && (
-            <span style={{ fontFamily: 'sans-serif', fontSize: 12, color: '#495057', display: 'flex', alignItems: 'center', gap: 4 }}>
-              距離
-              <input type="number" min={1} max={50} step={1} value={floodHopsInput}
-                title="到達とみなす最大手数 D（この層の super-edge の hop 数）。Enter/フォーカス外で確定"
-                onChange={e => setFloodHopsInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-                onBlur={() => {
-                  // 確定時のみ 1 回だけ再描画＋再フラッド（毎ティック再描画による WebGL コンテキスト喪失=黒画面を防ぐ）。
-                  const v = Math.max(1, Math.min(50, parseInt(floodHopsInput, 10) || 10))
-                  setFloodHops(v); setFloodHopsInput(String(v))
-                  // D は BFS 深さ＝到達集合が変わるので、直近クリックノードから再フラッド（未クリックなら次クリックで反映）。
-                  if (floodMode && selectedNode && selectedDb) {
-                    fetchFlood(selectedDb, mapLayer, selectedNode.node_name, v).then(r => {
-                      if (r) { setFloodResult(new Map(r.reached.map(x => [x.name, x.hop]))); setFloodSeedComp(selectedNode.comp_id ?? null) }
-                    })
-                  }
-                }}
-                style={{ width: 44, fontSize: 12, padding: '2px 4px' }} />
-              手
-            </span>
-          )}
-          {(bandAvail || regionAvail || geneAvail) && divider()}
-          {/* ── Color (node fill): 既定=ハプロタイプ / アノテ着色（Band/Region/Gene × Color/Label）── */}
-          {(bandAvail || regionAvail || geneAvail) && (() => {
-            // アノテのトグルを Band/Region/Gene 列 × Color(塗り)/Label(テキスト) 行のグリッドに集約。
-            // Color 行は node fill が単値なので相互排他。Label 行は併用可。
-            const cols = ([
-              bandAvail && { name: 'Band', accent: '#c92a2a',
-                fill: [bandMode, () => setBandMode(m => { const v = !m; if (v) { setRegionMode(false); setGeneMode(false) } return v })] as const,
-                text: [showBandLabels, () => setShowBandLabels(v => !v)] as const,
-                cT: 'Color nodes by cytoBand stain (acen = centromere)', tT: 'Overlay cytoBand names (e.g. Yq11.221)' },
-              regionAvail && { name: 'Region', accent: '#e8590c',
-                fill: [regionMode, () => setRegionMode(m => { const v = !m; if (v) { setBandMode(false); setGeneMode(false) } return v })] as const,
-                text: [showRegionMarks, () => setShowRegionMarks(v => !v)] as const,
-                cT: 'Color nodes by CHM13 region (centromere / satellite)', tT: 'Overlay region landmark names' },
-              geneAvail && { name: 'Gene', accent: '#6741d9',
-                fill: [geneMode, () => setGeneMode(m => { const v = !m; if (v) { setBandMode(false); setRegionMode(false) } return v })] as const,
-                text: [showGeneLabels, () => setShowGeneLabels(v => !v)] as const,
-                cT: 'Color nodes by gene density (coarse-zoom overview)', tT: 'Overlay gene names (strand arrow)' },
-            ].filter(Boolean)) as { name: string; accent: string; fill: readonly [boolean, () => void]; text: readonly [boolean, () => void]; cT: string; tT: string }[]
-            const cellBtn = (active: boolean, onClick: () => void, accent: string, title: string) => (
-              <button onClick={onClick} title={title} style={{
-                width: '100%', fontFamily: 'sans-serif', fontSize: 12, padding: '1px 0', border: '1px solid',
-                borderColor: active ? accent : '#ced4da', borderRadius: 3, lineHeight: '15px',
-                background: active ? accent : '#f8f9fa', color: active ? '#fff' : '#adb5bd',
-                cursor: 'pointer', fontWeight: 700 }}>{active ? '✓' : '·'}</button>
-            )
-            const hdr: React.CSSProperties = { fontSize: 10, textAlign: 'center', fontWeight: 700 }
-            const rl: React.CSSProperties = { fontSize: 10, color: '#868e96', paddingRight: 4, whiteSpace: 'nowrap' }
-            return (
-              <div style={{ display: 'inline-grid', gridTemplateColumns: `auto repeat(${cols.length}, 42px)`,
-                gap: '2px 4px', alignItems: 'center', border: '1px solid #dee2e6', borderRadius: 4,
-                padding: '3px 8px', marginLeft: 6 }}
-                title="Annotation tracks — Color row = node fill (exclusive); Label row = text overlays (combinable)">
-                <span style={{ fontSize: 10, color: '#495057', fontWeight: 700 }}>Annot</span>
-                {cols.map(c => <span key={c.name} style={{ ...hdr, color: c.accent }}>{c.name}</span>)}
-                <span style={rl}>Color</span>
-                {cols.map(c => <span key={c.name}>{cellBtn(c.fill[0], c.fill[1], c.accent, c.cT)}</span>)}
-                <span style={rl}>Label</span>
-                {cols.map(c => <span key={c.name}>{cellBtn(c.text[0], c.text[1], c.accent, c.tT)}</span>)}
-              </div>
-            )
-          })()}
-          {divider()}
-          {/* ── Labels: テキスト重畳をまとめたポップオーバー（併用可）── */}
-          <div ref={labelsMenuRef} style={{ position: 'relative' }}>
-            {toggleBtn(anyLabelOn, () => setShowLabelsMenu(v => !v), 'Labels ▾', '#1971c2', '#e7f5ff',
-              'ノード名・塩基・参照bp・深度数値・CNV などのテキスト重畳をまとめて切替')}
-            {showLabelsMenu && (
-              <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 200,
-                background: '#fff', border: '1px solid #dee2e6', borderRadius: 6,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.12)', padding: 8, display: 'flex',
-                flexDirection: 'column', gap: 6, minWidth: 190 }}>
-                {/* 全ラベル一括サイズ: ref bp・ノード名・遺伝子・バンド等すべてに効く */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#495057',
-                  paddingBottom: 6, borderBottom: '1px solid #f1f3f5' }}>
-                  <span style={{ whiteSpace: 'nowrap', flex: 1 }}>Label size</span>
-                  <button onClick={() => bumpLabelScale(1 / 1.15)} title="小さく"
-                    style={{ width: 22, height: 22, padding: 0, cursor: 'pointer',
-                      border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057' }}>−</button>
-                  <span onClick={() => setLabelScale(1)} title="クリックで標準(1×)に戻す"
-                    style={{ width: 40, textAlign: 'center', cursor: 'pointer', userSelect: 'none',
-                      fontVariantNumeric: 'tabular-nums' }}>{labelScale.toFixed(2)}×</span>
-                  <button onClick={() => bumpLabelScale(1.15)} title="大きく"
-                    style={{ width: 22, height: 22, padding: 0, cursor: 'pointer',
-                      border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057' }}>＋</button>
-                </div>
-                {/* ノード上ラベル(名前/bp/深度)の色と、ノード外へずらすオフセット。ノードに被って読みにくい時に */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#495057' }}>
-                  <span style={{ whiteSpace: 'nowrap', flex: 1 }}
-                    title="ノード上ラベル(名前/bp/深度)の文字色。明度に応じて白/黒のフチが自動で付く">Label color</span>
-                  <div style={{ display: 'flex', gap: 4 }}>
-                    {['#111111', '#ffffff', '#e03131', '#1971c2', '#2f9e44', '#e8590c', '#7048e8'].map(c => {
-                      const sel = labelColor.toLowerCase() === c
-                      return (
-                        <button key={c} onClick={() => setLabelColor(c)} title={c}
-                          style={{ width: 16, height: 16, padding: 0, cursor: 'pointer', borderRadius: 3,
-                            background: c, border: sel ? '2px solid #1971c2' : '1px solid #ced4da',
-                            boxShadow: c === '#ffffff' ? 'inset 0 0 0 1px #dee2e6' : 'none' }} />
-                      )
-                    })}
+        <div className="ui-spacer" />
+
+        <div className="ui-group">
+          {/* ── 表示: 辺の太さ・ノードの色・強調・重ね表示 ── */}
+          <div ref={viewMenuRef} className="ui-menu-wrap">
+            <button className={'ui-btn ui-btn-ghost' + (showViewMenu ? ' is-open' : '')} aria-expanded={showViewMenu}
+              onClick={() => setShowViewMenu(v => !v)}>表示 ▾</button>
+            {showViewMenu && (
+              <div className="ui-menu" style={{ minWidth: 300 }}>
+                <div className="ui-menu-title">辺の太さ</div>
+                <div className="ui-menu-row">
+                  <div className="ui-seg" role="radiogroup" aria-label="辺の太さ">
+                    {([
+                      { key: 'off' as const, label: '一定', show: true, hint: '' },
+                      { key: 'paths' as const, label: '通る株の数', show: hbAvail, hint: '辺の太さ = その辺を通るハプロタイプの数。太い = 多い' },
+                      { key: 'reads' as const, label: 'リード数', show: true, hint: '辺の太さ = その辺をまたぐリードの数' },
+                    ].filter(s => s.show)).map(s => (
+                      <button key={s.key} role="radio" aria-checked={edgeWidthMode === s.key} className={edgeWidthMode === s.key ? 'is-on' : ''}
+                        title={s.hint || '辺の太さを一定にする'}
+                        onClick={() => { setEdgeWidthMode(s.key); if (s.key !== edgeWidthMode && s.hint) showHint(s.hint) }}>{s.label}</button>
+                    ))}
                   </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#495057',
-                  paddingBottom: 6, borderBottom: '1px solid #f1f3f5' }}>
-                  <span style={{ whiteSpace: 'nowrap', flex: 1 }}
-                    title="ノード上ラベルを上方向へずらす px。0=ノード中心、大きくするとノード外へ">Label offset</span>
-                  <button onClick={() => setLabelOffset(v => Math.max(0, v - 6))} title="下げる(ノードへ寄せる)"
-                    style={{ width: 22, height: 22, padding: 0, cursor: 'pointer',
-                      border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057' }}>−</button>
-                  <span onClick={() => setLabelOffset(0)} title="クリックで0(ノード中心)に戻す"
-                    style={{ width: 40, textAlign: 'center', cursor: 'pointer', userSelect: 'none',
-                      fontVariantNumeric: 'tabular-nums' }}>{labelOffset}px</span>
-                  <button onClick={() => setLabelOffset(v => Math.min(120, v + 6))} title="上げる(ノード外へ)"
-                    style={{ width: 22, height: 22, padding: 0, cursor: 'pointer',
-                      border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057' }}>＋</button>
-                </div>
-                {labelRow('Node names', showNodeNames, () => setShowNodeNames(v => !v),
-                  'マップ上のノードにノード名を表示')}
-                {labelRow('Node bp', showNodeBp, () => setShowNodeBp(v => !v),
-                  'ノードの塩基数(bp)を表示。クラスタは配下の合計 bp（必要に応じ K/M 単位）')}
-                {seqAvail && labelRow('Bases (A/C/G/T)', seqMode,
-                  () => setSeqMode(v => { if (!v) showHint('画面内の 1bp ノードにその塩基(A/C/G/T)をノード内表示します。より長い葉はノード選択時に右パネルで配列を確認できます。'); return !v }),
-                  '画面内の小さい葉(現状 1bp)の塩基をノード内に表示。長い葉は選択時のみ右パネル')}
-                {refposAvail && labelRow(`Ref bp position${refKey ? ` (${refKey})` : ''}`, showRefPos,
-                  () => setShowRefPos(v => !v), '参照上の概算 bp 位置を代表ノード近傍にラベル表示')}
-                {labelRow('Depth number', coverageTextMode,
-                  () => setCoverageTextMode(m => { if (!m) showHint('ズームインしてノード幅が20px以上になると、ノード上に深度(リード数)の数値を表示します。'); return !m }),
-                  'ズームイン時、ノード上に深度(リード数)の数値を表示')}
-                {multAvail && (
-                  <>
-                    <span style={{ fontSize: 10, color: '#868e96', paddingTop: 2 }}>Copy number (CNV)</span>
-                    {(['all', 'diff'] as const).map(mode => (
-                      <Fragment key={mode}>
-                        {labelRow(
-                          (mode === 'all' ? 'All units' : 'Diff only') + (cnvMode === mode && cnvSuppressed ? ' ⚠' : ''),
-                          cnvMode === mode,
-                          () => setCnvMode(m => {
-                            const next = m === mode ? 'off' : mode
-                            if (next !== 'off' && ribbonSel.size === 0)
-                              showHint('CNV 表示はパスリボンで比較したいサンプル/ハプロタイプを選択してから使ってください。')
-                            else if (next === 'diff') showHint('選択ユニット間でコピー数が異なるノードだけにコピー数を表示します（隠れ CNV 発見用）。')
-                            else if (next === 'all') showHint('選択ユニット全ての各ノードのコピー数をリボン同色で表示します。')
-                            return next
-                          }),
-                          mode === 'all' ? '選択ユニット全ての per-node コピー数をリボン同色テキストで表示'
-                            : '選択ユニット間でコピー数が異なるノードのみコピー数を表示(隠れ CNV)'
-                        )}
-                      </Fragment>
-                    ))}
-                  </>
+                {devMode && edgeWidthMode === 'reads' && (
+                  <div className="ui-menu-row">
+                    <label htmlFor="px-reads" style={{ flex: 1, color: 'var(--ui-muted)' }}>最大の幅 px, 基準のリード数</label>
+                    <input id="px-reads" className="ui-input ui-select-sm" style={{ width: 80, fontFamily: 'var(--ui-mono)' }}
+                      value={detailParamInput} onChange={e => setDetailParamInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') applyDetailParams() }} onBlur={applyDetailParams} />
+                  </div>
                 )}
+                {(bandAvail || regionAvail || geneAvail) && (<>
+                  <div className="ui-menu-sep" />
+                  <div className="ui-menu-title">ノードの色</div>
+                  <div className="ui-menu-row">
+                    <div className="ui-seg" role="radiogroup" aria-label="ノードの色">
+                      {([
+                        { key: 'hap', label: 'ハプロタイプ', on: !bandMode && !regionMode && !geneMode, show: true, t: 'ノードを通るハプロタイプで塗る（既定）' },
+                        { key: 'band', label: 'バンド', on: bandMode, show: bandAvail, t: 'ノードを cytoBand の染色で塗る（acen = セントロメア）' },
+                        { key: 'region', label: '領域', on: regionMode, show: regionAvail, t: 'ノードを CHM13 の領域（セントロメア・サテライト）で塗る' },
+                        { key: 'gene', label: '遺伝子', on: geneMode, show: geneAvail, t: 'ノードを遺伝子の密度で塗る（粗い拡大での概観）' },
+                      ].filter(s => s.show)).map(s => (
+                        <button key={s.key} role="radio" aria-checked={s.on} className={s.on ? 'is-on' : ''} title={s.t}
+                          onClick={() => { setBandMode(s.key === 'band'); setRegionMode(s.key === 'region'); setGeneMode(s.key === 'gene') }}>{s.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                </>)}
+                <div className="ui-menu-sep" />
+                {menuCheck('パスに無いノードを薄く', nodeGreyMode,
+                  () => setNodeGreyMode(m => { if (!m) showHint('パスを選んだ状態で入れると、選んだパスが通らないノードを薄くします。'); return !m }),
+                  '左のパスの一覧で選んだパスが通らないノードを薄く描く')}
+                {menuCheck('Alignment と同じ色で塗る', showAlignColors,
+                  () => setShowAlignColors(v => { alignColorsUserOff.current = v; return !v }),
+                  'Alignment パネルの各ノードの色で、グラフの同じノードも塗る')}
+                {menuCheck('ミニマップと凡例', showOverlays, () => setShowOverlays(v => !v),
+                  'グラフに重ねて出すミニマップ・凡例・詳細度の箱をまとめて出す／隠す')}
+                {devMode && menuCheck('近さの色分け（開発）', floodMode, () => setFloodMode(m => {
+                  const nm = !m
+                  if (!nm) { setFloodResult(null); setFloodSeedComp(null) }
+                  else showHint('ノードをクリックすると、そこからグラフ距離が近いグリフを着色します（濃青=近い→淡青=D手、同一成分の未到達=青灰、別成分=灰）。背景クリックで解除。')
+                  return nm
+                }), 'クリックしたノードからグラフ距離の近いグリフを色分けする（融合か近接かの確認）')}
+                {devMode && floodMode && (
+                  <div className="ui-menu-row" style={{ paddingLeft: 32 }}>
+                    <label htmlFor="flood-hops" style={{ color: 'var(--ui-muted)' }}>距離</label>
+                    <input id="flood-hops" type="number" min={1} max={50} step={1} className="ui-input ui-select-sm" style={{ width: 56 }}
+                      value={floodHopsInput}
+                      onChange={e => setFloodHopsInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                      onBlur={() => {
+                        const v = Math.max(1, Math.min(50, parseInt(floodHopsInput, 10) || 10))
+                        setFloodHops(v); setFloodHopsInput(String(v))
+                        if (floodMode && selectedNode && selectedDb) {
+                          fetchFlood(selectedDb, mapLayer, selectedNode.node_name, v).then(r => {
+                            if (r) { setFloodResult(new Map(r.reached.map(x => [x.name, x.hop]))); setFloodSeedComp(selectedNode.comp_id ?? null) }
+                          })
+                        }
+                      }} />
+                    <span style={{ color: 'var(--ui-muted)' }}>手</span>
+                  </div>
+                )}
+                <div className="ui-menu-sep" />
+                <button className="ui-menu-item" onClick={() => { resetGraphView(); setShowViewMenu(false) }}
+                  title="グラフの塗りと重ね表示を初期値に戻す（Traversals の塗りと絞り込み、ホバーの強調、色分け、辺の太さ、リボン、パスの選択）">
+                  表示を初期値に戻す
+                </button>
               </div>
             )}
           </div>
-          {toggleBtn(showAlignColors, () => setShowAlignColors(v => { alignColorsUserOff.current = v; return !v }), 'Link colors', '#0c8599', '#e6fcf5',
-            'アラインビューの各ノードを色分けし、マップ上の該当ノードも同色で塗る')}
-          {divider()}
-          {/* ── View: ノードサイズ・パネル・共有 ── */}
-          {/* ノードサイズ倍率: 長さ(長軸=半径)にかける係数。厚み(短軸)は画面上一定なので長さのみ変わる。
-              スライダーはドラッグ中 draft のみ更新し、離した時(onMouseUp/onKeyUp)に確定＝重い再描画を待たせる。 */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'sans-serif', fontSize: 13, color: '#495057' }}>
-            <span onClick={() => applyNodeScale(1)} title="ノードの長さ(長軸=半径)にかける倍率。厚みは一定。クリックで標準(1×)に戻す"
-              style={{ whiteSpace: 'nowrap', cursor: 'pointer', userSelect: 'none' }}>Node size</span>
-            <button onClick={() => applyNodeScale(nodeScale / 1.25)}
-              title="小さく" style={{ width: 22, height: 22, padding: 0, cursor: 'pointer',
-                border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057' }}>−</button>
-            <input type="range" min={0} max={100}
-              value={Math.round(100 * Math.log(nodeScaleDraft / NODE_SCALE_MIN) / Math.log(NODE_SCALE_MAX / NODE_SCALE_MIN))}
-              onChange={e => setNodeScaleDraft(NODE_SCALE_MIN * Math.pow(NODE_SCALE_MAX / NODE_SCALE_MIN, Number(e.target.value) / 100))}
-              onMouseUp={() => setNodeScale(nodeScaleDraft)}
-              onKeyUp={() => setNodeScale(nodeScaleDraft)}
-              onTouchEnd={() => setNodeScale(nodeScaleDraft)}
-              style={{ width: 84 }} />
-            <button onClick={() => applyNodeScale(nodeScale * 1.25)}
-              title="大きく" style={{ width: 22, height: 22, padding: 0, cursor: 'pointer',
-                border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057' }}>＋</button>
-            <span style={{ width: 36, textAlign: 'right', whiteSpace: 'nowrap' }}>{nodeScaleDraft.toFixed(nodeScaleDraft < 1 ? 2 : 1)}×</span>
+
+          {/* ── ラベル: グラフに重ねる文字（併用可）。大きさ・色・ずらしは設定へ ── */}
+          <div ref={labelsMenuRef} className="ui-menu-wrap">
+            <button className={'ui-btn ui-btn-ghost' + (showLabelsMenu ? ' is-open' : '') + (anyLabelOn ? ' is-on' : '')} aria-expanded={showLabelsMenu}
+              onClick={() => setShowLabelsMenu(v => !v)} title="ノード名・塩基・参照の位置・深さ・コピー数などの文字を重ねる">ラベル ▾</button>
+            {showLabelsMenu && (
+              <div className="ui-menu" style={{ minWidth: 260 }}>
+                <div className="ui-menu-title">ノードに重ねる</div>
+                {menuCheck('ノード名', showNodeNames, () => setShowNodeNames(v => !v))}
+                {menuCheck('ノードの長さ（bp）', showNodeBp, () => setShowNodeBp(v => !v), 'クラスタは配下の合計 bp。大きいグラフの深い拡大では表示が遅くなる')}
+                {seqAvail && menuCheck('塩基（A/C/G/T）', seqMode,
+                  () => setSeqMode(v => { if (!v) showHint('画面内の 1bp ノードにその塩基を表示します。長いノードは選ぶと右のパネルで配列を見られます。'); return !v }),
+                  '画面内の短いノード（1bp）の塩基をノードの中に書く')}
+                {refposAvail && menuCheck(`参照の位置${refKey ? `（${refKey}）` : ''}`, showRefPos, () => setShowRefPos(v => !v), '参照上のおおよその bp 位置を代表のノードの近くに書く')}
+                {menuCheck('深さ（リード数）', coverageTextMode,
+                  () => setCoverageTextMode(m => { if (!m) showHint('拡大してノードの幅が 20px 以上になると、ノードの上にリード数を書きます。'); return !m }),
+                  '拡大したとき、ノードの上にリードの数を書く')}
+                {multAvail && (<>
+                  <div className="ui-menu-title">コピー数（選んだパスどうし）</div>
+                  {(['all', 'diff'] as const).map(mode => (
+                    <Fragment key={mode}>
+                      {menuCheck((mode === 'all' ? 'すべて' : '違うものだけ') + (cnvMode === mode && cnvSuppressed ? ' ⚠' : ''), cnvMode === mode,
+                        () => setCnvMode(m => {
+                          const next = m === mode ? 'off' : mode
+                          if (next !== 'off' && ribbonSel.size === 0) showHint('コピー数の表示は、左のパスの一覧で比べたいサンプル／ハプロタイプを選んでから使ってください。')
+                          return next
+                        }),
+                        mode === 'all' ? '選んだパスすべての、ノードごとのコピー数をリボンと同じ色で書く' : '選んだパスの間でコピー数が違うノードだけ書く（隠れた CNV）')}
+                    </Fragment>
+                  ))}
+                </>)}
+                {(bandAvail || regionAvail || geneAvail) && (<>
+                  <div className="ui-menu-title">注釈の名前</div>
+                  {bandAvail && menuCheck('バンド名', showBandLabels, () => setShowBandLabels(v => !v), 'cytoBand の名前（例 Yq11.221）')}
+                  {regionAvail && menuCheck('領域名', showRegionMarks, () => setShowRegionMarks(v => !v), 'CHM13 の領域の目印の名前')}
+                  {geneAvail && menuCheck('遺伝子名', showGeneLabels, () => setShowGeneLabels(v => !v), '遺伝子の名前（向きの矢印つき）')}
+                </>)}
+                <div className="ui-menu-sep" />
+                <button className="ui-menu-item" onClick={() => { setShowLabelsMenu(false); setShowSettings(true) }}>文字の大きさ・色… <span style={{ marginLeft: 'auto', color: 'var(--ui-faint)' }}>設定</span></button>
+              </div>
+            )}
           </div>
-          <button
-            onClick={saveCurrentState}
-            title="現在の表示状態（ビュー・各トグル・アラインメント構成）を保存し、共有可能なURLにする"
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-              border: '1px solid #adb5bd', borderRadius: 4,
-              background: '#f8f9fa', color: '#495057', cursor: 'pointer',
-            }}
-          >
-            Share view
-          </button>
-          <button
-            onClick={resetGraphView}
-            title="グラフの塗りと重ね表示を初期値に戻す（Traversals の範囲の塗りと絞り込み、ホバーの強調、洪水、重ね着色、辺の太さ、リボン、パス選択）"
-            style={{ fontFamily: 'sans-serif', fontSize: 13, padding: '4px 10px', border: '1px solid #adb5bd', borderRadius: 4, background: '#f8f9fa', color: '#495057', cursor: 'pointer' }}
-          >
-            Reset
-          </button>
-          {/* 8.3 Export: 現ビューポートの部分グラフ/ノードをファイル書き出し */}
-          <div ref={exportMenuRef} style={{ position: 'relative' }}>
-            <button onClick={() => setShowExportMenu(v => !v)}
-              title="表示中の部分グラフ/ノードをファイルに書き出す（GFA・BED）"
-              style={{ fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px', border: '1px solid',
-                borderColor: showExportMenu ? '#1971c2' : '#adb5bd', borderRadius: 4,
-                background: showExportMenu ? '#e7f5ff' : '#f8f9fa', color: showExportMenu ? '#1971c2' : '#495057',
-                cursor: 'pointer', whiteSpace: 'nowrap' }}>
-              Export ▾
-            </button>
+
+          {/* ── 書き出し: 図・部分グラフ・共有 ── */}
+          <div ref={exportMenuRef} className="ui-menu-wrap">
+            <button className={'ui-btn ui-btn-ghost' + (showExportMenu ? ' is-open' : '')} aria-expanded={showExportMenu}
+              onClick={() => setShowExportMenu(v => !v)}>書き出し ▾</button>
             {showExportMenu && (
-              <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, zIndex: 200,
-                background: '#fff', border: '1px solid #dee2e6', borderRadius: 6,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.12)', padding: 8, display: 'flex',
-                flexDirection: 'column', gap: 6, minWidth: 230 }}>
-                <span style={{ fontSize: 10, color: '#868e96' }}>現ビューポート範囲を書き出し</span>
-                <button onClick={() => { graphRef.current?.exportSvg(); setShowExportMenu(false) }} disabled={!selectedDb}
-                  title="現在の表示をベクタ図版(SVG・レイヤ付き・物理寸法 180mm)で書き出し"
-                  style={{ textAlign: 'left', padding: '5px 8px', border: '1px solid #e9ecef', borderRadius: 4,
-                    background: '#fff', color: '#7048e8', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: 13, fontWeight: 600 }}>
-                  Figure SVG (view)
-                </button>
-                <button onClick={() => exportRegion('gfa')} disabled={!selectedDb}
-                  title="視野の葉ノード＋エッジ＋配列を GFA で（他ツールへの入口＝相互引用）"
-                  style={{ textAlign: 'left', padding: '5px 8px', border: '1px solid #e9ecef', borderRadius: 4,
-                    background: '#fff', color: '#0c8599', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: 13, fontWeight: 600 }}>
-                  Subgraph GFA
-                </button>
+              <div className="ui-menu" style={{ minWidth: 280 }}>
+                <div className="ui-menu-title">いま見えている範囲</div>
+                <button className="ui-menu-item" disabled={!selectedDb} onClick={() => { graphRef.current?.exportSvg(); setShowExportMenu(false) }}>
+                  <span>図（SVG）<span className="ui-sub">レイヤつき・幅 180 mm</span></span></button>
+                <button className="ui-menu-item" disabled={!selectedDb} onClick={() => exportRegion('gfa')}>
+                  <span>部分グラフ（GFA）<span className="ui-sub">見えている葉ノード・辺・配列</span></span></button>
                 {refposAvail && (
-                  <button onClick={() => exportRegion('bed')} disabled={!selectedDb}
-                    title={`視野のノードを参照(${refKey ?? 'ref'})座標の BED6 で`}
-                    style={{ textAlign: 'left', padding: '5px 8px', border: '1px solid #e9ecef', borderRadius: 4,
-                      background: '#fff', color: '#0c8599', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: 13, fontWeight: 600 }}>
-                    Nodes BED ({refKey ?? 'ref'})
-                  </button>
+                  <button className="ui-menu-item" disabled={!selectedDb} onClick={() => exportRegion('bed')}>
+                    <span>ノードの位置（BED）<span className="ui-sub">参照（{refKey ?? 'ref'}）の座標で</span></span></button>
                 )}
-                <span style={{ fontSize: 10, color: '#adb5bd', borderTop: '1px solid #f1f3f5', paddingTop: 4 }}>
-                  塩基の整列（FASTA）は Traversals の塩基の段の「書き出し…」から
-                </span>
-                <span style={{ fontSize: 10, color: '#868e96', borderTop: '1px solid #f1f3f5', paddingTop: 4 }}>状態（セッション）</span>
-                <button onClick={shareSelfContainedLink} disabled={!selectedDb}
-                  title="現在の表示状態を URL 自体に圧縮埋め込みしたリンクをコピー（サーバ保存不要・別環境でも復元）"
-                  style={{ textAlign: 'left', padding: '5px 8px', border: '1px solid #e9ecef', borderRadius: 4,
-                    background: '#fff', color: '#495057', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: 13, fontWeight: 600 }}>
-                  自己完結リンクをコピー
-                </button>
-                <button onClick={exportSessionJson} disabled={!selectedDb}
-                  title="現在の表示状態を JSON ファイルに書き出し（論文添付・バージョン管理向け）"
-                  style={{ textAlign: 'left', padding: '5px 8px', border: '1px solid #e9ecef', borderRadius: 4,
-                    background: '#fff', color: '#495057', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: 13, fontWeight: 600 }}>
-                  Session JSON 書き出し
-                </button>
-                <button onClick={() => sessionFileRef.current?.click()}
-                  title="書き出した Session JSON を読み込んで表示状態を復元（同じ DB が必要）"
-                  style={{ textAlign: 'left', padding: '5px 8px', border: '1px solid #e9ecef', borderRadius: 4,
-                    background: '#fff', color: '#495057', cursor: 'pointer', fontFamily: 'sans-serif', fontSize: 13, fontWeight: 600 }}>
-                  Session JSON 読込…
-                </button>
+                <div className="ui-menu-note">塩基の整列（FASTA）は Traversals の塩基の段の「書き出し」から</div>
+                <div className="ui-menu-sep" />
+                <div className="ui-menu-title">表示の状態</div>
+                <button className="ui-menu-item" disabled={!selectedDb} onClick={() => { saveCurrentState(); setShowExportMenu(false) }}>
+                  <span>この表示の URL を作る<span className="ui-sub">サーバに保存して短い URL に</span></span></button>
+                <button className="ui-menu-item" disabled={!selectedDb} onClick={shareSelfContainedLink}>
+                  <span>自己完結のリンクをコピー<span className="ui-sub">状態を URL に埋め込む（別の配信でも開ける）</span></span></button>
+                <button className="ui-menu-item" disabled={!selectedDb} onClick={exportSessionJson}>セッションを保存（JSON）</button>
+                <button className="ui-menu-item" onClick={() => sessionFileRef.current?.click()}>セッションを読み込む…</button>
               </div>
             )}
             <input ref={sessionFileRef} type="file" accept="application/json,.json" style={{ display: 'none' }}
               onChange={e => { const f = e.target.files?.[0]; if (f) importSessionJson(f); e.target.value = ''; setShowExportMenu(false) }} />
           </div>
-          {divider()}
-          {/* ── Panels: パス一覧・付属UI・編集・アライメント ── */}
-          <button
-            onClick={() => setShowPaths(m => { if (!m) showHint('左にパス選択パネルを出します。サンプル/ハプロタイプ/コンティグ単位で選ぶと、リボン描画・MSA の対象・絞り込み描画の対象になります。'); return !m })}
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-              border: '1px solid',
-              borderColor: showPaths ? '#1971c2' : '#adb5bd',
-              borderRadius: 4,
-              background: showPaths ? '#e7f5ff' : '#f8f9fa',
-              color: showPaths ? '#1971c2' : '#495057',
-              cursor: 'pointer',
-              fontWeight: showPaths ? 600 : 400,
-            }}
-          >
-            Paths
-          </button>
-          <button
-            onClick={() => setShowOverlays(v => !v)}
-            title="ミニマップ・凡例・レイヤバッジなど、マップ上に重なる付属UIをまとめて表示/非表示"
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-              border: '1px solid',
-              borderColor: showOverlays ? '#1971c2' : '#adb5bd',
-              borderRadius: 4,
-              background: showOverlays ? '#e7f5ff' : '#f8f9fa',
-              color: showOverlays ? '#1971c2' : '#495057',
-              cursor: 'pointer',
-              fontWeight: showOverlays ? 600 : 400,
-            }}
-          >
-            Overlays
-          </button>
-          <button
-            onClick={() => setEditMode(m => { if (!m) showHint('編集モード: クリックでノード選択、ドラッグで移動、Shiftで複数選択、黄丸で回転。Space+ドラッグでパン。'); return !m })}
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-              border: '1px solid',
-              borderColor: editMode ? '#1971c2' : '#adb5bd',
-              borderRadius: 4,
-              background: editMode ? '#e7f5ff' : '#f8f9fa',
-              color: editMode ? '#1971c2' : '#495057',
-              cursor: 'pointer',
-              fontWeight: editMode ? 600 : 400,
-            }}
-          >
-            Edit
-          </button>
-          <button
+        </div>
+
+        <span className="ui-divider" />
+
+        {/* ── パネルの切り替え ── */}
+        <div className="ui-group">
+          <button className={'ui-btn' + (showPaths ? ' is-on' : '')} aria-pressed={showPaths}
+            title="左にパスの一覧を出す。選んだパスがリボン・比較・絞り込みの対象になる"
+            onClick={() => setShowPaths(m => !m)}>パス</button>
+          <button className={'ui-btn' + (bottomH > 0 ? ' is-on' : '')} aria-pressed={bottomH > 0}
+            title="Alignment パネル（ノード・リードの並びの比較）"
             onClick={() => {
               setBottomH(h => {
-                if (h > 0) {
-                  setActiveAlignRowId(null)
-                  setShowAlignColors(false)          // 閉じたらリンク色も戻す
-                  alignColorsUserOff.current = false // 次に開いたらまた自動 ON
-                  return 0
-                }
+                if (h > 0) { setActiveAlignRowId(null); setShowAlignColors(false); alignColorsUserOff.current = false; return 0 }
                 return 220
               })
-            }}
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-              border: '1px solid',
-              borderColor: bottomH > 0 ? '#7950f2' : '#adb5bd',
-              borderRadius: 4,
-              background: bottomH > 0 ? '#f3f0ff' : '#f8f9fa',
-              color: bottomH > 0 ? '#7950f2' : '#495057',
-              cursor: 'pointer',
-              fontWeight: bottomH > 0 ? 600 : 400,
-            }}
-          >
-            Alignment
-          </button>
-          <button
-            onClick={() => setTrvH(h => {
-              if (h > 0) return 0
-              showHint('Traversals: 新しい錨（ハプロタイプ単位の一意性）と通過（複数回の出現）に基づくシンテニー。上段のドラッグで範囲、拡大すると錨の列（アレル）の段、「塩基へ」で各通過を塩基レベル MSA に渡します。')
-              return 360
-            })}
-            title="通過（Traversals）パネル。<db>.trav サイドカーのある DB だけ"
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '4px 14px',
-              border: '1px solid',
-              borderColor: trvH > 0 ? '#8e44ad' : '#adb5bd',
-              borderRadius: 4,
-              background: trvH > 0 ? '#f3e9f8' : '#f8f9fa',
-              color: trvH > 0 ? '#8e44ad' : '#495057',
-              cursor: 'pointer',
-              fontWeight: trvH > 0 ? 600 : 400,
-            }}
-          >
-            Traversals
-          </button>
+            }}>Alignment</button>
+          <button className={'ui-btn' + (trvH > 0 ? ' is-on' : '')} aria-pressed={trvH > 0}
+            title="Traversals パネル（錨と通過に基づくシンテニー）。<db>.trav のある DB だけ"
+            onClick={() => setTrvH(h => h > 0 ? 0 : 360)}>Traversals</button>
+          <button className={'ui-btn' + (editMode ? ' is-on' : '')} aria-pressed={editMode}
+            title="ノードを動かす・回す。配置を DB に保存できる（閲覧専用の配信では保存しない）"
+            onClick={() => setEditMode(m => { if (!m) showHint('編集: クリックで選択、ドラッグで移動、Shift で複数選択、黄色の丸で回転。Space＋ドラッグで画面を動かす。'); return !m })}>編集</button>
         </div>
-      </div>
+
+        <span className="ui-divider" />
+
+        <button className="ui-iconbtn" aria-label="設定" title="設定" onClick={() => setShowSettings(true)}>
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+          </svg>
+        </button>
+        <a className="ui-iconbtn" aria-label="使い方" title="使い方（この版のドキュメント。別のタブで開く）"
+          href={docsUrl('viewer', versionInfo?.viewer)} target="_blank" rel="noreferrer">?</a>
+      </header>
+
+      {showSettings && (<>
+        <div className="ui-drawer-scrim" onClick={() => setShowSettings(false)} />
+        <aside className="ui-drawer" role="dialog" aria-label="設定">
+          <div className="ui-drawer-head">
+            <h2>設定</h2>
+            <button className="ui-iconbtn" aria-label="閉じる" onClick={() => setShowSettings(false)}>✕</button>
+          </div>
+          <div className="ui-drawer-body">
+            <section className="ui-section">
+              <h3>グラフ</h3>
+              <div className="ui-field">
+                <label htmlFor="set-budget">表示予算<span className="ui-help">画面のノードがこれを超えると粗い層で描く。端末が重いときは下げる</span></label>
+                <select id="set-budget" className="ui-select" value={maxRows} onChange={e => setMaxRows(Number(e.target.value))}>
+                  {MAXROWS_OPTS.map(v => <option key={v} value={v}>{v === 0 ? '無制限' : v.toLocaleString()}</option>)}
+                </select>
+              </div>
+              <div className="ui-field">
+                <label htmlFor="set-nodescale">ノードの長さ<span className="ui-help">厚みは変えない。数字のクリックで 1× に戻す</span></label>
+                <input id="set-nodescale" type="range" min={0} max={100} style={{ width: 120 }}
+                  value={Math.round(100 * Math.log(nodeScaleDraft / NODE_SCALE_MIN) / Math.log(NODE_SCALE_MAX / NODE_SCALE_MIN))}
+                  onChange={e => setNodeScaleDraft(NODE_SCALE_MIN * Math.pow(NODE_SCALE_MAX / NODE_SCALE_MIN, Number(e.target.value) / 100))}
+                  onMouseUp={() => setNodeScale(nodeScaleDraft)} onKeyUp={() => setNodeScale(nodeScaleDraft)} onTouchEnd={() => setNodeScale(nodeScaleDraft)} />
+                <button className="ui-btn ui-btn-ghost ui-btn-sm ui-num" onClick={() => applyNodeScale(1)}>{nodeScaleDraft.toFixed(nodeScaleDraft < 1 ? 2 : 1)}×</button>
+              </div>
+            </section>
+            <section className="ui-section">
+              <h3>ラベル</h3>
+              <div className="ui-field">
+                <span className="ui-field-label">文字の大きさ</span>
+                <span className="ui-stepper">
+                  <button aria-label="小さく" onClick={() => bumpLabelScale(1 / 1.15)}>−</button>
+                  <button className="ui-num" style={{ width: 'auto', padding: '0 6px', border: 'none' }} title="1× に戻す" onClick={() => setLabelScale(1)}>{labelScale.toFixed(2)}×</button>
+                  <button aria-label="大きく" onClick={() => bumpLabelScale(1.15)}>＋</button>
+                </span>
+              </div>
+              <div className="ui-field">
+                <span className="ui-field-label">文字の色<span className="ui-help">明るさに応じて白か黒の縁が付く</span></span>
+                <span style={{ display: 'flex', gap: 6 }}>
+                  {[['#111111', '黒'], ['#ffffff', '白'], ['#e03131', '赤'], ['#1971c2', '青'], ['#2f9e44', '緑'], ['#e8590c', '橙'], ['#7048e8', '紫']].map(([c, nm]) => (
+                    <button key={c} aria-label={nm} title={nm} onClick={() => setLabelColor(c)}
+                      style={{ width: 20, height: 20, padding: 0, borderRadius: '50%', cursor: 'pointer', background: c,
+                        border: labelColor.toLowerCase() === c ? '2px solid var(--ui-accent)' : '1px solid var(--ui-border-strong)' }} />
+                  ))}
+                </span>
+              </div>
+              <div className="ui-field">
+                <span className="ui-field-label">ノードから離す<span className="ui-help">0 = ノードの中央。重なって読みにくいときに</span></span>
+                <span className="ui-stepper">
+                  <button aria-label="近づける" onClick={() => setLabelOffset(v => Math.max(0, v - 6))}>−</button>
+                  <button className="ui-num" style={{ width: 'auto', padding: '0 6px', border: 'none' }} title="0 に戻す" onClick={() => setLabelOffset(0)}>{labelOffset}px</button>
+                  <button aria-label="離す" onClick={() => setLabelOffset(v => Math.min(120, v + 6))}>＋</button>
+                </span>
+              </div>
+            </section>
+            <section className="ui-section">
+              <h3>TRAVERSALS</h3>
+              <div className="ui-field">
+                <label htmlFor="set-nblk">ブロックの数<span className="ui-help">表示範囲をいくつの区間に分けて色を付けるか</span></label>
+                <input id="set-nblk" type="number" min={1} max={500} step={5} className="ui-input" style={{ width: 80 }}
+                  value={travNBlocks}
+                  onChange={e => { const v = Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 30)); setTravNBlocks(v) }} />
+              </div>
+            </section>
+            <section className="ui-section">
+              <h3>このアプリについて</h3>
+              <div className="ui-kv">
+                <span>viewer</span><b>{versionInfo?.viewer ?? '?'}</b>
+                {versionInfo?.db && (<>
+                  <span>DB</span><b>{selectedDb} · {versionInfo.db.built_at ?? (versionInfo.db.mtime?.slice(0, 16).replace('T', ' ') ?? '?')}{versionInfo.db.emitter_rev ? ` @${versionInfo.db.emitter_rev}` : ''}</b>
+                  <span>DB の機能</span><b>{(['seq', 'inv', 'mult'] as const).filter(f => versionInfo.db!.features[f]).join(' ') || '—'}</b>
+                </>)}
+                <span>API</span><b>{versionInfo?.api_level ?? '?'}（必要 {API_LEVEL_REQUIRED}）</b>
+                {prewarm && (prewarm.running || prewarm.finished) && (<>
+                  <span>キャッシュ</span><b>{prewarm.finished ? '済み' : `${Math.floor(100 * prewarm.done / Math.max(1, prewarm.total))}%`}</b>
+                </>)}
+              </div>
+              <a href={docsUrl('viewer', versionInfo?.viewer)} target="_blank" rel="noreferrer" style={{ color: 'var(--ui-accent)' }}>使い方を開く</a>
+              {!devMode && <div style={{ fontSize: 11, color: 'var(--ui-faint)' }}>開発用の表示は URL に ?dev=1 を付けると出る</div>}
+            </section>
+          </div>
+        </aside>
+      </>)}
 
       {/* ── Edit 行（2 段目・文脈ツールバー）────────────────────────────
           ★上段は Edit の ON/OFF で**一切変わらない**。編集用のものは全部ここに出す。
@@ -1995,78 +1733,36 @@ export default function App() {
             「繋がりをその場で確かめるために動かしてみる」使い方もするので、
             Save は Edit の文脈の中にあるべきで、離れた場所に常駐させない。 */}
       {editMode && (
-        <div style={{
-          flexShrink: 0, display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
-          padding: '4px 16px', background: '#faf8ff', borderBottom: '1px solid #e5dcf7',
-          fontFamily: 'sans-serif', fontSize: 12, color: '#495057',
-        }}>
-          <span style={{ fontWeight: 600, color: '#7048e8', whiteSpace: 'nowrap' }}>Edit</span>
-          {toggleBtn(softDragMode,
-            () => setSoftDragMode(m => { if (!m) showHint('ソフト移動: ノードを掴んでドラッグすると、BFSで近い近傍も hop 減衰した強さで一緒に動きます（d3-force風）。Shift+ドラッグは従来の剛体移動。「hop」で巻き込む距離を調整。'); return !m }),
-            'Soft drag', '#7048e8', '#f3f0ff', '掴んだノード＋BFS近傍を hop 減衰重みで一緒に動かす（d3-force風）')}
-          {softDragMode && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              hop
-              <input type="number" min={1} max={30} step={1} value={softDragHops}
-                title="ソフト移動で巻き込む最大 hop 距離。大きいほど遠くまで一緒に動く"
-                onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragHops(isNaN(v) ? 6 : Math.max(1, Math.min(30, v))) }}
-                style={{ width: 44, fontSize: 12, padding: '2px 4px' }} />
-              soft
-              <input type="number" min={1} max={12} step={1} value={softDragSoftness}
-                title="柔らかさ。大きいほど柔らかく（近傍が広く緩やかに追従）、小さいほど硬い（掴んだ点だけ動く）"
-                onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragSoftness(isNaN(v) ? 5 : Math.max(1, Math.min(12, v))) }}
-                style={{ width: 44, fontSize: 12, padding: '2px 4px' }} />
-            </span>
-          )}
-          <button
+        <div className="ui-topbar" style={{ minHeight: 44, background: 'var(--ui-bg)', zIndex: 40, gap: 8 }}>
+          <span style={{ fontWeight: 600 }}>編集</span>
+          <button className={'ui-btn ui-btn-sm' + (softDragMode ? ' is-on' : '')} aria-pressed={softDragMode}
+            title="掴んだノードと、グラフ上で近いノードを、離れるほど弱く一緒に動かす。Shift＋ドラッグは掴んだものだけ動かす"
+            onClick={() => setSoftDragMode(m => { if (!m) showHint('やわらかく動かす: 掴んだノードの近くのノードも、離れるほど弱く一緒に動きます。Shift＋ドラッグは掴んだものだけ。'); return !m })}>やわらかく動かす</button>
+          {softDragMode && (<>
+            <label htmlFor="sd-hops" style={{ color: 'var(--ui-muted)' }}>範囲</label>
+            <input id="sd-hops" type="number" min={1} max={30} step={1} className="ui-input ui-select-sm" style={{ width: 56 }} value={softDragHops}
+              title="一緒に動かす近さ（グラフ上の手数）。大きいほど遠くまで動く"
+              onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragHops(isNaN(v) ? 6 : Math.max(1, Math.min(30, v))) }} />
+            <label htmlFor="sd-soft" style={{ color: 'var(--ui-muted)' }}>やわらかさ</label>
+            <input id="sd-soft" type="number" min={1} max={12} step={1} className="ui-input ui-select-sm" style={{ width: 56 }} value={softDragSoftness}
+              title="大きいほど近くのノードがゆるやかに広くついてくる。小さいほど掴んだ点だけ動く"
+              onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragSoftness(isNaN(v) ? 5 : Math.max(1, Math.min(12, v))) }} />
+          </>)}
+          <button className={'ui-btn ui-btn-sm' + (pendingEdits.length > 0 && !saveDisabled ? ' ui-btn-warn' : '')}
             onClick={saveNodeEdits}
             disabled={pendingEdits.length === 0 || savingEdits || saveDisabled}
             title={saveDisabled
-              ? 'この配信では DB への保存を無効にしてある（サーバ側で AMIPA_READONLY=1）。移動して確かめるのは自由で、結果は保存されない'
-              : '編集モードでのノード移動/回転を、子孫ノードと関連エッジごとDBへ保存する'}
-            style={{
-              fontFamily: 'sans-serif', fontSize: 13, padding: '3px 12px',
-              border: '1px solid',
-              borderColor: (pendingEdits.length > 0 && !saveDisabled) ? '#e8590c' : '#adb5bd',
-              borderRadius: 4,
-              background: (pendingEdits.length > 0 && !saveDisabled) ? '#fff4e6' : '#f8f9fa',
-              color: (pendingEdits.length > 0 && !saveDisabled) ? '#e8590c' : '#adb5bd',
-              cursor: (pendingEdits.length === 0 || savingEdits || saveDisabled) ? 'default' : 'pointer',
-              fontWeight: (pendingEdits.length > 0 && !saveDisabled) ? 600 : 400,
-            }}
-          >
-            {savingEdits ? 'Saving…' : `Save to DB${pendingEdits.length > 0 ? ` (${pendingEdits.length})` : ''}`}
+              ? 'この配信では DB への保存を無効にしてある（サーバ側で AMIPA_READONLY=1）。動かして確かめるのは自由で、結果は保存されない'
+              : '動かした・回したノードを、子孫のノードと辺ごと DB に保存する'}>
+            {savingEdits ? '保存中…' : `DB に保存${pendingEdits.length > 0 ? `（${pendingEdits.length}）` : ''}`}
           </button>
-          {saveDisabled && (
-            <span style={{ color: '#868e96', whiteSpace: 'nowrap' }}
-              title="サーバを AMIPA_READONLY=1 で起動している">
-              保存は無効（閲覧専用の配信）
-            </span>
-          )}
-          <span style={{ marginLeft: 'auto', color: '#888' }}>
-            Click: select &nbsp;·&nbsp;
-            Shift+Click: add/remove &nbsp;·&nbsp;
-            Drag (empty): box-select &nbsp;·&nbsp;
-            Drag (node): move &nbsp;·&nbsp;
-            Yellow handle: rotate &nbsp;·&nbsp;
-            Space+Drag: pan &nbsp;·&nbsp;
-            Esc: clear
+          {saveDisabled && <span className="ui-chip" title="サーバを AMIPA_READONLY=1 で起動している">閲覧専用の配信なので保存しない</span>}
+          <span style={{ marginLeft: 'auto', color: 'var(--ui-muted)', fontSize: 'var(--ui-fs-sm)' }}>
+            クリック 選択 · Shift＋クリック 追加／外す · 空き地をドラッグ 範囲選択 · ノードをドラッグ 移動 · 黄色の丸 回転 · Space＋ドラッグ 画面を動かす · Esc 解除
           </span>
         </div>
       )}
 
-      {/* ── Top panel ─────────────────────────────────────────────── */}
-      {topH > 0 && (
-        <div style={{ height: topH, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 13, fontFamily: 'sans-serif' }}>
-          (top panel)
-        </div>
-      )}
-      <div
-        onMouseDown={onTopHandleDown}
-        title="Drag to resize top panel"
-        className="amipa-grip-row"
-        style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
-      />
 
       {/* ── Main row ──────────────────────────────────────────────── */}
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
@@ -2411,18 +2107,13 @@ export default function App() {
                   </div>
                 )}
                 {showOverlays && (
-                <div style={{
+                <div className="ui-float" style={{
                   position: 'absolute', top: 8, left: 8, zIndex: 10,
                   // 編集モード中はクリックを canvas へ通し、パネル下のノードを掴めるようにする（表示は維持）
                   pointerEvents: editMode ? 'none' : undefined,
-                  background: 'rgba(255,255,255,0.9)',
-                  border: '1px solid #dee2e6',
-                  borderRadius: 4,
-                  padding: '4px 8px',
-                  fontFamily: 'sans-serif', fontSize: 12, color: '#495057',
-                  display: 'flex', flexDirection: 'column', gap: 3, minWidth: 168,
+                  padding: '6px 8px', display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 320,
                 }}>
-                  {(() => {
+                  {devMode && (() => {
                     const atDeepest = maxLayer !== null && mapLayer >= maxLayer
                     return (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -2484,47 +2175,31 @@ export default function App() {
                       )}
                     </div>
                   )}
-                  {/* 取得上限（UX 値）。遅い環境や重い端末では下げる。0=無制限（安全弁 OFF）。 */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11,
-                    color: '#868e96' }}>
-                    <span title="表示するグリフ（ノード）の予算。範囲がこれを超えるときは粗い層（簡略化した表示）に切り替える。選択はこのブラウザに保存される">予算</span>
-                    <select value={maxRows} onChange={e => setMaxRows(Number(e.target.value))}
-                      style={{ flex: 1, fontSize: 11 }}>
-                      {MAXROWS_OPTS.map(v => (
-                        <option key={v} value={v}>{v === 0 ? '無制限' : v.toLocaleString()}</option>
-                      ))}
-                    </select>
-                  </div>
                   {(() => {
                     const atDeepest = maxLayer !== null && mapLayer >= maxLayer
                     const atShallowest = mapLayer <= 0
-                    const btn: React.CSSProperties = {
-                      width: 24, height: 22, lineHeight: '20px', textAlign: 'center', padding: 0,
-                      border: '1px solid #ced4da', borderRadius: 4, background: '#fff', cursor: 'pointer',
-                      fontSize: 14, fontWeight: 700, color: '#495057',
-                    }
-                    const dis: React.CSSProperties = { opacity: 0.4, cursor: 'default' }
+                    const btn: React.CSSProperties = {}
+                    const dis: React.CSSProperties = {}
                     const label = atDeepest ? '最深層'
                       : detailStep === 0 ? '標準'
                       : detailStep > 0 ? `詳細 +${detailStep}` : `簡略 ${detailStep}`
                     return (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                      <div className="ui-stepper">
+                        <span style={{ color: 'var(--ui-muted)', paddingRight: 2 }} title="グラフをどこまで細かく描くか。− で粗く速く、＋ で細かく重く">詳細度</span>
                         <button title="1段 軽く（簡略表示・速い）" aria-label="軽く"
                           style={{ ...btn, ...(atShallowest ? dis : {}) }} disabled={atShallowest}
                           onClick={() => setDetailStep(s => Math.max(-DETAIL_CLAMP, s - 1))}>−</button>
                         <span title="クリックで標準（自動）に戻す" onClick={() => setDetailStep(0)}
-                          style={{ flex: 1, textAlign: 'center', color: atDeepest ? '#1971c2' : '#868e96',
-                            fontWeight: atDeepest ? 700 : 400, minWidth: 60, cursor: 'pointer' }}>{label}</span>
+                          style={{ textAlign: 'center', color: atDeepest ? 'var(--ui-accent-strong)' : 'var(--ui-text)',
+                            fontWeight: 500, minWidth: 56, cursor: 'pointer' }}>{label}</span>
                         <button title={atDeepest ? 'これ以上詳細な層はありません（最深層）' : '1段 詳しく（詳細表示・重い）'}
                           aria-label="詳しく"
                           style={{ ...btn, ...(atDeepest ? dis : {}) }} disabled={atDeepest}
                           onClick={() => setDetailStep(s => Math.min(DETAIL_CLAMP, s + 1))}>＋</button>
+                        {!devMode && isLoading && <span style={{ color: 'var(--ui-muted)', paddingLeft: 2 }} title="取得中（別の場所へ動くと中断する）">読み込み中…</span>}
                       </div>
                     )
                   })()}
-                  <div style={{ color: '#adb5bd', fontSize: 11 }}>
-                    − 軽く（簡略）／ ＋ 詳しく（詳細・重い）・ラベルで標準に戻す
-                  </div>
                 </div>
                 )}
 
