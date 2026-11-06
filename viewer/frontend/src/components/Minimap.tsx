@@ -102,7 +102,10 @@ function drawGeometry(
   worldRect: Rect,
 ) {
   const ctx = off.getContext('2d')!
-  const cw = off.width, ch = off.height
+  // 11-06: キャンバスは画面の解像度（devicePixelRatio 倍）の画素を持つ。描画は CSS px の座標で書き、変換で拡大する
+  const k = off.width / MINIMAP_W
+  const cw = off.width / k, ch = off.height / k
+  ctx.setTransform(k, 0, 0, k, 0, 0)
   ctx.clearRect(0, 0, cw, ch)
   ctx.fillStyle = '#f8f9fa'
   ctx.fillRect(0, 0, cw, ch)
@@ -216,9 +219,12 @@ function composite(
   target: { x: number; y: number } | null,
 ) {
   const ctx = canvas.getContext('2d')!
-  const cw = canvas.width, ch = canvas.height
-  if (off && off.width === cw && off.height === ch) ctx.drawImage(off, 0, 0)
-  else { ctx.clearRect(0, 0, cw, ch); ctx.fillStyle = '#f8f9fa'; ctx.fillRect(0, 0, cw, ch) }
+  const k = canvas.width / MINIMAP_W
+  const cw = canvas.width / k, ch = canvas.height / k
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1
+  if (off && off.width === canvas.width && off.height === canvas.height) ctx.drawImage(off, 0, 0)
+  else { ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = '#f8f9fa'; ctx.fillRect(0, 0, canvas.width, canvas.height) }
+  ctx.setTransform(k, 0, 0, k, 0, 0)
 
   const p1 = w2c(vp.x1, vp.y1, worldRect, cw, ch)
   const p2 = w2c(vp.x2, vp.y2, worldRect, cw, ch)
@@ -276,6 +282,11 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
   // ちょうど包む（固定 180x55 だと横長の箱に細いグラフがレターボックスされ「横長」に見える）。
   const [ovH, setOvH] = useState(OVERVIEW_H)
   const [collapsed, setCollapsed] = useState(false)   // 最小化（ヘッダのみ表示）
+  // 画面の解像度（ブラウザの拡大率・別の画面への移動で変わる）。キャンバスの画素数をこれに合わせる
+  const [dpr, setDpr] = useState(() => Math.max(1, Math.min(4, window.devicePixelRatio || 1)))
+  useEffect(() => { let mq: MediaQueryList | null = null; const on = () => { setDpr(Math.max(1, Math.min(4, window.devicePixelRatio || 1))); arm() }
+    const arm = () => { mq?.removeEventListener('change', on); mq = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`); mq.addEventListener('change', on) }
+    arm(); return () => mq?.removeEventListener('change', on) }, [])
 
   // 非同期コールバックから最新値を参照するための ref
   const vpRef     = useRef(viewport)
@@ -394,7 +405,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     if (collapsed) return
     rebuildOv(); rebuildCtx()
     redrawOv(); redrawCtx()
-  }, [ovH, collapsed, showCtx])
+  }, [ovH, collapsed, showCtx, dpr])
 
   // ── ビューポート/レイヤ変化時: コンテキスト更新判定 + 再描画 ────────────
   useEffect(() => {
@@ -456,7 +467,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     e: React.MouseEvent<HTMLCanvasElement>,
   ) {
     const r  = canvas.getBoundingClientRect()
-    const wp = c2w(e.clientX - r.left, e.clientY - r.top, worldRect, canvas.width, canvas.height)
+    const wp = c2w(e.clientX - r.left, e.clientY - r.top, worldRect, r.width, r.height)   // CSS px（キャンバスの画素は dpr 倍）
     setPendingTarget({ x: wp.x, y: wp.y })
   }
 
@@ -495,8 +506,8 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       <div style={labelStyle}>layer 0</div>
       <canvas
         ref={ovRef}
-        width={MINIMAP_W} height={ovH}
-        style={{ display: 'block', cursor: 'crosshair' }}
+        width={Math.round(MINIMAP_W * dpr)} height={Math.round(ovH * dpr)}
+        style={{ display: 'block', cursor: 'crosshair', width: MINIMAP_W, height: ovH }}
         onClick={e => { if (ovRef.current) handleCanvasClick(ovRef.current, ovBounds.current, e) }}
       />
 
@@ -508,8 +519,8 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
           </div>
           <canvas
             ref={ctxRef}
-            width={MINIMAP_W} height={CONTEXT_H}
-            style={{ display: 'block', cursor: 'crosshair' }}
+            width={Math.round(MINIMAP_W * dpr)} height={Math.round(CONTEXT_H * dpr)}
+            style={{ display: 'block', cursor: 'crosshair', width: MINIMAP_W, height: CONTEXT_H }}
             onClick={e => { if (ctxRef.current) handleCanvasClick(ctxRef.current, ctxRect.current, e) }}
           />
         </>
