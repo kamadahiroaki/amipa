@@ -54,7 +54,7 @@ log(f"遺伝子 {len(genes):,}、子（最長の転写産物）{sum(len(v) for v
 next_gid = cur.execute("SELECT max(gid) FROM gene").fetchone()[0] + 1
 next_fid = cur.execute("SELECT max(fid) FROM feature").fetchone()[0] + 1
 out_g, out_gt, out_f, out_ft = [], [], [], []
-nproj = 0; ncopy2 = 0
+nproj = 0; ncopy2 = 0; next_ext = [0, 0]   # 端を参照に無いノードまで広げた数（遺伝子, 子）
 # 各パスが共有する参照パスを先に 1 回の走査で調べ、参照ごとの内側のループをそのパスだけにする（11-02）。以前は参照ごとに全パスのトークンを読み、
 # 計算量が 参照パス数 × 全トークン数（全ゲノムは参照 24 本以上・トークン 44 億）。ノードと、それを含む参照パスの組を全部持つ（参照どうしの共有も落とさない）
 touch = [[] for _ in ref_pids]   # 参照ごとの、ノードを共有するパス
@@ -126,7 +126,26 @@ for k_ref, rp in enumerate(ref_pids):
                     if same and t[k] == rk_same: return off_same
                     if (not same) and t[k] == rk_rev: return off_rev
                     return full(k)
+                # 11-06: 端が参照に無いノード 1 つで置き換わっている（SNP・端の小さな indel）ときは、そのノードまで広げる。
+                #   条件: 写しの端の内側のトークンが参照の端の 1 つ内側、パス上の 1 つ外が参照に無いノード、2 つ外が参照の端の 1 つ外。
+                #   長さが参照の端のノードと同じならオフセットを引き継ぎ（ウォーク上の位置で）、違えばノード全体。
+                #   以前は端のノードが欠け、CDS の長さが 3 の倍数でなく変わって、ただの SNP がフレームシフトに見えていた（fly16 で fs の大半）
+                nt = t.size
+                def ext(k, start, rs0, re0, rso, reo):
+                    if same: rb, rof, inner, outer = (rs0, rso, rs0 + 1, rs0 - 1) if start else (re0 - 1, reo, re0 - 2, re0)
+                    else:    rb, rof, inner, outer = (re0 - 1, reo, re0 - 2, re0) if start else (rs0, rso, rs0 + 1, rs0 - 1)
+                    d = -1 if start else 1; k1, k2 = k + d, k + 2 * d
+                    if re0 - rs0 < 2 or k2 < 0 or k2 >= nt or r[k] != inner or r[k1] >= 0 or r[k2] != outer: return None
+                    L_, Lr = int(bp_of[t[k1]]), int(bp_of[rtok[rb]])
+                    if L_ != Lr or rof is None: return k1, (full0(k1) if start else full1(k1))
+                    w = rof if rori[rb] else Lr - 1 - rof
+                    if not same: w = L_ - 1 - w
+                    return k1, (w if oo[k1] else L_ - 1 - w)
                 so = bnd(s0, rtok[g[10]], g[12], rtok[g[11] - 1], g[13], full0); eo = bnd(e0 - 1, rtok[g[11] - 1], g[13], rtok[g[10]], g[12], full1)
+                x_ = ext(s0, True, g[10], g[11], g[12], g[13])
+                if x_: s0, so = x_[0], x_[1]; next_ext[0] += 1
+                x_ = ext(e0 - 1, False, g[10], g[11], g[12], g[13])
+                if x_: e0, eo = x_[0] + 1, x_[1]; next_ext[0] += 1
                 out_gt.append((ngid, s0, e0, so, eo))
                 # 子: 参照の範囲 [cs0, ce0) に引き直されるトークン（この写しの中）の最小〜最大
                 for f in kids.get(g[0], []):
@@ -135,7 +154,12 @@ for k_ref, rp in enumerate(ref_pids):
                     nfid = next_fid; next_fid += 1
                     out_f.append((nfid, pi, f[2], f[3], f[4], strand, f[6], f[7], ngid))
                     k0_, k1_ = int(sel.min()), int(sel.max())
-                    out_ft.append((nfid, k0_, k1_ + 1, bnd(k0_, rtok[f[8]], f[10], rtok[f[9] - 1], f[11], full0), bnd(k1_, rtok[f[9] - 1], f[11], rtok[f[8]], f[10], full1)))
+                    fo0 = bnd(k0_, rtok[f[8]], f[10], rtok[f[9] - 1], f[11], full0); fo1 = bnd(k1_, rtok[f[9] - 1], f[11], rtok[f[8]], f[10], full1)
+                    x_ = ext(k0_, True, f[8], f[9], f[10], f[11])
+                    if x_: k0_, fo0 = x_[0], x_[1]; next_ext[1] += 1
+                    x_ = ext(k1_, False, f[8], f[9], f[10], f[11])
+                    if x_: k1_, fo1 = x_[0], x_[1]; next_ext[1] += 1
+                    out_ft.append((nfid, k0_, k1_ + 1, fo0, fo1))
     log(f"参照 {p_names[rp]}: 写し {nproj:,}（累計）")
 
 cur.executemany("INSERT INTO gene(gid, pid, start, end, strand, type, name, locus, product, pseudo, fid, proj, frac) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", out_g)
@@ -144,4 +168,5 @@ cur.executemany("INSERT INTO feature(fid, pid, type, parent, phase, strand, star
 cur.executemany("INSERT INTO feature_tok VALUES (?,?,?,?,?)", out_ft)
 cur.execute("INSERT OR REPLACE INTO meta VALUES ('projected', ?)", (f"{nproj} genes from pids {ref_pids}, min_frac {a.min_frac}, {time.strftime('%Y-%m-%d %H:%M')}",))
 con.commit(); con.execute("VACUUM"); con.close()
+log(f"端を参照に無いノードまで広げた: 遺伝子の端 {next_ext[0]:,}、子の端 {next_ext[1]:,}")
 log(f"写した遺伝子 {nproj:,}（2 コピー以上の遺伝子×パス {ncopy2:,}）子 {len(out_f):,} → {a.out} ({os.path.getsize(a.out)/1e6:.0f} MB)")
