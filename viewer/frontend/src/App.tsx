@@ -1771,92 +1771,82 @@ export default function App() {
         {showPaths && (
           <>
             <div style={{
-              width: leftW, flexShrink: 0, overflow: "hidden",
-              background: "#fafafa", borderRight: "1px solid #c8cdd3",
-              display: "flex", flexDirection: "column",
-              fontFamily: "sans-serif", fontSize: 12, color: "#343a40", padding: 8,
+              width: leftW, flexShrink: 0, overflow: 'hidden',
+              background: 'var(--ui-surface)', borderRight: '1px solid var(--ui-border)',
+              display: 'flex', flexDirection: 'column', fontSize: 'var(--ui-fs)', color: 'var(--ui-text)',
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }} title="選択したパスはリボン描画と MSA 対象を兼ねる">
-                <select value={ribbonLevel} onChange={e => setRibbonLevel(e.target.value as 'none' | RibbonLevel)}
-                  style={{ flex: 1 }}>
-                  <option value="none">パス: なし</option>
-                  <option value="sample">パス: サンプル</option>
-                  <option value="haplotype">パス: ハプロタイプ</option>
-                  {(ribbonContig || !ribbonHapcov) && <option value="contig">パス: コンティグ</option>}
+              {/* 11-06 UI 見直し: 見出し＋単位の選択、絞り込み、操作の行、一覧 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 12px 8px' }} title="選んだパスはリボン描画・比較・絞り込みの対象になる">
+                <span style={{ fontWeight: 600, flex: 1 }}>パス</span>
+                <label htmlFor="ribbon-level" className="ui-sr">パスの単位</label>
+                <select id="ribbon-level" className="ui-select ui-select-sm" value={ribbonLevel} onChange={e => setRibbonLevel(e.target.value as 'none' | RibbonLevel)}>
+                  <option value="none">選ばない</option>
+                  <option value="sample">サンプル</option>
+                  <option value="haplotype">ハプロタイプ</option>
+                  {(ribbonContig || !ribbonHapcov) && <option value="contig">コンティグ</option>}
                 </select>
               </div>
-              {/* 2 行目: 操作ボタンは常に同じ並びで出す（選択の有無でレイアウトを変えない。使えないときは無効表示） */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: ribbonLevel !== 'none' ? 6 : 0 }}>
-                {/* hap 絞り込み描画: 選択群を通るノード・エッジだけ取得する（サイドカー必須） */}
-                {hapIdx && (
-                  <button onClick={() => setHapFilter(v => !v)}
-                    title={ribbonSel.size === 0
-                      ? '選択群だけ描画（先に下のリストで群を選ぶ）'
-                      : hapFilter
-                        ? '選択群だけ描画: ON（クリックで全体表示に戻す）'
-                        : `選択群だけ描画: OFF（クリックで ON。${hapIdx.nHap} hap 索引${
-                            hapIdx.mode === 'bucket' ? '・近似マスク+厳密判定' : ''}）`}
-                    style={{ flex: '0 0 auto', width: 20, height: 20, padding: 0, cursor: 'pointer',
-                      border: '1px solid ' + (hapFilter ? '#1971c2' : '#ced4da'), borderRadius: 3,
-                      background: hapFilter ? '#e7f5ff' : '#f8f9fa',
-                      color: hapFilter ? '#1971c2' : '#495057', lineHeight: 1, fontSize: 12 }}>
-                    🔍
-                  </button>
-                )}
-                {/* 全選択 / 反転: 絞り込み結果に対して */}
-                {(() => { const off = ribbonLevel === 'none' || pathGroups.length === 0
-                  const bs = (extra: React.CSSProperties = {}): React.CSSProperties => ({ flex: '0 0 auto', height: 20, padding: '0 6px', cursor: off ? 'default' : 'pointer',
-                    border: '1px solid #ced4da', borderRadius: 3, background: '#f8f9fa', color: '#495057', lineHeight: 1, fontSize: 11, opacity: off ? 0.45 : 1, ...extra })
-                  const noSel = off || ribbonSel.size === 0
-                  return (
-                    <>
-                      <button onClick={selectAllRibbon} disabled={off} title="表示中(絞り込み結果)を全選択" style={bs()}>全選択</button>
-                      <button onClick={invertRibbon} disabled={off} title="表示中(絞り込み結果)の選択を反転" style={bs()}>反転</button>
-                      <button onClick={() => setRibbonHidden(h => !h)} disabled={noSel}
-                        title={ribbonHidden ? 'リボンを再表示' : 'リボンを一時非表示（選択は維持）'}
-                        style={bs({ width: 20, padding: 0, fontSize: 12, background: ribbonHidden ? '#ffe3e3' : '#f8f9fa', color: ribbonHidden ? '#c92a2a' : '#495057', opacity: noSel ? 0.45 : 1 })}>
-                        {ribbonHidden ? '🙈' : '👁'}
-                      </button>
-                      <button onClick={() => { setRibbonSel(new Map()); setRibbonHidden(false) }} disabled={noSel}
-                        title={ribbonSel.size ? `選択を全解除（${ribbonSel.size} 群）` : '選択なし'}
-                        style={bs({ width: 20, padding: 0, fontSize: 12, opacity: noSel ? 0.45 : 1 })}>✕</button>
-                      <span style={{ marginLeft: 'auto', color: '#868e96', fontSize: 11, minWidth: 28, textAlign: 'right' }}>{ribbonSel.size ? `${ribbonSel.size} 群` : ''}</span>
-                    </>
-                  ) })()}
-              </div>
+              {ribbonLevel === 'none' && (
+                <div style={{ padding: '0 12px 12px', color: 'var(--ui-muted)', fontSize: 'var(--ui-fs-sm)', lineHeight: 1.6 }}>
+                  単位（サンプル・ハプロタイプ・コンティグ）を選ぶと一覧が出る。選んだパスはグラフにリボンで描く。
+                </div>
+              )}
               {ribbonLevel !== 'none' && (
                 <>
-                  {devMode && <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                  {devMode && <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '0 12px 8px' }}>
                     <span title="super-node の総塩基の θ% 以上を通れば通過。既定 0=少しでも通れば通過（表示フィルタと同じ基準）。上げると混雑は減るが、バブルは 1 ハプロタイプが総塩基の 1/アリル数しか覆えないためリボンが落ちやすい">θ {Math.round(ribbonTheta * 100)}%</span>
                     <input type="range" min={0} max={100} value={Math.round(ribbonTheta * 100)}
                       onChange={e => setRibbonTheta(Number(e.target.value) / 100)} style={{ flex: 1 }} />
                   </div>}
-                  <div style={{ display: 'flex', gap: 4, marginBottom: 6 }}>
-                    <input type="text" placeholder="絞り込み…" value={ribbonSearch}
-                      onChange={e => setRibbonSearch(e.target.value)}
-                      style={{ flex: 1, minWidth: 0, padding: '2px 4px', border: '1px solid #ced4da', borderRadius: 3 }} />
-                    <select value={ribbonSort} onChange={e => setRibbonSort(e.target.value as 'name' | 'cov')}
-                      title="一覧の並び"
-                      style={{ flex: '0 0 auto' }}>
+                  <div style={{ display: 'flex', gap: 6, padding: '0 12px 8px' }}>
+                    <label htmlFor="ribbon-q" className="ui-sr">絞り込み</label>
+                    <input id="ribbon-q" type="text" className="ui-input ui-select-sm" placeholder="絞り込み…" value={ribbonSearch}
+                      onChange={e => setRibbonSearch(e.target.value)} style={{ flex: 1, minWidth: 0 }} />
+                    <label htmlFor="ribbon-sort" className="ui-sr">並び</label>
+                    <select id="ribbon-sort" className="ui-select ui-select-sm" value={ribbonSort} onChange={e => setRibbonSort(e.target.value as 'name' | 'cov')} title="一覧の並び">
                       <option value="name">名前順</option>
                       <option value="cov">被覆順</option>
                     </select>
                   </div>
-                  <div style={{ overflowY: 'auto', flex: 1 }}>
+                  {(() => { const off = pathGroups.length === 0; const noSel = off || ribbonSel.size === 0
+                    return (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '0 12px 8px', flexWrap: 'wrap', fontSize: 'var(--ui-fs-sm)' }}>
+                        <span style={{ color: 'var(--ui-muted)', marginRight: 'auto' }}>{ribbonSel.size ? `選択 ${ribbonSel.size}` : `${pathGroups.length} 個`}</span>
+                        <button className="ui-btn ui-btn-sm ui-btn-ghost" onClick={selectAllRibbon} disabled={off} title="表示中（絞り込みの結果）を全部選ぶ">全選択</button>
+                        <button className="ui-btn ui-btn-sm ui-btn-ghost" onClick={invertRibbon} disabled={off} title="表示中（絞り込みの結果）の選択を反転">反転</button>
+                        <button className="ui-btn ui-btn-sm ui-btn-ghost" onClick={() => { setRibbonSel(new Map()); setRibbonHidden(false) }} disabled={noSel}
+                          title={ribbonSel.size ? `選択を全部外す（${ribbonSel.size} 個）` : '選択なし'}>解除</button>
+                      </div>
+                    ) })()}
+                  {(() => { const noSel = pathGroups.length === 0 || ribbonSel.size === 0
+                    return (
+                      <div style={{ display: 'flex', gap: 6, padding: '0 12px 8px', flexWrap: 'wrap' }}>
+                        <button className={'ui-btn ui-btn-sm' + (ribbonHidden ? ' is-on' : '')} onClick={() => setRibbonHidden(h => !h)} disabled={noSel}
+                          title="選択は保ったまま、グラフのリボンを一時的に隠す">{ribbonHidden ? 'リボンを出す' : 'リボンを隠す'}</button>
+                        {hapIdx && (
+                          <button className={'ui-btn ui-btn-sm' + (hapFilter ? ' is-on' : '')} onClick={() => setHapFilter(v => !v)}
+                            title={ribbonSel.size === 0 ? '選んだパスが通るノードだけ描く（先に一覧でパスを選ぶ）'
+                              : hapFilter ? '選んだパスが通るノードだけ描いている（押すと全体に戻す）'
+                              : `選んだパスが通るノードだけ描く。表示予算を超える場所でも深い層まで出せる（${hapIdx.nHap} hap の索引${hapIdx.mode === 'bucket' ? '・近似と厳密判定' : ''}）`}>
+                            選んだパスだけ描く
+                          </button>
+                        )}
+                      </div>
+                    ) })()}
+                  <div style={{ overflowY: 'auto', flex: 1, padding: '0 4px 8px', borderTop: '1px solid var(--ui-border)' }}>
                     {sortedPathGroups
                       .filter(g => !ribbonSearch || g.key.toLowerCase().includes(ribbonSearch.toLowerCase()))
                       .slice(0, 300).map(g => {
                         const sel = ribbonSel.get(g.key)
                         return (
-                          <div key={g.key} onClick={() => toggleRibbonGroup(g)}
-                            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '2px',
-                              cursor: 'pointer', borderRadius: 3, background: sel ? '#f1f3f5' : 'transparent' }}>
-                            <span style={{ width: 12, height: 12, borderRadius: 2, flex: '0 0 auto',
-                              border: '1px solid #adb5bd',
-                              background: sel ? '#' + sel.color.toString(16).padStart(6, '0') : '#ced4da' }} />
+                          <button key={g.key} onClick={() => toggleRibbonGroup(g)} className="ui-menu-item" aria-pressed={!!sel}
+                            style={{ minHeight: 28, padding: '4px 8px', marginTop: 2, background: sel ? 'var(--ui-accent-weak)' : undefined }}>
+                            <span style={{ width: 12, height: 12, borderRadius: 3, flex: '0 0 auto',
+                              border: sel ? 'none' : '1px solid var(--ui-border-strong)',
+                              background: sel ? '#' + sel.color.toString(16).padStart(6, '0') : 'transparent' }} />
                             <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.key}</span>
-                            {ribbonLevel !== 'contig' && <span style={{ color: '#868e96' }}>{g.n_contigs}</span>}
-                          </div>
+                            {ribbonLevel !== 'contig' && <span style={{ color: 'var(--ui-muted)', fontSize: 'var(--ui-fs-xs)' }} title="コンティグの数">{g.n_contigs}</span>}
+                          </button>
                         )
                       })}
                   </div>
@@ -2303,25 +2293,22 @@ export default function App() {
         />
 
         {/* Right panel — node detail */}
-        <div style={{ width: rightW, flexShrink: 0, overflowY: 'auto', background: '#fafafa' }}>
+        <div style={{ width: rightW, flexShrink: 0, overflowY: 'auto', background: 'var(--ui-surface)', borderLeft: '1px solid var(--ui-border)' }}>
           {rightW > 80 && (
             <>
             {/* リード/アラインメント検索（read_name または aln_id） */}
-            <div style={{ padding: '8px 10px', borderBottom: '1px solid #e9ecef' }}>
-              <div style={{ fontSize: 10, color: '#868e96', fontFamily: 'sans-serif', marginBottom: 3 }}>リード / aln_id 検索</div>
-              <div style={{ display: 'flex', gap: 4 }}>
-                <input value={readQuery} onChange={e => setReadQuery(e.target.value)}
+            <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--ui-border)' }}>
+              <label htmlFor="read-q" style={{ display: 'block', fontSize: 'var(--ui-fs-xs)', fontWeight: 600, color: 'var(--ui-muted)', letterSpacing: '0.04em', marginBottom: 6 }}>リードを探す</label>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input id="read-q" className="ui-input ui-select-sm" value={readQuery} onChange={e => setReadQuery(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') runReadSearch(readQuery) }}
-                  placeholder="read名 または aln_id" disabled={!selectedDb}
-                  style={{ flex: 1, minWidth: 0, fontSize: 11, padding: '3px 5px', fontFamily: 'monospace',
-                    border: '1px solid #ced4da', borderRadius: 3, outline: 'none' }} />
-                <button onClick={() => runReadSearch(readQuery)} disabled={!selectedDb || !readQuery.trim()}
-                  style={{ fontSize: 11, padding: '3px 8px', border: '1px solid #1971c2', borderRadius: 3,
-                    background: !selectedDb || !readQuery.trim() ? '#adb5bd' : '#1971c2', color: '#fff', cursor: 'pointer' }}>検索</button>
+                  placeholder={devMode ? 'リード名 または aln_id' : 'リード名'} disabled={!selectedDb}
+                  style={{ flex: 1, minWidth: 0, fontFamily: 'var(--ui-mono)', fontSize: 'var(--ui-fs-sm)' }} />
+                <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(readQuery)} disabled={!selectedDb || !readQuery.trim()}>検索</button>
               </div>
-              {readSearching && <div style={{ fontSize: 10, color: '#868e96', marginTop: 3 }}>検索中…</div>}
+              {readSearching && <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-muted)', marginTop: 4 }}>検索中…</div>}
               {readResults && !readSearching && readResults.length === 0 &&
-                <div style={{ fontSize: 10, color: '#e8590c', marginTop: 3 }}>該当なし</div>}
+                <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-warn)', marginTop: 4 }}>見つからない</div>}
               {readResults && readResults.length > 1 && (
                 <div style={{ marginTop: 4, maxHeight: 90, overflowY: 'auto' }}>
                   {readResults.map(r => (
@@ -2335,11 +2322,11 @@ export default function App() {
               )}
             </div>
             {selectedReadAln ? (
-              <div style={{ padding: '12px 14px', fontFamily: 'sans-serif', fontSize: 12,
+              <div style={{ padding: '12px 14px', fontSize: 12,
                             userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text' }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-                  borderBottom: '1px solid #e9ecef', paddingBottom: 8, marginBottom: 10 }}>
-                  <div style={{ fontWeight: 700, fontSize: 12, color: '#212529', wordBreak: 'break-all', flex: 1 }}>
+                  borderBottom: '1px solid var(--ui-border)', paddingBottom: 8, marginBottom: 10 }}>
+                  <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--ui-text)', wordBreak: 'break-all', flex: 1 }}>
                     {selectedReadAln.read_name ?? `aln_id ${selectedReadAln.aln_id}`}
                   </div>
                   <button onClick={() => { setSelectedReadAln(null); setReadResults(null) }} title="選択解除"
@@ -2349,45 +2336,41 @@ export default function App() {
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <tbody>
                     {([
-                      ['aln_id',     selectedReadAln.aln_id],
-                      ['sample',     selectedReadAln.sample_id ?? '?'],
-                      ['strand',     selectedReadAln.strand ?? '?'],
-                      ['query_len',  selectedReadAln.query_len?.toLocaleString() ?? '?'],
-                      ['通過ノード', selectedReadAln.n_segments],
+                      ...(devMode ? [['aln_id', selectedReadAln.aln_id]] : []),
+                      ['サンプル',   selectedReadAln.sample_id ?? '?'],
+                      ['鎖',         selectedReadAln.strand ?? '?'],
+                      ['リード長',   selectedReadAln.query_len?.toLocaleString() ?? '?'],
+                      ['通るノード', selectedReadAln.n_segments],
                     ] as [string, string | number][]).map(([k, v]) => (
                       <tr key={k}>
-                        <td style={{ color: '#868e96', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
-                        <td style={{ color: '#343a40', wordBreak: 'break-all' }}>{v}</td>
+                        <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
+                        <td style={{ color: 'var(--ui-text)', wordBreak: 'break-all' }}>{v}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                  <button onClick={addPathToView} title="このアライメントの経路ノードを view に一括追加（既にある view へ残りを追加／無ければ新 view）"
-                    style={{ fontSize: 10, padding: '3px 8px', border: '1px solid #1971c2',
-                      borderRadius: 3, background: '#e7f5ff', color: '#1971c2', cursor: 'pointer' }}>
-                    経路ノードを view に追加
+                  <button className="ui-btn ui-btn-sm is-on" onClick={addPathToView} title="このリードが通るノードを Alignment の view にまとめて足す（既にある view へ残りを足す／無ければ新しい view）">
+                    通るノードを Alignment に追加
                   </button>
                   {selectedReadAln.read_name && (
-                    <button onClick={() => runReadSearch(selectedReadAln.read_name!)}
-                      style={{ fontSize: 10, padding: '3px 8px', border: '1px solid #adb5bd',
-                        borderRadius: 3, background: '#fff', color: '#495057', cursor: 'pointer' }}>
-                      同名リードの他アライメントを探す
+                    <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(selectedReadAln.read_name!)}>
+                      同じリードの他の整列を探す
                     </button>
                   )}
                 </div>
                 {/* 経路ノード（このアライメントが通る全ノード） */}
-                <div style={{ marginTop: 10, borderTop: '1px solid #e9ecef', paddingTop: 8 }}>
-                  <div style={{ fontWeight: 600, fontSize: 11, color: '#868e96', marginBottom: 6 }}>
-                    経路ノード（{selectedReadAln.n_segments}）
+                <div style={{ marginTop: 10, borderTop: '1px solid var(--ui-border)', paddingTop: 8 }}>
+                  <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
+                    通るノード（{selectedReadAln.n_segments}）
                   </div>
                   {selectedReadAln.segments.map((s, i) => (
                     <div key={i} style={{ fontSize: 10, fontFamily: 'monospace', marginBottom: 6, lineHeight: 1.35 }}>
-                      <div style={{ color: '#212529', wordBreak: 'break-all' }}>{s.node_name ?? '?'}</div>
-                      <div style={{ color: '#868e96' }}>
+                      <div style={{ color: 'var(--ui-text)', wordBreak: 'break-all' }}>{s.node_name ?? '?'}</div>
+                      <div style={{ color: 'var(--ui-muted)' }}>
                         node {s.node_start.toLocaleString()}–{s.node_end.toLocaleString()} ({s.strand}) · q {s.query_start.toLocaleString()}–{s.query_end.toLocaleString()} · mq{s.mapq ?? '?'}
                       </div>
-                      <div style={{ color: '#868e96' }}>
+                      <div style={{ color: 'var(--ui-muted)' }}>
                         <span style={{ color: '#2f9e44' }}>= {s.nmatch}</span>{'  '}
                         <span style={{ color: '#e03131' }}>X {s.nmm}</span>{'  '}
                         <span style={{ color: '#f76707' }}>I {s.nins}</span>{'  '}
@@ -2399,10 +2382,10 @@ export default function App() {
               </div>
             ) : selectedNode ? (
               // ノード詳細はコピペできるよう選択可(index.html の body user-select:none を subtree で上書き)。
-              <div style={{ padding: '12px 14px', fontFamily: 'sans-serif', fontSize: 12,
+              <div style={{ padding: '12px 14px', fontSize: 12,
                             userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text' }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: '#212529', marginBottom: 10,
-                  wordBreak: 'break-all', borderBottom: '1px solid #e9ecef', paddingBottom: 8 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--ui-text)', marginBottom: 10,
+                  wordBreak: 'break-all', borderBottom: '1px solid var(--ui-border)', paddingBottom: 8 }}>
                   {selectedNode.node_name}
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -2413,46 +2396,48 @@ export default function App() {
                         `selectedNode.size.toLocaleString()` を呼んでいたため undefined で例外→
                         ErrorBoundary が無く React ごと落ちて画面が真っ暗になっていた。 */}
                     {([
-                      ['size',      num(selectedNode.size ?? selectedNodeInfo?.size)],
-                      ['kind',      ((): string => {
+                      ['長さ',      num(selectedNode.size ?? selectedNodeInfo?.size, true)],
+                      ['種類',      ((): string => {
                                       const k = selectedNode.kind ?? selectedNodeInfo?.kind
                                       return (k != null
-                                        ? ({ 0: 'leaf', 1: 'cluster', 2: 'flubble' } as Record<number, string>)[k]
-                                        : ({ n: 'leaf', S: 'flubble', G: 'cluster', X: 'other' } as Record<string, string>)[selectedNode.node_name[0]]) ?? '?'
+                                        ? ({ 0: '葉（元のノード）', 1: 'まとめたノード', 2: 'バブル' } as Record<number, string>)[k]
+                                        : ({ n: '葉（元のノード）', S: 'バブル', G: 'まとめたノード', X: 'その他' } as Record<string, string>)[selectedNode.node_name[0]]) ?? '?'
                                     })()],
-                      ['x',         fixed(selectedNode.xCoord, 6)],
-                      ['y',         fixed(selectedNode.yCoord, 6)],
-                      ['angle',     Number.isFinite(selectedNode.angle) ? (selectedNode.angle * 180 / Math.PI).toFixed(1) + '°' : '—'],
-                      ['radius',    fixed(selectedNode.radius, 6)],
-                      ['size (bp)', num(selectedNode.size ?? selectedNodeInfo?.size, true)],
+                      ...(devMode ? [
+                        ['size',      num(selectedNode.size ?? selectedNodeInfo?.size)],
+                        ['x',         fixed(selectedNode.xCoord, 6)],
+                        ['y',         fixed(selectedNode.yCoord, 6)],
+                        ['angle',     Number.isFinite(selectedNode.angle) ? (selectedNode.angle * 180 / Math.PI).toFixed(1) + '°' : '—'],
+                        ['radius',    fixed(selectedNode.radius, 6)],
+                      ] : []),
                     ] as [string, string | number][]).map(([k, v]) => (
                       <tr key={k}>
-                        <td style={{ color: '#868e96', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
-                        <td style={{ color: '#343a40', wordBreak: 'break-all' }}>{v}</td>
+                        <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
+                        <td style={{ color: 'var(--ui-text)', wordBreak: 'break-all' }}>{v}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
                 {/* A3: 参照座標(ref_bp)。クリックしたノードが ref_bp を持つときだけ表示。 */}
                 {selectedNode.ref_bp != null && (
-                  <div style={{ marginTop: 10, borderTop: '1px solid #e9ecef', paddingTop: 8 }}>
-                    <div style={{ fontWeight: 600, fontSize: 11, color: '#868e96', marginBottom: 6 }}>
+                  <div style={{ marginTop: 10, borderTop: '1px solid var(--ui-border)', paddingTop: 8 }}>
+                    <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
                       参照位置{refKey ? `（${refKey}）` : ''}
                     </div>
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                       <tbody>
                         {(([
                           ['コンティグ', refContigs.get(Number(selectedNode.ref_contig_id))?.name ?? `#${selectedNode.ref_contig_id}`],
-                          ['ref_bp',     fmtBpDetail(Number(selectedNode.ref_bp))],
+                          ['位置',       fmtBpDetail(Number(selectedNode.ref_bp))],
                           ...(selectedNode.ref_bp_end != null && Number(selectedNode.ref_bp_end) !== Number(selectedNode.ref_bp)
                             ? [['範囲', `${fmtBpDetail(Number(selectedNode.ref_bp))} – ${fmtBpDetail(Number(selectedNode.ref_bp_end))}`]]
                             : []),
-                          ['種別', selectedNode.ref_multi ? '複数位置（概算）'
-                                 : selectedNode.is_anchor ? 'アンカー（単値）' : '継承（概算）'],
+                          ['確かさ', selectedNode.ref_multi ? '参照の複数の位置に当たる（概算）'
+                                 : selectedNode.is_anchor ? '参照のノードそのもの' : '近くの参照のノードから（概算）'],
                         ] as [string, string | number][])).map(([k, v]) => (
                           <tr key={k}>
-                            <td style={{ color: '#868e96', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
-                            <td style={{ color: '#343a40', wordBreak: 'break-all' }}>{v}</td>
+                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
+                            <td style={{ color: 'var(--ui-text)', wordBreak: 'break-all' }}>{v}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -2461,33 +2446,33 @@ export default function App() {
                 )}
                 {/* アノテーション詳細: バンド / 領域 / 遺伝子(選択ノードに重なるもの)。遺伝子クリックで hull 表示。 */}
                 {(selectedNode.band_id != null || selectedNode.region_class != null || selectedNodeFeatures.length > 0) && (
-                  <div style={{ marginTop: 10, borderTop: '1px solid #e9ecef', paddingTop: 8 }}>
-                    <div style={{ fontWeight: 600, fontSize: 11, color: '#868e96', marginBottom: 6 }}>アノテーション</div>
+                  <div style={{ marginTop: 10, borderTop: '1px solid var(--ui-border)', paddingTop: 8 }}>
+                    <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>注釈</div>
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                       <tbody>
                         {selectedNode.band_id != null && bandDict.get(Number(selectedNode.band_id)) && (
                           <tr>
-                            <td style={{ color: '#868e96', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>バンド</td>
-                            <td style={{ color: '#343a40' }}>{bandDict.get(Number(selectedNode.band_id))!.name}（{bandDict.get(Number(selectedNode.band_id))!.gie_stain}）</td>
+                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>バンド</td>
+                            <td style={{ color: 'var(--ui-text)' }}>{bandDict.get(Number(selectedNode.band_id))!.name}（{bandDict.get(Number(selectedNode.band_id))!.gie_stain}）</td>
                           </tr>
                         )}
                         {selectedNode.region_class != null && regionDict.get(Number(selectedNode.region_class)) && (
                           <tr>
-                            <td style={{ color: '#868e96', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>領域</td>
-                            <td style={{ color: '#343a40' }}>{regionDict.get(Number(selectedNode.region_class))!.name}</td>
+                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>領域</td>
+                            <td style={{ color: 'var(--ui-text)' }}>{regionDict.get(Number(selectedNode.region_class))!.name}</td>
                           </tr>
                         )}
                         {selectedNode.gene_count != null && Number(selectedNode.gene_count) > 0 && (
                           <tr>
-                            <td style={{ color: '#868e96', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>遺伝子数</td>
-                            <td style={{ color: '#343a40' }}>{selectedNode.gene_count}</td>
+                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>遺伝子数</td>
+                            <td style={{ color: 'var(--ui-text)' }}>{selectedNode.gene_count}</td>
                           </tr>
                         )}
                       </tbody>
                     </table>
                     {selectedNodeFeatures.length > 0 && (
                       <div style={{ marginTop: 6 }}>
-                        <div style={{ fontSize: 10, color: '#868e96', marginBottom: 3 }}>遺伝子（クリックで hull 表示）</div>
+                        <div style={{ fontSize: 10, color: 'var(--ui-muted)', marginBottom: 3 }}>遺伝子（クリックでその遺伝子の範囲を囲む）</div>
                         {selectedNodeFeatures.map(f => {
                           let a: { strand?: string; gene_type?: string } = {}
                           try { a = JSON.parse(f.attrs || '{}') } catch { /* ignore */ }
@@ -2498,7 +2483,7 @@ export default function App() {
                               style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
                                 padding: '2px 0', cursor: 'pointer' }}>
                               <span style={{ color: '#2b8a3e', fontWeight: 600 }}>{f.name}</span>
-                              <span style={{ fontSize: 10, color: '#868e96' }}>
+                              <span style={{ fontSize: 10, color: 'var(--ui-muted)' }}>
                                 {a.strand === '-' ? '◄' : a.strand === '+' ? '►' : ''} {f.exonic ? 'exon' : 'intron'}
                                 {a.gene_type && a.gene_type !== 'protein_coding' ? ` · ${a.gene_type}` : ''}
                               </span>
@@ -2511,26 +2496,24 @@ export default function App() {
                 )}
                 {/* 葉ノードの塩基配列(leaf_seq)。葉のみ・--emit-seq 済 DB のみ。巨大配列は先頭のみ+全長取得ボタン。 */}
                 {leafSeq?.available && leafSeq.leaf && leafSeq.seq != null && (
-                  <div style={{ marginTop: 10, borderTop: '1px solid #e9ecef', paddingTop: 8 }}>
+                  <div style={{ marginTop: 10, borderTop: '1px solid var(--ui-border)', paddingTop: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       marginBottom: 6 }}>
-                      <span style={{ fontWeight: 600, fontSize: 11, color: '#868e96' }}>
+                      <span style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)' }}>
                         塩基配列 {(leafSeq.len ?? 0).toLocaleString()} bp
                       </span>
                       <button
                         onClick={() => navigator.clipboard?.writeText(leafSeq.seq ?? '')}
-                        style={{ fontSize: 10, padding: '2px 6px', border: '1px solid #ced4da',
-                          borderRadius: 3, background: '#f8f9fa', cursor: 'pointer', color: '#495057' }}
-                        title="表示中の配列をコピー">コピー</button>
+                        className="ui-btn ui-btn-sm" title="表示中の配列をコピー">コピー</button>
                     </div>
-                    <div style={{ fontFamily: 'monospace', fontSize: 11, lineHeight: 1.4, color: '#343a40',
+                    <div style={{ fontFamily: 'monospace', fontSize: 11, lineHeight: 1.4, color: 'var(--ui-text)',
                       wordBreak: 'break-all', whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto',
-                      background: '#f8f9fa', border: '1px solid #e9ecef', borderRadius: 3, padding: 6,
+                      background: '#f8f9fa', border: '1px solid var(--ui-border)', borderRadius: 3, padding: 6,
                       userSelect: 'text', WebkitUserSelect: 'text' }}>
                       {leafSeq.seq}
                     </div>
                     {leafSeq.truncated && !leafSeqFull && (
-                      <div style={{ marginTop: 5, fontSize: 10, color: '#868e96' }}>
+                      <div style={{ marginTop: 5, fontSize: 10, color: 'var(--ui-muted)' }}>
                         先頭 {(leafSeq.seq.length).toLocaleString()} bp を表示中（全 {(leafSeq.len ?? 0).toLocaleString()} bp）。
                         <button
                           onClick={() => {
@@ -2538,8 +2521,7 @@ export default function App() {
                             fetchLeafSeq(selectedDb, selectedNode.node_name, true)
                               .then(r => { setLeafSeq(r); setLeafSeqFull(true) }).catch(() => {})
                           }}
-                          style={{ marginLeft: 6, fontSize: 10, padding: '2px 6px', border: '1px solid #ced4da',
-                            borderRadius: 3, background: '#f8f9fa', cursor: 'pointer', color: '#495057' }}>
+                          className="ui-btn ui-btn-sm" style={{ marginLeft: 6 }}>
                           全長を取得
                         </button>
                       </div>
@@ -2548,9 +2530,8 @@ export default function App() {
                 )}
               </div>
             ) : (
-              <div style={{ padding: 16, color: '#ced4da', fontSize: 12,
-                fontFamily: 'sans-serif', textAlign: 'center', marginTop: 20 }}>
-                ノード/リードをクリック、または上で検索
+              <div style={{ padding: 20, color: 'var(--ui-muted)', fontSize: 'var(--ui-fs-sm)', textAlign: 'center', marginTop: 12, lineHeight: 1.7 }}>
+                グラフのノードをクリックすると、ここに詳細が出る
               </div>
             )}
             </>

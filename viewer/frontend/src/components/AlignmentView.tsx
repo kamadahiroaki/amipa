@@ -404,24 +404,24 @@ export default function AlignmentView({
   }
 
   return (
-    <div style={{ height, display: 'flex', flexDirection: 'column', background: '#f8f9fa' }}>
+    <div style={{ height, display: 'flex', flexDirection: 'column', background: '#f7f8fa' }}>
 
       {/* Top bar */}
       <div style={{
         height: TOPBAR_H, flexShrink: 0,
         display: 'flex', alignItems: 'center', gap: 6, padding: '0 8px',
-        borderBottom: '1px solid #dee2e6', background: '#f1f3f5',
+        borderBottom: '1px solid #dee2e6', background: '#ffffff',
       }}>
         <button
           onClick={onAddRow}
-          title="新しいビューを追加"
+          title="新しいビュー（ノードを並べて比べる段）を足す"
           style={{
-            fontFamily: 'sans-serif', fontSize: 12, padding: '2px 10px',
-            border: '1px solid #7950f2', borderRadius: 4,
-            background: '#7950f2', color: '#fff', cursor: 'pointer',
+            fontSize: 12, padding: '2px 10px',
+            border: '1px solid #2563eb', borderRadius: 6,
+            background: '#2563eb', color: '#fff', cursor: 'pointer',
           }}
         >
-          view +
+          ビュー ＋
         </button>
       </div>
 
@@ -429,7 +429,7 @@ export default function AlignmentView({
       <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
         {rows.length === 0 ? (
           <div style={{ height: bodyH, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#adb5bd', fontFamily: 'sans-serif', fontSize: 13 }}>
+            color: '#d0d5dd', fontSize: 13 }}>
             ノードをクリックしてアラインメントを表示
           </div>
         ) : (
@@ -1008,7 +1008,7 @@ ${parts.join('\n')}
           alignSelf: 'stretch', width: 22, flexShrink: 0, cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           border: '1px dashed #b197fc', borderRadius: 3, background: '#f3f0ff',
-          color: '#7950f2', fontSize: 10, fontFamily: 'sans-serif', writingMode: 'vertical-rl',
+          color: '#2563eb', fontSize: 10, writingMode: 'vertical-rl',
         }}
         onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#e5dbff' }}
         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#f3f0ff' }}
@@ -1139,7 +1139,7 @@ ${parts.join('\n')}
                 height: RESIZE_H, flexShrink: 0, cursor: 'ns-resize',
                 background: '#dee2e6', transition: 'background 0.1s',
               }}
-              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#7950f2' }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#2563eb' }}
               onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#dee2e6' }}
             />
           </Fragment>
@@ -1164,7 +1164,7 @@ ${parts.join('\n')}
               height: DROP_LANE_H, cursor: 'pointer',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               border: '1px dashed #b197fc', borderRadius: 3, background: '#f3f0ff',
-              color: '#7950f2', fontSize: 11, fontFamily: 'sans-serif',
+              color: '#2563eb', fontSize: 11, fontFamily: 'sans-serif',
             }}
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = '#e5dbff' }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = '#f3f0ff' }}
@@ -1220,7 +1220,7 @@ ${parts.join('\n')}
     <div style={{
       height: gridContentH, display: 'flex', flexDirection: 'column',
       borderBottom: '1px solid #dee2e6', background: '#fff', overflow: 'hidden',
-      outline: isActive ? '2px solid #7950f2' : 'none',
+      outline: isActive ? '2px solid #2563eb' : 'none',
       outlineOffset: -2,
     }}>
       {/* Main content: sidebar + grid */}
@@ -1228,7 +1228,7 @@ ${parts.join('\n')}
         {/* Sidebar: controls */}
         <div style={{
           width: 58, flexShrink: 0,
-          background: isActive ? '#f3f0ff' : '#f8f9fa',
+          background: isActive ? '#e8effd' : '#f7f8fa',
           borderRight: '1px solid #dee2e6',
           display: 'flex', flexDirection: 'column',
           alignItems: 'center', justifyContent: 'flex-start', gap: 4, padding: '4px 0',
@@ -1237,25 +1237,25 @@ ${parts.join('\n')}
             onClick={onToggleNodeAdd}
             title={isActive ? 'ノード追加モードをOFF' : 'ノード追加モードをON'}
             style={{
-              fontFamily: 'sans-serif', fontSize: 11, padding: '2px 6px',
+              fontSize: 11, padding: '2px 6px',
               border: '1px solid',
-              borderColor: isActive ? '#7950f2' : '#adb5bd',
-              borderRadius: 3,
-              background: isActive ? '#7950f2' : '#fff',
-              color: isActive ? '#fff' : '#495057',
+              borderColor: isActive ? '#2563eb' : '#d0d5dd',
+              borderRadius: 5,
+              background: isActive ? '#2563eb' : '#fff',
+              color: isActive ? '#fff' : '#374151',
               cursor: 'pointer',
               fontWeight: isActive ? 700 : 400,
             }}
           >
-            node +
+            ノード＋
           </button>
           <button
             onClick={onRemoveRow}
             title="このビューを削除"
             style={{
-              fontFamily: 'sans-serif', fontSize: 11, padding: '2px 6px',
-              border: '1px solid #fa5252', borderRadius: 3,
-              background: '#fff', color: '#fa5252', cursor: 'pointer',
+              fontSize: 11, padding: '2px 6px',
+              border: '1px solid #fa5252', borderRadius: 5,
+              background: '#fff', color: '#c62828', cursor: 'pointer',
             }}
           >
             削除
@@ -1265,15 +1265,15 @@ ${parts.join('\n')}
             const bi = ZOOM_ORDER.indexOf(boardZoom)
             const set = (i: number) => { setBoardZoom(ZOOM_ORDER[i]); setNodeZoom({}) }
             const bbtn = (dis: boolean) => ({
-              fontFamily: 'sans-serif', fontSize: 12, lineHeight: 1, padding: '2px 6px',
-              border: 'none', background: '#fff', color: dis ? '#ced4da' : '#495057',
+              fontSize: 12, lineHeight: 1, padding: '2px 6px',
+              border: 'none', background: '#fff', color: dis ? '#d0d5dd' : '#374151',
               cursor: dis ? 'default' : 'pointer',
             } as const)
             return (
               <div title={`全ノードの縮尺: ${ZOOM_TITLE[boardZoom]}（現在値はノード上端のルーラー参照。個別はタイルのヘッダで変更）`}
                 style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <span style={{ fontFamily: 'sans-serif', fontSize: 9, color: '#868e96', lineHeight: 1.4 }}>縮尺</span>
-                <div style={{ display: 'flex', border: '1px solid #adb5bd', borderRadius: 3, overflow: 'hidden' }}>
+                <span style={{ fontSize: 9, color: '#5b6472', lineHeight: 1.4 }}>縮尺</span>
+                <div style={{ display: 'flex', border: '1px solid #adb5bd', borderRadius: 5, overflow: 'hidden' }}>
                   <button onClick={() => set(bi - 1)} disabled={bi <= 0} title="縮小（×10）"
                     style={bbtn(bi <= 0)}>−</button>
                   <button onClick={() => set(bi + 1)} disabled={bi >= ZOOM_ORDER.length - 1} title="拡大（×10）"
@@ -1287,12 +1287,12 @@ ${parts.join('\n')}
             onClick={() => setShowConnectors(v => !v)}
             title={showConnectors ? 'コネクタ線を非表示' : 'コネクタ線を表示'}
             style={{
-              fontFamily: 'sans-serif', fontSize: 10, padding: '2px 0', width: 50, marginTop: 2,
-              border: '1px solid', borderColor: showConnectors ? '#1971c2' : '#adb5bd', borderRadius: 3,
-              background: showConnectors ? '#1971c2' : '#fff',
-              color: showConnectors ? '#fff' : '#495057', cursor: 'pointer',
+              fontSize: 10, padding: '2px 0', width: 50, marginTop: 2,
+              border: '1px solid', borderColor: showConnectors ? '#2563eb' : '#d0d5dd', borderRadius: 5,
+              background: showConnectors ? '#2563eb' : '#fff',
+              color: showConnectors ? '#fff' : '#374151', cursor: 'pointer',
             }}>
-            線 {showConnectors ? 'ON' : 'OFF'}
+            線
           </button>
           {/* リードの縦位置。既定は上に詰める（縦が短い）。列をまたいで 1 本を目で追いたいときは
               「1本1段」にすると、同じリードが**全ノードで同じ高さ**に並ぶ（段は伸びる）。 */}
@@ -1303,11 +1303,11 @@ ${parts.join('\n')}
                 + '押すと 1 リード 1 段になり、列をまたいで同じ高さに並びます'
               : '1 リード 1 段（全ノードで同じ高さ＝列をまたいで追える）。押すと上に詰める表示に戻ります'}
             style={{
-              fontFamily: 'sans-serif', fontSize: 11, padding: '2px 6px', marginTop: 2,
-              border: '1px solid', borderColor: readRows === 'unique' ? '#1971c2' : '#adb5bd',
-              borderRadius: 3,
-              background: readRows === 'unique' ? '#1971c2' : '#fff',
-              color: readRows === 'unique' ? '#fff' : '#495057', cursor: 'pointer',
+              fontSize: 11, padding: '2px 6px', marginTop: 2,
+              border: '1px solid', borderColor: readRows === 'unique' ? '#2563eb' : '#d0d5dd',
+              borderRadius: 5,
+              background: readRows === 'unique' ? '#2563eb' : '#fff',
+              color: readRows === 'unique' ? '#fff' : '#374151', cursor: 'pointer',
             }}>
             {readRows === 'unique' ? '1本1段' : '詰める'}
           </button>
@@ -1324,23 +1324,23 @@ ${parts.join('\n')}
             onBlur={() => commitMapq(mapqInput)}
             style={{
               width: 50, marginTop: 2, padding: '2px 4px', boxSizing: 'border-box',
-              fontFamily: 'sans-serif', fontSize: 10, textAlign: 'center',
+              fontSize: 10, textAlign: 'center',
               // 上書き=青、大域追従(有効)=緑、無効=灰
-              border: `1px solid ${mapqOverride != null ? '#1971c2' : effMapq > 0 ? '#2f9e44' : '#adb5bd'}`,
-              borderRadius: 3,
-              background: mapqOverride != null ? '#e7f5ff' : effMapq > 0 ? '#ebfbee' : '#fff',
-              color: mapqOverride != null ? '#1971c2' : effMapq > 0 ? '#2f9e44' : '#495057', outline: 'none',
+              border: `1px solid ${mapqOverride != null ? '#2563eb' : effMapq > 0 ? '#2f9e44' : '#d0d5dd'}`,
+              borderRadius: 5,
+              background: mapqOverride != null ? '#e8effd' : effMapq > 0 ? '#ebfbee' : '#fff',
+              color: mapqOverride != null ? '#2563eb' : effMapq > 0 ? '#2f9e44' : '#374151', outline: 'none',
             }}
           />
           {/* リード塗りモード（1ボタン循環）: 自動→鎖→[株]→灰 */}
           <button onClick={cycleFill} title={FILL_TITLE[readFill]}
             style={{
               width: 50, marginTop: 2, padding: '2px 0', boxSizing: 'border-box',
-              fontFamily: 'sans-serif', fontSize: 10, cursor: 'pointer',
-              border: `1px solid ${readFill === 'auto' ? '#adb5bd' : FILL_BG[readFill]}`,
-              borderRadius: 3,
+              fontSize: 10, cursor: 'pointer',
+              border: `1px solid ${readFill === 'auto' ? '#d0d5dd' : FILL_BG[readFill]}`,
+              borderRadius: 5,
               background: readFill === 'auto' ? '#fff' : FILL_BG[readFill],
-              color: readFill === 'auto' ? '#495057' : '#fff',
+              color: readFill === 'auto' ? '#374151' : '#fff',
             }}>
             色:{FILL_LABEL[readFill]}
           </button>
@@ -1349,33 +1349,33 @@ ${parts.join('\n')}
             title={cbSafe ? '色覚対応パレット ON（塩基/鎖/変異色を CB-safe に）— クリックで慣習色へ' : '色覚対応パレット OFF（IGV 慣習色）— クリックで CB-safe へ'}
             style={{
               width: 50, marginTop: 2, padding: '2px 0', boxSizing: 'border-box',
-              fontFamily: 'sans-serif', fontSize: 10, cursor: 'pointer',
-              border: `1px solid ${cbSafe ? '#0072B2' : '#adb5bd'}`, borderRadius: 3,
-              background: cbSafe ? '#0072B2' : '#fff', color: cbSafe ? '#fff' : '#495057',
+              fontSize: 10, cursor: 'pointer',
+              border: `1px solid ${cbSafe ? '#0072B2' : '#d0d5dd'}`, borderRadius: 5,
+              background: cbSafe ? '#0072B2' : '#fff', color: cbSafe ? '#fff' : '#374151',
             }}>
-            CB:{cbSafe ? 'ON' : 'OFF'}
+            色覚
           </button>
           {/* 8.1 別ファイル SVG: 画面のアラインメントをそのままベクタ化 */}
           <button onClick={exportAlignPileup} title="今表示中のアラインメント（塩基/CIGAR/cs:Z・ノード跨ぎ線を含む）をそのまま SVG に書き出し（現ビューポート範囲）"
             style={{
               width: 50, marginTop: 2, padding: '2px 0', boxSizing: 'border-box',
-              fontFamily: 'sans-serif', fontSize: 10, cursor: 'pointer',
-              border: '1px solid #adb5bd', borderRadius: 3, background: '#fff', color: '#495057',
+              fontSize: 10, cursor: 'pointer',
+              border: '1px solid #adb5bd', borderRadius: 5, background: '#fff', color: '#374151',
             }}>
             SVG
           </button>
           {/* 株フォーカス（複数サンプルあるとき）: 絞り込み↔強調 + サンプルチップ（任意の1〜複数を選択） */}
           {samples.length > 1 && (
             <>
-              <div style={{ display: 'flex', border: '1px solid #adb5bd', borderRadius: 3, overflow: 'hidden', width: 50, marginTop: 2 }}>
+              <div style={{ display: 'flex', border: '1px solid #adb5bd', borderRadius: 5, overflow: 'hidden', width: 50, marginTop: 2 }}>
                 {([[false, '絞込'], [true, '強調']] as const).map(([hl, label], i) => (
                   <button key={label} onClick={() => setSampleHighlight(hl)}
                     title={hl ? '強調: 非選択サンプルを灰で残す' : '絞込: 非選択サンプルを非表示にする'}
                     style={{
-                      flex: 1, fontFamily: 'sans-serif', fontSize: 9, padding: '2px 0',
+                      flex: 1, fontSize: 9, padding: '2px 0',
                       border: 'none', borderLeft: i > 0 ? '1px solid #adb5bd' : 'none',
-                      background: sampleHighlight === hl ? '#1971c2' : '#fff',
-                      color: sampleHighlight === hl ? '#fff' : '#495057',
+                      background: sampleHighlight === hl ? '#2563eb' : '#fff',
+                      color: sampleHighlight === hl ? '#fff' : '#374151',
                       cursor: 'pointer',
                     }}>
                     {label}
@@ -1390,8 +1390,8 @@ ${parts.join('\n')}
                   return (
                     <div key={sid} title={sid} onClick={() => toggleSample(sid)} style={{
                       width: 11, height: 11, borderRadius: 2, cursor: 'pointer',
-                      background: active ? color : '#dee2e6',
-                      border: `1px solid ${active ? color : '#adb5bd'}`,
+                      background: active ? color : '#e4e7ec',
+                      border: `1px solid ${active ? color : '#d0d5dd'}`,
                     }} />
                   )
                 })}
@@ -1412,8 +1412,8 @@ ${parts.join('\n')}
                   style={{
                     flex: 1, height: bandHeights[0], cursor: 'pointer',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    border: '2px dashed #b197fc', borderRadius: 4, background: '#f3f0ff',
-                    color: '#7950f2', fontFamily: 'sans-serif', fontSize: 13,
+                    border: '2px dashed #b197fc', borderRadius: 6, background: '#e8effd',
+                    color: '#2563eb', fontSize: 13,
                   }}>
                   ＋ ここに「{pendingNode.node_name}」を追加
                 </div>
@@ -1424,7 +1424,7 @@ ${parts.join('\n')}
                 <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontFamily: 'sans-serif', fontSize: 12 }}>
                   {isActive ? (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, color: '#7950f2' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 3, color: '#2563eb' }}>
                       <span><b>①</b> グラフの葉ノード（n…）をクリック → 右へ並ぶ</span>
                       <span><b>②</b> <b style={{ color: '#0c8599' }}>⠿</b> を左右へドラッグ → 並べ替え</span>
                       <span><b>③</b> <b style={{ color: '#0c8599' }}>⠿</b> を列の上下へドラッグ → 段を分ける</span>
@@ -1596,7 +1596,7 @@ function NodeColumn({ node, headerH, bodyH, zoomMode, onSetZoom, dbFile, readEnt
     <div style={{
       width: '100%', height: headerH + bodyH, flexShrink: 0,
       display: 'flex', flexDirection: 'column',
-      border: '1px solid #dee2e6', borderRadius: 3, overflow: 'hidden',
+      border: '1px solid #dee2e6', borderRadius: 5, overflow: 'hidden',
     }}>
       {/* Header */}
       <div data-node-hdr={node.node_name} style={{
@@ -1625,17 +1625,17 @@ function NodeColumn({ node, headerH, bodyH, zoomMode, onSetZoom, dbFile, readEnt
           title={tagColor ? 'このノードの色分け選択を解除' : 'このノードで色分け（通るリードを着色）'}
           style={{
             width: 12, height: 12, flexShrink: 0, cursor: 'pointer', padding: 0,
-            borderRadius: 3, border: `1px solid ${tagColor ?? '#adb5bd'}`,
+            borderRadius: 5, border: `1px solid ${tagColor ?? '#d0d5dd'}`,
             background: tagColor ?? '#fff',
           }} />
         <span style={{
-          fontFamily: 'monospace', fontSize: 11, color: '#343a40',
+          fontFamily: 'monospace', fontSize: 11, color: '#1f2937',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1, minWidth: 0,
         }}>
           {node.node_name}
         </span>
         {showSize && (
-          <span style={{ fontFamily: 'sans-serif', fontSize: 10, color: '#868e96', whiteSpace: 'nowrap', flexShrink: 0 }}>
+          <span style={{ fontSize: 10, color: '#5b6472', whiteSpace: 'nowrap', flexShrink: 0 }}>
             {node.size >= 1e6
               ? `${(node.size / 1e6).toFixed(1)}M`
               : node.size >= 1000
@@ -1649,15 +1649,15 @@ function NodeColumn({ node, headerH, bodyH, zoomMode, onSetZoom, dbFile, readEnt
           const cur: ZoomMode = isFit ? 'fit' : zoomMode
           const ci = Math.max(0, steps.indexOf(cur))
           const zbtn = (dis: boolean) => ({
-            fontFamily: 'sans-serif', fontSize: 11, lineHeight: 1, padding: '1px 4px',
-            border: 'none', background: '#fff', color: dis ? '#ced4da' : '#495057',
+            fontSize: 11, lineHeight: 1, padding: '1px 4px',
+            border: 'none', background: '#fff', color: dis ? '#d0d5dd' : '#374151',
             cursor: dis ? 'default' : 'pointer',
           } as const)
           return (
-            <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, border: '1px solid #ced4da', borderRadius: 3, overflow: 'hidden' }}>
+            <div style={{ display: 'flex', alignItems: 'center', flexShrink: 0, border: '1px solid #ced4da', borderRadius: 5, overflow: 'hidden' }}>
               <button onClick={() => onSetZoom(stepZoom(cur, -1, steps))} disabled={ci <= 0}
                 title="縮小（×10）" style={zbtn(ci <= 0)}>−</button>
-              <span style={{ fontFamily: 'sans-serif', fontSize: 9, padding: '0 2px', color: '#495057', minWidth: 16, textAlign: 'center', borderLeft: '1px solid #ced4da', borderRight: '1px solid #ced4da' }}
+              <span style={{ fontSize: 9, padding: '0 2px', color: '#374151', minWidth: 16, textAlign: 'center', borderLeft: '1px solid #ced4da', borderRight: '1px solid #ced4da' }}
                 title={ZOOM_TITLE[cur]}>{ZOOM_SHORT[cur]}</span>
               <button onClick={() => onSetZoom(stepZoom(cur, 1, steps))} disabled={ci >= steps.length - 1}
                 title="拡大（×10）" style={zbtn(ci >= steps.length - 1)}>＋</button>
@@ -1675,13 +1675,13 @@ function NodeColumn({ node, headerH, bodyH, zoomMode, onSetZoom, dbFile, readEnt
           <button onClick={onToggleFlip} title="左右反転"
             style={{ border: 'none', background: 'none', cursor: 'pointer', flexShrink: 0,
               fontSize: 12, lineHeight: 1, padding: '0 2px',
-              color: flipped ? '#7950f2' : '#adb5bd', fontWeight: flipped ? 700 : 400 }}>
+              color: flipped ? '#2563eb' : '#d0d5dd', fontWeight: flipped ? 700 : 400 }}>
             ⇄
           </button>
         )}
         <button onClick={onRemove} title="ノードを削除"
           style={{ border: 'none', background: 'none', cursor: 'pointer',
-            color: '#adb5bd', fontSize: 12, lineHeight: 1, padding: '0 1px', flexShrink: 0 }}>
+            color: '#d0d5dd', fontSize: 12, lineHeight: 1, padding: '0 1px', flexShrink: 0 }}>
           ×
         </button>
       </div>

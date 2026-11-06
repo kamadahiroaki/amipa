@@ -473,19 +473,20 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
 
   // ── ラベルスタイル ────────────────────────────────────────────────────
   const labelStyle: React.CSSProperties = {
-    padding: '2px 6px', fontSize: 10, color: '#868e96',
-    fontFamily: 'sans-serif', background: '#f1f3f5',
-    borderBottom: '1px solid #e9ecef',
+    padding: '4px 10px', fontSize: 11, color: 'var(--ui-muted, #5b6472)',
+    background: 'var(--ui-surface, #fff)',
+    borderBottom: '1px solid var(--ui-border, #e4e7ec)',
   }
+  const DEV = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('dev')
 
   return (
     <div style={{
       position: 'absolute', top: 8, right: 8, zIndex: 10,
       pointerEvents: clickThrough ? 'none' : undefined,   // 編集モード中はクリックを canvas へ通す
-      background: 'rgba(255,255,255,0.92)',
-      border: '1px solid #dee2e6',
-      borderRadius: 6,
-      boxShadow: '0 2px 8px rgba(0,0,0,0.18)',
+      background: 'rgba(255,255,255,0.96)',
+      border: '1px solid var(--ui-border, #e4e7ec)',
+      borderRadius: 8,
+      boxShadow: '0 2px 8px rgba(16,24,40,0.08)',
       overflow: 'hidden',
       userSelect: 'none',
       width: MINIMAP_W,
@@ -493,7 +494,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       {/* ヘッダ（タイトル＋最小化トグル） */}
       <div style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4,
         borderBottom: collapsed ? 'none' : labelStyle.borderBottom }}>
-        <span style={{ fontWeight: 600, flex: 1 }}>ミニマップ</span>
+        <span style={{ fontWeight: 600, flex: 1, color: 'var(--ui-text, #1f2937)', fontSize: 12 }}>ミニマップ</span>
         <button onClick={() => setCollapsed(c => !c)} title={collapsed ? '開く' : '最小化'}
           style={{ border: 'none', background: 'transparent', cursor: 'pointer',
             fontSize: 11, color: '#495057', padding: '0 2px', lineHeight: 1 }}>
@@ -503,7 +504,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
 
       {!collapsed && (<>
       {/* 全体マップ */}
-      <div style={labelStyle}>layer 0</div>
+      <div style={labelStyle}>全体</div>
       <canvas
         ref={ovRef}
         width={Math.round(MINIMAP_W * dpr)} height={Math.round(ovH * dpr)}
@@ -515,7 +516,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       {showCtx && (
         <>
           <div style={{ ...labelStyle, borderTop: '1px solid #e9ecef' }}>
-            周辺（×{Math.round(zoom)}）· layer {Math.max(0, layer - CONTEXT_OFFSET)}
+            周辺（×{Math.round(zoom)}）{DEV ? ` · layer ${Math.max(0, layer - CONTEXT_OFFSET)}` : ''}
           </div>
           <canvas
             ref={ctxRef}
