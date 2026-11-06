@@ -2396,7 +2396,7 @@ export default function App() {
                         `selectedNode.size.toLocaleString()` を呼んでいたため undefined で例外→
                         ErrorBoundary が無く React ごと落ちて画面が真っ暗になっていた。 */}
                     {([
-                      ['長さ',      num(selectedNode.size ?? selectedNodeInfo?.size, true)],
+                      ['長さ',      ((v: string) => v === '—' ? v : v + ' bp')(num(selectedNode.size ?? selectedNodeInfo?.size, true))],
                       ['種類',      ((): string => {
                                       const k = selectedNode.kind ?? selectedNodeInfo?.kind
                                       return (k != null
