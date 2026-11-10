@@ -522,9 +522,9 @@ export default function App() {
   //   閾値を √(V/B) 倍に下げて（グリフ数は拡大率の 2 乗に反比例）早く深い層に降りる。それでも予算を超える所は /pick_layer と絞りモードの予算判定が粗い層に戻す。
   //   予算が無制限なら較正のまま
   //   11-05: 無制限（0）は上限を掛けないだけで、層の選び方は最大の予算と同じにする（以前は較正のまま＝最も浅く、予算 100,000 より粗い層になった）
-  const layerZoomRef = useRef<number[] | null>(null); const lodMetaRef = useRef<{ world: number[] | null }>({ world: null })
+  const layerZoomRef = useRef<number[] | null>(null); const lodMetaRef = useRef<{ world: { x0: number; x1: number } | null }>({ world: null })
   const layerZoomEff = useMemo(() => { const V = lodMeta.calib || 2000; const B = maxRows || Math.max(...MAXROWS_OPTS); if (B <= V || !lodMeta.layerZoom.length) return lodMeta.layerZoom; const f = Math.sqrt(V / B); return lodMeta.layerZoom.map(z => z * f) }, [lodMeta, maxRows])   // 11-05: 全層を同じ倍率で。以前は layer 0 を据え置き他を 0.999 で頭打ちにしていたため、浅い層の閾値が重なって全体表示の layer 0 から少しの拡大で layer 3〜4 に飛んだ
-  layerZoomRef.current = layerZoomEff; lodMetaRef.current = { world: (lodMeta.world as number[] | null) ?? null }
+  layerZoomRef.current = layerZoomEff; lodMetaRef.current = { world: lodMeta.world }
   const [lodClamp, setLodClamp] =
     useState<{ requested: number; served: number; counts?: Record<string, number> } | null>(null)
   // 選択群 → backend の sel= に渡す contig_id レンジ列。絞り込み OFF・索引無し・選択無しなら空文字。
@@ -635,7 +635,7 @@ export default function App() {
     const vp = ribbonViewportRef.current
     // 層がまだ追いついていない（広げた直後は深い層のまま矩形だけ広い）なら取らない。層が変われば取り直す。11-10: 層 10 で全体の半分の矩形を引き 15 秒塞がった
     { const lz = layerZoomRef.current, w = lodMetaRef.current.world
-      if (lz && lz[mapLayer] && w && w.length >= 2) { const W = Math.abs(w[1] - w[0]); if ((vp.x2 - vp.x1) > 3 * W / lz[mapLayer]) return () => {} } }
+      if (lz && lz[mapLayer] && w) { const W = Math.abs(w.x1 - w.x0); if (W > 0 && (vp.x2 - vp.x1) > 2 * W / lz[mapLayer]) return () => {} } }
     const mx = (vp.x2 - vp.x1) * 0.5, my = (vp.y2 - vp.y1) * 0.5
     const bbox = { x1: vp.x1 - mx, y1: vp.y1 - my, x2: vp.x2 + mx, y2: vp.y2 + my }
     // 単位がコンティグなら道筋（通る順）も取る（11-10）。矩形はビューポートの 15% 増し（広いと葉が増えて遅い）
