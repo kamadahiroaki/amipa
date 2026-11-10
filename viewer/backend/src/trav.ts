@@ -188,7 +188,9 @@ function addContigInfo(t: Trav, rows: TravRow[]) {
     const a = pst ? pst[r.pid] ?? 0 : 0; const b0 = r.bp0 ?? 0
     r.pn = p.path; r.cs = a + b0; r.ce = a + b0 + r.bp
     r.fs = r.i0 <= 1; r.fe = r.i1 >= p.ntok - 2
-    const e = ext.get(p.hid + '\t' + p.path)!; r.cs0 = r.fs && a <= e[0]; r.ce1 = r.fe && a + p.bp >= e[1]
+    // 本当のコンティグの端（11-10 改）: 始まりは W 行の start が 0 のときだけ（minigraph-cactus は整列しない端を切るので、最初の断片の始まりでも
+    //   start > 0 ならクリップ。fly16 では 2,527 本中 346 本）。終わりはコンティグの長さが GFA に無いので分からない → ce1 は付けず、最後の断片の終わりを ceL に
+    const e = ext.get(p.hid + '\t' + p.path)!; r.cs0 = r.fs && a === 0; r.ce1 = false; r.ceL = r.fe && a + p.bp >= e[1]
   }
 }
 

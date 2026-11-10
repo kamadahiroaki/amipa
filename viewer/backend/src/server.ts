@@ -19,6 +19,7 @@ import { initWorkerPool } from './workerPool'
 import { prewarmAtStartup } from './prewarm'
 import { warmRunners } from './pyRunner'
 import { warmTrav } from './travClient'
+import { warmBg } from './bgClient'
 import { getDbDir } from './db'
 
 const app = express()
@@ -179,5 +180,5 @@ app.listen(PORT, () => {
   // 起動時プリウォーム（AMIPA_PREWARM に DB 名をカンマ区切り）。この時点では利用者がいないので
   // 絞らずフル速度で読む。DB 切り替え時の自動プリウォームは /stats 側で開始し進捗を返す。
   prewarmAtStartup()
-  warmRunners(); warmTrav()   // 11-04: Traversals の worker も先に立てる
+  warmRunners(); warmTrav(); warmBg()   // 11-04: Traversals の worker も先に立てる
 })

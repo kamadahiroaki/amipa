@@ -643,18 +643,19 @@ export default function App() {
     const rbox = { x1: vp.x1 - rx, y1: vp.y1 - ry, x2: vp.x2 + rx, y2: vp.y2 + ry }
     const wantRoute = ribbonLevel === 'contig'
     // 道筋はリボンを待たせない（11-10: 道筋の取得が遅いとリボンも出なかった）。リボンを先に出し、道筋は届いたら同じラベルのリボンに足す
+    const ac = new AbortController()   // 古くなった取得は取り消す（サーバ側は順番待ちの要求を計算せずに捨てる）
     const gotRoute = new Map<string, RouteResp>(); let ribsSet = false
-    if (wantRoute) for (const [label] of sels) fetchRoute(selectedDb, mapLayer, label, rbox).then(route => {
+    if (wantRoute) for (const [label] of sels) fetchRoute(selectedDb, mapLayer, label, rbox, ac.signal).then(route => {
       if (cancelled || !route || !route.runs?.length) return
       gotRoute.set(label, route)
       if (ribsSet) setRibbons(prev => prev.map(r => r.label === label ? { ...r, route } : r))
     }).catch(() => { /* 道筋が無ければリボンのまま */ })
-    Promise.all(sels.map(([label, s]) => fetchRibbon(selectedDb, mapLayer, s.gids, ribbonTheta, bbox)
+    Promise.all(sels.map(([label, s]) => fetchRibbon(selectedDb, mapLayer, s.gids, ribbonTheta, bbox, ac.signal)
       .then(resp => ({ label, color: s.color, nodes: resp.nodes, edges: resp.edges, route: gotRoute.get(label) }))))
       // 取得直後に未保存編集を焼き込む＝群追加/解除でもリボンが編集前の初期位置に戻らない。
       .then(ribs => { if (!cancelled) { ribsSet = true; setRibbons(applyGesturesToRibbons(ribs.map(r => ({ ...r, route: r.route ?? gotRoute.get(r.label) })), pendingEditsRef.current)) } })
       .catch(() => { if (!cancelled) setRibbons([]) })
-    return () => { cancelled = true }
+    return () => { cancelled = true; ac.abort() }
   }, [selectedDb, ribbonSel, ribbonTheta, mapLayer, ribbonLevel])
   const fetchRibbonsRef = useRef(fetchRibbonsNow)
   fetchRibbonsRef.current = fetchRibbonsNow

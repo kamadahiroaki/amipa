@@ -2219,7 +2219,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         // 端の印
         const endMark = (p: P, t: P, kind: string) => {
           if (kind === 'ctg') { rl.beginFill(0x111111, 1); const nx = -t[1], ny = t[0]; quad(p[0] - nx * 6 * px, p[1] - ny * 6 * px, p[0] + nx * 6 * px, p[1] + ny * 6 * px, 1.6 * px); rl.endFill() }
-          else if (kind === 'clip') { rl.beginFill(0x555555, 1); rl.drawCircle(p[0] - originX, p[1] - originY, 4.5 * px); rl.endFill(); rl.beginFill(0xffffff, 1); rl.drawCircle(p[0] - originX, p[1] - originY, 2.6 * px); rl.endFill() }
+          else if (kind === 'clip' || kind === 'last') { rl.beginFill(0x555555, 1); rl.drawCircle(p[0] - originX, p[1] - originY, 4.5 * px); rl.endFill(); rl.beginFill(0xffffff, 1); rl.drawCircle(p[0] - originX, p[1] - originY, 2.6 * px); rl.endFill() }
         }
         endMark(ent[0], tan[0], run.k0); endMark(ext[m - 1], tan[m - 1], run.k1)
       }

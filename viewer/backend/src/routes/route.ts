@@ -11,6 +11,8 @@ import { spatialSource } from '../spatial'
 import { openDistill } from '../distill'
 import { distillFor } from './bubbleMsa'
 
+import { sendBg } from '../bgClient'
+
 export const routeRouter = Router()
 
 const MAX_LEAVES = Number(process.env.AMIPA_ROUTE_MAX_LEAVES) || 400_000
@@ -32,7 +34,7 @@ function maxLayerOf(d: any): number {
   ;(d as any).__maxLayer = m; return m
 }
 
-routeRouter.get('/route', (req, res) => {
+export function routeHandler(req: { query: any }, res: any): void {
   const q = req.query as Record<string, string>
   const T0 = Date.now()
   if (!q.db || !q.path || q.layer == null) { res.status(400).json({ error: 'Missing db/path/layer' }); return }
@@ -80,7 +82,6 @@ routeRouter.get('/route', (req, res) => {
     // 3) コンティグの断片ごとにトークンを順に写す
     const pst = dist.pStart()
     const fragStart = pids.map(p => pst ? pst[p] : 0)
-    const ctgMin = Math.min(...fragStart)
     const fragEnd: number[] = []
     const runs: any[] = []
     let nSteps = 0
@@ -104,8 +105,9 @@ routeRouter.get('/route', (req, res) => {
     // 端の種類: ctg ＝コンティグの本当の端、clip ＝断片の端（クリップの切れ目）、cut ＝矩形の外へ出る
     for (const r of runs) {
       const fi = pids.indexOf(r.pid); const nt = dist.ntok(r.pid)
-      r.k0 = r.t0 === 0 ? (fragStart[fi] <= ctgMin ? 'ctg' : 'clip') : 'cut'
-      r.k1 = r.t1 === nt - 1 ? (fragEnd[fi] >= ctgMax ? 'ctg' : 'clip') : 'cut'
+      // 本当の端は W の start が 0 の始まりだけ。終わりはコンティグの長さが分からないので 'last'（最後の断片の終わり）止まり（11-10）
+      r.k0 = r.t0 === 0 ? (fragStart[fi] === 0 ? 'ctg' : 'clip') : 'cut'
+      r.k1 = r.t1 === nt - 1 ? (fragEnd[fi] >= ctgMax ? 'last' : 'clip') : 'cut'
     }
     // 断片の並び（コンティグ上の位置）順に
     runs.sort((a, b) => a.c0 - b.c0)
@@ -113,4 +115,5 @@ routeRouter.get('/route', (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e), nodes: [], runs: [] })
   }
-})
+}
+routeRouter.get('/route', (req, res) => sendBg(req, res, 'route'))   // 11-10: 専用の worker で

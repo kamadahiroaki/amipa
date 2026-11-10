@@ -7,6 +7,8 @@ import { spatialSource } from '../spatial'
 import { tiledInfo, TILED_OFF, morton } from '../tiled'
 import { covFmt, rangeMaxFn, rangeSumFn } from '../covBlob'
 
+import { sendBg } from '../bgClient'
+
 export const pathsRouter = Router()
 
 // UTG positions and edge-aligned step coords for a CTG path
@@ -193,7 +195,7 @@ pathsRouter.get('/path_groups', (req, res) => {
 // bbox(x1,y1,x2,y2): 指定時は nodes_rtree/edges_rtree で層 L ∩ 矩形に絞る（深層で全層走査を回避）。
 //   viewer は現ビューポートを FETCH_MARGIN 拡張した矩形を渡し、パン settle 毎に再取得する（陳腐化防止）。
 //   無指定なら層全体（minimap 等の後方互換）。
-pathsRouter.get('/ribbon', (req, res) => {
+export function ribbonHandler(req: { query: any }, res: any): void {
   const { db, layer, groups } = req.query as Record<string, string>
   if (!db || layer == null || !groups) { res.status(400).json({ error: 'Missing params' }); return }
   const gids = String(groups).split(',').map(Number).filter(n => Number.isFinite(n))
@@ -513,14 +515,15 @@ pathsRouter.get('/ribbon', (req, res) => {
     }))
     res.json({ nodes, edges })
   } catch (e) { res.status(500).json({ error: String(e) }) }
-})
+}
+pathsRouter.get('/ribbon', (req, res) => sendBg(req, res, 'ribbon'))   // 11-10: 専用の worker で（bgClient.ts）
 
 // A-2 CNV: 選択ユニット(サンプル/ハプロタイプ)ごとの per-node コピー数を返す。
 //   units=「lo:hi」(=各ユニットの contig_id レンジ, path_groups の gids min/max)をカンマ区切りで受ける。
 //   各ユニットの contig レンジ→hap レンジへ写し(連続)、可視ノードの node_hap_mult blob から cn 合計
 //   (サンプル=構成ハプロタイプの合計)。返り値 nodes=[{id,name,x,y,cns:[ユニット順の cn]}](cns 全0 のノードは除外)。
 //   node_hap_mult は葉+flubble のみ格納なのでクラスタ層では自然に空。
-pathsRouter.get('/cnv', (req, res) => {
+export function cnvHandler(req: { query: any }, res: any): void {
   const { db, layer, units } = req.query as Record<string, string>
   if (!db || layer == null || !units) { res.status(400).json({ error: 'Missing params' }); return }
   const L = Number(layer)
@@ -559,7 +562,8 @@ pathsRouter.get('/cnv', (req, res) => {
     }
     res.json({ nodes, available: true })
   } catch (e) { res.status(500).json({ error: String(e) }) }
-})
+}
+pathsRouter.get('/cnv', (req, res) => sendBg(req, res, 'cnv'))
 
 // 配列表示モード: viewport 内の小さい葉(size<=maxsize bp)の塩基をノード内描画用に返す。
 // 葉は nodes.size==配列長(bp)なので size で絞れる。maxsize=1 なら 1bp 葉のみ=base 1 文字。
