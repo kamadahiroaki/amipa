@@ -18,7 +18,6 @@ export interface OverviewDeps {
   onGo: (x0: number, x1: number, fit: boolean) => void
   onGoPeak: (q: OvPeak) => void                           // 山のクリック（パネルを山の範囲へ、グラフは山の塊が小さければ寄せる）
   onHoverPeak: (p: OvPeak | null) => void
-  target?: () => [number, number] | null                  // 下の合意列（ブロックの帯）の左右端（画面の座標）。全体図の範囲からそこへリボンを張る（11-10）
 }
 export const MAX_TAGS = 6
 const fmtbp = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(2) + ' Mb' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kb' : Math.round(n) + ' bp'
@@ -49,19 +48,18 @@ export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => 
   return peaks
 }
 
-export interface OverviewHandle { draw(): void; setBands(b: OvBand[]): void; setPoints(pts: OvPoint[], peaks: OvPeak[], note: string): void; setMarker(x: number | null, label?: string): void; setHoverLetter(l: string | null): void; peaks(): OvPeak[]; centerWeighted(): boolean; destroy(): void }
+export interface OverviewHandle { viewClient(): [number, number] | null; draw(): void; setBands(b: OvBand[]): void; setPoints(pts: OvPoint[], peaks: OvPeak[], note: string): void; setMarker(x: number | null, label?: string): void; setHoverLetter(l: string | null): void; peaks(): OvPeak[]; centerWeighted(): boolean; destroy(): void }
 export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps, onCenterToggle: () => void): OverviewHandle {
   host.innerHTML = `<div style="display:flex;align-items:stretch;border-bottom:1px solid #ddd;background:#fff">
-    <div style="width:${LAB}px;flex-shrink:0;padding:2px 6px;box-sizing:border-box;font:11px system-ui;color:#555;overflow:hidden">
-      <div><b style="color:#333">全体図</b> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
-      <div class="ovn" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+    <div style="width:${LAB}px;height:29px;flex-shrink:0;padding:1px 6px;box-sizing:border-box;font:10px/13px system-ui;color:#555;overflow:hidden">
+      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="color:#333">全体図</b> <span class="ovn"></span> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
       <div class="ovh" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#222"></div>
     </div>
     <div style="position:relative;flex:1;min-width:0"><canvas class="ovcv" style="display:block;cursor:pointer"></canvas></div></div>`
   const cv = host.querySelector('.ovcv') as HTMLCanvasElement; const g = cv.getContext('2d')!
   const chk = host.querySelector('.ovc') as HTMLInputElement; const noteEl = host.querySelector('.ovn') as HTMLElement; const hovEl = host.querySelector('.ovh') as HTMLElement
   chk.addEventListener('change', onCenterToggle)
-  const H = 48, BAND = 12, HIST0 = 13, HIST1 = 31, STR0 = 32, STR1 = 36   // 11-10: 58 → 48 px。下の 12 px は合意列へのリボン
+  const H = 29, BAND = 9, HIST0 = 10, HIST1 = 24, STR0 = 25, STR1 = 29   // 11-10: 58 → 29 px
   let bands: OvBand[] = [], pts: OvPoint[] = [], pks: OvPeak[] = [], marker: { x: number; label: string } | null = null, hovL: string | null = null, drag: [number, number] | null = null
   const W = () => Math.max(50, cv.parentElement!.clientWidth)
   const total = () => Math.max(1, deps.totalBp())
@@ -72,7 +70,7 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(H * dpr); cv.style.width = w + 'px'; cv.style.height = H + 'px' }
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, H); g.fillStyle = '#fff'; g.fillRect(0, 0, w, H)
     // 染色体（灰の交互。名前は入る幅があれば）
-    g.font = '10px system-ui'; g.textBaseline = 'middle'; let k = 0
+    g.font = '9px system-ui'; g.textBaseline = 'middle'; let k = 0
     for (const b of bands) { const a = px(b.x0), c = px(b.x1 + 1); g.fillStyle = k++ % 2 ? '#d5d9de' : '#eceef1'; g.fillRect(a, 0, Math.max(1, c - a), BAND)
       const nm = b.name || `区間 ${k}`; const tw = g.measureText(nm).width; if (c - a >= tw + 6) { g.fillStyle = b.name ? '#333' : '#888'; g.fillText(nm, a + 3, BAND / 2 + 1) } }
     if (!bands.length) { g.fillStyle = '#eceef1'; g.fillRect(4, 0, w - 8, BAND) }
@@ -85,28 +83,18 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
     // 開いている範囲: 黒の枠と、その中にだけブロックの色の帯
     const [v0, v1] = deps.view(); const a = px(v0), c = px(v1 + 1)
     for (const s of deps.stripe()) { const sa = px(s.x0), sc = px(s.x1 + 1); g.fillStyle = s.color; g.fillRect(sa, STR0, Math.max(1, sc - sa), STR1 - STR0) }
-    g.strokeStyle = '#111'; g.lineWidth = 1.5; g.strokeRect(a, 1, Math.max(2, c - a), STR1 - 1)
-    // 合意列へのリボン: 開いている範囲（枠の下辺）から、下の合意列の左右端へ。ブロックの色の帯もそのまま広げてつなぐ
-    const tg = deps.target?.()
-    if (tg) { const r0 = cv.getBoundingClientRect().left; const L = tg[0] - r0, R = tg[1] - r0, span = Math.max(1, v1 + 1 - v0)
-      const at = (x: number) => L + (x - v0) / span * (R - L)
-      g.fillStyle = 'rgba(17,17,17,.10)'; g.beginPath(); g.moveTo(a, STR1); g.lineTo(c, STR1); g.lineTo(R, H); g.lineTo(L, H); g.closePath(); g.fill()
-      g.globalAlpha = 0.6
-      for (const s of deps.stripe()) { const x0 = Math.max(v0, s.x0), x1 = Math.min(v1 + 1, s.x1 + 1); if (x1 <= x0) continue
-        g.fillStyle = s.color; g.beginPath(); g.moveTo(px(x0), STR1); g.lineTo(px(x1), STR1); g.lineTo(at(x1), H); g.lineTo(at(x0), H); g.closePath(); g.fill() }
-      g.globalAlpha = 1
-      g.strokeStyle = 'rgba(17,17,17,.55)'; g.lineWidth = 1; g.beginPath(); g.moveTo(a, STR1); g.lineTo(L, H); g.moveTo(c, STR1); g.lineTo(R, H); g.stroke() }
+    g.strokeStyle = '#111'; g.lineWidth = 1.5; g.strokeRect(a, 1, Math.max(2, c - a), H - 1.5)
     if (c - a < 6) { g.fillStyle = '#111'; g.beginPath(); g.moveTo((a + c) / 2 - 5, 0); g.lineTo((a + c) / 2 + 5, 0); g.lineTo((a + c) / 2, 6); g.fill() }
     // 山の札（場所の名前）。横に重なるものは 2 段目へ、それでも重なるものは小さな印だけ（ホバーで名前）
-    g.font = 'bold 9px system-ui'; g.textBaseline = 'top'; tagBoxes = []; const rowEnd = [-Infinity, -Infinity]
+    g.font = 'bold 8px system-ui'; g.textBaseline = 'top'; tagBoxes = []; const rowEnd = [-Infinity, -Infinity]
     for (const p of pks.filter(q => q.letter).sort((a, b) => px(a.xm) - px(b.xm))) { const x = px(p.xm); const on = p.letter === hovL; const tw = g.measureText(p.letter).width
       let l = Math.max(1, Math.min(w - tw - 7, x - tw / 2 - 3)); const row = l > rowEnd[0] + 2 ? 0 : l > rowEnd[1] + 2 ? 1 : -1
       g.strokeStyle = '#111'; g.lineWidth = 1
       if (row < 0) { g.fillStyle = on ? '#111' : '#fff'; g.beginPath(); g.rect(x - 3, HIST0, 6, 6); g.fill(); g.stroke(); tagBoxes.push({ q: p, a: x - 4, b: x + 4, y0: HIST0, y1: HIST0 + 7 }); continue }
-      const y = HIST0 + row * 9; rowEnd[row] = l + tw + 6
-      g.fillStyle = on ? '#111' : '#fff'; g.beginPath(); g.rect(l, y, tw + 6, 12); g.fill(); g.stroke(); g.fillStyle = on ? '#fff' : '#111'; g.fillText(p.letter, l + 3, y + 1.5)
-      if (x < l || x > l + tw + 6) { g.beginPath(); g.moveTo(x + .5, y + 12); g.lineTo(x + .5, y + 15); g.stroke() }
-      tagBoxes.push({ q: p, a: l, b: l + tw + 6, y0: y, y1: y + 12 }) }
+      const y = HIST0 + row * 9; rowEnd[row] = l + tw + 6   // 札は高さ 10 px で 2 段
+      g.fillStyle = on ? '#111' : '#fff'; g.beginPath(); g.rect(l, y, tw + 6, 10); g.fill(); g.stroke(); g.fillStyle = on ? '#fff' : '#111'; g.fillText(p.letter, l + 3, y + 1)
+      if (x < l || x > l + tw + 6) { g.beginPath(); g.moveTo(x + .5, y + 10); g.lineTo(x + .5, y + 13); g.stroke() }
+      tagBoxes.push({ q: p, a: l, b: l + tw + 6, y0: y, y1: y + 10 }) }
     // グラフでクリックしたノードの印
     if (marker) { const x = px(marker.x); g.fillStyle = '#111'; g.beginPath(); g.moveTo(x - 5, BAND); g.lineTo(x + 5, BAND); g.lineTo(x, BAND + 7); g.fill() }
     if (drag) { const l = Math.min(...drag), r = Math.max(...drag); g.fillStyle = 'rgba(52,152,219,.25)'; g.fillRect(l, 0, r - l, H) }
@@ -136,6 +124,7 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
   const ro = new ResizeObserver(() => draw()); ro.observe(cv.parentElement!)
   draw()
   return {
+    viewClient: () => { const r = cv.getBoundingClientRect(); if (!r.width) return null; const [v0, v1] = deps.view(); return [r.left + px(v0), r.left + px(v1 + 1)] },   // 開いている範囲の枠の左右（画面の座標）。合意列から線で結ぶ
     draw,
     setBands(b) { bands = b; draw() },
     setPoints(p, peaks, note) { pts = p; pks = peaks; noteEl.textContent = note; noteEl.title = note; if (hovL && !pks.some(q => q.letter === hovL)) hovL = null; draw() },

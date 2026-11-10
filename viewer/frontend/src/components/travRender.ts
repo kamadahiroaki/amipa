@@ -353,7 +353,6 @@ const ovw: OverviewHandle = mountOverview($('ovw'), LAB, {
   onGo: (x0, x1, fit) => goRange(x0, x1, fit),
   onGoPeak: q => goPeakQ(q),
   onHoverPeak: q => cb.onPeakHover?.(q ? q.letter : null, q ? q.names : null),
-  target: () => { if (base) return null; const r = cv.getBoundingClientRect(); return r.width ? [r.left + LAB, r.left + cv.parentElement!.clientWidth] : null },
 }, () => { void refreshOverview() })
 // 全体図の山を引き直す。見えているノードを座標に引き、山（文字つき）を全体図とグラフ側の札（onPeaks）に送る
 let ovReq = 0
@@ -977,7 +976,7 @@ function treadsHover(e: MouseEvent): boolean {
 }
 function drawCore() {
   if (base && root) { drawBaseCore(); return }
-  const useCols = !!cols && wantCols(); const ogOn = (ogroups.length > 0 || !!gdens) && showGenes(); TOP = (useCols ? 70 : 52) + (ogOn ? OGH + 2 : 0)   // 11-10: 合意列（ブロックの帯）を最大 38 → 22 px に詰めた
+  const useCols = !!cols && wantCols(); const ogOn = (ogroups.length > 0 || !!gdens) && showGenes(); TOP = (useCols ? 62 : 44) + (ogOn ? OGH + 2 : 0)   // 11-10: 合意列（ブロックの帯）は行の高さの約 2 倍（最大 18 px）に
   const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 22 : 15
   // 行の高さ: 遺伝子レーンのある行だけ段数ぶん高く（3 + 10 × 段）
   // 繰り返し通過（同じ場所を k 回）: 錨の列の段では k 段の小行に分けて各回のセルを出す（塩基の段の ·2 の行に対応）。ブロックの段は 1 片 ×k のまま
@@ -993,12 +992,16 @@ function drawCore() {
   // 上段: ブロック（色は番号、高さは通るハプロタイプの割合）、×n の赤い帯、もつれの縦縞、境界（支持と持続度）
   const rcp = (mode === 'rows' && rowColPx && rowColPx.length === blocks.length + 1) ? rowColPx : null   // 各行の並び: 上段のブロックを行の列の位置に描く（行と上段の幅を揃える）
   const RT = root; blocks.forEach((b, bi) => {
-    const px0 = rcp ? rcp[bi] : Math.max(LAB, X(b.x0)), px1 = rcp ? Math.max(rcp[bi] + 1, rcp[bi + 1]) : Math.min(W, X(b.x1 + 1)); const h = 6 + 16 * Math.min(1, b.nhap / RT.H)
+    const px0 = rcp ? rcp[bi] : Math.max(LAB, X(b.x0)), px1 = rcp ? Math.max(rcp[bi] + 1, rcp[bi + 1]) : Math.min(W, X(b.x1 + 1)); const h = 8 + 10 * Math.min(1, b.nhap / RT.H)
     g.fillStyle = `hsla(${hue(b.id)}, 70%, 50%, .85)`; g.fillRect(px0, BB - h, Math.max(1, px1 - px0), h); g.strokeStyle = 'rgba(0,0,0,.5)'; g.lineWidth = 1; g.strokeRect(px0 + .5, BB - h + .5, Math.max(1, px1 - px0) - 1, h - 1)
     if (b.nhap2 > 0) { g.fillStyle = 'rgba(192,57,43,.9)'; g.fillRect(px0, BB, Math.max(1, px1 - px0), 3) }
     if (b.tangled) { g.fillStyle = 'rgba(120,120,120,.45)'; g.fillRect(px0, BB - h, Math.max(1, px1 - px0), h); if (px1 - px0 > 10) { g.fillStyle = '#fff'; g.font = 'bold 11px system-ui'; g.fillText('?', (px0 + px1) / 2 - 3, BB - h / 2 + 4) } }
     if (px1 - px0 > 44) { g.fillStyle = '#333'; g.font = '10px system-ui'; g.fillText(`${fmtbp(b.bp)} ${b.nhap}/${RT.H}${b.nhap2 ? ` ×${b.nhap2}` : ''}`, px0 + 2, BB - 2 - h) }
   })
+  { // 全体図の枠（開いている範囲）の両端から合意列の両端へ黒線（11-10）。全体図はこのキャンバスの真上にあるので、上端 y=0 から引く
+    const vc = ovw.viewClient(); const r = cv.getBoundingClientRect()
+    if (vc && r.width && !rcp) { const top = BB - 18; g.strokeStyle = '#111'; g.lineWidth = 1.2; g.beginPath(); g.moveTo(vc[0] - r.left, 0); g.lineTo(LAB, top); g.moveTo(vc[1] - r.left, 0); g.lineTo(W, top); g.stroke() }
+  }
   if (useCols && cols) {   // 錨の列の帯: 列ごとのアレルの種類数（灰 1 種 → 橙 → 赤）、高さ＝その列に掛かる行の数
     const C = cols; const Wc = C.x1 - C.x0 + 1; const SY0 = TOP - 24 - (ogOn ? OGH + 2 : 0), SH = 10; let maxrow = 1; for (let c = 0; c < C.ncol; c++) if (C.nrow[c] > maxrow) maxrow = C.nrow[c]
     for (let c = 0; c < C.ncol; c++) {
