@@ -8,7 +8,9 @@ interface Props {
   sel?: string             // hap 絞り込み（メインと同じ sel=）。渡さないとミニマップだけ絞り込み前を描く
   clickThrough?: boolean   // 編集モード中: クリックを canvas へ通す（表示は維持）
   onNavigate: (cx: number, cy: number) => void
-  minViewW?: number        // 表示の層に入った時点の表示幅（world）。周辺の範囲はこれ以上の表示幅から作る（11-10）
+  layerZoom?: number[]     // 本体と同じ層の倍率の閾値（layer_zoom）。下段の層を選ぶのに使う
+  world?: { x0: number; x1: number; y0: number; y1: number } | null
+  zoomWindow?: string
 }
 
 const MINIMAP_W      = 180
@@ -25,6 +27,9 @@ const CTX_ZOOM_OFF   = 9
 //   下段が全体とほぼ同じ広さになることがある。そのときは二段にしない）
 const CTX_MAG_ON     = 3
 const CTX_MAG_OFF    = 2.5
+// 下段の画面上の縮尺を本体の 1/CTX_PX_RATIO にする（11-10）。本体で 100 px のノードが下段で 1 px。下段は本体の拡大に合わせて
+//   ズームし続け（再読み込みしても同じ）、エッジを描かない下段でもノードが見える大きさになるのは本体でかなり拡大したときだけ
+const CTX_PX_RATIO   = 100
 
 // ── 座標変換 ──────────────────────────────────────────────────────────────
 // アスペクト比を保って world 矩形を canvas に収める（x/y 同一スケール＋センタリング）。
@@ -58,14 +63,10 @@ function c2w(cx: number, cy: number, r: Rect, cw: number, ch: number) {
 //     ・レターボックスの空白が消える
 //     ・クリック→ナビゲーションが余白で矩形外に外れる問題も消える
 //     ・グリッドのセルが world 上でほぼ正方になり、drawGeometry の 1 セル≒1 画素前提と揃う
-// minViewW: 表示幅の下限（表示の層に入った時点の幅）。11-10: 範囲は層が変わったときに作るので、層の中で拡大していくと
-//   最初の（広い）範囲が残る。ところが最深層より先まで拡大して再読み込みすると、その細かい表示から範囲を作り直し、
-//   倍率が高すぎて縮小すると赤枠がはみ出した。層に入った時点の幅を下限にすれば、再読み込みの前後で同じ広さになる
-function makeContextRect(vp: Rect, bounds?: Rect, minViewW = 0): Rect {
+function makeContextRect(vp: Rect, bounds?: Rect, span = 2 * CONTEXT_SCALE): Rect {   // span: 下段の幅 ÷ 本体の表示幅
   let cx = (vp.x1 + vp.x2) / 2, cy = (vp.y1 + vp.y2) / 2
-  const f = minViewW > 0 ? Math.max(1, minViewW / Math.max(1e-300, vp.x2 - vp.x1)) : 1
-  let hw = (vp.x2 - vp.x1) * f * CONTEXT_SCALE
-  let hh = (vp.y2 - vp.y1) * f * CONTEXT_SCALE
+  let hw = (vp.x2 - vp.x1) * span / 2
+  let hh = hw * CONTEXT_H / MINIMAP_W   // 縦は下段の縦横比で（横の縮尺をそのまま縦にも。表示の縦横比で決めると下に続く調整で横が広がり、縮尺が 1/100 からずれた）
   // グラフ全体（全体マップの範囲）より広くしない（11-05）: 小さなグラフでは全体に近い表示でも層が 4 以上になり、
   // ±4 倍の矩形がワールドの何倍にもなって、下段の絵が中央の小さな点になっていた（fly16、vw 0.72）
   if (bounds) { hw = Math.min(hw, (bounds.x2 - bounds.x1) / 2); hh = Math.min(hh, (bounds.y2 - bounds.y1) / 2) }
@@ -82,9 +83,11 @@ function makeContextRect(vp: Rect, bounds?: Rect, minViewW = 0): Rect {
 
 // ビューポート中心が rect の中央 50% 内にあるか
 // （11-05: 比べる中心は「いまの表示から作る矩形」の中心。グラフの端で中心を寄せた矩形と表示の中心を比べると、パンのたびに取り直していた）
-function inMiddle50(vp: Rect, r: Rect, bounds?: Rect): boolean {
-  const want = makeContextRect(vp, bounds); const cx = (want.x1 + want.x2) / 2, cy = (want.y1 + want.y2) / 2
-  return Math.abs(cx - (r.x1 + r.x2) / 2) < (r.x2 - r.x1) / 4
+function inMiddle50(vp: Rect, r: Rect, bounds?: Rect, span?: number): boolean {
+  const want = makeContextRect(vp, bounds, span); const cx = (want.x1 + want.x2) / 2, cy = (want.y1 + want.y2) / 2
+  const k = (want.x2 - want.x1) / Math.max(1e-300, r.x2 - r.x1)   // 11-10: 下段は本体に合わせてズームするので、広さが 0.7〜1.4 倍を外れたら作り直す
+  return k > 0.7 && k < 1.4
+      && Math.abs(cx - (r.x1 + r.x2) / 2) < (r.x2 - r.x1) / 4
       && Math.abs(cy - (r.y1 + r.y2) / 2) < (r.y2 - r.y1) / 4
 }
 
@@ -109,6 +112,7 @@ function drawGeometry(
   nodes: NodeData[], edges: EdgeData[], cells: GridCell[] | null,
   big: GridBigNode[] | null,
   worldRect: Rect,
+  bigComplete = false,
 ) {
   const ctx = off.getContext('2d')!
   // 11-06: キャンバスは画面の解像度（devicePixelRatio 倍）の画素を持つ。描画は CSS px の座標で書き、変換で拡大する
@@ -146,6 +150,7 @@ function drawGeometry(
       ctx.beginPath()
       for (const c of b) {
         // 1 画素未満は 1 画素の点。1 画素を超えるものは大きさを反映（疎な領域で潰れないように）。
+        if (bigComplete && c.w * scale >= 2) continue   // 11-10: 画素より大きいノードは上に向き付きで描くので点は描かない（中心に四角が見えた）。backend の GRID_BIG_PX と同じ判定
         const w = Math.max(1, c.w * scale)
         const h = Math.max(1, c.w * 0.35 * scale)
         ctx.rect(px(c.x) - w / 2, py(c.y) - h / 2, w, h)
@@ -287,7 +292,7 @@ function composite(
 
 // ── コンポーネント ─────────────────────────────────────────────────────────
 
-export default function Minimap({ viewport, layer, dbFile, sel = '', clickThrough, onNavigate, minViewW = 0 }: Props) {
+export default function Minimap({ viewport, layer, dbFile, sel = '', clickThrough, onNavigate, layerZoom, world, zoomWindow }: Props) {
   const ovRef  = useRef<HTMLCanvasElement>(null)
   const ctxRef = useRef<HTMLCanvasElement>(null)
   // ジオメトリのオフスクリーン。パン中はここから drawImage するだけにする。
@@ -328,6 +333,21 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
   const ctxBig         = useRef<GridBigNode[]>([])   // 1画素超＝向きが見えるノード
   const ctxRect        = useRef<Rect>({ x1: 0, x2: 1, y1: 0, y2: 1 })
   const ctxLayerRef    = useRef(-1)
+  const ctxBigComplete = useRef(false)
+  const rootRef        = useRef<HTMLDivElement | null>(null)
+  // 下段の広さ（本体の表示幅に対する倍数）: 画面上の縮尺が本体の 1/CTX_PX_RATIO になるように
+  const mainPx = Math.max(200, rootRef.current?.parentElement?.clientWidth || 1000)
+  const span = CTX_PX_RATIO * MINIMAP_W / mainPx
+  // 下段の層: 下段の範囲を本体の画面で見たとき（表示幅 = 本体の表示幅 × CTX_PX_RATIO）に本体が選ぶ層（GraphCanvas の thresholdFor と同じ式）。
+  //   最深層より先まで拡大すると下段も最深層に降りる。表示の層より深くはしない
+  const ctxLayer = (() => {
+    const vw = viewport.x2 - viewport.x1, vh = viewport.y2 - viewport.y1
+    if (!layerZoom || !layerZoom.length || !world) return Math.max(0, layer - CONTEXT_OFFSET)
+    const W = Math.max(1e-12, world.x1 - world.x0); const af = zoomWindow === 'square_side_W_over_s' && vh > 0 ? Math.sqrt(vw / vh) : 1
+    const want = vw * CTX_PX_RATIO; let L = 0
+    for (let k = 0; k < layerZoom.length; k++) { if (W / layerZoom[k] * af >= want) L = k; else break }
+    return Math.min(L, layer)
+  })()
   const ctxBusy        = useRef(false)
   const ctxPendingRect = useRef<Rect | null>(null)  // fetch中の rect
   const ctxSelRef      = useRef(sel)                // 絞り込みが変わったら取り直す
@@ -343,7 +363,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
   const showCtxRef = useRef(false)
   const ctxMag = (() => {   // 下段の範囲（作るとしたら）が全体の段の何倍の拡大か
     if (!ovReady.current) return 0
-    const want = makeContextRect(viewport, ob, minViewW)
+    const want = makeContextRect(viewport, ob, span)
     return Math.min((ob.x2 - ob.x1) / Math.max(1e-300, want.x2 - want.x1), (ob.y2 - ob.y1) / Math.max(1e-300, want.y2 - want.y1))
   })()
   const showCtx = zoom >= (showCtxRef.current ? CTX_ZOOM_OFF : CTX_ZOOM_ON) && ctxMag >= (showCtxRef.current ? CTX_MAG_OFF : CTX_MAG_ON)
@@ -371,7 +391,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     const c = ctxRef.current
     if (!c) return
     drawGeometry(offFor(ctxOff, c.width, c.height), [], [],
-      ctxCells.current, ctxBig.current, ctxRect.current)
+      ctxCells.current, ctxBig.current, ctxRect.current, ctxBigComplete.current)
   }
   function redrawOv() {
     if (ovRef.current)
@@ -429,13 +449,13 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
 
   // ── ビューポート/レイヤ変化時: コンテキスト更新判定 + 再描画 ────────────
   useEffect(() => {
-    const newCtxLayer = Math.max(0, layer - CONTEXT_OFFSET)
+    const newCtxLayer = ctxLayer
     const needsNewData = newCtxLayer !== ctxLayerRef.current
       || sel !== ctxSelRef.current
-      || !inMiddle50(viewport, ctxRect.current, ovReady.current ? ovBounds.current : undefined)
+      || !inMiddle50(viewport, ctxRect.current, ovReady.current ? ovBounds.current : undefined, span)
 
     if (showCtx && needsNewData && !ctxBusy.current) {
-      const newRect = makeContextRect(viewport, ovReady.current ? ovBounds.current : undefined, minViewW)
+      const newRect = makeContextRect(viewport, ovReady.current ? ovBounds.current : undefined, span)
       ctxPendingRect.current = newRect
       ctxLayerRef.current    = newCtxLayer
       ctxSelRef.current      = sel
@@ -465,6 +485,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
           }
           ctxCells.current = grid.cells
           ctxBig.current   = grid.nodes ?? []
+          ctxBigComplete.current = !grid.nodesTruncated
           ctxRect.current  = ctxPendingRect.current!  // データ到着後に rect 確定
           ctxPendingRect.current = null
           rebuildCtx()
@@ -478,7 +499,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     // ノード数に依らず O(1)（以前はここで全ノードを描き直していた）。
     redrawOv()
     redrawCtx()
-  }, [viewport, layer, dbFile, sel, pendingTarget, ctxRetry, showCtx])
+  }, [viewport, layer, dbFile, sel, pendingTarget, ctxRetry, showCtx, ctxLayer, span])
 
   // ── クリックハンドラ ──────────────────────────────────────────────────
   function handleCanvasClick(
@@ -500,7 +521,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
   const DEV = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('dev')
 
   return (
-    <div style={{
+    <div ref={rootRef} style={{
       position: 'absolute', top: 8, right: 8, zIndex: 10,
       pointerEvents: clickThrough ? 'none' : undefined,   // 編集モード中はクリックを canvas へ通す
       background: 'rgba(255,255,255,0.96)',
@@ -536,7 +557,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       {showCtx && (
         <>
           <div style={{ ...labelStyle, borderTop: '1px solid #e9ecef' }}>
-            周辺（×{Math.round(zoom)}）{DEV ? ` · layer ${Math.max(0, layer - CONTEXT_OFFSET)}` : ''}
+            周辺（×{Math.round(zoom)}）{DEV ? ` · layer ${ctxLayer}` : ''}
           </div>
           <canvas
             ref={ctxRef}

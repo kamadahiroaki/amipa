@@ -523,13 +523,6 @@ export default function App() {
   //   予算が無制限なら較正のまま
   //   11-05: 無制限（0）は上限を掛けないだけで、層の選び方は最大の予算と同じにする（以前は較正のまま＝最も浅く、予算 100,000 より粗い層になった）
   const layerZoomEff = useMemo(() => { const V = lodMeta.calib || 2000; const B = maxRows || Math.max(...MAXROWS_OPTS); if (B <= V || !lodMeta.layerZoom.length) return lodMeta.layerZoom; const f = Math.sqrt(V / B); return lodMeta.layerZoom.map(z => z * f) }, [lodMeta, maxRows])   // 11-05: 全層を同じ倍率で。以前は layer 0 を据え置き他を 0.999 で頭打ちにしていたため、浅い層の閾値が重なって全体表示の layer 0 から少しの拡大で layer 3〜4 に飛んだ
-  // ミニマップの周辺の範囲の下限: 表示の層に入った時点の表示幅（GraphCanvas の thresholdFor と同じ式: 入る倍率 = 画面幅/W × layerZoom[L]）。
-  //   11-10: 最深層より先まで拡大して再読み込みすると、細かい表示から周辺を作って倍率が高すぎた
-  const mapLayerEntryW = useMemo(() => {
-    const lz = layerZoomEff[mapLayer]; const w = lodMeta.world; if (!lz || !w) return 0
-    const W = Math.max(1e-12, w.x1 - w.x0); const vw = mapViewport.x2 - mapViewport.x1, vh = mapViewport.y2 - mapViewport.y1
-    return W / lz * (lodMeta.zoomWindow === 'square_side_W_over_s' && vh > 0 ? Math.sqrt(vw / vh) : 1)
-  }, [layerZoomEff, mapLayer, lodMeta.world, lodMeta.zoomWindow, mapViewport])
   const [lodClamp, setLodClamp] =
     useState<{ requested: number; served: number; counts?: Record<string, number> } | null>(null)
   // 選択群 → backend の sel= に渡す contig_id レンジ列。絞り込み OFF・索引無し・選択無しなら空文字。
@@ -2273,7 +2266,9 @@ export default function App() {
                     key={`${selectedDb}-${mapReloadKey}`}
                     viewport={mapViewport}
                     layer={mapLayer}
-                    minViewW={mapLayerEntryW}
+                    layerZoom={layerZoomEff}
+                    world={lodMeta.world}
+                    zoomWindow={lodMeta.zoomWindow}
                     dbFile={selectedDb}
                     sel={hapSel}
                     clickThrough={editMode}
