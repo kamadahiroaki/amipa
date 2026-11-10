@@ -522,7 +522,9 @@ export default function App() {
   //   閾値を √(V/B) 倍に下げて（グリフ数は拡大率の 2 乗に反比例）早く深い層に降りる。それでも予算を超える所は /pick_layer と絞りモードの予算判定が粗い層に戻す。
   //   予算が無制限なら較正のまま
   //   11-05: 無制限（0）は上限を掛けないだけで、層の選び方は最大の予算と同じにする（以前は較正のまま＝最も浅く、予算 100,000 より粗い層になった）
+  const layerZoomRef = useRef<number[] | null>(null); const lodMetaRef = useRef<{ world: number[] | null }>({ world: null })
   const layerZoomEff = useMemo(() => { const V = lodMeta.calib || 2000; const B = maxRows || Math.max(...MAXROWS_OPTS); if (B <= V || !lodMeta.layerZoom.length) return lodMeta.layerZoom; const f = Math.sqrt(V / B); return lodMeta.layerZoom.map(z => z * f) }, [lodMeta, maxRows])   // 11-05: 全層を同じ倍率で。以前は layer 0 を据え置き他を 0.999 で頭打ちにしていたため、浅い層の閾値が重なって全体表示の layer 0 から少しの拡大で layer 3〜4 に飛んだ
+  layerZoomRef.current = layerZoomEff; lodMetaRef.current = { world: (lodMeta.world as number[] | null) ?? null }
   const [lodClamp, setLodClamp] =
     useState<{ requested: number; served: number; counts?: Record<string, number> } | null>(null)
   // 選択群 → backend の sel= に渡す contig_id レンジ列。絞り込み OFF・索引無し・選択無しなら空文字。
@@ -615,6 +617,7 @@ export default function App() {
   const editModeRef = useRef(editMode)
   editModeRef.current = editMode
   const ribbonViewportRef = useRef(ribbonViewport)
+  const ribbonSelRef = useRef(ribbonSel); ribbonSelRef.current = ribbonSel
   ribbonViewportRef.current = ribbonViewport
   // fetchRibbonsNow から最新の未保存編集を読むための ref（依存に入れると編集の度に再取得してしまうため）
   const pendingEditsRef = useRef(pendingEdits)
@@ -630,6 +633,9 @@ export default function App() {
     let cancelled = false
     const sels = [...ribbonSel.entries()]
     const vp = ribbonViewportRef.current
+    // 層がまだ追いついていない（広げた直後は深い層のまま矩形だけ広い）なら取らない。層が変われば取り直す。11-10: 層 10 で全体の半分の矩形を引き 15 秒塞がった
+    { const lz = layerZoomRef.current, w = lodMetaRef.current.world
+      if (lz && lz[mapLayer] && w && w.length >= 2) { const W = Math.abs(w[1] - w[0]); if ((vp.x2 - vp.x1) > 3 * W / lz[mapLayer]) return () => {} } }
     const mx = (vp.x2 - vp.x1) * 0.5, my = (vp.y2 - vp.y1) * 0.5
     const bbox = { x1: vp.x1 - mx, y1: vp.y1 - my, x2: vp.x2 + mx, y2: vp.y2 + my }
     // 単位がコンティグなら道筋（通る順）も取る（11-10）。矩形はビューポートの 15% 増し（広いと葉が増えて遅い）
@@ -972,14 +978,15 @@ export default function App() {
   const pendingContigRef = useRef<string | null>(null)
   const onTravSelectContig = useCallback((path: string) => {
     const g = ribbonLevel === 'contig' ? pathGroups.find(x => x.key === path) : undefined
-    if (g) { toggleRibbonGroup(g); setRibbonHidden(false); return }
+    // 選ぶだけ（外さない）。11-10: 同じコンティグの片を 2 回クリックすると外れて「出ない」ように見えた。外すのはパスの一覧から
+    if (g) { if (ribbonSel.has(g.key)) showHint(`${path} は選択済み（外すときはパスの一覧から）`); else toggleRibbonGroup(g); setRibbonHidden(false); return }
     pendingContigRef.current = path
     if (ribbonLevel !== 'contig') { setRibbonLevel('contig'); showHint(`パスの単位をコンティグにして ${path} のリボンを描く`) }
-  }, [ribbonLevel, pathGroups, toggleRibbonGroup, showHint])
+  }, [ribbonLevel, pathGroups, toggleRibbonGroup, showHint, ribbonSel])
   useEffect(() => {
     const path = pendingContigRef.current; if (!path || ribbonLevel !== 'contig' || pathGroups.length === 0) return
     const g = pathGroups.find(x => x.key === path); if (!g) return   // まだ前の単位の群かもしれない
-    pendingContigRef.current = null; toggleRibbonGroup(g); setRibbonHidden(false)
+    pendingContigRef.current = null; if (!ribbonSelRef.current.has(g.key)) toggleRibbonGroup(g); setRibbonHidden(false)
   }, [pathGroups, ribbonLevel, toggleRibbonGroup])
   const applyHaps = useCallback((haps: string[], on: boolean) => {
     const keys = pathGroups.map(g => g.key)

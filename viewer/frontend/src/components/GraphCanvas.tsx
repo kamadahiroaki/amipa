@@ -1544,7 +1544,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const hovSet = msaHoverRef.current && msaHoverRef.current.size ? msaHoverRef.current : null
       const hovMany = !!hovSet && hovSet.size > HOV_FEW
       edgeLayer.alpha = hovMany ? 0.2 : 1   // 他を薄くするときは辺も
-      ribbonLayer.visible = !hovSet; pathLayer.visible = !hovSet   // 強調中はリボンと選んだパスの線を消す（11-10: 上に重ねても半透明のリボンに埋もれて薄くしか見えなかった）
+      ribbonLayer.alpha = hovSet ? 0.15 : 1; pathLayer.alpha = hovSet ? 0.15 : 1   // 強調中はリボンと選んだパスの線をごく薄く（11-10: 重ねると強調が埋もれた。消すと「リボンが出ない」ように見えた）
       for (const n of visibleNodes) {
         if (hiddenNodeIds.has(n.id)) continue
         const isHovN = !!hovSet && hovSet.has(n.node_name)
@@ -2203,15 +2203,15 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         // 矢羽根（画面で 70 px ごと）
         const all: P[] = []; for (const seg of pieces) for (const p of seg) all.push(p)
         rl.beginFill(dark, 1)
-        let acc = 35 * px
+        let acc = 45 * px
         for (let i = 1; i < all.length; i++) {
           const a = all[i - 1], b = all[i]; const L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L < 1e-15) continue
           while (acc <= L) {
             const t = acc / L; const cx = a[0] + (b[0] - a[0]) * t, cy = a[1] + (b[1] - a[1]) * t
-            const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, nx = -uy, ny = ux, Lh = 4.5 * px, Hh = 3.6 * px
+            const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, nx = -uy, ny = ux, Lh = 7 * px, Hh = 5.5 * px
             rl.drawPolygon([cx + ux * Lh - originX, cy + uy * Lh - originY, cx - ux * Lh + nx * Hh - originX, cy - uy * Lh + ny * Hh - originY,
                             cx - ux * Lh * 0.3 - originX, cy - uy * Lh * 0.3 - originY, cx - ux * Lh - nx * Hh - originX, cy - uy * Lh - ny * Hh - originY])
-            acc += 70 * px
+            acc += 90 * px
           }
           acc -= L
         }
