@@ -2242,7 +2242,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       if (ribs.some(r => r.nodes.some(n => n.inv))) for (const vn of visibleNodesRef.current) { if (vn.ref_bp != null && Number(vn.ref_bp) >= 0 && !vn.ref_multi) rbByName.set(vn.node_name, (Number(vn.ref_bp) + Number(vn.ref_bp_end ?? vn.ref_bp)) / 2) }
       let chevTotal = 0; const MAX_CHEV = 3000
       ribs.forEach((rib0, ri) => {
-        if (!subF && rib0.route && rib0.route.runs && rib0.route.runs.length) { drawRoute(rib0.route, rib0.color, zoom, originX, originY, scale); return }
+        if (!subF && rib0.route && rib0.route.runs && rib0.route.runs.length) { try { drawRoute(rib0.route, rib0.color, zoom, originX, originY, scale); return } catch (e) { console.warn('[route] 描けないのでリボンで', e) } }   // 失敗したらリボンで描く
         let rib = rib0
         if (keepId && keepNm) { const nodes = rib0.nodes.filter(n => keepId.has(n.id) || keepNm.has(n.name)); const ids = new Set(nodes.map(n => n.id))
           const edges: typeof rib0.edges = []; for (const e of rib0.edges) { const a = ids.has(e.su), b = ids.has(e.tv); if (a && b) edges.push(e); else if (a !== b) { const f = .35; edges.push(a ? { ...e, ex: e.sx + (e.ex - e.sx) * f, ey: e.sy + (e.ey - e.sy) * f } : { ...e, sx: e.ex + (e.sx - e.ex) * f, sy: e.ey + (e.sy - e.ey) * f }) } }

@@ -7,7 +7,7 @@ import { naReason, naTag, AvailMap } from './avail'
 import TravPanel from './components/TravPanel'
 import type { TravHandle } from './components/travRender'
 import { matchHapToKey } from './components/hapKey'
-import { API_LEVEL_REQUIRED, fetchBlockBbox, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRoute, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
+import { API_LEVEL_REQUIRED, fetchBlockBbox, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRoute, RouteResp, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -636,11 +636,17 @@ export default function App() {
     const rx = (vp.x2 - vp.x1) * 0.15, ry = (vp.y2 - vp.y1) * 0.15
     const rbox = { x1: vp.x1 - rx, y1: vp.y1 - ry, x2: vp.x2 + rx, y2: vp.y2 + ry }
     const wantRoute = ribbonLevel === 'contig'
-    Promise.all(sels.map(([label, s]) => Promise.all([fetchRibbon(selectedDb, mapLayer, s.gids, ribbonTheta, bbox),
-                                                      wantRoute ? fetchRoute(selectedDb, mapLayer, label, rbox).catch(() => undefined) : Promise.resolve(undefined)])
-      .then(([resp, route]) => ({ label, color: s.color, nodes: resp.nodes, edges: resp.edges, route }))))
+    // 道筋はリボンを待たせない（11-10: 道筋の取得が遅いとリボンも出なかった）。リボンを先に出し、道筋は届いたら同じラベルのリボンに足す
+    const gotRoute = new Map<string, RouteResp>(); let ribsSet = false
+    if (wantRoute) for (const [label] of sels) fetchRoute(selectedDb, mapLayer, label, rbox).then(route => {
+      if (cancelled || !route || !route.runs?.length) return
+      gotRoute.set(label, route)
+      if (ribsSet) setRibbons(prev => prev.map(r => r.label === label ? { ...r, route } : r))
+    }).catch(() => { /* 道筋が無ければリボンのまま */ })
+    Promise.all(sels.map(([label, s]) => fetchRibbon(selectedDb, mapLayer, s.gids, ribbonTheta, bbox)
+      .then(resp => ({ label, color: s.color, nodes: resp.nodes, edges: resp.edges, route: gotRoute.get(label) }))))
       // 取得直後に未保存編集を焼き込む＝群追加/解除でもリボンが編集前の初期位置に戻らない。
-      .then(ribs => { if (!cancelled) setRibbons(applyGesturesToRibbons(ribs, pendingEditsRef.current)) })
+      .then(ribs => { if (!cancelled) { ribsSet = true; setRibbons(applyGesturesToRibbons(ribs.map(r => ({ ...r, route: r.route ?? gotRoute.get(r.label) })), pendingEditsRef.current)) } })
       .catch(() => { if (!cancelled) setRibbons([]) })
     return () => { cancelled = true }
   }, [selectedDb, ribbonSel, ribbonTheta, mapLayer, ribbonLevel])

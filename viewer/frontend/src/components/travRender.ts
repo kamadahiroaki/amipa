@@ -1384,7 +1384,7 @@ cv.addEventListener('mousedown', e => {
   if (root && e.offsetX >= LAB && e.offsetY >= TOP && ($('showctg') as HTMLInputElement).checked) {   // 片 → そのコンティグのリボン（11-10）
     const k = rowAt(e.offsetY); if (k >= 0 && k < hapOrder.length) { const hid = hapOrder[k]; const inR = ($('mode') as HTMLSelectElement).value === 'rows'; const x = xOfPx(e.offsetX)
       const r = inR ? (lastPieces.get(hid) || []).find(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX)?.tr : (mrowsByHap.get(hid) || []).find(r => r.hid === hid && r.x0 <= x && r.x1 >= x)
-      const pn = r ? (r.pn ?? r.members?.find(m => m.pn)?.pn) : undefined; if (pn) { muteHoverKey = lastHoverNodes; sendHover(null); cb.onSelectContig?.(pn) } }
+      const pn = r ? (r.pn ?? r.members?.find(m => m.pn)?.pn) : undefined; if (pn) { muteHoverKey = lastHoverNodes; muteAt = [e.offsetX, e.offsetY]; sendHover(null); cb.onSelectContig?.(pn) } }
   }
 })
 cv.addEventListener('mousemove', e => {
@@ -1482,6 +1482,7 @@ document.addEventListener('mousedown', e => { const b = $('gres'); if (b && b.st
 //   名前はグラフが描いている層のもの（全体図の点）なので祖先を引かない。全体図の点がまだ無いとき（グラフ連動を切っている等）は
 //   範囲の錨を間引いて送り、グラフ側で祖先に直す（200 個まで）
 let linkHovT: ReturnType<typeof setTimeout> | null = null
+let muteAt: [number, number] | null = null   // クリックした点。そこから 60 px 以内ではホバーの強調を出さない（強調中はリボンを消すので、選んだリボンが見えなかった）
 let muteHoverKey = ''   // 片のクリックでリボンを選んだ直後は、同じ場所のホバーの強調を止める（強調中はリボンを消すので、選んだリボンが見えなかった）
 function linkHover(x0: number, x1: number) {
   const key = `r:${x0}-${x1}`; if (key === lastHoverNodes) return; if (key === muteHoverKey) return; muteHoverKey = ''; lastHoverNodes = key
@@ -1497,6 +1498,7 @@ function rowHoverX(e: MouseEvent, hid: number): number | null {
 }
 cv.addEventListener('mousemove', e => {
   if (base || drag || bDrag || !root) return
+  if (muteAt) { if (Math.hypot(e.offsetX - muteAt[0], e.offsetY - muteAt[1]) < 60) { sendHover(null); return } muteAt = null }
   let r: [number, number] | null = null
   if (e.offsetX >= LAB && e.offsetY < TOP) { const inGene = ogroups.length && showGenes() && e.offsetY >= TOP - 12 - OGH && e.offsetY < TOP - 12; const b = inGene ? null : blocks[topBlockAt(e.offsetX)]; if (b) r = [b.x0, b.x1] }
   else if (e.offsetX >= LAB) { const k = rowAt(e.offsetY); const x = k >= 0 && k < hapOrder.length ? rowHoverX(e, hapOrder[k]) : null
