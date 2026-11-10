@@ -1863,7 +1863,22 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           type Lab = { m: number; x: number; y: number; name?: string; wx: number; wy: number; a: number; strand: number }
           // コンティグ毎: 目盛り生成 → 画面間引き → PER_CONTIG に均等サンプル → 両端を先頭に並べる
           const perContig: Lab[][] = []
-          for (const [cid, arr] of groups) {
+          // 参照上で遠い区間が画面で隣り合う（逆位のループの両端など）と、最小〜最大から決めた目盛りが粗くなり
+          // 目盛りがほぼ出ず、出ても丸め値が実位置から大きくずれた（11-10）。参照上の大きな飛びで区間に分け、区間ごとに目盛りを作る
+          const runs: [number, Cand[]][] = []
+          for (const [cid, all] of groups) {
+            const srt = [...all].sort((p, q) => p.mid - q.mid)
+            const gaps = srt.slice(1).map((a, i) => a.mid - srt[i].mid).sort((p, q) => p - q)
+            const med = gaps.length ? gaps[gaps.length >> 1] : 0
+            const cut = Math.max(50 * med, 2000, (srt[srt.length - 1].mid - srt[0].mid) * 0.02)
+            let cur: Cand[] = [srt[0]]
+            for (let i = 1; i < srt.length; i++) {
+              if (srt[i].mid - srt[i - 1].mid > cut) { runs.push([cid, cur]); cur = [] }
+              cur.push(srt[i])
+            }
+            runs.push([cid, cur])
+          }
+          for (const [cid, arr] of runs) {
             let bpMin = Infinity, bpMax = -Infinity
             for (const a of arr) { if (a.mid < bpMin) bpMin = a.mid; if (a.mid > bpMax) bpMax = a.mid }
             const step = Math.max(niceStep((bpMax - bpMin) / TARGET), 1)
@@ -1873,6 +1888,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             for (const a of arr) {
               if (a.e - a.s > step * 1.5) continue   // 粗すぎるノードは位置決めに使わない
               const m = Math.round(a.mid / step) * step
+              const tol = step * 0.1
+              if (m < a.s - tol || m > a.e + tol) continue   // 丸め値がこのノードの参照区間から離れすぎ＝誤った位置を指すので使わない
               const d = Math.abs(a.mid - m)
               const prev = buckets.get(m)
               if (!prev || d < prev.dist || (d === prev.dist && a.anchor && !prev.anchor))
