@@ -75,7 +75,11 @@ function makeContextRect(vp: Rect, bounds?: Rect): Rect {
 // （11-05: 比べる中心は「いまの表示から作る矩形」の中心。グラフの端で中心を寄せた矩形と表示の中心を比べると、パンのたびに取り直していた）
 function inMiddle50(vp: Rect, r: Rect, bounds?: Rect): boolean {
   const want = makeContextRect(vp, bounds); const cx = (want.x1 + want.x2) / 2, cy = (want.y1 + want.y2) / 2
-  return Math.abs(cx - (r.x1 + r.x2) / 2) < (r.x2 - r.x1) / 4
+  // 11-10: 広さも見る。層が変わらない拡大・縮小（最深層より先など）で矩形を作り直さず、再読み込みで細かい倍率の矩形が残り、
+  //   縮小すると赤枠が下段からはみ出していた。欲しい広さとの比が 1/2〜2 を外れたら作り直す
+  const k = (want.x2 - want.x1) / Math.max(1e-300, r.x2 - r.x1)
+  return k > 0.5 && k < 2
+      && Math.abs(cx - (r.x1 + r.x2) / 2) < (r.x2 - r.x1) / 4
       && Math.abs(cy - (r.y1 + r.y2) / 2) < (r.y2 - r.y1) / 4
 }
 
@@ -137,8 +141,9 @@ function drawGeometry(
       ctx.beginPath()
       for (const c of b) {
         // 1 画素未満は 1 画素の点。1 画素を超えるものは大きさを反映（疎な領域で潰れないように）。
-        // セルは向きを持たない（重心と平均幅だけ）ので正方形の点にする。横長に描くと、斜めの部分でも横棒が並んで向きが 0 度に見える（11-10）
-        const w = Math.max(1, Math.min(c.w * scale, c.w * 0.35 * scale * 2))
+        // セルは向きを持たない（重心と平均幅だけ）ので正方形の点にする。横長に描くと、斜めの部分でも横棒が並んで向きが 0 度に見える（11-10）。
+        //   一辺はノードの太さ（幅の 0.35）にとどめる。幅で描くと、上に重ねる向き付きのノードからはみ出して正方形が見えた
+        const w = Math.max(1, c.w * 0.35 * scale)
         ctx.rect(px(c.x) - w / 2, py(c.y) - w / 2, w, w)
       }
       ctx.fill()
