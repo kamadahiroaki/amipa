@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchNodes, fetchEdges, fetchNodesGrid, GridCell, GridBigNode, NodeData, EdgeData, Rect, GuardSink } from '../api/client'
+import { fetchNodes, fetchEdges, fetchNodesGrid, fetchNodeCounts, GridCell, GridBigNode, NodeData, EdgeData, Rect, GuardSink } from '../api/client'
 
 interface Props {
   viewport: Rect
@@ -15,6 +15,7 @@ const OVERVIEW_H     = 55
 const CONTEXT_H      = 110
 const CONTEXT_OFFSET = 3    // currentLayer - N をコンテキストレイヤとする
 const VP_MIN_PX      = 12   // 現在位置の枠がこれより小さいと十字の点線を足す（11-06、老眼でも見える目印）
+const CTX_BUDGET     = 8000 // 下段の層: 矩形の中のノードがこの数以下になる最も深い層（11-10。表示の層 − 3 固定だと、最深層より先の拡大で粗すぎた）
 const CONTEXT_SCALE  = 4    // 中心 ± N × ビューポート幅を表示範囲とする
 // 下段（周辺マップ）を出すズーム倍率（グラフ全体 ÷ 表示範囲、縦横の小さい方）。11-06: 以前は layer > 3 で出しており、
 // 小さなグラフでは殆ど拡大していなくても二段になっていた。出し入れのちらつきを避けるため消す側は少し低く（履歴つき）
@@ -104,6 +105,7 @@ function drawGeometry(
   nodes: NodeData[], edges: EdgeData[], cells: GridCell[] | null,
   big: GridBigNode[] | null,
   worldRect: Rect,
+  bigComplete = false,   // big が打ち切られていない＝画素より大きいノードは全部 big で向き付きに描く
 ) {
   const ctx = off.getContext('2d')!
   // 11-06: キャンバスは画面の解像度（devicePixelRatio 倍）の画素を持つ。描画は CSS px の座標で書き、変換で拡大する
@@ -143,6 +145,8 @@ function drawGeometry(
         // 1 画素未満は 1 画素の点。1 画素を超えるものは大きさを反映（疎な領域で潰れないように）。
         // セルは向きを持たない（重心と平均幅だけ）ので正方形の点にする。横長に描くと、斜めの部分でも横棒が並んで向きが 0 度に見える（11-10）。
         //   一辺はノードの太さ（幅の 0.35）にとどめる。幅で描くと、上に重ねる向き付きのノードからはみ出して正方形が見えた
+        // 11-10: 画素より大きいノードは上に向き付きで描くので、big が揃っていればセルは描かない（大きく拡大するとノードの中心に正方形が見えた）
+        if (bigComplete && c.w * scale >= 2) continue   // c.w は外接箱の幅の平均。backend の GRID_BIG_PX（幅 2 px 以上を big で返す）と同じ判定
         const w = Math.max(1, c.w * 0.35 * scale)
         ctx.rect(px(c.x) - w / 2, py(c.y) - w / 2, w, w)
       }
@@ -323,7 +327,9 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
   const ctxCells       = useRef<GridCell[]>([])
   const ctxBig         = useRef<GridBigNode[]>([])   // 1画素超＝向きが見えるノード
   const ctxRect        = useRef<Rect>({ x1: 0, x2: 1, y1: 0, y2: 1 })
-  const ctxLayerRef    = useRef(-1)
+  const ctxLayerRef    = useRef(-1)    // 下段を作ったときの表示の層（変わったら取り直す）
+  const ctxBigComplete = useRef(false)
+  const [ctxShownLayer, setCtxShownLayer] = useState(-1)   // 下段に実際に描いている層
   const ctxBusy        = useRef(false)
   const ctxPendingRect = useRef<Rect | null>(null)  // fetch中の rect
   const ctxSelRef      = useRef(sel)                // 絞り込みが変わったら取り直す
@@ -362,7 +368,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     const c = ctxRef.current
     if (!c) return
     drawGeometry(offFor(ctxOff, c.width, c.height), [], [],
-      ctxCells.current, ctxBig.current, ctxRect.current)
+      ctxCells.current, ctxBig.current, ctxRect.current, ctxBigComplete.current)
   }
   function redrawOv() {
     if (ovRef.current)
@@ -420,15 +426,15 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
 
   // ── ビューポート/レイヤ変化時: コンテキスト更新判定 + 再描画 ────────────
   useEffect(() => {
-    const newCtxLayer = Math.max(0, layer - CONTEXT_OFFSET)
-    const needsNewData = newCtxLayer !== ctxLayerRef.current
+    const baseCtxLayer = Math.max(0, layer - CONTEXT_OFFSET)
+    const needsNewData = layer !== ctxLayerRef.current
       || sel !== ctxSelRef.current
       || !inMiddle50(viewport, ctxRect.current, ovReady.current ? ovBounds.current : undefined)
 
     if (showCtx && needsNewData && !ctxBusy.current) {
       const newRect = makeContextRect(viewport, ovReady.current ? ovBounds.current : undefined)
       ctxPendingRect.current = newRect
-      ctxLayerRef.current    = newCtxLayer
+      ctxLayerRef.current    = layer
       ctxSelRef.current      = sel
       ctxBusy.current        = true
 
@@ -440,8 +446,16 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       const ctrl = new AbortController()
       ctxAbort.current = ctrl
       const guard: GuardSink = { truncated: null }
-      fetchNodesGrid(newCtxLayer, newRect, dbFile, MINIMAP_W, CONTEXT_H, sel, ctrl.signal,
-                     undefined, guard)
+      // 層は「表示の層 − CONTEXT_OFFSET」から表示の層までのうち、矩形の中のノードが CTX_BUDGET 以下の最も深い層。
+      //   普段は − CONTEXT_OFFSET 付近になり、最深層より先まで拡大したときは最深層まで降りる（倍率と解像度を釣り合わせる）
+      const cands: number[] = []; for (let L = baseCtxLayer; L <= layer; L++) cands.push(L)
+      let ctxL = baseCtxLayer
+      fetchNodeCounts(dbFile, cands, newRect).catch(() => ({} as Record<number, number>))
+        .then(counts => {
+          for (const L of cands) { const n = counts[L]; if (n != null && n <= CTX_BUDGET) ctxL = L }
+          if (ctrl.signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' })
+          return fetchNodesGrid(ctxL, newRect, dbFile, MINIMAP_W, CONTEXT_H, sel, ctrl.signal, undefined, guard)
+        })
         .then(grid => {
           // ★不完全な応答（'cancel'=走行中に中断 / 'time'=時間ガード）で **内容を置き換えない**。
           //   置き換えると前の絵まで消えて真っ白になる。前回の内容を保ったまま少し後に取り直す。
@@ -456,6 +470,8 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
           }
           ctxCells.current = grid.cells
           ctxBig.current   = grid.nodes ?? []
+          ctxBigComplete.current = !grid.nodesTruncated
+          setCtxShownLayer(ctxL)
           ctxRect.current  = ctxPendingRect.current!  // データ到着後に rect 確定
           ctxPendingRect.current = null
           rebuildCtx()
@@ -527,7 +543,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       {showCtx && (
         <>
           <div style={{ ...labelStyle, borderTop: '1px solid #e9ecef' }}>
-            周辺（×{Math.round(zoom)}）{DEV ? ` · layer ${Math.max(0, layer - CONTEXT_OFFSET)}` : ''}
+            周辺（×{Math.round(zoom)}）{DEV && ctxShownLayer >= 0 ? ` · layer ${ctxShownLayer}` : ''}
           </div>
           <canvas
             ref={ctxRef}
