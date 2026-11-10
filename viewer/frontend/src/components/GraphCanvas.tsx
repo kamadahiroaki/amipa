@@ -1224,7 +1224,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     // ── 座標変換 ─────────────────────────────────────────────────────
     function getViewport(): Rect {
       const z = world.scale.x, px = world.position.x, py = world.position.y
-      const { width, height } = app.screen
+      const sc = app.screen, vw = (app as any).view as HTMLCanvasElement | null | undefined; const width = sc ? sc.width : (vw?.clientWidth ?? 0), height = sc ? sc.height : (vw?.clientHeight ?? 0)   // 破棄後に呼ばれても落ちない
       return { x1: -px/z, x2: (width-px)/z, y1: -py/z, y2: (height-py)/z }
     }
     getViewportRef.current = getViewport
@@ -3724,6 +3724,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       textLayerRef.current    = null
       if (layerDebounce) clearTimeout(layerDebounce)
       if (urlDebounce)   clearTimeout(urlDebounce)
+      if (sweepTimer)    { clearTimeout(sweepTimer); sweepTimer = null }   // 11-10: DB 切替後に欠損の取り直しが走り、破棄した app.screen を読んで落ちていた
       document.removeEventListener('visibilitychange', onVisibility)
       canvas.removeEventListener('wheel', onWheel)
       canvas.removeEventListener('mousedown', onMouseDown)

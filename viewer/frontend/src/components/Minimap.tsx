@@ -137,9 +137,9 @@ function drawGeometry(
       ctx.beginPath()
       for (const c of b) {
         // 1 画素未満は 1 画素の点。1 画素を超えるものは大きさを反映（疎な領域で潰れないように）。
-        const w = Math.max(1, c.w * scale)
-        const h = Math.max(1, c.w * 0.35 * scale)
-        ctx.rect(px(c.x) - w / 2, py(c.y) - h / 2, w, h)
+        // セルは向きを持たない（重心と平均幅だけ）ので正方形の点にする。横長に描くと、斜めの部分でも横棒が並んで向きが 0 度に見える（11-10）
+        const w = Math.max(1, Math.min(c.w * scale, c.w * 0.35 * scale * 2))
+        ctx.rect(px(c.x) - w / 2, py(c.y) - w / 2, w, w)
       }
       ctx.fill()
     }
@@ -183,16 +183,22 @@ function drawGeometry(
   ctx.fillStyle = '#228be6'
   ctx.strokeStyle = '#1864ab'
   ctx.lineWidth = 0.5
-  // 1 画素程度にしかならないノードは回転も縁取りも見えないので、save/rotate/restore をやめて
-  // まとめて 1 パスで塗る（Canvas2D 呼び出しがノードあたり 12 回 → 1 回）。
+  // 小さく描くノードは save/rotate/restore をやめて、向きに沿った短い線分をまとめて 1 パスで引く（Canvas2D 呼び出しがノードあたり 12 回 → 1 回）。
+  // 11-10: 以前は軸に平行な 1.5×0.8 の四角で塗っていた。画面の解像度で描くようにしてから、斜めの部分が横棒の並び（0 度）に見えた
   const bigRaw: NodeData[] = []
+  ctx.strokeStyle = '#228be6'
+  ctx.lineWidth = 0.9
   ctx.beginPath()
   for (const n of nodes) {
     const w = n.radius * 2 * scale
     if (w > 2) { bigRaw.push(n); continue }
-    ctx.rect(px(n.xCoord) - 0.75, py(n.yCoord) - 0.4, 1.5, 0.8)
+    const hl = Math.max(0.75, w / 2), a = Number.isFinite(n.angle) ? n.angle : 0
+    const dx = Math.cos(a) * hl, dy = Math.sin(a) * hl, cx = px(n.xCoord), cy = py(n.yCoord)
+    ctx.moveTo(cx - dx, cy - dy); ctx.lineTo(cx + dx, cy + dy)
   }
-  ctx.fill()
+  ctx.stroke()
+  ctx.strokeStyle = '#1864ab'
+  ctx.lineWidth = 0.5
   // 画素より大きく描かれるノードだけ、従来どおり向き付きで描く。
   for (const n of bigRaw) {
     const w = n.radius * 2 * scale
