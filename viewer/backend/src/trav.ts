@@ -168,7 +168,47 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
   const reps = t.db.prepare('SELECT r.id, r.pid, r.hid, r.i0, r.i1, r.bp, t.x0 AS tx0, t.x1 AS tx1, t.i0 AS ti0, t.i1 AS ti1, t.dir FROM reps r JOIN trav t ON t.pid = r.pid AND t.i0 <= r.i1 AND t.i1 >= r.i0 WHERE t.x0 <= ? AND t.x1 >= ? AND t.nanch >= ?').all(x1, x0, ma) as any[]
   const repsOut = reps.map(r => { const L = Math.max(1, r.ti1 - r.ti0); const f0 = Math.max(0, Math.min(1, (r.i0 - r.ti0) / L)), f1 = Math.max(0, Math.min(1, (r.i1 - r.ti0) / L)); const [a0, a1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]
     return { id: r.id, pid: r.pid, hid: r.hid, i0: r.i0, i1: r.i1, bp: r.bp, x0: Math.round(r.tx0 + a0 * (r.tx1 - r.tx0)), x1: Math.round(r.tx0 + a1 * (r.tx1 - r.tx0)) } }).filter(r => r.x1 >= x0 && r.x0 <= x1)   // 反復自体が区間に掛かるものだけ（通過が掛かるだけでは不足）
-  return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: out, copies, reps: repsOut, perHap }
+  let dups: Dup[] = []
+  try { dups = [...redundSpans(t).filter(d => d.x1 >= x0 && d.x0 <= x1), ...pieceOverlaps(out.filter(r => r.nanch >= 50 && !(r as any).fill))] } catch (e) { console.warn('[trav/range] dups', e) }
+  return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: out, copies, reps: repsOut, perHap, dups }
+}
+
+// 同じ株がその座標を 2 回以上持つのに、通過の行では見えない所（11-10。fly16 A2 の chr3R 逆位の切れ目で、グラフの CNV は ×2〜3 なのに
+//   Traversals は 1 回に見えた）:
+//   redund  … prep が「冗長」として除いたコンティグ（同じ株のほかのコンティグと 9 割以上を共有。paths.excluded=1）。行を作らないので、
+//             そのトークンの合意座標の張りを区間にして印だけ出す（隔たり 0.1% 超で区間を分ける）
+//   overlap … 同じ株の 2 つの通過（別コンティグ、または同じコンティグの離れた区間）が合意座標で重なる所。同じ行に重ねて描くので見えなかった
+export interface Dup { kind: 'redund' | 'overlap'; hid: number; x0: number; x1: number; pid: number; pid2?: number; path: string; bp: number; n: number }
+function redundSpans(t: Trav): Dup[] {
+  const c = (t as any).__redund as Dup[] | undefined; if (c) return c
+  const out: Dup[] = []
+  if (ensureCols(t)) {
+    const X = t.xOfDense!, dist = t.dist!; const gap = Math.max(200, Math.floor(t.R * 0.001))
+    for (const p of t.paths) {
+      if (!p.excluded) continue
+      const pi = dist.names[p.pid] === p.path ? p.pid : dist.pidx.get(p.path); if (pi == null) continue
+      const tk = dist.read(pi, 0, dist.ntok(pi)); const xs: number[] = []
+      for (let i = 0; i < tk.length; i++) { const x = X[tk[i]]; if (x >= 0) xs.push(x) }
+      if (!xs.length) continue
+      xs.sort((a, b) => a - b); let a = xs[0], n = 1
+      const push = (b: number) => { if (n >= 20) out.push({ kind: 'redund', hid: p.hid, x0: a, x1: b, pid: p.pid, path: p.path, bp: p.bp, n }) }
+      for (let i = 1; i < xs.length; i++) { if (xs[i] - xs[i - 1] > gap) { push(xs[i - 1]); a = xs[i]; n = 0 } n++ }
+      push(xs[xs.length - 1])
+    }
+  }
+  out.sort((p, q) => p.x0 - q.x0); (t as any).__redund = out; return out
+}
+function pieceOverlaps(rows: TravRow[]): Dup[] {
+  const byHap = new Map<number, TravRow[]>(); for (const r of rows) { if (!byHap.has(r.hid)) byHap.set(r.hid, []); byHap.get(r.hid)!.push(r) }
+  const out: Dup[] = []
+  for (const [hid, rs] of byHap) {
+    rs.sort((a, b) => a.x0 - b.x0)
+    for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length && rs[j].x0 <= rs[i].x1; j++) {
+      const a = rs[i], b = rs[j]; const o0 = Math.max(a.x0, b.x0), o1 = Math.min(a.x1, b.x1); if (o1 < o0) continue
+      out.push({ kind: 'overlap', hid, x0: o0, x1: o1, pid: a.pid, pid2: b.pid, path: '', bp: 0, n: 0 })
+    }
+  }
+  return out
 }
 
 // 錨でないトークンも含めた「このコンティグのトークン区間 [i0, i1] が座標のどこに当たるか」は trav 表から引く
