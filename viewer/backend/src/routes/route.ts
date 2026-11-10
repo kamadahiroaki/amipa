@@ -13,8 +13,16 @@ import { distillFor } from './bubbleMsa'
 
 export const routeRouter = Router()
 
-const MAX_LEAVES = Number(process.env.AMIPA_ROUTE_MAX_LEAVES) || 3_000_000
+const MAX_LEAVES = Number(process.env.AMIPA_ROUTE_MAX_LEAVES) || 400_000
 const MAX_STEPS = 200_000
+const MAX_EST_LEAVES = Number(process.env.AMIPA_ROUTE_MAX_EST) || 200_000
+const MAX_NODES = 8000
+function layerNodesOf(d: any): number[] | null {
+  const c = (d as any).__layerNodes; if (c !== undefined) return c
+  let v: number[] | null = null
+  try { const row = d.prepare('SELECT data FROM stats ORDER BY id DESC LIMIT 1').get() as { data: string } | undefined; v = row?.data ? JSON.parse(row.data).layer_nodes ?? null : null } catch { /* ignore */ }
+  ;(d as any).__layerNodes = v; return v
+}
 
 function maxLayerOf(d: any): number {
   const c = (d as any).__maxLayer; if (c != null) return c
@@ -46,6 +54,11 @@ routeRouter.get('/route', (req, res) => {
                              FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid`).all(...sp.params) as { name: string; x: number; y: number; a: number; r: number }[]
     // 2) 葉（最深層）→ 層 L のノードの添字。parent_name を下へたどる
     const ML = maxLayerOf(d)
+    // 重すぎる範囲は先に断る（11-10: 広い表示で数分かかり、その間メインスレッドが塞がって他の取得も止まった）。
+    //   葉の数の見込み ＝ 矩形の中のノード数 × （最深層のノード数 ÷ 層 L のノード数）
+    const ln = layerNodesOf(d)
+    const est = ln && ln[L] ? nodes.length * (ln[ML] / ln[L]) : nodes.length
+    if (est > MAX_EST_LEAVES || nodes.length > MAX_NODES) { res.json({ tooBig: true, est: Math.round(est), nodes: [], runs: [], ms: Date.now() - T0 }); return }
     const leafAnc = new Map<number, number>()   // 元の GFA id → nodes の添字
     let front = new Map<string, number>(nodes.map((n, i) => [n.name, i]))
     let truncated = false
