@@ -148,7 +148,7 @@ const ALIGN_NODE_COLORS = [
 ]
 const EMPTY_NODE_COLORS: Map<string, number> = new Map()
 
-const HANDLE_SIZE = 5   // px, resize handle thickness
+const HANDLE_SIZE = 2   // px, resize handle thickness（見た目は縁取り 1 px と合わせて 3 px。11-10 に 5→2 で半分に。掴める幅は GRIP_PAD で据え置き）
 const MIN_SIDE   = 0    // px, minimum surrounding panel size
 const MIN_GRAPH  = 120  // px, minimum graph canvas dimension
 
@@ -162,7 +162,7 @@ const handleStyle: React.CSSProperties = {
   zIndex: 5,
 }
 // 掴みしろ(px)。5px の線を掴むのは細すぎるので、上下(左右)にこれだけ透明な帯を足す。
-const GRIP_PAD = 6
+const GRIP_PAD = 7.5   // 掴める幅 ＝ 見た目 3 px ＋ 両側 7.5 px ＝ 18 px（仕切りを細くする前の 6 px ＋ 6 px×2 と同じ）
 
 const EMPTY_RIBBONS: RibbonData[] = []   // リボン一時非表示用の安定した空配列(参照不変で再描画churn回避)
 
