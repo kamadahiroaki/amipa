@@ -27,6 +27,7 @@ export interface RibbonData {
   label?: string   // 凡例用ラベル(= ribbonSel のユニット名 sample/hap/contig)
   nodes: { id: number; name: string; x: number; y: number; a: number; r: number; frac: number; inv?: boolean; invDir?: number }[]
   edges: { su: number; tv: number; sx: number; sy: number; ex: number; ey: number; inv?: boolean }[]
+  route?: import('../api/client').RouteResp   // コンティグの道筋（単位がコンティグのとき）。あればリボンの代わりに一筆書きで描く（11-10）
 }
 
 function lerpColor(c1: number, c2: number, t: number): number {
@@ -2074,6 +2075,125 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     // スキップするため、正規化座標[0,1]の深層(edge長~2e-5)で消える。塗りつぶしポリゴンはこの
     // スキップが無く、最小長を保証すれば layer に依らず一定太さ(=W スクリーン px)で描ける。
     // 複数リボンは y 方向に STAGGER ずらして重なりを見せ、1 群だけ別経路へ逸れるのを可視化。
+    // コンティグの道筋（11-10）: コンティグが通る順にノードを結ぶ一筆書き。アニメーションを使わずに道筋を誤解なく読めるように、
+    //   ・ノードの中は軸に沿って直線、ノードの間は両端の接線に沿う 3 次ベジエで滑らかに曲げる（曲がる所は滑らかな弧になる）
+    //   ・後から通る線ほど上に描き、下の線との間に白い縁を空ける（交わる所は「上を越える」形になり、曲がり角と見分けられる）
+    //   ・同じノードを 2 回以上通るときは、回ごとにノードの軸と直交する向きへずらして平行に並べる
+    //   ・進む向きを矢羽根で、コンティグの本当の端を黒い横棒、断片の端（クリップの切れ目）を白抜きの丸で示す
+    function drawRoute(route: NonNullable<RibbonData['route']>, color: number, zoom: number, originX: number, originY: number, scale: number) {
+      const rl = ribbonLayerRef.current; if (!rl) return
+      const px = 1 / zoom
+      const Wc = 2.6 * px, CASE = 2.0 * px, GAP = 5 * px
+      const nodes = route.nodes
+      // 各ノードを通る回数と、その回が何回目か（コンティグ上の順）
+      const total = new Map<number, number>()
+      for (const r of route.runs) for (const i of r.s) total.set(i, (total.get(i) ?? 0) + 1)
+      const seen = new Map<number, number>()
+      type P = [number, number]
+      const dark = darken(color)
+      const quad = (ax: number, ay: number, bx: number, by: number, h: number) => {
+        let dx = bx - ax, dy = by - ay; const len = Math.hypot(dx, dy); if (len < 1e-15) return
+        dx /= len; dy /= len
+        const ex = dx * h * 0.9, ey = dy * h * 0.9   // 継ぎ目を埋めるため両端を少し延ばす
+        const nx = -dy * h, ny = dx * h
+        rl.drawPolygon([ax - ex + nx - originX, ay - ey + ny - originY, bx + ex + nx - originX, by + ey + ny - originY,
+                        bx + ex - nx - originX, by + ey - ny - originY, ax - ex - nx - originX, ay - ey - ny - originY])
+      }
+      const strokeLine = (pts: P[], h: number, col: number, alpha = 1) => {
+        if (pts.length < 2) return
+        rl.beginFill(col, alpha); for (let i = 1; i < pts.length; i++) quad(pts[i - 1][0], pts[i - 1][1], pts[i][0], pts[i][1], h); rl.endFill()
+      }
+      for (const run of route.runs) {
+        const S = run.s; const m = S.length; if (!m) continue
+        // ステップごとの中心・接線・半長。接線は前後のノードを結ぶ向き（小さなノードの角度はばらつくので使わない）。
+        //   画面で 10 px 以上あるノードだけ軸に沿って入口→出口の直線を持たせる
+        const cx: number[] = [], cy: number[] = [], tx: number[] = [], ty: number[] = [], hl: number[] = [], lane: number[] = []
+        for (let j = 0; j < m; j++) {
+          const n = nodes[S[j]]
+          const pv = nodes[S[Math.max(0, j - 1)]], nx = nodes[S[Math.min(m - 1, j + 1)]]
+          let dx = nx.x - pv.x, dy = nx.y - pv.y; let L = Math.hypot(dx, dy)
+          const ux = Math.cos(n.a), uy = Math.sin(n.a)
+          if (L < 1e-15) { dx = run.o[j] ? ux : -ux; dy = run.o[j] ? uy : -uy; L = 1 }
+          let h = Math.max(n.r * scale, 0)
+          let ttx = dx / L, tty = dy / L
+          if (2 * h * zoom >= 10) { const sg = ux * ttx + uy * tty >= 0 ? 1 : -1; ttx = ux * sg; tty = uy * sg } else h = 0
+          cx.push(n.x); cy.push(n.y); tx.push(ttx); ty.push(tty); hl.push(h)
+          const K = total.get(S[j]) ?? 1, k = seen.get(S[j]) ?? 0; seen.set(S[j], k + 1)
+          lane.push(K > 1 ? k - (K - 1) / 2 : NaN)
+        }
+        // ずらし量: 1 回しか通らないノード（アレルの片側など）は前後の値をつなぐ。その後 5 ステップの移動平均で跳びをならす
+        { let last = -1
+          for (let j = 0; j <= m; j++) {
+            if (j < m && Number.isNaN(lane[j])) continue
+            const a = last >= 0 ? lane[last] : (j < m ? lane[j] : 0), b = j < m ? lane[j] : a
+            for (let q = last + 1; q < j; q++) lane[q] = (j - q <= 30 || q - last <= 30) ? a + (b - a) * (q - last) / Math.max(1, j - last) : 0
+            last = j
+          }
+          for (let j = 0; j < m; j++) if (Number.isNaN(lane[j])) lane[j] = 0
+          const sm = lane.slice(); for (let j = 0; j < m; j++) { let a = 0, c = 0; for (let q = Math.max(0, j - 2); q <= Math.min(m - 1, j + 2); q++) { a += lane[q]; c++ } sm[j] = a / c }
+          for (let j = 0; j < m; j++) lane[j] = sm[j] }
+        // 通過点の列（ずらしは向きに依らない法線へ: 接線を x が正になる向きにそろえてから直交させる。逆向きに通る 2 本も別の側に並ぶ）
+        const pts: P[] = []; const ent: P[] = [], ext: P[] = [], tan: P[] = []
+        for (let j = 0; j < m; j++) {
+          const cs = tx[j] < 0 || (tx[j] === 0 && ty[j] < 0) ? -1 : 1
+          const ox = -ty[j] * cs * lane[j] * GAP, oy = tx[j] * cs * lane[j] * GAP
+          const e: P = [cx[j] - tx[j] * hl[j] + ox, cy[j] - ty[j] * hl[j] + oy], x: P = [cx[j] + tx[j] * hl[j] + ox, cy[j] + ty[j] * hl[j] + oy]
+          ent.push(e); ext.push(x); tan.push([tx[j], ty[j]])
+          const push = (p: P) => { const q = pts[pts.length - 1]; if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) * zoom >= 2.5) pts.push(p) }
+          push(e); if (hl[j] > 0) push(x)
+        }
+        if (pts.length === 1) pts.push([pts[0][0] + tan[0][0] * px, pts[0][1] + tan[0][1] * px])
+        // Catmull-Rom で滑らかにつなぐ（画面で約 4 px ごとに標本）
+        const curve: P[] = [pts[0]]
+        for (let i = 0; i + 1 < pts.length; i++) {
+          const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)]
+          const d = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]); const M = Math.max(1, Math.min(24, Math.ceil(d * zoom / 4)))
+          for (let q = 1; q <= M; q++) {
+            const t = q / M, t2 = t * t, t3 = t2 * t
+            curve.push([0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+                        0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)])
+          }
+        }
+        const pieces: P[][] = [curve]
+        // 塊（約 40 px）ごとに「白い縁 → 色」を重ねる＝後から通る線が前の線の上を越える。縁は塊の頭 8 px を空けて、直前の塊（自分自身の続き）を切らない
+        let chunk: P[] = []; let lenPx = 0
+        const flush = () => {
+          if (chunk.length >= 2) {
+            let k = 1, acc = 0; while (k < chunk.length - 1 && acc < 8) { acc += Math.hypot(chunk[k][0] - chunk[k - 1][0], chunk[k][1] - chunk[k - 1][1]) * zoom; k++ }
+            strokeLine(chunk.slice(k - 1), Wc / 2 + CASE, 0xffffff); strokeLine(chunk, Wc / 2, color)
+          }
+          chunk = chunk.length ? [chunk[chunk.length - 1]] : []; lenPx = 0
+        }
+        for (const p of curve) {
+          if (chunk.length) lenPx += Math.hypot(p[0] - chunk[chunk.length - 1][0], p[1] - chunk[chunk.length - 1][1]) * zoom
+          chunk.push(p); if (lenPx > 40) flush()
+        }
+        flush()
+        // 矢羽根（画面で 70 px ごと）
+        const all: P[] = []; for (const seg of pieces) for (const p of seg) all.push(p)
+        rl.beginFill(dark, 1)
+        let acc = 35 * px
+        for (let i = 1; i < all.length; i++) {
+          const a = all[i - 1], b = all[i]; const L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (L < 1e-15) continue
+          while (acc <= L) {
+            const t = acc / L; const cx = a[0] + (b[0] - a[0]) * t, cy = a[1] + (b[1] - a[1]) * t
+            const ux = (b[0] - a[0]) / L, uy = (b[1] - a[1]) / L, nx = -uy, ny = ux, Lh = 4.5 * px, Hh = 3.6 * px
+            rl.drawPolygon([cx + ux * Lh - originX, cy + uy * Lh - originY, cx - ux * Lh + nx * Hh - originX, cy - uy * Lh + ny * Hh - originY,
+                            cx - ux * Lh * 0.3 - originX, cy - uy * Lh * 0.3 - originY, cx - ux * Lh - nx * Hh - originX, cy - uy * Lh - ny * Hh - originY])
+            acc += 70 * px
+          }
+          acc -= L
+        }
+        rl.endFill()
+        // 端の印
+        const endMark = (p: P, t: P, kind: string) => {
+          if (kind === 'ctg') { rl.beginFill(0x111111, 1); const nx = -t[1], ny = t[0]; quad(p[0] - nx * 6 * px, p[1] - ny * 6 * px, p[0] + nx * 6 * px, p[1] + ny * 6 * px, 1.6 * px); rl.endFill() }
+          else if (kind === 'clip') { rl.beginFill(0x555555, 1); rl.drawCircle(p[0] - originX, p[1] - originY, 4.5 * px); rl.endFill(); rl.beginFill(0xffffff, 1); rl.drawCircle(p[0] - originX, p[1] - originY, 2.6 * px); rl.endFill() }
+        }
+        endMark(ent[0], tan[0], run.k0); endMark(ext[m - 1], tan[m - 1], run.k1)
+      }
+    }
+
     function renderRibbons() {
       const rl = ribbonLayerRef.current
       if (!rl) return
@@ -2122,6 +2242,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       if (ribs.some(r => r.nodes.some(n => n.inv))) for (const vn of visibleNodesRef.current) { if (vn.ref_bp != null && Number(vn.ref_bp) >= 0 && !vn.ref_multi) rbByName.set(vn.node_name, (Number(vn.ref_bp) + Number(vn.ref_bp_end ?? vn.ref_bp)) / 2) }
       let chevTotal = 0; const MAX_CHEV = 3000
       ribs.forEach((rib0, ri) => {
+        if (!subF && rib0.route && rib0.route.runs && rib0.route.runs.length) { drawRoute(rib0.route, rib0.color, zoom, originX, originY, scale); return }
         let rib = rib0
         if (keepId && keepNm) { const nodes = rib0.nodes.filter(n => keepId.has(n.id) || keepNm.has(n.name)); const ids = new Set(nodes.map(n => n.id))
           const edges: typeof rib0.edges = []; for (const e of rib0.edges) { const a = ids.has(e.su), b = ids.has(e.tv); if (a && b) edges.push(e); else if (a !== b) { const f = .35; edges.push(a ? { ...e, ex: e.sx + (e.ex - e.sx) * f, ey: e.sy + (e.ey - e.sy) * f } : { ...e, sx: e.ex + (e.sx - e.ex) * f, sy: e.ey + (e.sy - e.ey) * f }) } }

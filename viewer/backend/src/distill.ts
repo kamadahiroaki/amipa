@@ -39,6 +39,22 @@ export class Distill {
     } catch { this.pst = null }
     return this.pst
   }
+  // dense（1 始まり）→ 元の GFA id（id_map.npy）と、dense → bp（s_bp を s_id で並べ直す）。コンティグの道筋（route.ts）用。11-10
+  private idm: Float64Array | null | undefined; private bpd: Float64Array | null | undefined
+  private readAll(f: string): Float64Array | null {
+    try { const n = openNpy(path.join(this.dir, f)); const b = Buffer.alloc(n.n * n.itemsize); let o = 0; while (o < b.length) { const k = fs.readSync(n.fd, b, o, Math.min(1 << 28, b.length - o), n.dataOffset + o); if (k <= 0) break; o += k } fs.closeSync(n.fd)
+      const out = new Float64Array(n.n); if (n.itemsize === 8) { const v = new BigInt64Array(b.buffer, b.byteOffset, n.n); for (let i = 0; i < n.n; i++) out[i] = Number(v[i]) } else if (n.dtype === 'uint32') out.set(new Uint32Array(b.buffer, b.byteOffset, n.n)); else out.set(new Int32Array(b.buffer, b.byteOffset, n.n)); return out
+    } catch { return null }
+  }
+  idMap(): Float64Array | null { if (this.idm === undefined) this.idm = this.readAll('id_map.npy'); return this.idm }
+  bpOfDense(): Float64Array | null {
+    if (this.bpd !== undefined) return this.bpd
+    const sid = this.readAll('s_id.npy'), sbp = this.readAll('s_bp.npy'); if (!sid || !sbp) { this.bpd = null; return null }
+    let mx = 0; for (let i = 0; i < sid.length; i++) if (sid[i] > mx) mx = sid[i]
+    const out = new Float64Array(mx + 1); for (let i = 0; i < sid.length; i++) out[sid[i]] = sbp[i]; this.bpd = out; return out
+  }
+  // 同じ名前のパス（コンティグの断片）の pid の一覧。pidx は名前→最後の pid なので別に引く
+  pidsOf(name: string): number[] { const out: number[] = []; for (let i = 0; i < this.names.length; i++) if (this.names[i] === name) out.push(i); return out }
   ntok(pi: number): number { const a = Number(this.off[pi]); const b = pi + 1 < this.off.length ? Number(this.off[pi + 1]) : this.tok.n; return b - a }
   // パス pi のトークン [s0, e0) を dense id の配列で（Float64Array で返す: int64 も安全に表せる範囲）
   read(pi: number, s0: number, e0: number): Float64Array {

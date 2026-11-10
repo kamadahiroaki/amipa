@@ -7,7 +7,7 @@ import { naReason, naTag, AvailMap } from './avail'
 import TravPanel from './components/TravPanel'
 import type { TravHandle } from './components/travRender'
 import { matchHapToKey } from './components/hapKey'
-import { API_LEVEL_REQUIRED, fetchBlockBbox, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
+import { API_LEVEL_REQUIRED, fetchBlockBbox, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRoute, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
 import { docsUrl } from './docsLink'
 
 type Cell = NodeData | null
@@ -632,13 +632,18 @@ export default function App() {
     const vp = ribbonViewportRef.current
     const mx = (vp.x2 - vp.x1) * 0.5, my = (vp.y2 - vp.y1) * 0.5
     const bbox = { x1: vp.x1 - mx, y1: vp.y1 - my, x2: vp.x2 + mx, y2: vp.y2 + my }
-    Promise.all(sels.map(([label, s]) => fetchRibbon(selectedDb, mapLayer, s.gids, ribbonTheta, bbox)
-      .then(resp => ({ label, color: s.color, nodes: resp.nodes, edges: resp.edges }))))
+    // 単位がコンティグなら道筋（通る順）も取る（11-10）。矩形はビューポートの 15% 増し（広いと葉が増えて遅い）
+    const rx = (vp.x2 - vp.x1) * 0.15, ry = (vp.y2 - vp.y1) * 0.15
+    const rbox = { x1: vp.x1 - rx, y1: vp.y1 - ry, x2: vp.x2 + rx, y2: vp.y2 + ry }
+    const wantRoute = ribbonLevel === 'contig'
+    Promise.all(sels.map(([label, s]) => Promise.all([fetchRibbon(selectedDb, mapLayer, s.gids, ribbonTheta, bbox),
+                                                      wantRoute ? fetchRoute(selectedDb, mapLayer, label, rbox).catch(() => undefined) : Promise.resolve(undefined)])
+      .then(([resp, route]) => ({ label, color: s.color, nodes: resp.nodes, edges: resp.edges, route }))))
       // 取得直後に未保存編集を焼き込む＝群追加/解除でもリボンが編集前の初期位置に戻らない。
       .then(ribs => { if (!cancelled) setRibbons(applyGesturesToRibbons(ribs, pendingEditsRef.current)) })
       .catch(() => { if (!cancelled) setRibbons([]) })
     return () => { cancelled = true }
-  }, [selectedDb, ribbonSel, ribbonTheta, mapLayer])
+  }, [selectedDb, ribbonSel, ribbonTheta, mapLayer, ribbonLevel])
   const fetchRibbonsRef = useRef(fetchRibbonsNow)
   fetchRibbonsRef.current = fetchRibbonsNow
 

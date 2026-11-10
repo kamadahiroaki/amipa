@@ -1,0 +1,103 @@
+// コンティグの道筋（11-10）: GET /api/route?db&path&layer&x1&y1&x2&y2
+//   リボン（/api/ribbon）は「群が通るノードの集合」しか返さないので、同じノードを 2 回通る所や逆位の折り返しで、どこからどこへ続くかが読めない。
+//   ここではコンティグ（同じ名前の W 行の断片すべて）のトークン列を distill から順に読み、表示中の層 L のノード（矩形の中）に写して、
+//   通る順のノード列（連続する同じノードは 1 つにまとめる）を返す。矩形の外へ出たところで列（run）を切る。
+//   ★子を引く問い合わせは INDEXED BY idx_nodes_parent が要る（無いとプランナが layer_index の索引で層全体を走査し、層 11 で 139 秒かかった）
+//   葉 → 層 L のノードは、矩形の中の層 L のノードから parent_name を下へたどって作る（同じ名前のノードが層をまたいで続き、parent_name は一つ上の層を指す）
+import { Router } from 'express'
+import path from 'path'
+import { getDb, getDbDir } from '../db'
+import { spatialSource } from '../spatial'
+import { openDistill } from '../distill'
+import { distillFor } from './bubbleMsa'
+
+export const routeRouter = Router()
+
+const MAX_LEAVES = Number(process.env.AMIPA_ROUTE_MAX_LEAVES) || 3_000_000
+const MAX_STEPS = 200_000
+
+function maxLayerOf(d: any): number {
+  const c = (d as any).__maxLayer; if (c != null) return c
+  let m = 0
+  try { const row = d.prepare('SELECT maxlayer, data FROM stats ORDER BY id DESC LIMIT 1').get() as { maxlayer: number | null; data: string } | undefined
+    m = row?.maxlayer ?? (row?.data ? JSON.parse(row.data).maxlayer : 0) ?? 0 } catch { /* ignore */ }
+  ;(d as any).__maxLayer = m; return m
+}
+
+routeRouter.get('/route', (req, res) => {
+  const q = req.query as Record<string, string>
+  const T0 = Date.now()
+  if (!q.db || !q.path || q.layer == null) { res.status(400).json({ error: 'Missing db/path/layer' }); return }
+  const L = Number(q.layer)
+  const [x1, y1, x2, y2] = ['x1', 'y1', 'x2', 'y2'].map(k => Number(q[k]))
+  if (![x1, y1, x2, y2].every(Number.isFinite)) { res.status(400).json({ error: 'Missing bbox' }); return }
+  try {
+    const d = getDb(q.db)
+    const dir = distillFor(path.join(getDbDir(), path.basename(q.db)))
+    if (!dir) { res.json({ error: 'no distill', nodes: [], runs: [] }); return }
+    const dist = openDistill(dir)
+    const pids = dist.pidsOf(q.path)
+    if (!pids.length) { res.json({ error: 'no such path', nodes: [], runs: [] }); return }
+    const idm = dist.idMap(); if (!idm) { res.json({ error: 'no id_map', nodes: [], runs: [] }); return }
+    const bpd = dist.bpOfDense()
+    // 1) 矩形の中の層 L のノード
+    const sp = spatialSource(d, L, { x1, x2, y1, y2 })
+    const nodes = d.prepare(`SELECT n.node_name AS name, n.xCoord AS x, n.yCoord AS y, n.angle AS a, n.radius AS r
+                             FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid`).all(...sp.params) as { name: string; x: number; y: number; a: number; r: number }[]
+    // 2) 葉（最深層）→ 層 L のノードの添字。parent_name を下へたどる
+    const ML = maxLayerOf(d)
+    const leafAnc = new Map<number, number>()   // 元の GFA id → nodes の添字
+    let front = new Map<string, number>(nodes.map((n, i) => [n.name, i]))
+    let truncated = false
+    const qChild = new Map<number, any>()
+    for (let l = L; l < ML && front.size; l++) {
+      const next = new Map<string, number>()
+      const names = [...front.keys()]
+      for (let i = 0; i < names.length; i += 500) {
+        const part = names.slice(i, i + 500)
+        const k = part.length
+        let st = qChild.get(k); if (!st) { st = d.prepare(`SELECT node_name AS c, parent_name AS p FROM nodes INDEXED BY idx_nodes_parent WHERE parent_name IN (${part.map(() => '?').join(',')}) AND layer_index = ?`).raw(); qChild.set(k, st) }
+        for (const [c, p] of st.all(...part, l + 1) as [string, string][]) next.set(c, front.get(p)!)
+      }
+      if (next.size > MAX_LEAVES) { truncated = true; break }
+      front = next
+    }
+    if (truncated) { res.json({ error: 'too many leaves', tooBig: true, nodes: [], runs: [] }); return }
+    for (const [nm, i] of front) { const m = /^n(\d+)$/.exec(nm); if (m) leafAnc.set(Number(m[1]), i) }
+    // 3) コンティグの断片ごとにトークンを順に写す
+    const pst = dist.pStart()
+    const fragStart = pids.map(p => pst ? pst[p] : 0)
+    const ctgMin = Math.min(...fragStart)
+    const fragEnd: number[] = []
+    const runs: any[] = []
+    let nSteps = 0
+    for (let fi = 0; fi < pids.length; fi++) {
+      const pid = pids[fi]; const nt = dist.ntok(pid)
+      const tok = dist.read(pid, 0, nt), ori = dist.readOri(pid, 0, nt)
+      let pos = fragStart[fi]
+      let cur: { pid: number; t0: number; t1: number; s: number[]; o: number[]; c0: number; c1: number } | null = null
+      for (let i = 0; i < nt; i++) {
+        const t = tok[i]; const a = leafAnc.get(idm[t - 1]); const bp = bpd ? bpd[t] : 0
+        if (a === undefined) { if (cur) { runs.push(cur); cur = null } pos += bp; continue }
+        if (!cur) cur = { pid, t0: i, t1: i, s: [a], o: [ori[i]], c0: pos, c1: pos + bp }
+        else { if (cur.s[cur.s.length - 1] !== a) { cur.s.push(a); cur.o.push(ori[i]); nSteps++ } cur.t1 = i; cur.c1 = pos + bp }
+        pos += bp
+      }
+      if (cur) runs.push(cur)
+      fragEnd.push(pos)
+      if (nSteps > MAX_STEPS) { truncated = true; break }
+    }
+    const ctgMax = Math.max(...fragEnd)
+    // 端の種類: ctg ＝コンティグの本当の端、clip ＝断片の端（クリップの切れ目）、cut ＝矩形の外へ出る
+    for (const r of runs) {
+      const fi = pids.indexOf(r.pid); const nt = dist.ntok(r.pid)
+      r.k0 = r.t0 === 0 ? (fragStart[fi] <= ctgMin ? 'ctg' : 'clip') : 'cut'
+      r.k1 = r.t1 === nt - 1 ? (fragEnd[fi] >= ctgMax ? 'ctg' : 'clip') : 'cut'
+    }
+    // 断片の並び（コンティグ上の位置）順に
+    runs.sort((a, b) => a.c0 - b.c0)
+    res.json({ path: q.path, layer: L, nodes, runs, truncated, ms: Date.now() - T0 })
+  } catch (e) {
+    res.status(500).json({ error: String(e), nodes: [], runs: [] })
+  }
+})

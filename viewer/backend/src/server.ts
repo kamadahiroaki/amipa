@@ -8,6 +8,7 @@ import { graphRouter } from './routes/graph'
 import { statsRouter } from './routes/stats'
 import { databasesRouter } from './routes/databases'
 import { pathsRouter } from './routes/paths'
+import { routeRouter } from './routes/route'
 import { sessionRouter } from './routes/session'
 import { bubbleMsaRouter } from './routes/bubbleMsa'
 import { exportRouter } from './routes/exportData'
@@ -155,6 +156,7 @@ app.use('/api', graphRouter)
 app.use('/api', statsRouter)
 app.use('/api', databasesRouter)
 app.use('/api', pathsRouter)
+app.use('/api', routeRouter)
 app.use('/api', sessionRouter)
 app.use('/api', bubbleMsaRouter)
 app.use('/api', exportRouter)
