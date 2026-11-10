@@ -21,6 +21,10 @@ const CONTEXT_SCALE  = 4    // 中心 ± N × ビューポート幅を表示範�
 // 小さなグラフでは殆ど拡大していなくても二段になっていた。出し入れのちらつきを避けるため消す側は少し低く（履歴つき）
 const CTX_ZOOM_ON    = 12
 const CTX_ZOOM_OFF   = 9
+// 下段の範囲が全体の段の何倍に拡大されていれば出すか（11-10: 範囲の下限を層に入った時点の幅にしたので、倍率が 12 を超えても
+//   下段が全体とほぼ同じ広さになることがある。そのときは二段にしない）
+const CTX_MAG_ON     = 3
+const CTX_MAG_OFF    = 2.5
 
 // ── 座標変換 ──────────────────────────────────────────────────────────────
 // アスペクト比を保って world 矩形を canvas に収める（x/y 同一スケール＋センタリング）。
@@ -337,7 +341,12 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
     ? Math.min((ob.x2 - ob.x1) / Math.max(1e-12, viewport.x2 - viewport.x1), (ob.y2 - ob.y1) / Math.max(1e-12, viewport.y2 - viewport.y1))
     : 1
   const showCtxRef = useRef(false)
-  const showCtx = zoom >= (showCtxRef.current ? CTX_ZOOM_OFF : CTX_ZOOM_ON)
+  const ctxMag = (() => {   // 下段の範囲（作るとしたら）が全体の段の何倍の拡大か
+    if (!ovReady.current) return 0
+    const want = makeContextRect(viewport, ob, minViewW)
+    return Math.min((ob.x2 - ob.x1) / Math.max(1e-300, want.x2 - want.x1), (ob.y2 - ob.y1) / Math.max(1e-300, want.y2 - want.y1))
+  })()
+  const showCtx = zoom >= (showCtxRef.current ? CTX_ZOOM_OFF : CTX_ZOOM_ON) && ctxMag >= (showCtxRef.current ? CTX_MAG_OFF : CTX_MAG_ON)
   showCtxRef.current = showCtx
 
   useEffect(() => { targetRef.current = pendingTarget }, [pendingTarget])
