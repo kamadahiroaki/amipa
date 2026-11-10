@@ -516,7 +516,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     const k = blockColors?.filter ? (blockColors.filterSel ? blockSelKey(blockColors.filterSel) : (blockColors.filterRange ? `x${Math.floor(blockColors.filterRange[0])}|${Math.ceil(blockColors.filterRange[1])}` : '')) : ''
     if (k !== subKeyPrevRef.current) { subKeyPrevRef.current = k; recheckRef.current?.() }
     renderRef.current?.(); renderRibbonsRef.current?.() }, [blockColors])
-  useEffect(() => { ribbonsRef.current = ribbons; renderRibbonsRef.current?.() }, [ribbons])
+  useEffect(() => { ribbonsRef.current = ribbons; renderRibbonsRef.current?.(); if (ribbons.some(r => r.route)) renderRef.current?.() }, [ribbons])   // 道筋の目盛りの文字は render が描くので
 
   interface PathCache { nodes: CtgPathNode[]; steps: CtgPathStep[] }
   // Path cache: ctg_name → {nodes, steps}
@@ -610,6 +610,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   const nodeRankTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ribbonsRef          = useRef(ribbons)
   const ribbonLayerRef      = useRef<PIXI.Graphics | null>(null)
+  const routeLabelsRef      = useRef<{ wx: number; wy: number; text: string; color: number }[]>([])   // 道筋に沿うコンティグ座標の目盛り（drawRoute が作り、render が文字にする）
   const renderRibbonsRef    = useRef<(() => void) | null>(null)
   const textLayerRef        = useRef<PIXI.Container | null>(null)
   // LOD-A: DB メタと実行時ノブ。effect の再実行を避けるため ref 経由で読む。
@@ -2059,6 +2060,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           }
           if (cnt) emitText(g.name, gx / cnt, gy / cnt, 0.5, 3.4, 12, 0x2b8a3e, true)
         }
+        // 道筋に沿うコンティグ座標の目盛り（11-10）。リボンを消している間（ホバーの強調中）は出さない
+        if (!(msaHoverRef.current && msaHoverRef.current.size)) for (const l of routeLabelsRef.current) { const sp = worldToScreen(l.wx, l.wy); emitText(l.text, sp.x, sp.y, 0.5, 1.4, 10, l.color, true) }
         // 使わなかったプール分は破棄せず非表示に(次フレームで再利用)。
         for (let i = poolIdx; i < tl.children.length; i++) tl.children[i].visible = false
       }
@@ -2090,6 +2093,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       for (const r of route.runs) for (const i of r.s) total.set(i, (total.get(i) ?? 0) + 1)
       const seen = new Map<number, number>()
       type P = [number, number]
+      // 濃さは「見えている道筋の中での順位」に割り当てる（位置そのものだと、離れた区間が並ぶ所で 1 本の中の変化がほとんど出なかった）
+      const allPos: number[] = []; for (const r of route.runs) for (const v of (r.p ?? [r.c0, r.c1])) allPos.push(v)
+      const sorted = Float64Array.from(allPos).sort()
+      const rankOf = (v: number) => { let lo = 0, hi = sorted.length; while (lo < hi) { const mm = (lo + hi) >> 1; if (sorted[mm] < v) lo = mm + 1; else hi = mm } return sorted.length > 1 ? lo / (sorted.length - 1) : 0.5 }
+      const light = lerpColor(color, 0xffffff, 0.72), deep = lerpColor(color, 0x000000, 0.5)
+      const shade = (pos: number) => { const t = Math.max(0, Math.min(1, rankOf(pos))); return t < 0.5 ? lerpColor(light, color, t * 2) : lerpColor(color, deep, (t - 0.5) * 2) }
+      const ticks: { wx: number; wy: number; v: number; st: number }[] = []
+      const ctgName = (route.path ?? '').split('#').pop() || ''
       const dark = darken(color)
       const quad = (ax: number, ay: number, bx: number, by: number, h: number) => {
         let dx = bx - ax, dy = by - ay; const len = Math.hypot(dx, dy); if (len < 1e-15) return
@@ -2108,6 +2119,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         // ステップごとの中心・接線・半長。接線は前後のノードを結ぶ向き（小さなノードの角度はばらつくので使わない）。
         //   画面で 10 px 以上あるノードだけ軸に沿って入口→出口の直線を持たせる
         const cx: number[] = [], cy: number[] = [], tx: number[] = [], ty: number[] = [], hl: number[] = [], lane: number[] = []
+        const PP = run.p ?? S.map((_, j) => run.c0 + (run.c1 - run.c0) * j / Math.max(1, m - 1))   // ステップのコンティグ上の位置
         for (let j = 0; j < m; j++) {
           const n = nodes[S[j]]
           const pv = nodes[S[Math.max(0, j - 1)]], nx = nodes[S[Math.min(m - 1, j + 1)]]
@@ -2133,18 +2145,18 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           const sm = lane.slice(); for (let j = 0; j < m; j++) { let a = 0, c = 0; for (let q = Math.max(0, j - 2); q <= Math.min(m - 1, j + 2); q++) { a += lane[q]; c++ } sm[j] = a / c }
           for (let j = 0; j < m; j++) lane[j] = sm[j] }
         // 通過点の列（ずらしは向きに依らない法線へ: 接線を x が正になる向きにそろえてから直交させる。逆向きに通る 2 本も別の側に並ぶ）
-        const pts: P[] = []; const ent: P[] = [], ext: P[] = [], tan: P[] = []
+        const pts: P[] = [], ppos: number[] = []; const ent: P[] = [], ext: P[] = [], tan: P[] = []
         for (let j = 0; j < m; j++) {
           const cs = tx[j] < 0 || (tx[j] === 0 && ty[j] < 0) ? -1 : 1
           const ox = -ty[j] * cs * lane[j] * GAP, oy = tx[j] * cs * lane[j] * GAP
           const e: P = [cx[j] - tx[j] * hl[j] + ox, cy[j] - ty[j] * hl[j] + oy], x: P = [cx[j] + tx[j] * hl[j] + ox, cy[j] + ty[j] * hl[j] + oy]
           ent.push(e); ext.push(x); tan.push([tx[j], ty[j]])
-          const push = (p: P) => { const q = pts[pts.length - 1]; if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) * zoom >= 2.5) pts.push(p) }
-          push(e); if (hl[j] > 0) push(x)
+          const push = (p: P, c: number) => { const q = pts[pts.length - 1]; if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) * zoom >= 2.5) { pts.push(p); ppos.push(c) } }
+          push(e, PP[j]); if (hl[j] > 0) push(x, j + 1 < m ? PP[j + 1] : PP[j])
         }
-        if (pts.length === 1) pts.push([pts[0][0] + tan[0][0] * px, pts[0][1] + tan[0][1] * px])
+        if (pts.length === 1) { pts.push([pts[0][0] + tan[0][0] * px, pts[0][1] + tan[0][1] * px]); ppos.push(ppos[0]) }
         // Catmull-Rom で滑らかにつなぐ（画面で約 4 px ごとに標本）
-        const curve: P[] = [pts[0]]
+        const curve: P[] = [pts[0]], cpos: number[] = [ppos[0]]
         for (let i = 0; i + 1 < pts.length; i++) {
           const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)]
           const d = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]); const M = Math.max(1, Math.min(24, Math.ceil(d * zoom / 4)))
@@ -2152,23 +2164,42 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             const t = q / M, t2 = t * t, t3 = t2 * t
             curve.push([0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
                         0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)])
+            cpos.push(ppos[i] + (ppos[i + 1] - ppos[i]) * t)
           }
         }
         const pieces: P[][] = [curve]
         // 塊（約 40 px）ごとに「白い縁 → 色」を重ねる＝後から通る線が前の線の上を越える。縁は塊の頭 8 px を空けて、直前の塊（自分自身の続き）を切らない
-        let chunk: P[] = []; let lenPx = 0
+        // 色は通る順に薄い→濃い（見えている道筋のコンティグ上の最小〜最大に割り当てる）。曲がるだけの所は濃さが続き、交差する所は濃さの違う線がぶつかる
+        let chunk: P[] = [], cc: number[] = []; let lenPx = 0
         const flush = () => {
           if (chunk.length >= 2) {
             let k = 1, acc = 0; while (k < chunk.length - 1 && acc < 8) { acc += Math.hypot(chunk[k][0] - chunk[k - 1][0], chunk[k][1] - chunk[k - 1][1]) * zoom; k++ }
-            strokeLine(chunk.slice(k - 1), Wc / 2 + CASE, 0xffffff); strokeLine(chunk, Wc / 2, color)
+            const mid = (cc[0] + cc[cc.length - 1]) / 2
+            strokeLine(chunk.slice(k - 1), Wc / 2 + CASE, 0xffffff); strokeLine(chunk, Wc / 2, shade(mid))
           }
-          chunk = chunk.length ? [chunk[chunk.length - 1]] : []; lenPx = 0
+          chunk = chunk.length ? [chunk[chunk.length - 1]] : []; cc = cc.length ? [cc[cc.length - 1]] : []; lenPx = 0
         }
-        for (const p of curve) {
+        for (let i = 0; i < curve.length; i++) {
+          const p = curve[i]
           if (chunk.length) lenPx += Math.hypot(p[0] - chunk[chunk.length - 1][0], p[1] - chunk[chunk.length - 1][1]) * zoom
-          chunk.push(p); if (lenPx > 40) flush()
+          chunk.push(p); cc.push(cpos[i]); if (lenPx > 16) flush()
         }
         flush()
+        // コンティグ座標の目盛り: 丸めた位置を道筋が越える点に短い横線と、文字（render が描く）。刻みは run ごと（その run の見えている長さの 1/4 前後）
+        let rmin = Infinity, rmax = -Infinity; for (const v of cpos) { if (v < rmin) rmin = v; if (v > rmax) rmax = v }
+        const tickStep = niceStep(Math.max(1, (rmax - rmin) / 4))
+        rl.beginFill(dark, 1)
+        for (let i = 1; i < curve.length; i++) {
+          const a = cpos[i - 1], b = cpos[i]; if (a === b) continue
+          const ka = Math.floor(a / tickStep), kb = Math.floor(b / tickStep); if (ka === kb) continue
+          const v = (a < b ? kb : ka) * tickStep, t = (v - a) / (b - a)
+          const q: P = [curve[i - 1][0] + (curve[i][0] - curve[i - 1][0]) * t, curve[i - 1][1] + (curve[i][1] - curve[i - 1][1]) * t]
+          const dx = curve[i][0] - curve[i - 1][0], dy = curve[i][1] - curve[i - 1][1], L = Math.hypot(dx, dy) || 1
+          const nx = -dy / L, ny = dx / L
+          quad(q[0] - nx * 5 * px, q[1] - ny * 5 * px, q[0] + nx * 5 * px, q[1] + ny * 5 * px, 0.9 * px)
+          ticks.push({ wx: q[0], wy: q[1], v, st: tickStep })
+        }
+        rl.endFill()
         // 矢羽根（画面で 70 px ごと）
         const all: P[] = []; for (const seg of pieces) for (const p of seg) all.push(p)
         rl.beginFill(dark, 1)
@@ -2192,12 +2223,19 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         }
         endMark(ent[0], tan[0], run.k0); endMark(ext[m - 1], tan[m - 1], run.k1)
       }
+      // 目盛りの文字は画面で 90 px 以上離れたものだけ
+      const fmtC = (v: number, st: number) => st >= 1e5 ? (v / 1e6).toFixed(st >= 1e6 ? 0 : 1) + 'M' : st >= 1e3 ? (v / 1e6).toFixed(st >= 1e4 ? 2 : 3) + 'M' : Math.round(v).toLocaleString('en-US')
+      const kept: { wx: number; wy: number }[] = []
+      for (const t of ticks) {
+        if (kept.some(k => Math.hypot(k.wx - t.wx, k.wy - t.wy) * zoom < 90)) continue
+        kept.push(t); routeLabelsRef.current.push({ wx: t.wx, wy: t.wy, text: `${ctgName}:${fmtC(t.v, t.st)}`, color: dark })
+      }
     }
 
     function renderRibbons() {
       const rl = ribbonLayerRef.current
       if (!rl) return
-      rl.clear()
+      rl.clear(); routeLabelsRef.current = []
       const ribs = ribbonsRef.current
       if (!ribs || ribs.length === 0) return
       const zoom = world.scale.x

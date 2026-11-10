@@ -1,7 +1,7 @@
 // コンティグの道筋（11-10）: GET /api/route?db&path&layer&x1&y1&x2&y2
 //   リボン（/api/ribbon）は「群が通るノードの集合」しか返さないので、同じノードを 2 回通る所や逆位の折り返しで、どこからどこへ続くかが読めない。
 //   ここではコンティグ（同じ名前の W 行の断片すべて）のトークン列を distill から順に読み、表示中の層 L のノード（矩形の中）に写して、
-//   通る順のノード列（連続する同じノードは 1 つにまとめる）を返す。矩形の外へ出たところで列（run）を切る。
+//   通る順のノード列（連続する同じノードは 1 つにまとめる）と、各ステップのコンティグ上の位置 p を返す。矩形の外へ出たところで列（run）を切る。
 //   ★子を引く問い合わせは INDEXED BY idx_nodes_parent が要る（無いとプランナが layer_index の索引で層全体を走査し、層 11 で 139 秒かかった）
 //   葉 → 層 L のノードは、矩形の中の層 L のノードから parent_name を下へたどって作る（同じ名前のノードが層をまたいで続き、parent_name は一つ上の層を指す）
 import { Router } from 'express'
@@ -88,12 +88,12 @@ routeRouter.get('/route', (req, res) => {
       const pid = pids[fi]; const nt = dist.ntok(pid)
       const tok = dist.read(pid, 0, nt), ori = dist.readOri(pid, 0, nt)
       let pos = fragStart[fi]
-      let cur: { pid: number; t0: number; t1: number; s: number[]; o: number[]; c0: number; c1: number } | null = null
+      let cur: { pid: number; t0: number; t1: number; s: number[]; o: number[]; p: number[]; c0: number; c1: number } | null = null
       for (let i = 0; i < nt; i++) {
         const t = tok[i]; const a = leafAnc.get(idm[t - 1]); const bp = bpd ? bpd[t] : 0
         if (a === undefined) { if (cur) { runs.push(cur); cur = null } pos += bp; continue }
-        if (!cur) cur = { pid, t0: i, t1: i, s: [a], o: [ori[i]], c0: pos, c1: pos + bp }
-        else { if (cur.s[cur.s.length - 1] !== a) { cur.s.push(a); cur.o.push(ori[i]); nSteps++ } cur.t1 = i; cur.c1 = pos + bp }
+        if (!cur) cur = { pid, t0: i, t1: i, s: [a], o: [ori[i]], p: [Math.round(pos)], c0: pos, c1: pos + bp }
+        else { if (cur.s[cur.s.length - 1] !== a) { cur.s.push(a); cur.o.push(ori[i]); cur.p.push(Math.round(pos)); nSteps++ } cur.t1 = i; cur.c1 = pos + bp }
         pos += bp
       }
       if (cur) runs.push(cur)

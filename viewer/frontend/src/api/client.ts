@@ -526,7 +526,7 @@ export interface RibbonResp { nodes: RibbonNode[]; edges: RibbonEdge[] }
 // コンティグの道筋（11-10, /api/route）: 表示中の層のノードを、コンティグが通る順に。run は矩形の中で続く一続き
 //   s = nodes の添字の列（連続する同じノードは 1 つ）、o = 各ステップの最初の葉の向き、c0/c1 = コンティグ上の位置、
 //   k0/k1 = 端の種類（ctg ＝コンティグの本当の端、clip ＝断片の端、cut ＝矩形の外へ出る）
-export interface RouteRun { pid: number; t0: number; t1: number; s: number[]; o: number[]; c0: number; c1: number; k0: 'ctg' | 'clip' | 'cut'; k1: 'ctg' | 'clip' | 'cut' }
+export interface RouteRun { pid: number; t0: number; t1: number; s: number[]; o: number[]; p?: number[]; c0: number; c1: number; k0: 'ctg' | 'clip' | 'cut'; k1: 'ctg' | 'clip' | 'cut' }
 export interface RouteResp { path?: string; nodes: { name: string; x: number; y: number; a: number; r: number }[]; runs: RouteRun[]; tooBig?: boolean; error?: string }
 export async function fetchRoute(dbFile: string, layer: number, pathName: string, bbox: { x1: number; y1: number; x2: number; y2: number }): Promise<RouteResp> {
   const p = new URLSearchParams({ db: dbFile, layer: String(layer), path: pathName, x1: String(bbox.x1), y1: String(bbox.y1), x2: String(bbox.x2), y2: String(bbox.y2) })
