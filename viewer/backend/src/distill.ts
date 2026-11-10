@@ -30,6 +30,15 @@ export class Distill {
     this.names = fs.readFileSync(path.join(dir, 'p_names.txt'), 'utf8').split('\n').filter(x => x.length)
     this.pidx = new Map(this.names.map((nm, i) => [nm, i]))
   }
+  // パスがコンティグのどこから始まるか（W 行の start。minigraph-cactus はクリップした区間でコンティグを断片に切る）。無ければ null
+  private pst: Float64Array | null | undefined
+  pStart(): Float64Array | null {
+    if (this.pst !== undefined) return this.pst
+    try { const n = openNpy(path.join(this.dir, 'p_start.npy')); const b = Buffer.alloc(n.n * n.itemsize); fs.readSync(n.fd, b, 0, b.length, n.dataOffset); fs.closeSync(n.fd)
+      const out = new Float64Array(n.n); if (n.itemsize === 8) { const v = new BigInt64Array(b.buffer, b.byteOffset, n.n); for (let i = 0; i < n.n; i++) out[i] = Number(v[i]) } else out.set(new Int32Array(b.buffer, b.byteOffset, n.n)); this.pst = out
+    } catch { this.pst = null }
+    return this.pst
+  }
   ntok(pi: number): number { const a = Number(this.off[pi]); const b = pi + 1 < this.off.length ? Number(this.off[pi + 1]) : this.tok.n; return b - a }
   // パス pi のトークン [s0, e0) を dense id の配列で（Float64Array で返す: int64 も安全に表せる範囲）
   read(pi: number, s0: number, e0: number): Float64Array {

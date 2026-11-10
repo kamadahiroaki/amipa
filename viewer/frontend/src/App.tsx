@@ -957,6 +957,19 @@ export default function App() {
   }, [pathGroups, toggleRibbonGroup, showHint])
   // Traversals から複数の株をまとめて選ぶ・外す（木の枝のクリック、選択を外す。10-30）。粒度が未定ならハプロタイプにして、群が出そろってから適用
   const pendingHapsRef = useRef<{ haps: string[]; on: boolean } | null>(null)
+  // Traversals の片のクリック → そのコンティグのリボン（11-10）。単位をコンティグに切り替え、群が届いてから選ぶ（もう選んでいれば外す）
+  const pendingContigRef = useRef<string | null>(null)
+  const onTravSelectContig = useCallback((path: string) => {
+    const g = ribbonLevel === 'contig' ? pathGroups.find(x => x.key === path) : undefined
+    if (g) { toggleRibbonGroup(g); setRibbonHidden(false); return }
+    pendingContigRef.current = path
+    if (ribbonLevel !== 'contig') { setRibbonLevel('contig'); showHint(`パスの単位をコンティグにして ${path} のリボンを描く`) }
+  }, [ribbonLevel, pathGroups, toggleRibbonGroup, showHint])
+  useEffect(() => {
+    const path = pendingContigRef.current; if (!path || ribbonLevel !== 'contig' || pathGroups.length === 0) return
+    const g = pathGroups.find(x => x.key === path); if (!g) return   // まだ前の単位の群かもしれない
+    pendingContigRef.current = null; toggleRibbonGroup(g); setRibbonHidden(false)
+  }, [pathGroups, ribbonLevel, toggleRibbonGroup])
   const applyHaps = useCallback((haps: string[], on: boolean) => {
     const keys = pathGroups.map(g => g.key)
     setRibbonSel(prev => {
@@ -2693,6 +2706,7 @@ export default function App() {
             }}
             onSelectHap={hap => onBlockSelectHap(hap, hap)}
             onSelectHaps={onTravSelectHaps}
+            onSelectContig={onTravSelectContig}
             onGraphRange={onTravGraphRange}
             onReady={h => { travApiRef.current = h; if (h && pendingTravState.current) { const st = pendingTravState.current; pendingTravState.current = null; setTimeout(() => h.setState(st), 1500) } if (!h) { setTrvRange(null); setTrvFilter(null); setTrvColors(null); setTrvHov(null) } }}
             onHoverNodes={onTravHover}

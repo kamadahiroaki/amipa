@@ -168,9 +168,28 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
   const reps = t.db.prepare('SELECT r.id, r.pid, r.hid, r.i0, r.i1, r.bp, t.x0 AS tx0, t.x1 AS tx1, t.i0 AS ti0, t.i1 AS ti1, t.dir FROM reps r JOIN trav t ON t.pid = r.pid AND t.i0 <= r.i1 AND t.i1 >= r.i0 WHERE t.x0 <= ? AND t.x1 >= ? AND t.nanch >= ?').all(x1, x0, ma) as any[]
   const repsOut = reps.map(r => { const L = Math.max(1, r.ti1 - r.ti0); const f0 = Math.max(0, Math.min(1, (r.i0 - r.ti0) / L)), f1 = Math.max(0, Math.min(1, (r.i1 - r.ti0) / L)); const [a0, a1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]
     return { id: r.id, pid: r.pid, hid: r.hid, i0: r.i0, i1: r.i1, bp: r.bp, x0: Math.round(r.tx0 + a0 * (r.tx1 - r.tx0)), x1: Math.round(r.tx0 + a1 * (r.tx1 - r.tx0)) } }).filter(r => r.x1 >= x0 && r.x0 <= x1)   // 反復自体が区間に掛かるものだけ（通過が掛かるだけでは不足）
+  try { addContigInfo(t, out) } catch (e) { console.warn('[trav/range] contig info', e) }
   let dups: Dup[] = []
   try { dups = [...redundSpans(t).filter(d => d.x1 >= x0 && d.x0 <= x1), ...pieceOverlaps(out.filter(r => r.nanch >= 50 && !(r as any).fill))] } catch (e) { console.warn('[trav/range] dups', e) }
   return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: out, copies, reps: repsOut, perHap, dups }
+}
+
+// 通過にコンティグの情報を付ける（11-10。構造変異を見るのにコンティグの切れ目と向きが要る）:
+//   pn  … パス名（= コンティグ名。同じ名前の断片が複数ありうる）
+//   cs, ce … 通過のコンティグ上の位置（bp。断片の開始 p_start ＋ 断片の中の位置）。p_start が無い DB では断片の中の位置
+//   fs, fe … 断片（パス）の先頭・末尾まで通過が届いているか（＝断片の切れ目に接する）
+//   cs0, ce1 … 通過が接しているのがコンティグの本当の端か（同じ名前の断片のうち最初の始まり・最後の終わり）
+function addContigInfo(t: Trav, rows: TravRow[]) {
+  const pst = ensureCols(t) ? t.dist!.pStart() : null
+  let ext = (t as any).__cext as Map<string, [number, number]> | undefined
+  if (!ext) { ext = new Map(); for (const p of t.paths) { const k = p.hid + '\t' + p.path; const a = pst ? pst[p.pid] ?? 0 : 0; const e = ext.get(k); if (!e) ext.set(k, [a, a + p.bp]); else { e[0] = Math.min(e[0], a); e[1] = Math.max(e[1], a + p.bp) } } (t as any).__cext = ext }
+  for (const r of rows as any[]) {
+    const p = t.paths[r.pid]; if (!p) continue
+    const a = pst ? pst[r.pid] ?? 0 : 0; const b0 = r.bp0 ?? 0
+    r.pn = p.path; r.cs = a + b0; r.ce = a + b0 + r.bp
+    r.fs = r.i0 <= 1; r.fe = r.i1 >= p.ntok - 2
+    const e = ext.get(p.hid + '\t' + p.path)!; r.cs0 = r.fs && a <= e[0]; r.ce1 = r.fe && a + p.bp >= e[1]
+  }
 }
 
 // 同じ株がその座標を 2 回以上持つのに、通過の行では見えない所（11-10。fly16 A2 の chr3R 逆位の切れ目で、グラフの CNV は ×2〜3 なのに
