@@ -355,6 +355,7 @@ const ovw: OverviewHandle = mountOverview($('ovw'), LAB, {
   onGo: (x0, x1, fit) => goRange(x0, x1, fit),
   onGoPeak: q => goPeakQ(q),
   onHoverPeak: q => cb.onPeakHover?.(q ? q.letter : null, q ? q.names : null),
+  target: () => { if (base) return null; const r = cv.getBoundingClientRect(); return r.width ? [r.left + LAB, r.left + LAB + wPx()] : null },
 }, () => { void refreshOverview() })
 // 全体図の山を引き直す。見えているノードを座標に引き、山（文字つき）を全体図とグラフ側の札（onPeaks）に送る
 let ovReq = 0

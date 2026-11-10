@@ -18,6 +18,7 @@ export interface OverviewDeps {
   onGo: (x0: number, x1: number, fit: boolean) => void
   onGoPeak: (q: OvPeak) => void                           // 山のクリック（パネルを山の範囲へ、グラフは山の塊が小さければ寄せる）
   onHoverPeak: (p: OvPeak | null) => void
+  target?: () => [number, number] | null                  // 下のブロック列の左右端（画面の座標）。全体図の横の範囲をこれに揃える（11-10）
 }
 export const MAX_TAGS = 6
 const fmtbp = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(2) + ' Mb' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kb' : Math.round(n) + ' bp'
@@ -63,8 +64,10 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
   let bands: OvBand[] = [], pts: OvPoint[] = [], pks: OvPeak[] = [], marker: { x: number; label: string } | null = null, hovL: string | null = null, drag: [number, number] | null = null
   const W = () => Math.max(50, cv.parentElement!.clientWidth)
   const total = () => Math.max(1, deps.totalBp())
-  const px = (x: number) => 4 + deps.bpOfX(x) / total() * (W() - 8)
-  const xOf = (p: number) => deps.xOfBp((p - 4) / (W() - 8) * total())
+  // 横の範囲: 下のブロック列と同じ左右端（全体を開いたとき全体図とブロック列が上下で一致するように）。取れなければキャンバスの幅（左右 4 px あけ）
+  const span = (): [number, number] => { const t = deps.target?.(); if (t) { const r = cv.getBoundingClientRect(); if (r.width) { const a = t[0] - r.left, b = t[1] - r.left; if (b - a > 20) return [a, b] } } return [4, W() - 4] }
+  const px = (x: number) => { const [a, b] = span(); return a + deps.bpOfX(x) / total() * (b - a) }
+  const xOf = (p: number) => { const [a, b] = span(); return deps.xOfBp((p - a) / (b - a) * total()) }
   function draw() {
     const w = W(), dpr = devicePixelRatio || 1
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(H * dpr); cv.style.width = w + 'px'; cv.style.height = H + 'px' }
