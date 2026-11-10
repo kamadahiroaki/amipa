@@ -38,8 +38,8 @@
 
 /* 上部バー: 1 行。収まらないときは検索欄が縮み、それでも足りなければ右の群が折り返す */
 .ui-topbar {
-  min-height: 52px; flex-shrink: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 16px; background: var(--ui-surface); border-bottom: 1px solid var(--ui-border);
+  min-height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 3px 12px; --ui-h: 26px;   /* 11-10: 縦幅を詰める（52 → 34 px） */ background: var(--ui-surface); border-bottom: 1px solid var(--ui-border);
   position: relative; z-index: 50; font-family: var(--ui-font); font-size: var(--ui-fs); color: var(--ui-text);
 }
 .ui-brand { font-weight: 600; font-size: 15px; letter-spacing: 0.02em; white-space: nowrap; }
@@ -99,7 +99,7 @@
 
 /* 切り替え（2〜4 択） */
 .ui-seg { display: inline-flex; border: 1px solid var(--ui-border); border-radius: var(--ui-radius); overflow: hidden; flex-shrink: 0; }
-.ui-seg button { height: 28px; padding: 0 10px; border: none; background: var(--ui-surface); cursor: pointer; color: var(--ui-muted); white-space: nowrap; }
+.ui-seg button { height: calc(var(--ui-h) - 2px); padding: 0 10px; border: none; background: var(--ui-surface); cursor: pointer; color: var(--ui-muted); white-space: nowrap; }
 .ui-seg button + button { border-left: 1px solid var(--ui-border); }
 .ui-seg button:hover { background: var(--ui-hover); }
 .ui-seg button.is-on { background: var(--ui-accent-weak); color: var(--ui-accent-strong); font-weight: 500; }
@@ -161,7 +161,7 @@
 .ui-topbar > .ui-select { max-width: 200px; text-overflow: ellipsis; }
 /* 狭い画面: 余白を詰め、ロゴを外して 1 行に収める（1,000 px 程度まで） */
 @media (max-width: 1280px) {
-  .ui-topbar { gap: 6px; padding: 8px 10px; }
+  .ui-topbar { gap: 6px; padding: 3px 10px; }
   .ui-topbar .ui-brand { display: none; }
   .ui-topbar .ui-btn { padding: 0 8px; }
   .ui-topbar > .ui-select { max-width: 150px; }
