@@ -746,8 +746,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     world.addChild(pathLayer)  // on top of nodes
     pathLayerRef.current = pathLayer
     const ribbonLayer = new PIXI.Graphics()
-    world.addChild(ribbonLayer)  // パスリボンは最前面
+    world.addChild(ribbonLayer)  // パスリボンはノードより前
     ribbonLayerRef.current = ribbonLayer
+    const hovLayer = new PIXI.Graphics()
+    world.addChild(hovLayer)     // Traversals のホバーで光らせるノードはリボンより前（11-10: リボンに隠れて見えなかった）
     const uiLayer = new PIXI.Graphics()
     app.stage.addChild(uiLayer)
     const textLayer = new PIXI.Container()
@@ -1296,6 +1298,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const originY = (viewport.y1 + viewport.y2) / 2
       edgeLayer.position.set(originX, originY)
       nodeLayer.position.set(originX, originY)
+      hovLayer.position.set(originX, originY)
       // LOD-A: 描画は displayLayer（＝現在画面に出ている層）。新層は maybePromote() でタイルが
       // 揃ってから displayLayer に昇格するので、層切替時に空の新層を描いて白飛びすることがない。
       const renderLayer = Math.max(0, displayLayer)
@@ -1521,6 +1524,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       }
 
       nodeLayer.clear()
+      hovLayer.clear()
       const minW = 3 / zoom
       let drawnCount = 0   // 実際に描いたグリフ数（バッジ表示・重さ判定用・クエリ不要）
 
@@ -1538,6 +1542,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const hovSet = msaHoverRef.current && msaHoverRef.current.size ? msaHoverRef.current : null
       const hovMany = !!hovSet && hovSet.size > HOV_FEW
       edgeLayer.alpha = hovMany ? 0.2 : 1   // 他を薄くするときは辺も
+      ribbonLayer.alpha = hovMany ? 0.3 : 1; pathLayer.alpha = hovMany ? 0.3 : 1   // リボンと選んだパスの線も（11-10）
       for (const n of visibleNodes) {
         if (hiddenNodeIds.has(n.id)) continue
         const isHovN = !!hovSet && hovSet.has(n.node_name)
@@ -1621,7 +1626,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
                         : 0x1864ab
 
         {
-          if (isHovN) { nodeLayer.lineStyle(0); nodeLayer.beginFill(fillColor, 1.0) }
+          const G = isHovN ? hovLayer : nodeLayer   // ホバー中はリボンより前の層へ
+          if (isHovN) { G.lineStyle(0); G.beginFill(fillColor, 1.0) }
           else if (hovMany) { nodeLayer.lineStyle(0); nodeLayer.beginFill(fillColor, 0.15) }   // 他を薄く
           else if (isSelected) {
             nodeLayer.lineStyle(2 / zoom, 0xf08c00, 1.0, 0.5, true)
@@ -1639,14 +1645,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           }
           // 5点: side0(-hw,5'/enter)側は平ら。side1(+hw,0)=3'/exit=次ノードへの接続点を尖端(5点目)にし、
           // 両肩を inset だけ内側へ寄せる。尖端は流れ(5'→3')の向きを指す。集約は inset=0 で長方形に退化。
-          nodeLayer.drawPolygon([
+          G.drawPolygon([
             cx + cos*(-hw)         - sin*(-hh), cy + sin*(-hw)         + cos*(-hh),
             cx + cos*(-hw)         - sin*  hh,  cy + sin*(-hw)         + cos*  hh,
             cx + cos*( hw - inset) - sin*  hh,  cy + sin*( hw - inset) + cos*  hh,
             cx + cos*  hw,                      cy + sin*  hw,
             cx + cos*( hw - inset) - sin*(-hh), cy + sin*( hw - inset) + cos*(-hh),
           ])
-          nodeLayer.endFill()
+          G.endFill()
         }
         // 選択遺伝子: この ref ノードが gene に重なるなら、**ノード本体に沿って exon 部分区間を塗り分け**
         // (intron=淡緑ベース / exon=濃緑)。node ref_bp スパン ∩ exon を node 軸(hw)に写像する
