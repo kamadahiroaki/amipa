@@ -233,7 +233,7 @@ async function loadRoot() {
   const refHid = (root as any).refHid as number | undefined   // 参照（種）の株を先頭に（11-05: 以前は GRCh38/CHM13 などの名前で決め打ち）
   const refLike = (hid: number) => (refHid != null && refHid >= 0 ? hid === refHid : /^(GRCh38|CHM13|GCF_000148365)/.test(root!.haps[hid].hap)) ? 0 : 1
   baseOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(a) - refLike(b) || root!.haps[a].hap.localeCompare(root!.haps[b].hap)); hapOrder = baseOrder.slice()
-  bands = []; locCache.clear(); lastPeaks = []; ovw.setMarker(null); ovw.setPoints([], [], '')
+  bands = []; locCache.clear(); lastPeaks = []; lastPts = []; ovw.setMarker(null); ovw.setPoints([], [], '')
   try { const rb = await getJson(`/api/trav/chroms?db=${encodeURIComponent(db)}`); if (rb.ok) bands = (await rb.json()).bands || [] } catch { /* 区切りは無くてもよい */ }
   ovw.setBands(bands)
   atomStats = []; await loadAtoms(); await loadRange()
@@ -342,6 +342,7 @@ async function locateMany(names: string[]): Promise<{ nodes: LocNode[]; hasFill:
 }
 // ---- 全体図（travOverview.ts）----
 let lastPeaks: OvPeak[] = []
+let lastPts: OvPoint[] = []   // グラフに見えているノードの合意座標（全体図の点。ブロック・錨の列のホバーでグラフを光らせるのに使う）
 const ovw: OverviewHandle = mountOverview($('ovw'), LAB, {
   R: () => root ? root.R : 1, bpOfX, xOfBp,
   totalBp: () => root && root.atoms.length ? atomCum[atomCum.length - 1] + root.atoms[root.atoms.length - 1].bp : 1,
@@ -372,7 +373,7 @@ async function refreshOverview(): Promise<OvPeak[]> {
   const peaks = computePeaks(pts, root.R, chromLabel, view, x => { const b = bandAt(x); return b ? bands.indexOf(b) : -1 }, peakTag); lastPeaks = peaks
   const lettered = peaks.filter(p => p.letter).sort((a, b) => a.xm - b.xm)
   const note = `見えている ${fmt(vis.length)}・山 ${lettered.length}${peaks.length > lettered.length ? `（ほか小さな ${peaks.length - lettered.length}）` : ''}${nNo ? `・座標なし ${fmt(nNo)}` : ''}${nWide ? `・張りが広い ${fmt(nWide)}` : ''}`
-  ovw.setPoints(pts, peaks, note); cb.onPeaks?.(lettered.length ? lettered : null)
+  lastPts = pts; ovw.setPoints(pts, peaks, note); cb.onPeaks?.(lettered.length ? lettered : null)
   return peaks
 }
 // 山へ（全体図・札のクリック）: パネルは山の範囲へ（グラフの範囲の寄せはしない）。グラフは App が山の塊の外接箱に寄せる（11-05: 全体を見ているとき札をクリックしても
@@ -1411,6 +1412,31 @@ function goGenes(hs: GHit[]) {
 $('gfind').addEventListener('keydown', e => { if (e.key === 'Enter') void findGene(($('gfind') as HTMLInputElement).value); if (e.key === 'Escape') $('gres').style.display = 'none' })
 $('gfind').addEventListener('search', () => { if (!($('gfind') as HTMLInputElement).value) $('gres').style.display = 'none' })
 document.addEventListener('mousedown', e => { const b = $('gres'); if (b && b.style.display !== 'none' && !b.contains(e.target as Node) && e.target !== $('gfind')) b.style.display = 'none' })
+// ブロック・錨の列のホバー → その合意座標の範囲に入る「グラフに見えているノード」をグラフで光らせる（11-10）。
+//   名前はグラフが描いている層のもの（全体図の点）なので祖先を引かない。全体図の点がまだ無いとき（グラフ連動を切っている等）は
+//   範囲の錨を間引いて送り、グラフ側で祖先に直す（200 個まで）
+let linkHovT: ReturnType<typeof setTimeout> | null = null
+function linkHover(x0: number, x1: number) {
+  const key = `r:${x0}-${x1}`; if (key === lastHoverNodes) return; lastHoverNodes = key
+  if (linkHovT) { clearTimeout(linkHovT); linkHovT = null }
+  if (lastPts.length) { const names = lastPts.filter(p => p.a != null && p.b != null ? p.a <= x1 && p.b >= x0 : p.x >= x0 && p.x <= x1).map(p => p.name); cb.onPeakHover?.(null, names.length ? names : null); return }
+  linkHovT = setTimeout(async () => { try { const r = await getJson(`/api/trav/nodes?db=${encodeURIComponent(db)}&x0=${x0}&x1=${x1}&max=200`); const j = await r.json(); if (lastHoverNodes === key) cb.onHoverNodes?.(j.names?.length ? j.names : null) } catch { /* 光らないだけ */ } }, 120)
+}
+function rowHoverX(e: MouseEvent, hid: number): number | null {
+  if (($('mode') as HTMLSelectElement).value !== 'rows') { const x = xOfPx(e.offsetX); return (mrowsByHap.get(hid) || []).some(r => r.hid === hid && r.x0 <= x && r.x1 >= x) ? x : null }
+  const p = (lastPieces.get(hid) || []).find(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX); if (!p) return null
+  const f = (e.offsetX - Math.min(p.px0, p.px1)) / Math.max(1, Math.abs(p.px1 - p.px0)); const ft = p.fwd ? f : 1 - f; let lo = p.c0, hi = p.c1 + 1
+  for (let it = 0; it < 30; it++) { const m = (lo + hi) / 2; if (fracOf(p, m) < ft) lo = m; else hi = m } return lo
+}
+cv.addEventListener('mousemove', e => {
+  if (base || drag || bDrag || !root) return
+  let r: [number, number] | null = null
+  if (e.offsetX >= LAB && e.offsetY < TOP) { const inGene = ogroups.length && showGenes() && e.offsetY >= TOP - 12 - OGH && e.offsetY < TOP - 12; const b = inGene ? null : blocks[topBlockAt(e.offsetX)]; if (b) r = [b.x0, b.x1] }
+  else if (e.offsetX >= LAB) { const k = rowAt(e.offsetY); const x = k >= 0 && k < hapOrder.length ? rowHoverX(e, hapOrder[k]) : null
+    if (x != null) { if (cols && wantCols()) { const C = cols; const Wc = C.x1 - C.x0 + 1; const c = Math.max(0, Math.min(C.ncol - 1, Math.floor((x - C.x0) * C.ncol / Wc))); r = [Math.floor(C.x0 + c * Wc / C.ncol), Math.max(Math.floor(C.x0 + c * Wc / C.ncol), Math.floor(C.x0 + (c + 1) * Wc / C.ncol) - 1)] }
+      else { const b = blocks[blockAt(x)]; if (b && b.x0 <= x && b.x1 >= x) r = [b.x0, b.x1] } } }
+  if (r) linkHover(r[0], r[1]); else sendHover(null)
+})
 cv.addEventListener('mouseleave', () => { tip.style.display = 'none'; sendHover(null); if (base && base.hoverCi != null) { base.hoverCi = null; draw() } })
 $('zout').addEventListener('click', () => { if (base) baseZoomStep(-1, null) }); $('zin').addEventListener('click', () => { if (base) baseZoomStep(1, null) })
 $('zfit').addEventListener('click', () => { if (base) { base.sx = 0; baseSetZoom(null, null) } }); $('zbase').addEventListener('click', () => { if (base) baseSetZoom(BASE_LETTER_Z, null) })
