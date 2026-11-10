@@ -1542,7 +1542,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const hovSet = msaHoverRef.current && msaHoverRef.current.size ? msaHoverRef.current : null
       const hovMany = !!hovSet && hovSet.size > HOV_FEW
       edgeLayer.alpha = hovMany ? 0.2 : 1   // 他を薄くするときは辺も
-      ribbonLayer.alpha = hovMany ? 0.3 : 1; pathLayer.alpha = hovMany ? 0.3 : 1   // リボンと選んだパスの線も（11-10）
+      ribbonLayer.visible = !hovSet; pathLayer.visible = !hovSet   // 強調中はリボンと選んだパスの線を消す（11-10: 上に重ねても半透明のリボンに埋もれて薄くしか見えなかった）
       for (const n of visibleNodes) {
         if (hiddenNodeIds.has(n.id)) continue
         const isHovN = !!hovSet && hovSet.has(n.node_name)
