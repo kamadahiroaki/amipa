@@ -160,7 +160,6 @@ interface Props {
   showNodeNames: boolean
   showNodeBp: boolean                 // ノードの bp 数(size)をラベル表示。クラスタは配下合計 bp
   labelScale: number                  // 全ラベル(ref bp/ノード名/遺伝子/バンド等)の一括サイズ倍率
-  fadeStart?: number                  // ブロックの色で塗るとき辺と枠を薄くし始める画面のノード数（4 倍で最も薄い）。0 ＝薄くしない
   labelColor: number                  // ノード上ラベル(名前/bp/深度)の文字色
   labelOffset: number                 // ノード上ラベルの上方向オフセット px(>0 でノード外へずらす)
   showRefPos: boolean                 // 参照(ref_bp)上の概算 bp 位置ラベルを代表ノード近傍に重畳
@@ -317,7 +316,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     breadthMode, maxHb, bandMode, regionMode, geneMode, maxGeneCount, bandDict, regionDict,
     showBandLabels, showRegionMarks, showGeneLabels, geneFeatures, selectedGene, selectedGeneExons,
     cnvMode, cnvNodes, cnvColors, onCnvSuppress, seqMode, baseMap, coverageMin,
-    nodeScale, edgeMin, mapMapq, hapSel, maxRows, onLodClamp, detailDepthMode, maxEdgePx, maxEdgeReads, showNodeNames, showNodeBp, labelScale, fadeStart, labelColor, labelOffset, showRefPos, refContigs, nodeColors,
+    nodeScale, edgeMin, mapMapq, hapSel, maxRows, onLodClamp, detailDepthMode, maxEdgePx, maxEdgeReads, showNodeNames, showNodeBp, labelScale, labelColor, labelOffset, showRefPos, refContigs, nodeColors,
     selectedPaths, ribbons, layerZoom, zoomWindow, worldBbox, layerOffset, suppressHeavyWarning,
     floodMode, floodResult, floodSeedComp, floodMaxHop, msaHighlight, msaHoverNodes, msaHoverColor, blockColors, onVisibleAtoms,
     onViewportChange, onHeavyView, onNodeSelect, onLoadingChange, onFetchProgress, onFastPath,
@@ -509,8 +508,6 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   useEffect(() => { showNodeNamesRef.current = showNodeNames; renderRef.current?.() }, [showNodeNames])
   useEffect(() => { showNodeBpRef.current = showNodeBp; renderRef.current?.() }, [showNodeBp])
   useEffect(() => { labelScaleRef.current = labelScale; renderRef.current?.() }, [labelScale])
-  const fadeStartRef = useRef(fadeStart ?? 300)
-  useEffect(() => { fadeStartRef.current = fadeStart ?? 300; renderRef.current?.() }, [fadeStart])
   useEffect(() => { labelColorRef.current = labelColor; renderRef.current?.() }, [labelColor])
   useEffect(() => { labelOffsetRef.current = labelOffset; renderRef.current?.() }, [labelOffset])
   useEffect(() => { showRefPosRef.current = showRefPos; renderRef.current?.() }, [showRefPos])
@@ -1356,13 +1353,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       // 11-05: 数は画面にかかるノードだけ（以前は読み込んだタイルの全ノードで画面の外まで数え、拡大しても薄いままだった）、大きさは画面上のノードの長さの中央値で。
       //   1,200 個以上で最も薄く 300 個以下で元の濃さ、または長さの中央値が 6 px から 16 px で元の濃さ（以前は最も細いノードの厚みで 8〜24 px）
       let edgeFade = 1
-      const fs0 = fadeStartRef.current
-      if (blockColorsRef.current && fs0 > 0) {
+      if (blockColorsRef.current) {
         const vp = viewport; const lens: number[] = []; let nOn = 0
         for (const n of visibleNodes) { if (n.xCoord < vp.x1 || n.xCoord > vp.x2 || n.yCoord < vp.y1 || n.yCoord > vp.y2) continue; nOn++; if (lens.length < 4000) lens.push(n.radius * 2 * zoom) }
         lens.sort((a, b) => a - b); const medPx = lens.length ? lens[lens.length >> 1] : 0
-        // 11-11: 閾値は設定（fadeStart）から。以前は 300〜1,200 で固定
-        edgeFade = Math.max(Math.max(0, Math.min(1, Math.log(4 * fs0 / Math.max(1, nOn)) / Math.log(4))), Math.max(0, Math.min(1, (medPx - 6) / 10)))
+        edgeFade = Math.max(Math.max(0, Math.min(1, Math.log(1200 / Math.max(1, nOn)) / Math.log(1200 / 300))), Math.max(0, Math.min(1, (medPx - 6) / 10)))
       }
       const edgeBase = (alpha: number) => edgeLayer.lineStyle(1, lerpColor(0xced4da, 0xadb5bd, edgeFade), 0.3 + (alpha - 0.3) * edgeFade, 0.5, true)
 
@@ -1652,8 +1647,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             // 10-30: Traversals のグラフ連動の色は linkColor（ノードごとの色）で来るので、そちらも同じ扱いに（以前は blockColor だけで、linkColor の枠はほぼ黒 0x343a40）。
             // また短辺 8 px でもまだ縁が濃く見えた（6〜10 px のノードで 1 px の枠が塗りの 3 割前後）→ 24 px 未満は枠なし、それ以上も塗りに近い色で薄く
             const colored = (blockColor != null || linkColor != null) && !shouldGrey && floodFill == null
-            if (colored && edgeFade >= 1) nodeLayer.lineStyle(0.8 / zoom, darken(fillColor, 0.7), 0.6, 0.5, true)   // 画面のノードが閾値以下なら枠を薄くしない（11-11）
-            else if (colored && 2 * hh * zoom < 24) nodeLayer.lineStyle(0)
+            if (colored && 2 * hh * zoom < 24) nodeLayer.lineStyle(0)
             else if (colored) nodeLayer.lineStyle(0.8 / zoom, darken(fillColor, 0.85), 0.35, 0.5, true)
             else nodeLayer.lineStyle(0.8 / zoom, lineColor, shouldGrey ? 0.4 : 0.6, 0.5, true)
             nodeLayer.beginFill(fillColor, shouldGrey ? 0.7 : 1.0)

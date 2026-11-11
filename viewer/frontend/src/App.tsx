@@ -273,7 +273,6 @@ export default function App() {
   const [coverageTextMode, setCoverageTextMode] = useState(false)
   // 全ラベル(ref bp/ノード名/遺伝子/バンド等)の一括サイズ倍率。Labels ポップオーバーの ± で調整。
   const [labelScale, setLabelScale] = useState(1)
-  const [fadeStart, setFadeStart] = useState(300)   // ブロックの色で塗るとき、画面のノードがこれを超えたら辺と枠を薄くし始める（4 倍で最も薄い）。0 ＝薄くしない（11-11）
   const bumpLabelScale = (f: number) => setLabelScale(s => Math.round(Math.min(3, Math.max(0.6, s * f)) * 100) / 100)
   // ノード上ラベル(名前/bp/深度)の文字色と、ノード外へずらす上方向オフセット px。
   const [labelColor, setLabelColor] = useState('#111111')
@@ -822,7 +821,7 @@ export default function App() {
       db: selectedDb,
       view: { cx: (vp.x1 + vp.x2) / 2, cy: (vp.y1 + vp.y2) / 2, vw: vp.x2 - vp.x1 },
       graph: { nodeGreyMode, coverageTextMode, edgeWidthMode, cnvMode, showNodeNames, showNodeBp, showAlignColors, showRefPos,
-               maxHb, coverageMin, nodeScale, edgeMin, mapMapq, maxEdgePx, maxEdgeReads, labelScale, labelColor, labelOffset, fadeStart },
+               maxHb, coverageMin, nodeScale, edgeMin, mapMapq, maxEdgePx, maxEdgeReads, labelScale, labelColor, labelOffset },
       paths: [...selectedPaths.entries()],
       trav: trvH > 0 ? (travApiRef.current?.getState?.() ?? null) : null,   // Traversals パネル（範囲・段・並び・絞り込みなど）
       panels: { leftW, rightW, topH, bottomH, showPaths, showOverlays },
@@ -847,7 +846,6 @@ export default function App() {
     setShowAlignColors(!!g.showAlignColors)
     if (typeof g.showRefPos === 'boolean') setShowRefPos(g.showRefPos)
     if (typeof g.labelScale === 'number' && g.labelScale > 0) setLabelScale(g.labelScale)
-    if (typeof g.fadeStart === 'number' && g.fadeStart >= 0) setFadeStart(g.fadeStart)
     if (typeof g.labelColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(g.labelColor)) setLabelColor(g.labelColor)
     if (typeof g.labelOffset === 'number' && g.labelOffset >= 0) setLabelOffset(g.labelOffset)
     if (typeof g.coverageMin === 'number') { setCoverageMin(g.coverageMin); setCoverageMinInput(g.coverageMin ? String(g.coverageMin) : '') }
@@ -1720,12 +1718,6 @@ export default function App() {
                   onMouseUp={() => setNodeScale(nodeScaleDraft)} onKeyUp={() => setNodeScale(nodeScaleDraft)} onTouchEnd={() => setNodeScale(nodeScaleDraft)} />
                 <button className="ui-btn ui-btn-ghost ui-btn-sm ui-num" onClick={() => applyNodeScale(1)}>{nodeScaleDraft.toFixed(nodeScaleDraft < 1 ? 2 : 1)}×</button>
               </div>
-              <div className="ui-field">
-                <label htmlFor="set-fade">塗るときに辺と枠を薄くするノード数<span className="ui-help">ブロックの色で塗っている（Traversals の「塗る」など）とき、画面のノードがこの数を超えたら辺とノードの枠を薄くし始め、4 倍で最も薄くする。それ以下なら薄くしない</span></label>
-                <select id="set-fade" className="ui-select" value={fadeStart} onChange={e => setFadeStart(Number(e.target.value))}>
-                  {[300, 1000, 3000, 10000, 30000, 0].map(v => <option key={v} value={v}>{v === 0 ? '薄くしない' : v.toLocaleString() + (v === 300 ? '（既定）' : '')}</option>)}
-                </select>
-              </div>
             </section>
             <section className="ui-section">
               <h3>ラベル</h3>
@@ -2005,7 +1997,6 @@ export default function App() {
                   detailDepthMode={edgeWidthMode === 'reads'}
                   showNodeBp={showNodeBp}
                   labelScale={labelScale}
-                  fadeStart={fadeStart}
                   labelColor={parseInt(labelColor.slice(1), 16) || 0x111111}
                   labelOffset={labelOffset}
                   maxEdgePx={maxEdgePx}
