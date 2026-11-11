@@ -66,7 +66,7 @@ function checkReads(sidecar: string, dbPath: string): void {
     const dir = path.dirname(fs.realpathSync(dbPath))
     for (const r of rows) {
       const base = path.basename(r.p)
-      const found = [path.join(dir, 'reads', base), path.join(dir, base), r.p].find(q => fs.existsSync(q))
+      const found = [r.p, path.join(dir, 'reads', base), path.join(dir, base)].find(q => fs.existsSync(q))
       if (!found) { bad(`reads: ${r.sample_id} の実体が無い（${base}）→ リード表示が空になる`); continue }
       // 末尾 9 バイトの seekable zstd マジック（旧アトラスは BGZF なので判定しない）
       let kind = 'bgzf'

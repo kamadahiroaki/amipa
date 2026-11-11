@@ -302,6 +302,20 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
   // ちょうど包む（固定 180x55 だと横長の箱に細いグラフがレターボックスされ「横長」に見える）。
   const [ovH, setOvH] = useState(OVERVIEW_H)
   const [collapsed, setCollapsed] = useState(false)   // 最小化（ヘッダのみ表示）
+  // 置き場所（11-11）: ヘッダのドラッグで動かす（画面写真で邪魔にならない所へ）。親の右上からの距離で持ち、ブラウザに覚える。ダブルクリックで元の右上へ
+  const [pos, setPos] = useState<{ right: number; top: number }>(() => { try { const v = JSON.parse(localStorage.getItem('amipa.minimapPos') || 'null'); if (v && Number.isFinite(v.right) && Number.isFinite(v.top)) return v } catch { /* 無ければ既定 */ } return { right: 8, top: 8 } })
+  const savePos = (p: { right: number; top: number }) => { try { localStorage.setItem('amipa.minimapPos', JSON.stringify(p)) } catch { /* 覚えられなくてもよい */ } }
+  const onHeadDown = (e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('button') || e.button !== 0) return
+    const el = rootRef.current, par = el?.offsetParent as HTMLElement | null; if (!el || !par) return
+    e.preventDefault(); const sx = e.clientX, sy = e.clientY, p0 = pos; let last = p0
+    const move = (ev: PointerEvent) => {
+      const maxR = Math.max(0, par.clientWidth - el.offsetWidth), maxT = Math.max(0, par.clientHeight - el.offsetHeight)
+      last = { right: Math.round(Math.min(maxR, Math.max(0, p0.right - (ev.clientX - sx)))), top: Math.round(Math.min(maxT, Math.max(0, p0.top + (ev.clientY - sy)))) }; setPos(last)
+    }
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); savePos(last) }
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up)
+  }
   // 画面の解像度（ブラウザの拡大率・別の画面への移動で変わる）。キャンバスの画素数をこれに合わせる
   const [dpr, setDpr] = useState(() => Math.max(1, Math.min(4, window.devicePixelRatio || 1)))
   useEffect(() => { let mq: MediaQueryList | null = null; const on = () => { setDpr(Math.max(1, Math.min(4, window.devicePixelRatio || 1))); arm() }
@@ -522,7 +536,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
 
   return (
     <div ref={rootRef} style={{
-      position: 'absolute', top: 8, right: 8, zIndex: 10,
+      position: 'absolute', top: pos.top, right: pos.right, zIndex: 10,
       pointerEvents: clickThrough ? 'none' : undefined,   // 編集モード中はクリックを canvas へ通す
       background: 'rgba(255,255,255,0.96)',
       border: '1px solid var(--ui-border, #e4e7ec)',
@@ -533,7 +547,8 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       width: MINIMAP_W,
     }}>
       {/* ヘッダ（タイトル＋最小化トグル） */}
-      <div style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4,
+      <div onPointerDown={onHeadDown} onDoubleClick={() => { const p = { right: 8, top: 8 }; setPos(p); savePos(p) }} title="ドラッグで移動（ダブルクリックで右上に戻す）"
+        style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4, cursor: 'move', touchAction: 'none',
         borderBottom: collapsed ? 'none' : labelStyle.borderBottom }}>
         <span style={{ fontWeight: 600, flex: 1, color: 'var(--ui-text, #1f2937)', fontSize: 12 }}>Minimap</span>
         <button onClick={() => setCollapsed(c => !c)} title={collapsed ? '開く' : '最小化'}

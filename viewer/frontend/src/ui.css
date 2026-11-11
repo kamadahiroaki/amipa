@@ -38,14 +38,14 @@
 
 /* 上部バー: 1 行。収まらないときは検索欄が縮み、それでも足りなければ右の群が折り返す */
 .ui-topbar {
-  min-height: 34px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 3px 12px; --ui-h: 26px;   /* 11-10: 縦幅を詰める（52 → 34 px） */ background: var(--ui-surface); border-bottom: 1px solid var(--ui-border);
+  min-height: 26px; flex-shrink: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 1px 10px; --ui-h: 22px; --ui-h-sm: 20px;   /* 11-10: 縦幅を詰める（52 → 34 px）、11-11: さらに 26 px */ background: var(--ui-surface); border-bottom: 1px solid var(--ui-border);
   position: relative; z-index: 50; font-family: var(--ui-font); font-size: var(--ui-fs); color: var(--ui-text);
 }
 .ui-brand { font-weight: 600; font-size: 15px; letter-spacing: 0.02em; white-space: nowrap; }
 .ui-spacer { flex: 1 1 0; }
 .ui-group { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
-.ui-divider { width: 1px; height: 20px; background: var(--ui-border); margin: 0 4px; flex-shrink: 0; }
+.ui-divider { width: 1px; height: 16px; background: var(--ui-border); margin: 0 4px; flex-shrink: 0; }
 
 /* ボタン */
 .ui-btn {
@@ -79,7 +79,7 @@
 
 /* 検索: 種類の切り替え＋入力＋ボタンを 1 つの枠に */
 .ui-search {
-  position: relative; display: flex; align-items: stretch; height: 32px; flex: 1 1 280px; min-width: 220px; max-width: 520px;
+  position: relative; display: flex; align-items: stretch; height: var(--ui-h); flex: 1 1 280px; min-width: 220px; max-width: 520px;
   border: 1px solid var(--ui-border-strong); border-radius: var(--ui-radius-lg); background: var(--ui-surface);
 }
 .ui-search:focus-within { border-color: var(--ui-accent); box-shadow: 0 0 0 3px var(--ui-accent-weak); }
@@ -161,7 +161,7 @@
 .ui-topbar > .ui-select { max-width: 200px; text-overflow: ellipsis; }
 /* 狭い画面: 余白を詰め、ロゴを外して 1 行に収める（1,000 px 程度まで） */
 @media (max-width: 1280px) {
-  .ui-topbar { gap: 6px; padding: 3px 10px; }
+  .ui-topbar { gap: 6px; padding: 1px 10px; }
   .ui-topbar .ui-brand { display: none; }
   .ui-topbar .ui-btn { padding: 0 8px; }
   .ui-topbar > .ui-select { max-width: 150px; }

@@ -1,5 +1,5 @@
 // Linear パネルの表示範囲の木（11-11）。距離関数 dist(i, j) だけを受け取り、株数で計算の方法を切り替える。
-//   n ≤ FULL_MAX: 全対の距離 → UPGMA（最近隣連鎖法。O(n²) 時間・O(n²) メモリ。以前の素朴な実装は O(n³) で 1,000 株 2.9 秒）
+//   n ≤ FULL_MAX（2,000）: 全対の距離 → UPGMA（最近隣連鎖法。O(n²) 時間・O(n²) メモリ。以前の素朴な実装は O(n³) で 1,000 株 2.9 秒）
 //   n >  FULL_MAX: 二段（10-15 の Blocks の方式を移植）。最遠点抽出で √n 個の目印 → 各株を最も近い目印の群へ（n√n 回の距離）
 //                  → 群の中は全対で UPGMA → 群どうしは群の中心（距離の和が最小の株）の距離で UPGMA → 継ぐ。遠い株どうしの厳密な比較を省く
 //   木の高さ h は併合の距離そのもの（半分にしない。描画と treeCut がこれを前提にしている）
@@ -8,7 +8,7 @@ export type TreeHow = 'exact' | 'two-level'
 
 const urlNum = (k: string): number | null => { try { const v = new URLSearchParams(location.search).get(k); return v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : null } catch { return null } }
 // ?treefull=N は検証用（二段を少ない株で試す）。利用者の設定ではない
-export const FULL_MAX = urlNum('treefull') ?? 800
+export const FULL_MAX = urlNum('treefull') ?? 2000
 
 // 全対の距離行列（n×n、対称）から UPGMA。葉は 0..n-1
 export function upgmaNN(n: number, D: Float64Array): Clade {
