@@ -27,6 +27,7 @@ import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/clie
 import { matchHapToKey } from './hapKey'
 import { naReason, naTag, AvailMap } from '../avail'
 import { mountOverview, computePeaks, OvBand, OvPoint, OvPeak, OverviewHandle } from './travOverview'
+import { buildTree, compareTrees, medoid, Clade } from './travTree'
 type Gene = { proj?: number | null; frac?: number; gid: number; pid: number; hid: number; tr: number; x0: number; x1: number; s0: number; e0: number; start: number; end: number; strand: string; fwd: boolean; type: string; name: string; locus: string; product: string; pseudo: boolean; anchored: boolean; og: number; ch?: [string, number, number][]; nodes?: { names: string[]; cds: { names: string[]; phase: number; strand: string; so: number; eo: number; first: boolean }[]; exon: string[][]; t0: number; t1: number } }   // ch = 子（'cds'|'exon'|'utr', x0, x1）、nodes = 塩基の段用（ノード名）
 type Pres = { cover: number; n0: number; n1: number; n2: number; part: number; absent: number[]; multi: number[]; partial: number[] }
 type OGroup = { para?: string[] | null; og: number; x0: number; x1: number; n: number; nhap: number; name: string; fwd: number; npseudo: number; kind: string; pres?: Pres }   // 見出しの遺伝子トラック（オルソログ群＝錨の共有で結んだ遺伝子）
@@ -73,7 +74,6 @@ let TOP = 70; const TREEW = 70, LAB = 150 + TREEW, BLK = 8; let ROW = 13   // �
 let db = '', root: Root | null = null, view: [number, number] = [0, 1], hist: { v: [number, number]; r: string }[] = [], restoreRung: string | null = null   // hist＝範囲とその時の段（戻るで両方を戻す）
 let rows: Trav[] = [], copies: Copy[] = [], reps: Rep[] = [], dups: Dup[] = [], perHap: Record<string, number> = {}, loading = 0
 let hapOrder: number[] = [], baseOrder: number[] = [], atomStats: AtomStat[] = [], refTrav: Trav[] = []
-type Clade = { leaves: number[]; size: number; h: number; kids: Clade[]; rep?: number; collapsed?: boolean }
 let treeRoot: Clade | null = null   // 表示範囲の木（描画用）
 let atomCum: number[] = []        // 原子 i の開始 bp（root.atoms の順）
 let blocks: Block[] = []           // 今の表示範囲のブロック
@@ -834,21 +834,23 @@ function baseScrollSync(Wb: number) {
 }
 $('bscroll').addEventListener('scroll', () => { const el = $('bscroll'); if (base && Math.abs(el.scrollLeft - base.sx) > 0.5) { base.sx = Math.max(0, Math.min(el.scrollLeft, Math.max(0, base.fullW - bodyPx() + 4))); draw() } })
 const fmtBpShort = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n)
-// ---- 表示範囲の木（UPGMA）: ブロックごとの状態（無し/順/逆/両方）の bp 重み不一致率 ----
+// ---- 表示範囲の木（UPGMA）: 段ごとの距離 dist(i, j) を作り、travTree.ts の buildTree で木にする（株が多いと二段＝n√n） ----
+let treeDist: ((i: number, j: number) => number) | null = null, treeIds: number[] = []   // 検証用（__amipaTreeCmp）
 function treeOrder(): number[] {
   treeRoot = null
   if (!root || !blocks.length) return orderBase()
   const H = root.haps.length, nb = blocks.length
-  const ids = orderBase(); const n = ids.length; const D: number[][] = Array.from({ length: n }, () => new Array(n).fill(0))
+  const ids = orderBase(); const n = ids.length
+  let dist: (i: number, j: number) => number
   if (base) {   // 塩基の段: 変異のある列（行で塩基が違う列）の塩基の不一致率（ハミング）。株の代表は最初の行。両方が塩基を持つ列だけ数える
     // 向き（10-27）: 逆向きに通った列（inv）も「塩基が違う」と同じく 1 列として数える（逆位の株どうしがまとまるように）。対象の列＝変異のある列 ∪ どれかの行が逆向きの列
     const B = base; const anyInv = new Uint8Array(B.cols.length); for (const st of B.inv) for (const c of st) anyInv[c] = 1
     const vcols: number[] = []; for (let c = 0; c < B.cols.length; c++) if (B.cols[c].variant || anyInv[c]) vcols.push(c)
     const miOf = (hid: number): number => { const ms = B.rowsOf.get(hid); return ms && ms.length ? ms[0] : -1 }
     const mis = ids.map(miOf)
-    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const mi = mis[i], mj = mis[j]; if (mi < 0 || mj < 0) { D[i][j] = D[j][i] = 1; continue }
+    dist = (i, j) => { const mi = mis[i], mj = mis[j]; if (mi < 0 || mj < 0) return 1
       const a = B.norm[mi] || B.rows[mi].seq, b = B.norm[mj] || B.rows[mj].seq, ia = B.inv[mi], ib = B.inv[mj]; let diff = 0, both = 0
-      for (const c of vcols) { const x = a[c], y = b[c]; if (!x || !y || x === '-' || y === '-' || x === '.' || y === '.' || x === '~' || y === '~') continue; both++; if (x !== y || ia.has(c) !== ib.has(c)) diff++ } D[i][j] = D[j][i] = both ? diff / both : 1 }
+      for (const c of vcols) { const x = a[c], y = b[c]; if (!x || !y || x === '-' || y === '-' || x === '.' || y === '.' || x === '~' || y === '~') continue; both++; if (x !== y || ia.has(c) !== ib.has(c)) diff++ } return both ? diff / both : 1 }
   } else if (cols && wantCols()) {   // 錨の列の段: ハプロタイプごとの列のアレル番号（複数の通過は先のもの）。距離＝両方が持つ列のうちアレルが違う列の割合
     // 向き（10-27）: 列の状態＝アレル番号 ＋ 向き（その通過がコンティグの主な向きと逆なら +1000）。同じ株の複数の通過は、その列の錨が多い方を採る
     // （以前は先の通過。逆位の片と両側の通過が同じ列に掛かると、錨の無い両側の方を拾って逆位が消えた）
@@ -856,36 +858,34 @@ function treeOrder(): number[] {
     const domC = new Map<number, number>(); for (const r of rows) domC.set(r.pid, (domC.get(r.pid) || 0) + r.dir * r.nanch)
     for (const r of C.rows) { const base = r.hid * C.ncol; const invd = ((domC.get(r.pid) ?? r.dir) >= 0 ? 1 : -1) !== (r.dir >= 0 ? 1 : -1)
       for (let c = 0; c < C.ncol; c++) { const k = r.cls[c]; if (k === 255) continue; if (st[base + c] < 0 || r.pres[c] > bestP[base + c]) { st[base + c] = k + (invd ? 1000 : 0); bestP[base + c] = r.pres[c] } } }
-    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { let diff = 0, both = 0; const bi = ids[i] * C.ncol, bj = ids[j] * C.ncol; for (let c = 0; c < C.ncol; c++) { const a = st[bi + c], b = st[bj + c]; if (a >= 0 && b >= 0) { both++; if (a !== b) diff++ } } D[i][j] = D[j][i] = both ? diff / both : 1 }
+    dist = (i, j) => { let diff = 0, both = 0; const bi = ids[i] * C.ncol, bj = ids[j] * C.ncol; for (let c = 0; c < C.ncol; c++) { const a = st[bi + c], b = st[bj + c]; if (a >= 0 && b >= 0) { both++; if (a !== b) diff++ } } return both ? diff / both : 1 }
   } else {   // ブロックの段: ブロックごとの状態（無し/順/逆/両方）の bp 重み不一致率
     const state = new Uint8Array(H * nb)
     const dom = new Map<number, number>(); for (const r of rows) dom.set(r.pid, cdirOf(r.pid) ?? ((dom.get(r.pid) || 0) + r.dir * r.nanch))
     for (const r of rows) { const d = (dom.get(r.pid) || 0) >= 0 ? r.dir : -r.dir; for (let bi = blockAt(r.x0); bi < nb && blocks[bi].x0 <= r.x1; bi++) { const k = r.hid * nb + bi; const nv = d >= 0 ? 1 : 2; state[k] = state[k] === 0 ? nv : (state[k] === nv ? nv : 3) } }
     const w = blocks.map(b => Math.max(1, b.bp)); const wsum = w.reduce((a, b) => a + b, 0)
-    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { let dsum = 0; for (let k = 0; k < nb; k++) { const a = state[ids[i] * nb + k], b = state[ids[j] * nb + k]; if (a !== b) dsum += w[k] * (a === 0 || b === 0 ? 1 : 0.5) } D[i][j] = D[j][i] = dsum / wsum }
+    dist = (i, j) => { let dsum = 0; const si = ids[i] * nb, sj = ids[j] * nb; for (let k = 0; k < nb; k++) { const a = state[si + k], b = state[sj + k]; if (a !== b) dsum += w[k] * (a === 0 || b === 0 ? 1 : 0.5) } return dsum / wsum }
   }
-  let clusters: Clade[] = ids.map((_, i) => ({ leaves: [i], size: 1, h: 0, kids: [] })); let dist = D.map(r => r.slice())
-  while (clusters.length > 1) {
-    let bi = 0, bj = 1, bd = Infinity; for (let i = 0; i < clusters.length; i++) for (let j = i + 1; j < clusters.length; j++) if (dist[i][j] < bd) { bd = dist[i][j]; bi = i; bj = j }
-    const A = clusters[bi], B = clusters[bj]; const merged: Clade = { leaves: A.leaves.concat(B.leaves), size: A.size + B.size, h: bd, kids: [A, B] }
-    const nd: number[] = []; for (let k = 0; k < clusters.length; k++) if (k !== bi && k !== bj) nd.push((dist[bi][k] * A.size + dist[bj][k] * B.size) / (A.size + B.size))
-    clusters = clusters.filter((_, k) => k !== bi && k !== bj); dist = dist.filter((_, k) => k !== bi && k !== bj).map(r => r.filter((_, k) => k !== bi && k !== bj))
-    clusters.push(merged); for (let k = 0; k < dist.length; k++) dist[k].push(nd[k]); dist.push(nd.concat([0]))
-  }
-  treeRoot = clusters[0]; const mapLeaf = (c: Clade) => { c.leaves = c.leaves.map(i => ids[i]); c.kids.forEach(mapLeaf) }; mapLeaf(treeRoot)
-  // 系統樹のまとめ: 併合の高さが閾値以下の枝（最上位のもの）を代表 1 株に。代表＝枝の中で他との距離の和が最小の株
+  treeDist = dist; treeIds = ids
+  const t0 = performance.now(); const T = buildTree(n, dist); treeRoot = T.root
+  const ms = performance.now() - t0; if (ms > 200) console.info(`[trav] tree ${n} haps ${T.how} ${ms.toFixed(0)} ms`)
+  const mapLeaf = (c: Clade) => { c.leaves = c.leaves.map(i => ids[i]); c.kids.forEach(mapLeaf) }; mapLeaf(treeRoot)
+  // 系統樹のまとめ: 併合の高さが閾値以下の枝（最上位のもの）を代表 1 株に。代表＝枝の中で他との距離の和が最小の株（大きな群は標本で近似）
   groupOf = new Map()
   if (treeCut == null) return treeRoot.leaves
-  const idxOf = new Map(ids.map((h, i) => [h, i])); const cutH = treeCut * Math.max(1e-9, treeRoot.h); const reps: number[] = []
+  const idxOf = new Map(ids.map((h, i) => [h, i])); const hd = (a: number, b: number) => dist(idxOf.get(a)!, idxOf.get(b)!)
+  const cutH = treeCut * Math.max(1e-9, treeRoot.h); const reps: number[] = []
   const visit = (c: Clade) => {
     if (!c.kids.length || c.h <= cutH) {
       let rep = c.leaves[0]
-      if (c.leaves.length > 1) { const cand = c.leaves.filter(h => (perHap[h] || 0) > 0); const pool = cand.length ? cand : c.leaves; rep = pool[0]; let best = Infinity; for (const a of pool) { let sum = 0; for (const b of c.leaves) sum += D[idxOf.get(a)!][idxOf.get(b)!]; if (sum < best) { best = sum; rep = a } } }   // 代表はこの範囲に通過を持つ株から（持たない株が代表になると行が空）
+      if (c.leaves.length > 1) { const cand = c.leaves.filter(h => (perHap[h] || 0) > 0); rep = medoid(cand.length ? cand : c.leaves, c.leaves, hd) }   // 代表はこの範囲に通過を持つ株から（持たない株が代表になると行が空）
       c.rep = rep; c.collapsed = c.leaves.length > 1; reps.push(rep); groupOf.set(rep, c.leaves.slice())
     } else c.kids.forEach(visit)
   }
   visit(treeRoot); return reps
 }
+// 検証用: 今の段の距離で、厳密な UPGMA と二段の木を比べる（11-11）
+;(window as any).__amipaTreeCmp = () => treeDist ? { stage: base ? 'bases' : (cols && wantCols()) ? 'anchors' : 'blocks', ...compareTrees(treeIds.length, treeDist) } : null
 
 // ---- 描画 ----
 // コンティグの印（11-10）: 片の中の向きの山形、通過の端の切れ目（黒＝コンティグの端、灰の破線＝クリップした断片の切れ目）、名前と区間、
