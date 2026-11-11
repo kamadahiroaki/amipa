@@ -9,6 +9,7 @@ import type { TravHandle } from './components/travRender'
 import { matchHapToKey } from './components/hapKey'
 import { API_LEVEL_REQUIRED, fetchBlockBbox, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRoute, RouteResp, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
 import { docsUrl } from './docsLink'
+import { fitBar } from './fitBar'
 
 type Cell = NodeData | null
 
@@ -493,6 +494,18 @@ export default function App() {
   const [showViewMenu, setShowViewMenu] = useState(false)
   const viewMenuRef = useRef<HTMLDivElement>(null)
   const [showSettings, setShowSettings] = useState(false)
+  // 上部バー（11-11）: 幅が足りなければ詰める（fitBar）／自動的に隠す（画面の上端にマウスが来たときだけ下ろす。ブラウザに覚える）
+  const headerRef = useRef<HTMLElement>(null)
+  useEffect(() => headerRef.current ? fitBar(headerRef.current) : undefined, [])
+  const [barAutoHide, setBarAutoHide] = useState<boolean>(() => { try { return localStorage.getItem('amipa.barAutoHide') === '1' } catch { return false } })
+  const [barShown, setBarShown] = useState(false)
+  const barHideT = useRef<number | null>(null)
+  const toggleBarAutoHide = () => setBarAutoHide(v => { const nv = !v; try { localStorage.setItem('amipa.barAutoHide', nv ? '1' : '0') } catch { /* 覚えられなくてもよい */ } setBarShown(false); return nv })
+  const showBar = () => { if (barHideT.current) { clearTimeout(barHideT.current); barHideT.current = null } setBarShown(true) }
+  const hideBarSoon = () => { if (barHideT.current) clearTimeout(barHideT.current); barHideT.current = window.setTimeout(() => {
+    barHideT.current = null; const h = headerRef.current
+    if (h && (h.matches(':hover') || h.contains(document.activeElement) && document.activeElement instanceof HTMLInputElement)) return   // マウスが中・検索欄に入力中なら下ろしたまま
+    setBarShown(false) }, 450) }
   const devMode = useMemo(() => { try { return new URLSearchParams(window.location.search).has('dev') } catch { return false } }, [])
   // Traversals のブロックの数（設定の引き出しから。パネルへは travApiRef で渡す）
   const [travNBlocks, setTravNBlocksRaw] = useState<number>(() => { try { const v = Number(localStorage.getItem('amipa.trav.nblk')); if (v >= 1 && v <= 500) return v } catch { /* 保存できない環境 */ } return 30 })
@@ -1426,8 +1439,10 @@ export default function App() {
           常に出すのは DB・検索・表示/ラベル/書き出しのメニュー・パネルの切り替え・設定・使い方だけ。
           細かい調整は「表示」「ラベル」のメニューと設定の引き出し（⚙）へ、版や内部の状態は設定の「このアプリについて」と ?dev=1 へ。
           ★折り返しても canvas の上に被らないよう、固定の高さにせず縦に伸ばす（以前の不具合の対策を引き継ぐ） */}
-      <header className="ui-topbar">
-        <span className="ui-brand">AMIPA</span>
+      {barAutoHide && <div className="ui-topbar-hot" onMouseEnter={showBar} />}
+      <header ref={headerRef} className={'ui-topbar' + (barAutoHide ? ' is-autohide' + (barShown || showViewMenu || showLabelsMenu || showExportMenu ? ' is-shown' : '') : '')}
+        onMouseEnter={barAutoHide ? showBar : undefined} onMouseLeave={barAutoHide ? hideBarSoon : undefined} onBlur={barAutoHide ? hideBarSoon : undefined}>
+        <span className="ui-brand fit-opt">AMIPA</span>
         <label htmlFor="db-select" className="ui-sr">データベース</label>
         <select id="db-select" className="ui-select" value={selectedDb ?? ''} onChange={e => setSelectedDb(e.target.value)}
           title="表示するデータベース">
@@ -1473,7 +1488,7 @@ export default function App() {
             onChange={e => setSearchQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && submitFind()}
             style={{ fontFamily: findScope === 'pos' ? 'var(--ui-mono)' : undefined }} />
-          <button onClick={submitFind} disabled={searchStatus === 'searching'}>{searchStatus === 'searching' ? '…' : 'Search'}</button>
+          <button onClick={submitFind} disabled={searchStatus === 'searching'} data-short="Go">{searchStatus === 'searching' ? '…' : 'Search'}</button>
           {/* 補完候補は入力で絞ってから上位 GENE_MENU_MAX 件だけ描く（全件を対象にしつつ DOM は軽い） */}
           {geneAvail && findScope === 'gene' && (
             <datalist id="geneGotoList">
@@ -1499,7 +1514,7 @@ export default function App() {
           {/* ── 表示: 辺の太さ・ノードの色・強調・重ね表示 ── */}
           <div ref={viewMenuRef} className="ui-menu-wrap">
             <button className={'ui-btn ui-btn-ghost' + (showViewMenu ? ' is-open' : '')} aria-expanded={showViewMenu}
-              onClick={() => setShowViewMenu(v => !v)}>View ▾</button>
+              onClick={() => setShowViewMenu(v => !v)} title="表示（辺の太さ・ノードの色など）" data-tiny="V ▾">View ▾</button>
             {showViewMenu && (
               <div className="ui-menu" style={{ minWidth: 300 }}>
                 <div className="ui-menu-title">Edge width</div>
@@ -1589,7 +1604,7 @@ export default function App() {
           {/* ── ラベル: グラフに重ねる文字（併用可）。大きさ・色・ずらしは設定へ ── */}
           <div ref={labelsMenuRef} className="ui-menu-wrap">
             <button className={'ui-btn ui-btn-ghost' + (showLabelsMenu ? ' is-open' : '') + (anyLabelOn ? ' is-on' : '')} aria-expanded={showLabelsMenu}
-              onClick={() => setShowLabelsMenu(v => !v)} title="ノード名・塩基・参照の位置・深さ・コピー数などの文字を重ねる">Labels ▾</button>
+              onClick={() => setShowLabelsMenu(v => !v)} title="ノード名・塩基・参照の位置・深さ・コピー数などの文字を重ねる" data-short="Lbl ▾" data-tiny="L ▾">Labels ▾</button>
             {showLabelsMenu && (
               <div className="ui-menu" style={{ minWidth: 260 }}>
                 <div className="ui-menu-title">On nodes</div>
@@ -1631,7 +1646,7 @@ export default function App() {
           {/* ── 書き出し: 図・部分グラフ・共有 ── */}
           <div ref={exportMenuRef} className="ui-menu-wrap">
             <button className={'ui-btn ui-btn-ghost' + (showExportMenu ? ' is-open' : '')} aria-expanded={showExportMenu}
-              onClick={() => setShowExportMenu(v => !v)}>Export ▾</button>
+              onClick={() => setShowExportMenu(v => !v)} title="書き出し（図・部分グラフ・セッション）" data-short="Exp ▾" data-tiny="E ▾">Export ▾</button>
             {showExportMenu && (
               <div className="ui-menu" style={{ minWidth: 280 }}>
                 <div className="ui-menu-title">Current view</div>
@@ -1665,7 +1680,7 @@ export default function App() {
         <div className="ui-group">
           <button className={'ui-btn' + (showPaths ? ' is-on' : '')} aria-pressed={showPaths}
             title="左にパスの一覧を出す。選んだパスがリボン・比較・絞り込みの対象になる"
-            onClick={() => setShowPaths(m => !m)}>Paths</button>
+            onClick={() => setShowPaths(m => !m)} data-tiny="P">Paths</button>
           <button className={'ui-btn' + (bottomH > 0 ? ' is-on' : '')} aria-pressed={bottomH > 0}
             title="Alignment パネル（ノード・リードの並びの比較）"
             onClick={() => {
@@ -1673,21 +1688,27 @@ export default function App() {
                 if (h > 0) { setActiveAlignRowId(null); setShowAlignColors(false); alignColorsUserOff.current = false; return 0 }
                 return 220
               })
-            }}>Alignment</button>
+            }} data-short="Align" data-tiny="A">Alignment</button>
           {naTrav && trvH === 0 ? (
-            <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why}>Linear</button>
+            <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why} data-tiny="Ln">Linear</button>
           ) : (
           <button className={'ui-btn' + (trvH > 0 ? ' is-on' : '')} aria-pressed={trvH > 0}
             title="Linear パネル: 全株を共通の座標（合意座標）に並べて比べる"
-            onClick={() => setTrvH(h => h > 0 ? 0 : 360)}>Linear</button>
+            onClick={() => setTrvH(h => h > 0 ? 0 : 360)} data-tiny="Ln">Linear</button>
           )}
           <button className={'ui-btn' + (editMode ? ' is-on' : '')} aria-pressed={editMode}
             title="ノードを動かす・回す。配置を DB に保存できる（閲覧専用の配信では保存しない）"
-            onClick={() => setEditMode(m => !m)}>Edit</button>
+            onClick={() => setEditMode(m => !m)} data-tiny="Ed">Edit</button>
         </div>
 
         <span className="ui-divider" />
 
+        <button className={'ui-iconbtn' + (barAutoHide ? ' is-on' : '')} aria-pressed={barAutoHide} aria-label="バーを自動的に隠す"
+          title={barAutoHide ? 'バーを自動的に隠す: オン（画面の上端にマウスを寄せると出る）。クリックで常に表示' : 'バーを自動的に隠す（画面の上端にマウスを寄せたときだけ出す）'} onClick={toggleBarAutoHide}>
+          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 4h16" /><path d={barAutoHide ? 'M12 9v11M7 15l5 5 5-5' : 'M12 20V9M7 14l5-5 5 5'} />
+          </svg>
+        </button>
         <button className="ui-iconbtn" aria-label="設定" title="設定" onClick={() => setShowSettings(true)}>
           <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
             <circle cx="12" cy="12" r="3" />

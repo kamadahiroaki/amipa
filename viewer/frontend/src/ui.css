@@ -213,3 +213,34 @@
 :root:not([data-ui="plain"]) header.ui-topbar .ui-menu { color: var(--ui-text); }
 /* 濃紺の上部の行の中でも、白い入力欄の文字は濃く（select は color: inherit なので淡い文字を受け継いで読めなかった） */
 :root:not([data-ui="plain"]) header.ui-topbar .ui-select, :root:not([data-ui="plain"]) header.ui-topbar .ui-input, :root:not([data-ui="plain"]) header.ui-topbar .ui-search, :root:not([data-ui="plain"]) header.ui-topbar .ui-search input, :root:not([data-ui="plain"]) header.ui-topbar .ui-search select { color: var(--ui-text); }
+
+/* 折り返さないバー（11-11、fitBar.ts）: 幅が足りないときは段階的に詰める */
+[data-fit] { flex-wrap: nowrap !important; }
+[data-fit]:not([data-fit="0"]) { gap: 4px; }
+[data-fit]:not([data-fit="0"]) .fit-opt { display: none !important; }
+[data-fit="2"] .fit-opt2, [data-fit="3"] .fit-opt2, [data-fit="3"] .fit-opt3 { display: none !important; }
+[data-fit]:not([data-fit="0"]) .ui-btn, [data-fit]:not([data-fit="0"]) .ui-seg button { padding: 0 6px; }
+[data-fit]:not([data-fit="0"]) .ui-divider { margin: 0 1px; }
+[data-fit]:not([data-fit="0"]) .ui-search { min-width: 150px; }
+[data-fit="3"][data-fit] .ui-search { min-width: 100px; }
+[data-fit]:not([data-fit="0"]) #db-select { max-width: 150px; }
+[data-fit="3"][data-fit] #db-select { max-width: 96px; }
+[data-fit="2"] [data-short], [data-fit="3"] [data-short], [data-fit="3"] [data-tiny] { font-size: 0 !important; }
+[data-fit="2"] [data-short]::after, [data-fit="3"] [data-short]:not([data-tiny])::after { content: attr(data-short); font-size: var(--ui-fs-sm, 12px); }
+[data-fit="3"] [data-tiny]::after { content: attr(data-tiny); font-size: var(--ui-fs-sm, 12px); }
+
+/* 上部バーを自動的に隠す（11-11）: 隠す設定のときはグラフの上に重ね、画面の上端にマウスが来たときだけ下ろす */
+.ui-root { position: relative; }
+.ui-topbar.is-autohide { position: absolute; top: 0; left: 0; right: 0; transform: translateY(-100%); transition: transform .14s ease-out; box-shadow: 0 2px 10px rgba(16, 24, 40, .25); }
+.ui-topbar.is-autohide.is-shown { transform: none; }
+.ui-topbar-hot { position: absolute; top: 0; left: 0; right: 0; height: 6px; z-index: 49; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-iconbtn.is-on, .ui-iconbtn.is-on { background: var(--ui-accent); color: #fff; }
+[data-fit]:not([data-fit="0"]) #tv_gfind { width: 90px !important; }
+[data-fit="3"][data-fit] #tv_gfind { width: 64px !important; }
+[data-fit]:not([data-fit="0"]) #tv_bexp, [data-fit]:not([data-fit="0"]) #tv_bexpw { width: 92px !important; }
+[data-fit]:not([data-fit="0"]) #tv_crumb span[data-short] { padding: 1px 3px !important; }
+[data-fit="2"] #tv_cmp, [data-fit="3"] #tv_cmp { width: 84px; }
+[data-fit="2"] #tv_bmode, [data-fit="3"] #tv_bmode { width: 64px !important; }
+[data-fit="3"] #tv_breadmax { width: 44px !important; }
+[data-fit="3"][data-fit] #tv_bexp, [data-fit="3"][data-fit] #tv_bexpw { width: 66px !important; }
+[data-fit="3"] .ui-divider { display: none; }
