@@ -535,7 +535,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       {/* ヘッダ（タイトル＋最小化トグル） */}
       <div style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 4,
         borderBottom: collapsed ? 'none' : labelStyle.borderBottom }}>
-        <span style={{ fontWeight: 600, flex: 1, color: 'var(--ui-text, #1f2937)', fontSize: 12 }}>ミニマップ</span>
+        <span style={{ fontWeight: 600, flex: 1, color: 'var(--ui-text, #1f2937)', fontSize: 12 }}>Minimap</span>
         <button onClick={() => setCollapsed(c => !c)} title={collapsed ? '開く' : '最小化'}
           style={{ border: 'none', background: 'transparent', cursor: 'pointer',
             fontSize: 11, color: '#495057', padding: '0 2px', lineHeight: 1 }}>
@@ -545,7 +545,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
 
       {!collapsed && (<>
       {/* 全体マップ */}
-      <div style={labelStyle}>全体</div>
+      <div style={labelStyle}>Overview</div>
       <canvas
         ref={ovRef}
         width={Math.round(MINIMAP_W * dpr)} height={Math.round(ovH * dpr)}
@@ -557,7 +557,7 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
       {showCtx && (
         <>
           <div style={{ ...labelStyle, borderTop: '1px solid #e9ecef' }}>
-            周辺（×{Math.round(zoom)}）{DEV ? ` · layer ${ctxLayer}` : ''}
+            Context ×{Math.round(zoom)}{DEV ? ` · layer ${ctxLayer}` : ''}
           </div>
           <canvas
             ref={ctxRef}
@@ -575,13 +575,13 @@ export default function Minimap({ viewport, layer, dbFile, sel = '', clickThroug
           background: '#fff9db', borderTop: '1px solid #ffe066',
         }}>
           <span style={{ fontSize: 11, color: '#5c4400', fontFamily: 'sans-serif', flex: 1 }}>
-            この位置に移動?
+            Go here?
           </span>
           <button
             onClick={() => { onNavigate(pendingTarget.x, pendingTarget.y); setPendingTarget(null) }}
             style={{ fontSize: 11, padding: '2px 8px', background: '#228be6', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontFamily: 'sans-serif' }}
           >
-            移動
+            Go
           </button>
           <button
             onClick={() => setPendingTarget(null)}

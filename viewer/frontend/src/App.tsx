@@ -415,6 +415,14 @@ export default function App() {
   const graphRef = useRef<GraphCanvasHandle>(null)
   const [selectedNode, setSelectedNode] = useState<NodeData | null>(null)
   const [selectedNodeInfo, setSelectedNodeInfo] = useState<NodeInfo | null>(null)  // 高速経路で欠ける属性の補完
+  // ノードを通るパスの一覧（11-11。右パネル）
+  const [nodePaths, setNodePaths] = useState<{ haps: { hap: string; sample: string; contigs: string[]; copies?: number }[]; total: number; available: boolean } | null>(null)
+  useEffect(() => {
+    setNodePaths(null); if (!selectedDb || !selectedNode || selectedNode.id == null) return
+    let dead = false
+    fetch(`/api/node_paths?db=${encodeURIComponent(selectedDb)}&id=${selectedNode.id}`).then(r => r.ok ? r.json() : null).then(j => { if (!dead && j && !j.error) setNodePaths(j) }).catch(() => { /* 出さないだけ */ })
+    return () => { dead = true }
+  }, [selectedDb, selectedNode])
   // リード/アラインメント選択（クリック or 検索）。サイドバーに詳細を出し、全ボードで該当 aln_id を強調。
   const [selectedReadAln, setSelectedReadAln] = useState<ReadAlignment | null>(null)
   const [readResults, setReadResults] = useState<ReadAlignment[] | null>(null)  // 検索候補（read_name で複数になり得る）
@@ -1397,7 +1405,7 @@ export default function App() {
   // メニューの 1 行のチェック（11-06 UI 見直し）。on のとき青いチェック
   // na: この DB では使えない（データが無い）。押すと理由を出すだけ
   const menuCheck = (label: React.ReactNode, on: boolean, onClick: () => void, title?: string, na?: { why: string; tag: string } | null) => na ? (
-    <button className="ui-menu-item is-na" role="menuitemcheckbox" aria-checked={false} aria-disabled="true" title={na.why} onClick={() => showHint(na.why)}>
+    <button className="ui-menu-item is-na" role="menuitemcheckbox" aria-checked={false} aria-disabled="true" title={na.why}>
       <span className="ui-check" /><span>{label}</span><span className="ui-na-tag">{na.tag}</span>
     </button>
   ) : (
@@ -1428,23 +1436,23 @@ export default function App() {
         {versionInfo && (versionInfo.api_level ?? 0) < API_LEVEL_REQUIRED && (
           <span className="ui-chip ui-chip-danger"
             title={`この画面は backend の API 段階 ${API_LEVEL_REQUIRED} 以上を要求しますが、繋いでいる配信は ${versionInfo.api_level ?? 0} です。古い配信に繋いでいるか、backend を再起動していません。ページを再読み込みしても直らなければ配信を上げ直してください`}>
-            ⚠ 配信が古い
+            ⚠ Outdated server
           </span>
         )}
         {/* ★速いときは何も出さない。遅くなる設定を自分で入れている間だけ、原因と戻し方を出す */}
         {!fastPath.on && (
           <span className="ui-chip ui-chip-warn"
             title="この設定はノード 1 個ずつの詳細を読むので、大きいグラフの深い拡大では表示に時間がかかる。解除すると描画用の索引だけを読む速い経路に戻る">
-            表示が遅くなる設定: {fastPath.cause === 'nodebp' ? 'ノードの bp' : '近さの色分け'}
+            Slow view: {fastPath.cause === 'nodebp' ? 'node bp' : 'proximity'}
             <button className="ui-link" onClick={() => {
               if (fastPath.cause === 'nodebp') setShowNodeBp(false)
-              else { setFloodMode(false); setFloodResult(null); setFloodSeedComp(null) } }}>解除</button>
+              else { setFloodMode(false); setFloodResult(null); setFloodSeedComp(null) } }}>Off</button>
           </span>
         )}
-        {annotLoading && <span className="ui-chip" title="注釈の辞書を取得している。全ゲノムでは十数秒かかることがある">注釈を読み込み中…</span>}
+        {annotLoading && <span className="ui-chip" title="注釈の辞書を取得している。全ゲノムでは十数秒かかることがある">Loading annotations…</span>}
         {prewarm && prewarm.running && !prewarm.finished && (
           <span className="ui-chip" title={'DB ファイルを順に読んでキャッシュに載せている。終わるまで表示範囲の取得が遅い（1 枚 1〜4 秒）'}>
-            DB を準備中 {Math.floor(100 * prewarm.done / Math.max(1, prewarm.total))}%
+            Preparing {Math.floor(100 * prewarm.done / Math.max(1, prewarm.total))}%
           </span>
         )}
 
@@ -1453,26 +1461,26 @@ export default function App() {
           <label htmlFor="find-scope" className="ui-sr">検索の種類</label>
           <select id="find-scope" value={findScope}
             onChange={e => { setFindScope(e.target.value as 'node' | 'pos' | 'gene'); setShowSearchDropdown(false); setSearchStatus('idle') }}>
-            <option value="node">ノード</option>
-            {refposAvail && <option value="pos">位置</option>}
-            {geneAvail && <option value="gene">遺伝子</option>}
+            <option value="node">Node</option>
+            {refposAvail && <option value="pos">Locus</option>}
+            {geneAvail && <option value="gene">Gene</option>}
           </select>
           <label htmlFor="find-q" className="ui-sr">検索語</label>
           <input id="find-q" type="text"
             list={findScope === 'gene' ? 'geneGotoList' : undefined}
-            placeholder={findScope === 'node' ? 'ノード名' : findScope === 'pos' ? 'chr:bp（例 chrY:12,300,000）' : '遺伝子名（例 UTY）'}
+            placeholder={findScope === 'node' ? 'Node ID' : findScope === 'pos' ? 'chrY:12,300,000' : 'Gene (e.g. UTY)'}
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && submitFind()}
             style={{ fontFamily: findScope === 'pos' ? 'var(--ui-mono)' : undefined }} />
-          <button onClick={submitFind} disabled={searchStatus === 'searching'}>{searchStatus === 'searching' ? '…' : '検索'}</button>
+          <button onClick={submitFind} disabled={searchStatus === 'searching'}>{searchStatus === 'searching' ? '…' : 'Search'}</button>
           {/* 補完候補は入力で絞ってから上位 GENE_MENU_MAX 件だけ描く（全件を対象にしつつ DOM は軽い） */}
           {geneAvail && findScope === 'gene' && (
             <datalist id="geneGotoList">
               {matchGenes(searchQuery).map(g => <option key={g.name} value={g.name} />)}
             </datalist>
           )}
-          {searchStatus === 'notfound' && <span className="ui-search-status">見つからない</span>}
+          {searchStatus === 'notfound' && <span className="ui-search-status">No match</span>}
           {findScope === 'node' && showSearchDropdown && searchResults.length > 0 && (
             <div className="ui-menu ui-menu-left" style={{ minWidth: 260, maxHeight: 260 }}>
               {searchResults.map(n => (
@@ -1491,22 +1499,22 @@ export default function App() {
           {/* ── 表示: 辺の太さ・ノードの色・強調・重ね表示 ── */}
           <div ref={viewMenuRef} className="ui-menu-wrap">
             <button className={'ui-btn ui-btn-ghost' + (showViewMenu ? ' is-open' : '')} aria-expanded={showViewMenu}
-              onClick={() => setShowViewMenu(v => !v)}>表示 ▾</button>
+              onClick={() => setShowViewMenu(v => !v)}>View ▾</button>
             {showViewMenu && (
               <div className="ui-menu" style={{ minWidth: 300 }}>
-                <div className="ui-menu-title">辺の太さ</div>
+                <div className="ui-menu-title">Edge width</div>
                 <div className="ui-menu-row">
                   <div className="ui-seg" role="radiogroup" aria-label="辺の太さ">
                     {([
-                      { key: 'off' as const, label: '一定', show: true, hint: '' },
-                      { key: 'paths' as const, label: '通る株の数', show: hbAvail, hint: '辺の太さ = その辺を通るハプロタイプの数。太い = 多い' },
-                      { key: 'reads' as const, label: 'リード数', show: true, hint: '辺の太さ = その辺をまたぐリードの数' },
+                      { key: 'off' as const, label: 'Fixed', show: true, hint: '' },
+                      { key: 'paths' as const, label: 'Haplotypes', show: hbAvail, hint: '辺の太さ = その辺を通るハプロタイプの数。太い = 多い' },
+                      { key: 'reads' as const, label: 'Reads', show: true, hint: '辺の太さ = その辺をまたぐリードの数' },
                     ].filter(s => s.show)).map(s => { const na = s.key === 'reads' ? naReads : null; return na ? (
-                      <button key={s.key} role="radio" aria-checked={false} aria-disabled="true" className="is-na" title={na.why} onClick={() => showHint(na.why)}>{s.label}</button>
+                      <button key={s.key} role="radio" aria-checked={false} aria-disabled="true" className="is-na" title={na.why}>{s.label}</button>
                     ) : (
                       <button key={s.key} role="radio" aria-checked={edgeWidthMode === s.key} className={edgeWidthMode === s.key ? 'is-on' : ''}
                         title={s.hint || '辺の太さを一定にする'}
-                        onClick={() => { setEdgeWidthMode(s.key); if (s.key !== edgeWidthMode && s.hint) showHint(s.hint) }}>{s.label}</button>
+                        onClick={() => setEdgeWidthMode(s.key)}>{s.label}</button>
                     ) })}
                   </div>
                 </div>
@@ -1520,14 +1528,14 @@ export default function App() {
                 )}
                 {(bandAvail || regionAvail || geneAvail) && (<>
                   <div className="ui-menu-sep" />
-                  <div className="ui-menu-title">ノードの色</div>
+                  <div className="ui-menu-title">Node color</div>
                   <div className="ui-menu-row">
                     <div className="ui-seg" role="radiogroup" aria-label="ノードの色">
                       {([
-                        { key: 'hap', label: 'ハプロタイプ', on: !bandMode && !regionMode && !geneMode, show: true, t: 'ノードを通るハプロタイプで塗る（既定）' },
-                        { key: 'band', label: 'バンド', on: bandMode, show: bandAvail, t: 'ノードを cytoBand の染色で塗る（acen = セントロメア）' },
-                        { key: 'region', label: '領域', on: regionMode, show: regionAvail, t: 'ノードを CHM13 の領域（セントロメア・サテライト）で塗る' },
-                        { key: 'gene', label: '遺伝子', on: geneMode, show: geneAvail, t: 'ノードを遺伝子の密度で塗る（粗い拡大での概観）' },
+                        { key: 'hap', label: 'Plain', on: !bandMode && !regionMode && !geneMode, show: true, t: '単色（青）。パスのリボンや Traversals の「塗る」の色はこの上に重なる' },
+                        { key: 'band', label: 'Band', on: bandMode, show: bandAvail, t: 'ノードを cytoBand の染色で塗る（acen = セントロメア）' },
+                        { key: 'region', label: 'Region', on: regionMode, show: regionAvail, t: 'ノードを CHM13 の領域（セントロメア・サテライト）で塗る' },
+                        { key: 'gene', label: 'Gene density', on: geneMode, show: geneAvail, t: 'ノードを遺伝子の密度で塗る（粗い拡大での概観）' },
                       ].filter(s => s.show)).map(s => (
                         <button key={s.key} role="radio" aria-checked={s.on} className={s.on ? 'is-on' : ''} title={s.t}
                           onClick={() => { setBandMode(s.key === 'band'); setRegionMode(s.key === 'region'); setGeneMode(s.key === 'gene') }}>{s.label}</button>
@@ -1536,13 +1544,13 @@ export default function App() {
                   </div>
                 </>)}
                 <div className="ui-menu-sep" />
-                {menuCheck('パスに無いノードを薄く', nodeGreyMode,
-                  () => setNodeGreyMode(m => { if (!m) showHint('パスを選んだ状態で入れると、選んだパスが通らないノードを薄くします。'); return !m }),
+                {menuCheck('Dim unselected', nodeGreyMode,
+                  () => setNodeGreyMode(m => !m),
                   '左のパスの一覧で選んだパスが通らないノードを薄く描く')}
-                {menuCheck('Alignment と同じ色で塗る', showAlignColors,
+                {menuCheck('Match Alignment colors', showAlignColors,
                   () => setShowAlignColors(v => { alignColorsUserOff.current = v; return !v }),
                   'Alignment パネルの各ノードの色で、グラフの同じノードも塗る')}
-                {menuCheck('ミニマップと凡例', showOverlays, () => setShowOverlays(v => !v),
+                {menuCheck('Minimap & legend', showOverlays, () => setShowOverlays(v => !v),
                   'グラフに重ねて出すミニマップ・凡例・詳細度の箱をまとめて出す／隠す')}
                 {devMode && menuCheck('近さの色分け（開発）', floodMode, () => setFloodMode(m => {
                   const nm = !m
@@ -1581,45 +1589,41 @@ export default function App() {
           {/* ── ラベル: グラフに重ねる文字（併用可）。大きさ・色・ずらしは設定へ ── */}
           <div ref={labelsMenuRef} className="ui-menu-wrap">
             <button className={'ui-btn ui-btn-ghost' + (showLabelsMenu ? ' is-open' : '') + (anyLabelOn ? ' is-on' : '')} aria-expanded={showLabelsMenu}
-              onClick={() => setShowLabelsMenu(v => !v)} title="ノード名・塩基・参照の位置・深さ・コピー数などの文字を重ねる">ラベル ▾</button>
+              onClick={() => setShowLabelsMenu(v => !v)} title="ノード名・塩基・参照の位置・深さ・コピー数などの文字を重ねる">Labels ▾</button>
             {showLabelsMenu && (
               <div className="ui-menu" style={{ minWidth: 260 }}>
-                <div className="ui-menu-title">ノードに重ねる</div>
-                {menuCheck('ノード名', showNodeNames, () => setShowNodeNames(v => !v))}
-                {menuCheck('ノードの長さ（bp）', showNodeBp, () => setShowNodeBp(v => !v), 'クラスタは配下の合計 bp。大きいグラフの深い拡大では表示が遅くなる')}
-                {seqAvail && menuCheck('塩基（A/C/G/T）', seqMode,
-                  () => setSeqMode(v => { if (!v) showHint('画面内の 1bp ノードにその塩基を表示します。長いノードは選ぶと右のパネルで配列を見られます。'); return !v }),
+                <div className="ui-menu-title">On nodes</div>
+                {menuCheck('Node ID', showNodeNames, () => setShowNodeNames(v => !v))}
+                {menuCheck('Length (bp)', showNodeBp, () => setShowNodeBp(v => !v), 'クラスタは配下の合計 bp。大きいグラフの深い拡大では表示が遅くなる')}
+                {seqAvail && menuCheck('Bases', seqMode,
+                  () => setSeqMode(v => !v),
                   '画面内の短いノード（1bp）の塩基をノードの中に書く')}
-                {refposAvail && menuCheck(`参照の位置${refKey ? `（${refKey}）` : ''}`, showRefPos, () => setShowRefPos(v => !v), '参照上のおおよその bp 位置を代表のノードの近くに書く')}
-                {menuCheck('深さ（リード数）', coverageTextMode,
-                  () => setCoverageTextMode(m => { if (!m) showHint('拡大してノードの幅が 20px 以上になると、ノードの上にリード数を書きます。'); return !m }),
+                {refposAvail && menuCheck(`Ref position${refKey ? ` (${refKey})` : ''}`, showRefPos, () => setShowRefPos(v => !v), '参照上のおおよその bp 位置を代表のノードの近くに書く')}
+                {menuCheck('Read depth', coverageTextMode,
+                  () => setCoverageTextMode(m => !m),
                   '拡大したとき、ノードの上にリードの数を書く', naReads)}
                 {multAvail && (<>
-                  <div className="ui-menu-title">コピー数（選んだパスどうし）</div>
+                  <div className="ui-menu-title">Copy number</div>
                   {(['all', 'diff'] as const).map(mode => (
                     <Fragment key={mode}>
-                      {menuCheck((mode === 'all' ? 'すべて' : '違うものだけ') + (cnvMode === mode && cnvSuppressed ? ' ⚠' : ''), cnvMode === mode,
-                        () => setCnvMode(m => {
-                          const next = m === mode ? 'off' : mode
-                          if (next !== 'off' && ribbonSel.size === 0) showHint('コピー数の表示は、左のパスの一覧で比べたいサンプル／ハプロタイプを選んでから使ってください。')
-                          return next
-                        }),
-                        mode === 'all' ? '選んだパスすべての、ノードごとのコピー数をリボンと同じ色で書く' : '選んだパスの間でコピー数が違うノードだけ書く（隠れた CNV）')}
+                      {menuCheck((mode === 'all' ? 'All' : 'Differences only') + (cnvMode === mode && cnvSuppressed ? ' ⚠' : ''), cnvMode === mode,
+                        () => setCnvMode(m => m === mode ? 'off' : mode),
+                        mode === 'all' ? '選んだパスすべての、ノードごとのコピー数をリボンと同じ色で書く' : '選んだパスの間でコピー数が違うノードだけ書く（隠れた CNV）',
+                        ribbonSel.size === 0 ? { tag: 'Select paths', why: '左のパスの一覧で、比べたいサンプル／ハプロタイプを選ぶと使える' } : null)}
                     </Fragment>
                   ))}
                 </>)}
                 {naAnnot && !(bandAvail || regionAvail || geneAvail) && (<>
-                  <div className="ui-menu-title">注釈の名前</div>
-                  {menuCheck('バンド・遺伝子など', false, () => {}, undefined, naAnnot)}
+                  <div className="ui-menu-title">Annotations</div>
+                  {menuCheck('Bands, genes…', false, () => {}, undefined, naAnnot)}
                 </>)}
                 {(bandAvail || regionAvail || geneAvail) && (<>
-                  <div className="ui-menu-title">注釈の名前</div>
-                  {bandAvail && menuCheck('バンド名', showBandLabels, () => setShowBandLabels(v => !v), 'cytoBand の名前（例 Yq11.221）')}
-                  {regionAvail && menuCheck('領域名', showRegionMarks, () => setShowRegionMarks(v => !v), 'CHM13 の領域の目印の名前')}
-                  {geneAvail && menuCheck('遺伝子名', showGeneLabels, () => setShowGeneLabels(v => !v), '遺伝子の名前（向きの矢印つき）')}
+                  <div className="ui-menu-title">Annotations</div>
+                  {bandAvail && menuCheck('Bands', showBandLabels, () => setShowBandLabels(v => !v), 'cytoBand の名前（例 Yq11.221）')}
+                  {regionAvail && menuCheck('Regions', showRegionMarks, () => setShowRegionMarks(v => !v), 'CHM13 の領域の目印の名前')}
+                  {geneAvail && menuCheck('Genes', showGeneLabels, () => setShowGeneLabels(v => !v), '遺伝子の名前（向きの矢印つき）')}
                 </>)}
                 <div className="ui-menu-sep" />
-                <button className="ui-menu-item" onClick={() => { setShowLabelsMenu(false); setShowSettings(true) }}>文字の大きさ・色… <span style={{ marginLeft: 'auto', color: 'var(--ui-faint)' }}>設定</span></button>
               </div>
             )}
           </div>
@@ -1627,27 +1631,27 @@ export default function App() {
           {/* ── 書き出し: 図・部分グラフ・共有 ── */}
           <div ref={exportMenuRef} className="ui-menu-wrap">
             <button className={'ui-btn ui-btn-ghost' + (showExportMenu ? ' is-open' : '')} aria-expanded={showExportMenu}
-              onClick={() => setShowExportMenu(v => !v)}>書き出し ▾</button>
+              onClick={() => setShowExportMenu(v => !v)}>Export ▾</button>
             {showExportMenu && (
               <div className="ui-menu" style={{ minWidth: 280 }}>
-                <div className="ui-menu-title">いま見えている範囲</div>
+                <div className="ui-menu-title">Current view</div>
                 <button className="ui-menu-item" disabled={!selectedDb} onClick={() => { graphRef.current?.exportSvg(); setShowExportMenu(false) }}>
-                  <span>図（SVG）<span className="ui-sub">レイヤつき・幅 180 mm</span></span></button>
+                  <span>Figure (SVG)<span className="ui-sub">レイヤつき・幅 180 mm</span></span></button>
                 <button className="ui-menu-item" disabled={!selectedDb} onClick={() => exportRegion('gfa')}>
-                  <span>部分グラフ（GFA）<span className="ui-sub">見えている葉ノード・辺・配列</span></span></button>
+                  <span>Subgraph (GFA)<span className="ui-sub">見えている葉ノード・辺・配列</span></span></button>
                 {refposAvail && (
                   <button className="ui-menu-item" disabled={!selectedDb} onClick={() => exportRegion('bed')}>
-                    <span>ノードの位置（BED）<span className="ui-sub">参照（{refKey ?? 'ref'}）の座標で</span></span></button>
+                    <span>Node coordinates (BED)<span className="ui-sub">参照（{refKey ?? 'ref'}）の座標で</span></span></button>
                 )}
                 <div className="ui-menu-note">塩基の整列（FASTA）は Traversals の塩基の段の「書き出し」から</div>
                 <div className="ui-menu-sep" />
-                <div className="ui-menu-title">表示の状態</div>
+                <div className="ui-menu-title">Session</div>
                 <button className="ui-menu-item" disabled={!selectedDb} onClick={() => { saveCurrentState(); setShowExportMenu(false) }}>
-                  <span>この表示の URL を作る<span className="ui-sub">サーバに保存して短い URL に</span></span></button>
+                  <span>Share link<span className="ui-sub">サーバに保存して短い URL に</span></span></button>
                 <button className="ui-menu-item" disabled={!selectedDb} onClick={shareSelfContainedLink}>
-                  <span>自己完結のリンクをコピー<span className="ui-sub">状態を URL に埋め込む（別の配信でも開ける）</span></span></button>
-                <button className="ui-menu-item" disabled={!selectedDb} onClick={exportSessionJson}>セッションを保存（JSON）</button>
-                <button className="ui-menu-item" onClick={() => sessionFileRef.current?.click()}>セッションを読み込む…</button>
+                  <span>Copy standalone link<span className="ui-sub">状態を URL に埋め込む（別の配信でも開ける）</span></span></button>
+                <button className="ui-menu-item" disabled={!selectedDb} onClick={exportSessionJson}>Save session (JSON)</button>
+                <button className="ui-menu-item" onClick={() => sessionFileRef.current?.click()}>Open session…</button>
               </div>
             )}
             <input ref={sessionFileRef} type="file" accept="application/json,.json" style={{ display: 'none' }}
@@ -1661,7 +1665,7 @@ export default function App() {
         <div className="ui-group">
           <button className={'ui-btn' + (showPaths ? ' is-on' : '')} aria-pressed={showPaths}
             title="左にパスの一覧を出す。選んだパスがリボン・比較・絞り込みの対象になる"
-            onClick={() => setShowPaths(m => !m)}>パス</button>
+            onClick={() => setShowPaths(m => !m)}>Paths</button>
           <button className={'ui-btn' + (bottomH > 0 ? ' is-on' : '')} aria-pressed={bottomH > 0}
             title="Alignment パネル（ノード・リードの並びの比較）"
             onClick={() => {
@@ -1671,7 +1675,7 @@ export default function App() {
               })
             }}>Alignment</button>
           {naTrav && trvH === 0 ? (
-            <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why} onClick={() => showHint(naTrav.why)}>Traversals</button>
+            <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why}>Traversals</button>
           ) : (
           <button className={'ui-btn' + (trvH > 0 ? ' is-on' : '')} aria-pressed={trvH > 0}
             title="Traversals パネル（錨と通過に基づくシンテニー）"
@@ -1679,7 +1683,7 @@ export default function App() {
           )}
           <button className={'ui-btn' + (editMode ? ' is-on' : '')} aria-pressed={editMode}
             title="ノードを動かす・回す。配置を DB に保存できる（閲覧専用の配信では保存しない）"
-            onClick={() => setEditMode(m => { if (!m) showHint('編集: クリックで選択、ドラッグで移動、Shift で複数選択、黄色の丸で回転。Space＋ドラッグで画面を動かす。'); return !m })}>編集</button>
+            onClick={() => setEditMode(m => !m)}>Edit</button>
         </div>
 
         <span className="ui-divider" />
@@ -1698,16 +1702,16 @@ export default function App() {
         <div className="ui-drawer-scrim" onClick={() => setShowSettings(false)} />
         <aside className="ui-drawer" role="dialog" aria-label="設定">
           <div className="ui-drawer-head">
-            <h2>設定</h2>
+            <h2>Settings</h2>
             <button className="ui-iconbtn" aria-label="閉じる" onClick={() => setShowSettings(false)}>✕</button>
           </div>
           <div className="ui-drawer-body">
             <section className="ui-section">
-              <h3>グラフ</h3>
+              <h3>Graph</h3>
               <div className="ui-field">
                 <label htmlFor="set-budget">表示予算<span className="ui-help">画面のノードがこれを超えると粗い層で描く。端末が重いときは下げる</span></label>
                 <select id="set-budget" className="ui-select" value={maxRows} onChange={e => setMaxRows(Number(e.target.value))}>
-                  {MAXROWS_OPTS.map(v => <option key={v} value={v}>{v === 0 ? '無制限' : v.toLocaleString()}</option>)}
+                  {MAXROWS_OPTS.map(v => <option key={v} value={v}>{v === 0 ? 'Unlimited' : v.toLocaleString()}</option>)}
                 </select>
               </div>
               <div className="ui-field">
@@ -1720,9 +1724,9 @@ export default function App() {
               </div>
             </section>
             <section className="ui-section">
-              <h3>ラベル</h3>
+              <h3>Labels</h3>
               <div className="ui-field">
-                <span className="ui-field-label">文字の大きさ</span>
+                <span className="ui-field-label">Text size</span>
                 <span className="ui-stepper">
                   <button aria-label="小さく" onClick={() => bumpLabelScale(1 / 1.15)}>−</button>
                   <button className="ui-num" style={{ width: 'auto', padding: '0 6px', border: 'none' }} title="1× に戻す" onClick={() => setLabelScale(1)}>{labelScale.toFixed(2)}×</button>
@@ -1749,7 +1753,7 @@ export default function App() {
               </div>
             </section>
             <section className="ui-section">
-              <h3>TRAVERSALS</h3>
+              <h3>Traversals</h3>
               <div className="ui-field">
                 <label htmlFor="set-nblk">ブロックの数<span className="ui-help">表示範囲をいくつの区間に分けて色を付けるか</span></label>
                 <input id="set-nblk" type="number" min={1} max={500} step={5} className="ui-input" style={{ width: 80 }}
@@ -1758,19 +1762,19 @@ export default function App() {
               </div>
             </section>
             <section className="ui-section">
-              <h3>このアプリについて</h3>
+              <h3>About</h3>
               <div className="ui-kv">
                 <span>viewer</span><b>{versionInfo?.viewer ?? '?'}</b>
                 {versionInfo?.db && (<>
                   <span>DB</span><b>{selectedDb} · {versionInfo.db.built_at ?? (versionInfo.db.mtime?.slice(0, 16).replace('T', ' ') ?? '?')}{versionInfo.db.emitter_rev ? ` @${versionInfo.db.emitter_rev}` : ''}</b>
-                  <span>DB の機能</span><b>{(['seq', 'inv', 'mult'] as const).filter(f => versionInfo.db!.features[f]).join(' ') || '—'}</b>
+                  <span>DB features</span><b>{(['seq', 'inv', 'mult'] as const).filter(f => versionInfo.db!.features[f]).join(' ') || '—'}</b>
                 </>)}
                 <span>API</span><b>{versionInfo?.api_level ?? '?'}（必要 {API_LEVEL_REQUIRED}）</b>
                 {prewarm && (prewarm.running || prewarm.finished) && (<>
-                  <span>キャッシュ</span><b>{prewarm.finished ? '済み' : `${Math.floor(100 * prewarm.done / Math.max(1, prewarm.total))}%`}</b>
+                  <span>Cache</span><b>{prewarm.finished ? 'ready' : `${Math.floor(100 * prewarm.done / Math.max(1, prewarm.total))}%`}</b>
                 </>)}
               </div>
-              <a href={docsUrl('viewer', versionInfo?.viewer)} target="_blank" rel="noreferrer" style={{ color: 'var(--ui-accent)' }}>使い方を開く</a>
+              <a href={docsUrl('viewer', versionInfo?.viewer)} target="_blank" rel="noreferrer" style={{ color: 'var(--ui-accent)' }}>Help</a>
               {!devMode && <div style={{ fontSize: 11, color: 'var(--ui-faint)' }}>開発用の表示は URL に ?dev=1 を付けると出る</div>}
             </section>
           </div>
@@ -1787,16 +1791,16 @@ export default function App() {
             Save は Edit の文脈の中にあるべきで、離れた場所に常駐させない。 */}
       {editMode && (
         <div className="ui-topbar" style={{ minHeight: 44, background: 'var(--ui-bg)', zIndex: 40, gap: 8 }}>
-          <span style={{ fontWeight: 600 }}>編集</span>
+          <span style={{ fontWeight: 600 }}>Edit</span>
           <button className={'ui-btn ui-btn-sm' + (softDragMode ? ' is-on' : '')} aria-pressed={softDragMode}
             title="掴んだノードと、グラフ上で近いノードを、離れるほど弱く一緒に動かす。Shift＋ドラッグは掴んだものだけ動かす"
-            onClick={() => setSoftDragMode(m => { if (!m) showHint('やわらかく動かす: 掴んだノードの近くのノードも、離れるほど弱く一緒に動きます。Shift＋ドラッグは掴んだものだけ。'); return !m })}>やわらかく動かす</button>
+            onClick={() => setSoftDragMode(m => !m)}>Soft drag</button>
           {softDragMode && (<>
-            <label htmlFor="sd-hops" style={{ color: 'var(--ui-muted)' }}>範囲</label>
+            <label htmlFor="sd-hops" style={{ color: 'var(--ui-muted)' }}>Radius</label>
             <input id="sd-hops" type="number" min={1} max={30} step={1} className="ui-input ui-select-sm" style={{ width: 56 }} value={softDragHops}
               title="一緒に動かす近さ（グラフ上の手数）。大きいほど遠くまで動く"
               onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragHops(isNaN(v) ? 6 : Math.max(1, Math.min(30, v))) }} />
-            <label htmlFor="sd-soft" style={{ color: 'var(--ui-muted)' }}>やわらかさ</label>
+            <label htmlFor="sd-soft" style={{ color: 'var(--ui-muted)' }}>Falloff</label>
             <input id="sd-soft" type="number" min={1} max={12} step={1} className="ui-input ui-select-sm" style={{ width: 56 }} value={softDragSoftness}
               title="大きいほど近くのノードがゆるやかに広くついてくる。小さいほど掴んだ点だけ動く"
               onChange={e => { const v = parseInt(e.target.value, 10); setSoftDragSoftness(isNaN(v) ? 5 : Math.max(1, Math.min(12, v))) }} />
@@ -1807,9 +1811,9 @@ export default function App() {
             title={saveDisabled
               ? 'この配信では DB への保存を無効にしてある（サーバ側で AMIPA_READONLY=1）。動かして確かめるのは自由で、結果は保存されない'
               : '動かした・回したノードを、子孫のノードと辺ごと DB に保存する'}>
-            {savingEdits ? '保存中…' : `DB に保存${pendingEdits.length > 0 ? `（${pendingEdits.length}）` : ''}`}
+            {savingEdits ? 'Saving…' : `Save${pendingEdits.length > 0 ? ` (${pendingEdits.length})` : ''}`}
           </button>
-          {saveDisabled && <span className="ui-chip" title="サーバを AMIPA_READONLY=1 で起動している">閲覧専用の配信なので保存しない</span>}
+          {saveDisabled && <span className="ui-chip" title="この配信は閲覧専用（サーバを AMIPA_READONLY=1 で起動）なので、動かした結果は DB に保存できない">Read-only server</span>}
           <span style={{ marginLeft: 'auto', color: 'var(--ui-muted)', fontSize: 'var(--ui-fs-sm)' }}>
             クリック 選択 · Shift＋クリック 追加／外す · 空き地をドラッグ 範囲選択 · ノードをドラッグ 移動 · 黄色の丸 回転 · Space＋ドラッグ 画面を動かす · Esc 解除
           </span>
@@ -1830,18 +1834,18 @@ export default function App() {
             }}>
               {/* 11-06 UI 見直し: 見出し＋単位の選択、絞り込み、操作の行、一覧 */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 12px 8px' }} title="選んだパスはリボン描画・比較・絞り込みの対象になる">
-                <span style={{ fontWeight: 600, flex: 1 }}>パス</span>
+                <span style={{ fontWeight: 600, flex: 1 }}>Paths</span>
                 <label htmlFor="ribbon-level" className="ui-sr">パスの単位</label>
                 <select id="ribbon-level" className="ui-select ui-select-sm" value={ribbonLevel} onChange={e => setRibbonLevel(e.target.value as 'none' | RibbonLevel)}>
-                  <option value="none">選ばない</option>
-                  <option value="sample">サンプル</option>
-                  <option value="haplotype">ハプロタイプ</option>
-                  {(ribbonContig || !ribbonHapcov) && <option value="contig">コンティグ</option>}
+                  <option value="none">None</option>
+                  <option value="sample">Sample</option>
+                  <option value="haplotype">Haplotype</option>
+                  {(ribbonContig || !ribbonHapcov) && <option value="contig">Contig</option>}
                 </select>
               </div>
               {ribbonLevel === 'none' && (
                 <div style={{ padding: '0 12px 12px', color: 'var(--ui-muted)', fontSize: 'var(--ui-fs-sm)', lineHeight: 1.6 }}>
-                  単位（サンプル・ハプロタイプ・コンティグ）を選ぶと一覧が出る。選んだパスはグラフにリボンで描く。
+                  Choose a level to list paths.
                 </div>
               )}
               {ribbonLevel !== 'none' && (
@@ -1853,35 +1857,35 @@ export default function App() {
                   </div>}
                   <div style={{ display: 'flex', gap: 6, padding: '0 12px 8px' }}>
                     <label htmlFor="ribbon-q" className="ui-sr">絞り込み</label>
-                    <input id="ribbon-q" type="text" className="ui-input ui-select-sm" placeholder="絞り込み…" value={ribbonSearch}
+                    <input id="ribbon-q" type="text" className="ui-input ui-select-sm" placeholder="Filter" value={ribbonSearch}
                       onChange={e => setRibbonSearch(e.target.value)} style={{ flex: 1, minWidth: 0 }} />
                     <label htmlFor="ribbon-sort" className="ui-sr">並び</label>
                     <select id="ribbon-sort" className="ui-select ui-select-sm" value={ribbonSort} onChange={e => setRibbonSort(e.target.value as 'name' | 'cov')} title="一覧の並び">
-                      <option value="name">名前順</option>
-                      <option value="cov">被覆順</option>
+                      <option value="name">Name</option>
+                      <option value="cov">Coverage</option>
                     </select>
                   </div>
                   {(() => { const off = pathGroups.length === 0; const noSel = off || ribbonSel.size === 0
                     return (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '0 12px 8px', flexWrap: 'wrap', fontSize: 'var(--ui-fs-sm)' }}>
-                        <span style={{ color: 'var(--ui-muted)', marginRight: 'auto' }}>{ribbonSel.size ? `選択 ${ribbonSel.size}` : `${pathGroups.length} 個`}</span>
-                        <button className="ui-btn ui-btn-sm ui-btn-ghost" onClick={selectAllRibbon} disabled={off} title="表示中（絞り込みの結果）を全部選ぶ">全選択</button>
-                        <button className="ui-btn ui-btn-sm ui-btn-ghost" onClick={invertRibbon} disabled={off} title="表示中（絞り込みの結果）の選択を反転">反転</button>
+                        <span style={{ color: 'var(--ui-muted)', marginRight: 'auto' }}>{ribbonSel.size ? `${ribbonSel.size} of ${pathGroups.length}` : `${pathGroups.length} paths`}</span>
+                        <button className="ui-btn ui-btn-sm ui-btn-ghost" onClick={selectAllRibbon} disabled={off} title="表示中（絞り込みの結果）を全部選ぶ">All</button>
+                        <button className="ui-btn ui-btn-sm ui-btn-ghost" onClick={invertRibbon} disabled={off} title="表示中（絞り込みの結果）の選択を反転">Invert</button>
                         <button className="ui-btn ui-btn-sm ui-btn-ghost" onClick={() => { setRibbonSel(new Map()); setRibbonHidden(false) }} disabled={noSel}
-                          title={ribbonSel.size ? `選択を全部外す（${ribbonSel.size} 個）` : '選択なし'}>解除</button>
+                          title={ribbonSel.size ? `選択を全部外す（${ribbonSel.size} 個）` : '選択なし'}>Clear</button>
                       </div>
                     ) })()}
                   {(() => { const noSel = pathGroups.length === 0 || ribbonSel.size === 0
                     return (
                       <div style={{ display: 'flex', gap: 6, padding: '0 12px 8px', flexWrap: 'wrap' }}>
                         <button className={'ui-btn ui-btn-sm' + (ribbonHidden ? ' is-on' : '')} onClick={() => setRibbonHidden(h => !h)} disabled={noSel}
-                          title="選択は保ったまま、グラフのリボンを一時的に隠す">{ribbonHidden ? 'リボンを出す' : 'リボンを隠す'}</button>
+                          title="選択は保ったまま、グラフのリボンを一時的に隠す">{ribbonHidden ? 'Show ribbons' : 'Hide ribbons'}</button>
                         {hapIdx && (
                           <button className={'ui-btn ui-btn-sm' + (hapFilter ? ' is-on' : '')} onClick={() => setHapFilter(v => !v)}
                             title={ribbonSel.size === 0 ? '選んだパスが通るノードだけ描く（先に一覧でパスを選ぶ）'
                               : hapFilter ? '選んだパスが通るノードだけ描いている（押すと全体に戻す）'
                               : `選んだパスが通るノードだけ描く。表示予算を超える場所でも深い層まで出せる（${hapIdx.nHap} hap の索引${hapIdx.mode === 'bucket' ? '・近似と厳密判定' : ''}）`}>
-                            選んだパスだけ描く
+                            Selected only
                           </button>
                         )}
                       </div>
@@ -1942,7 +1946,6 @@ export default function App() {
               padding: '8px 16px', borderRadius: 6,
               maxWidth: 480, textAlign: 'center',
               boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
-              animation: 'hint-toast 4s ease forwards',
             }}>
               {hint.text}
             </div>
@@ -1950,7 +1953,7 @@ export default function App() {
           {selectedDb && maxLayer !== null && trvColors?.filter && (
             <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)', zIndex: 20, background: '#e7f5ff', border: '1px solid #74c0fc', borderRadius: 4, padding: '2px 8px', fontSize: 12, color: '#1864ab' }}
               title="Traversals パネルの「グラフを絞る」が入っているので、表示範囲に属するノードとパスリボンだけを描いている">
-              Traversals の範囲に絞り込み中{lodClamp ? `（表示予算超過のため layer ${lodClamp.served}）` : ''}
+              Filtered to Traversals range{lodClamp ? `（表示予算超過のため layer ${lodClamp.served}）` : ''}
               {' · '}<span style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }} onClick={() => { setTrvFilter(null); travApiRef.current?.setFilter(false) }}>解除</span>
             </div>
           )}
@@ -2189,14 +2192,14 @@ export default function App() {
                   {lodClamp && (
                     <div style={{ background: '#fff4e6', border: '1px solid #ffd8a8', borderRadius: 3,
                       padding: '3px 5px', fontSize: 11, color: '#a8620a', lineHeight: 1.35 }}>
-                      表示予算超過のため <b>layer {lodClamp.served}</b> を表示中（拡大に応じた層は {lodClamp.requested}）
+                      Over budget: <b>layer {lodClamp.served}</b> (needs {lodClamp.requested})
                       {trvH > 0 && !trvColors?.filter && (
                         <>
                           {' · '}
                           <span onClick={() => { travApiRef.current?.setFilter(true) }}
                             title="Traversals パネルで開いている範囲に属するノードだけを描く（パネルの「グラフを絞る」を入れる）。範囲外を描かないので、同じ予算でより深い層を出せる"
                             style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }}>
-                            Traversals の範囲だけ描く
+                            Filter to range
                           </span>
                         </>
                       )}
@@ -2213,7 +2216,7 @@ export default function App() {
                             }}
                             title="選択サンプル/ハプロタイプが通るノード・エッジだけに絞ると、この層まで戻せます"
                             style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }}>
-                            サンプルで絞る
+                            Filter by sample
                           </span>
                         </>
                       )}
@@ -2224,12 +2227,12 @@ export default function App() {
                     const atShallowest = mapLayer <= 0
                     const btn: React.CSSProperties = {}
                     const dis: React.CSSProperties = {}
-                    const label = atDeepest ? '最深層'
-                      : detailStep === 0 ? '標準'
+                    const label = atDeepest ? 'Max'
+                      : detailStep === 0 ? 'Auto'
                       : detailStep > 0 ? `詳細 +${detailStep}` : `簡略 ${detailStep}`
                     return (
                       <div className="ui-stepper">
-                        <span style={{ color: 'var(--ui-muted)', paddingRight: 2 }} title="グラフをどこまで細かく描くか。− で粗く速く、＋ で細かく重く">詳細度</span>
+                        <span style={{ color: 'var(--ui-muted)', paddingRight: 2 }} title="グラフをどこまで細かく描くか。− で粗く速く、＋ で細かく重く">Detail</span>
                         <button title="1段 軽く（簡略表示・速い）" aria-label="軽く"
                           style={{ ...btn, ...(atShallowest ? dis : {}) }} disabled={atShallowest}
                           onClick={() => setDetailStep(s => Math.max(-DETAIL_CLAMP, s - 1))}>−</button>
@@ -2240,7 +2243,7 @@ export default function App() {
                           aria-label="詳しく"
                           style={{ ...btn, ...(atDeepest ? dis : {}) }} disabled={atDeepest}
                           onClick={() => setDetailStep(s => Math.min(DETAIL_CLAMP, s + 1))}>＋</button>
-                        {!devMode && isLoading && <span style={{ color: 'var(--ui-muted)', paddingLeft: 2 }} title="取得中（別の場所へ動くと中断する）">読み込み中…</span>}
+                        {!devMode && isLoading && <span style={{ color: 'var(--ui-muted)', paddingLeft: 2 }} title="取得中（別の場所へ動くと中断する）">Loading…</span>}
                       </div>
                     )
                   })()}
@@ -2260,7 +2263,7 @@ export default function App() {
                       fontFamily: 'sans-serif', color: '#343a40',
                     }}>
                       <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 8 }}>
-                        ⚠ この表示範囲は描画が重いです
+                        ⚠ Heavy view
                       </div>
                       <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 14, color: '#495057' }}>
                         画面内に約 <b>{heavyModal.toLocaleString()}</b> 個のグリフがあります（目安上限 6,000）。
@@ -2275,7 +2278,7 @@ export default function App() {
                             border: 'none', background: '#228be6', color: '#fff', fontWeight: 700,
                             opacity: mapLayer <= 0 ? 0.5 : 1,
                           }}>
-                          − 簡略表示にする
+                          Simplify
                         </button>
                         <button
                           onClick={() => closeHeavy('proceed')}
@@ -2283,13 +2286,13 @@ export default function App() {
                             flex: 1, padding: '8px 10px', borderRadius: 6, cursor: 'pointer',
                             border: '1px solid #ced4da', background: '#fff', color: '#495057', fontWeight: 600,
                           }}>
-                          このまま続行
+                          Continue
                         </button>
                       </div>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#868e96', cursor: 'pointer' }}>
                         <input type="checkbox" checked={heavyDontWarn}
                           onChange={e => setHeavyDontWarn(e.target.checked)} />
-                        今後このセッションでは警告しない
+                        Don't warn again
                       </label>
                     </div>
                   </div>
@@ -2355,18 +2358,18 @@ export default function App() {
             <>
             {/* リード/アラインメント検索（read_name または aln_id） */}
             <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--ui-border)' }}>
-              <label htmlFor="read-q" style={{ display: 'block', fontSize: 'var(--ui-fs-xs)', fontWeight: 600, color: 'var(--ui-muted)', letterSpacing: '0.04em', marginBottom: 6 }}>リードを探す</label>
+              <label htmlFor="read-q" style={{ display: 'block', fontSize: 'var(--ui-fs-xs)', fontWeight: 600, color: 'var(--ui-muted)', letterSpacing: '0.04em', marginBottom: 6 }}>Find read</label>
               <div style={{ display: 'flex', gap: 6 }}>
                 <input id="read-q" className="ui-input ui-select-sm" value={readQuery} onChange={e => setReadQuery(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter') runReadSearch(readQuery) }}
-                  placeholder={naReads ? naReads.tag : devMode ? 'リード名 または aln_id' : 'リード名'} disabled={!selectedDb || !!naReads}
+                  placeholder={naReads ? 'No reads in this DB' : devMode ? 'Read name or aln_id' : 'Read name'} disabled={!selectedDb || !!naReads}
                   style={{ flex: 1, minWidth: 0, fontFamily: 'var(--ui-mono)', fontSize: 'var(--ui-fs-sm)' }} />
-                <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(readQuery)} disabled={!selectedDb || !readQuery.trim() || !!naReads}>検索</button>
+                <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(readQuery)} disabled={!selectedDb || !readQuery.trim() || !!naReads}>Search</button>
               </div>
               {naReads && <div className="ui-na-note">{naReads.why}</div>}
-              {readSearching && <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-muted)', marginTop: 4 }}>検索中…</div>}
+              {readSearching && <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-muted)', marginTop: 4 }}>Searching…</div>}
               {readResults && !readSearching && readResults.length === 0 &&
-                <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-warn)', marginTop: 4 }}>見つからない</div>}
+                <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-warn)', marginTop: 4 }}>No match</div>}
               {readResults && readResults.length > 1 && (
                 <div style={{ marginTop: 4, maxHeight: 90, overflowY: 'auto' }}>
                   {readResults.map(r => (
@@ -2395,10 +2398,10 @@ export default function App() {
                   <tbody>
                     {([
                       ...(devMode ? [['aln_id', selectedReadAln.aln_id]] : []),
-                      ['サンプル',   selectedReadAln.sample_id ?? '?'],
-                      ['鎖',         selectedReadAln.strand ?? '?'],
-                      ['リード長',   selectedReadAln.query_len?.toLocaleString() ?? '?'],
-                      ['通るノード', selectedReadAln.n_segments],
+                      ['Sample',   selectedReadAln.sample_id ?? '?'],
+                      ['Strand',   selectedReadAln.strand ?? '?'],
+                      ['Length',   selectedReadAln.query_len?.toLocaleString() ?? '?'],
+                      ['Nodes', selectedReadAln.n_segments],
                     ] as [string, string | number][]).map(([k, v]) => (
                       <tr key={k}>
                         <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
@@ -2409,18 +2412,18 @@ export default function App() {
                 </table>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
                   <button className="ui-btn ui-btn-sm is-on" onClick={addPathToView} title="このリードが通るノードを Alignment の view にまとめて足す（既にある view へ残りを足す／無ければ新しい view）">
-                    通るノードを Alignment に追加
+                    Add to Alignment
                   </button>
                   {selectedReadAln.read_name && (
                     <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(selectedReadAln.read_name!)}>
-                      同じリードの他の整列を探す
+                      Other alignments
                     </button>
                   )}
                 </div>
                 {/* 経路ノード（このアライメントが通る全ノード） */}
                 <div style={{ marginTop: 10, borderTop: '1px solid var(--ui-border)', paddingTop: 8 }}>
                   <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
-                    通るノード（{selectedReadAln.n_segments}）
+                    Path ({selectedReadAln.n_segments} nodes)
                   </div>
                   {selectedReadAln.segments.map((s, i) => (
                     <div key={i} style={{ fontSize: 10, fontFamily: 'monospace', marginBottom: 6, lineHeight: 1.35 }}>
@@ -2454,12 +2457,12 @@ export default function App() {
                         `selectedNode.size.toLocaleString()` を呼んでいたため undefined で例外→
                         ErrorBoundary が無く React ごと落ちて画面が真っ暗になっていた。 */}
                     {([
-                      ['長さ',      ((v: string) => v === '—' ? v : v + ' bp')(num(selectedNode.size ?? selectedNodeInfo?.size, true))],
-                      ['種類',      ((): string => {
+                      ['Length',      ((v: string) => v === '—' ? v : v + ' bp')(num(selectedNode.size ?? selectedNodeInfo?.size, true))],
+                      ['Type',      ((): string => {
                                       const k = selectedNode.kind ?? selectedNodeInfo?.kind
                                       return (k != null
-                                        ? ({ 0: '葉（元のノード）', 1: 'まとめたノード', 2: 'バブル' } as Record<number, string>)[k]
-                                        : ({ n: '葉（元のノード）', S: 'バブル', G: 'まとめたノード', X: 'その他' } as Record<string, string>)[selectedNode.node_name[0]]) ?? '?'
+                                        ? ({ 0: 'Leaf', 1: 'Merged', 2: 'Bubble' } as Record<number, string>)[k]
+                                        : ({ n: 'Leaf', S: 'Bubble', G: 'Merged', X: 'Other' } as Record<string, string>)[selectedNode.node_name[0]]) ?? '?'
                                     })()],
                       ...(devMode ? [
                         ['size',      num(selectedNode.size ?? selectedNodeInfo?.size)],
@@ -2480,18 +2483,18 @@ export default function App() {
                 {selectedNode.ref_bp != null && (
                   <div style={{ marginTop: 10, borderTop: '1px solid var(--ui-border)', paddingTop: 8 }}>
                     <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>
-                      参照位置{refKey ? `（${refKey}）` : ''}
+                      Ref position{refKey ? ` (${refKey})` : ''}
                     </div>
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                       <tbody>
                         {(([
-                          ['コンティグ', refContigs.get(Number(selectedNode.ref_contig_id))?.name ?? `#${selectedNode.ref_contig_id}`],
-                          ['位置',       fmtBpDetail(Number(selectedNode.ref_bp))],
+                          ['Contig', refContigs.get(Number(selectedNode.ref_contig_id))?.name ?? `#${selectedNode.ref_contig_id}`],
+                          ['Position',   fmtBpDetail(Number(selectedNode.ref_bp))],
                           ...(selectedNode.ref_bp_end != null && Number(selectedNode.ref_bp_end) !== Number(selectedNode.ref_bp)
-                            ? [['範囲', `${fmtBpDetail(Number(selectedNode.ref_bp))} – ${fmtBpDetail(Number(selectedNode.ref_bp_end))}`]]
+                            ? [['Span', `${fmtBpDetail(Number(selectedNode.ref_bp))} – ${fmtBpDetail(Number(selectedNode.ref_bp_end))}`]]
                             : []),
-                          ['確かさ', selectedNode.ref_multi ? '参照の複数の位置に当たる（概算）'
-                                 : selectedNode.is_anchor ? '参照のノードそのもの' : '近くの参照のノードから（概算）'],
+                          ['Confidence', selectedNode.ref_multi ? 'Multiple (approx.)'
+                                 : selectedNode.is_anchor ? 'Exact' : 'Inferred'],
                         ] as [string, string | number][])).map(([k, v]) => (
                           <tr key={k}>
                             <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>{k}</td>
@@ -2505,24 +2508,24 @@ export default function App() {
                 {/* アノテーション詳細: バンド / 領域 / 遺伝子(選択ノードに重なるもの)。遺伝子クリックで hull 表示。 */}
                 {(selectedNode.band_id != null || selectedNode.region_class != null || selectedNodeFeatures.length > 0) && (
                   <div style={{ marginTop: 10, borderTop: '1px solid var(--ui-border)', paddingTop: 8 }}>
-                    <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>注釈</div>
+                    <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)', marginBottom: 6, letterSpacing: '0.04em' }}>Annotations</div>
                     <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                       <tbody>
                         {selectedNode.band_id != null && bandDict.get(Number(selectedNode.band_id)) && (
                           <tr>
-                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>バンド</td>
+                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>Band</td>
                             <td style={{ color: 'var(--ui-text)' }}>{bandDict.get(Number(selectedNode.band_id))!.name}（{bandDict.get(Number(selectedNode.band_id))!.gie_stain}）</td>
                           </tr>
                         )}
                         {selectedNode.region_class != null && regionDict.get(Number(selectedNode.region_class)) && (
                           <tr>
-                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>領域</td>
+                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>Region</td>
                             <td style={{ color: 'var(--ui-text)' }}>{regionDict.get(Number(selectedNode.region_class))!.name}</td>
                           </tr>
                         )}
                         {selectedNode.gene_count != null && Number(selectedNode.gene_count) > 0 && (
                           <tr>
-                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>遺伝子数</td>
+                            <td style={{ color: 'var(--ui-muted)', paddingBottom: 5, paddingRight: 8, whiteSpace: 'nowrap' }}>Genes</td>
                             <td style={{ color: 'var(--ui-text)' }}>{selectedNode.gene_count}</td>
                           </tr>
                         )}
@@ -2530,7 +2533,7 @@ export default function App() {
                     </table>
                     {selectedNodeFeatures.length > 0 && (
                       <div style={{ marginTop: 6 }}>
-                        <div style={{ fontSize: 10, color: 'var(--ui-muted)', marginBottom: 3 }}>遺伝子（クリックでその遺伝子の範囲を囲む）</div>
+                        <div style={{ fontSize: 10, color: 'var(--ui-muted)', marginBottom: 3 }} title="クリックでその遺伝子の範囲を囲む">Genes</div>
                         {selectedNodeFeatures.map(f => {
                           let a: { strand?: string; gene_type?: string } = {}
                           try { a = JSON.parse(f.attrs || '{}') } catch { /* ignore */ }
@@ -2552,17 +2555,36 @@ export default function App() {
                     )}
                   </div>
                 )}
+                {/* ノードを通るパス（11-11）: ハプロタイプごとに、通る回数とコンティグ名 */}
+                {nodePaths && nodePaths.available && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)', marginBottom: 6, letterSpacing: '0.04em' }}
+                      title="このノードを通るパス（コンティグ）をハプロタイプごとにまとめたもの。×n はそのハプロタイプが通る回数">
+                      Paths ({nodePaths.haps.length} haplotypes{nodePaths.total !== nodePaths.haps.length ? `, ${nodePaths.total} contigs` : ''})
+                    </div>
+                    <div style={{ maxHeight: 220, overflowY: 'auto', fontSize: 12, userSelect: 'text' }}>
+                      {nodePaths.haps.map(h => (
+                        <div key={h.hap} style={{ display: 'flex', gap: 6, padding: '1px 0', alignItems: 'baseline' }}>
+                          <span style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>{h.hap}</span>
+                          {h.copies != null && h.copies > 1 && <span style={{ color: 'var(--ui-warn)', fontWeight: 600 }}>×{h.copies}</span>}
+                          <span style={{ color: 'var(--ui-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={h.contigs.join(', ')}>{h.contigs.join(', ')}</span>
+                        </div>
+                      ))}
+                      {!nodePaths.haps.length && <div style={{ color: 'var(--ui-muted)' }}>No paths</div>}
+                    </div>
+                  </div>
+                )}
                 {/* 葉ノードの塩基配列(leaf_seq)。葉のみ・--emit-seq 済 DB のみ。巨大配列は先頭のみ+全長取得ボタン。 */}
                 {leafSeq?.available && leafSeq.leaf && leafSeq.seq != null && (
                   <div style={{ marginTop: 10, borderTop: '1px solid var(--ui-border)', paddingTop: 8 }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                       marginBottom: 6 }}>
                       <span style={{ fontWeight: 600, fontSize: 11, color: 'var(--ui-muted)' }}>
-                        塩基配列 {(leafSeq.len ?? 0).toLocaleString()} bp
+                        Sequence · {(leafSeq.len ?? 0).toLocaleString()} bp
                       </span>
                       <button
                         onClick={() => navigator.clipboard?.writeText(leafSeq.seq ?? '')}
-                        className="ui-btn ui-btn-sm" title="表示中の配列をコピー">コピー</button>
+                        className="ui-btn ui-btn-sm" title="表示中の配列をコピー">Copy</button>
                     </div>
                     <div style={{ fontFamily: 'monospace', fontSize: 11, lineHeight: 1.4, color: 'var(--ui-text)',
                       wordBreak: 'break-all', whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto',
@@ -2572,7 +2594,7 @@ export default function App() {
                     </div>
                     {leafSeq.truncated && !leafSeqFull && (
                       <div style={{ marginTop: 5, fontSize: 10, color: 'var(--ui-muted)' }}>
-                        先頭 {(leafSeq.seq.length).toLocaleString()} bp を表示中（全 {(leafSeq.len ?? 0).toLocaleString()} bp）。
+                        First {(leafSeq.seq.length).toLocaleString()} of {(leafSeq.len ?? 0).toLocaleString()} bp.
                         <button
                           onClick={() => {
                             if (!selectedDb || !selectedNode) return
@@ -2580,7 +2602,7 @@ export default function App() {
                               .then(r => { setLeafSeq(r); setLeafSeqFull(true) }).catch(() => {})
                           }}
                           className="ui-btn ui-btn-sm" style={{ marginLeft: 6 }}>
-                          全長を取得
+                          Load all
                         </button>
                       </div>
                     )}
@@ -2589,7 +2611,7 @@ export default function App() {
               </div>
             ) : (
               <div style={{ padding: 20, color: 'var(--ui-muted)', fontSize: 'var(--ui-fs-sm)', textAlign: 'center', marginTop: 12, lineHeight: 1.7 }}>
-                グラフのノードをクリックすると、ここに詳細が出る
+                Select a node to inspect.
               </div>
             )}
             </>

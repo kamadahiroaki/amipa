@@ -421,7 +421,7 @@ export default function AlignmentView({
             background: '#2563eb', color: '#fff', cursor: 'pointer',
           }}
         >
-          ビュー ＋
+          ＋ View
         </button>
       </div>
 
@@ -430,7 +430,7 @@ export default function AlignmentView({
         {rows.length === 0 ? (
           <div style={{ height: bodyH, display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: '#d0d5dd', fontSize: 13 }}>
-            ノードをクリックしてアラインメントを表示
+            Select a node to align
           </div>
         ) : (
           rows.map(row => (
@@ -1247,7 +1247,7 @@ ${parts.join('\n')}
               fontWeight: isActive ? 700 : 400,
             }}
           >
-            ノード＋
+            ＋ Node
           </button>
           <button
             onClick={onRemoveRow}
@@ -1258,7 +1258,7 @@ ${parts.join('\n')}
               background: '#fff', color: '#c62828', cursor: 'pointer',
             }}
           >
-            削除
+            Remove
           </button>
           {/* 全ノードの縮尺ステッパー（−/＋ で ×10。個別はタイルヘッダで上書き）。列の −＋ と同じUI。 */}
           {(() => {
@@ -1272,7 +1272,7 @@ ${parts.join('\n')}
             return (
               <div title={`全ノードの縮尺: ${ZOOM_TITLE[boardZoom]}（現在値はノード上端のルーラー参照。個別はタイルのヘッダで変更）`}
                 style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <span style={{ fontSize: 9, color: '#5b6472', lineHeight: 1.4 }}>縮尺</span>
+                <span style={{ fontSize: 9, color: '#5b6472', lineHeight: 1.4 }}>Scale</span>
                 <div style={{ display: 'flex', border: '1px solid #adb5bd', borderRadius: 5, overflow: 'hidden' }}>
                   <button onClick={() => set(bi - 1)} disabled={bi <= 0} title="縮小（×10）"
                     style={bbtn(bi <= 0)}>−</button>
@@ -1292,7 +1292,7 @@ ${parts.join('\n')}
               background: showConnectors ? '#2563eb' : '#fff',
               color: showConnectors ? '#fff' : '#374151', cursor: 'pointer',
             }}>
-            線
+            Lines
           </button>
           {/* リードの縦位置。既定は上に詰める（縦が短い）。列をまたいで 1 本を目で追いたいときは
               「1本1段」にすると、同じリードが**全ノードで同じ高さ**に並ぶ（段は伸びる）。 */}
@@ -1309,7 +1309,7 @@ ${parts.join('\n')}
               background: readRows === 'unique' ? '#2563eb' : '#fff',
               color: readRows === 'unique' ? '#fff' : '#374151', cursor: 'pointer',
             }}>
-            {readRows === 'unique' ? '1本1段' : '詰める'}
+            {readRows === 'unique' ? 'Expand' : 'Pack'}
           </button>
           {/* mapq フィルタ: 空欄=マップの大域 mapq に追従、数値=このボードだけ上書き */}
           <input
@@ -1353,7 +1353,7 @@ ${parts.join('\n')}
               border: `1px solid ${cbSafe ? '#0072B2' : '#d0d5dd'}`, borderRadius: 5,
               background: cbSafe ? '#0072B2' : '#fff', color: cbSafe ? '#fff' : '#374151',
             }}>
-            色覚
+            Color-safe
           </button>
           {/* 8.1 別ファイル SVG: 画面のアラインメントをそのままベクタ化 */}
           <button onClick={exportAlignPileup} title="今表示中のアラインメント（塩基/CIGAR/cs:Z・ノード跨ぎ線を含む）をそのまま SVG に書き出し（現ビューポート範囲）"
@@ -1368,7 +1368,7 @@ ${parts.join('\n')}
           {samples.length > 1 && (
             <>
               <div style={{ display: 'flex', border: '1px solid #adb5bd', borderRadius: 5, overflow: 'hidden', width: 50, marginTop: 2 }}>
-                {([[false, '絞込'], [true, '強調']] as const).map(([hl, label], i) => (
+                {([[false, 'Filter'], [true, 'Highlight']] as const).map(([hl, label], i) => (
                   <button key={label} onClick={() => setSampleHighlight(hl)}
                     title={hl ? '強調: 非選択サンプルを灰で残す' : '絞込: 非選択サンプルを非表示にする'}
                     style={{

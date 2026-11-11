@@ -5,7 +5,7 @@ import { dbEdgesSigned, edgeXYSelect, EDGE_NODE_JOIN } from '../edgeGeom'
 import { contigToHap, buildSelection, maskWhere, hapIdxEdgeOk, type Selection } from '../hapidx'
 import { spatialSource } from '../spatial'
 import { tiledInfo, TILED_OFF, morton } from '../tiled'
-import { covFmt, rangeMaxFn, rangeSumFn } from '../covBlob'
+import { covFmt, rangeMaxFn, rangeSumFn, listAll } from '../covBlob'
 
 import { sendBg } from '../bgClient'
 
@@ -925,5 +925,41 @@ pathsRouter.get('/leaf_seq', (req, res) => {
       seq: truncated ? row.seq.slice(0, SEQ_CAP) : row.seq,
       truncated,
     })
+  } catch (e) { res.status(500).json({ error: String(e) }) }
+})
+
+// ノードを通るパスの一覧（11-11。右パネルのノードの詳細）: node_contig_cov の blob から contig を取り出し、ハプロタイプごとにまとめる。
+//   copies は node_hap_mult があればそのハプロタイプの通過回数。GET /api/node_paths?db&id=<node rowid>
+pathsRouter.get('/node_paths', (req, res) => {
+  const { db, id } = req.query as Record<string, string>
+  const rid = Number(id)
+  if (!db || !Number.isFinite(rid)) { res.status(400).json({ error: 'Missing db/id' }); return }
+  try {
+    const d = getDb(db)
+    if (!hasContigcovSchema(d)) { res.json({ haps: [], total: 0, available: false }); return }
+    const row = d.prepare('SELECT blob FROM node_contig_cov WHERE node_rowid = ?').get(rid) as { blob: Buffer } | undefined
+    if (!row) { res.json({ haps: [], total: 0, available: true }); return }
+    const fmt = covFmt(d); const { ids } = listAll(fmt, Buffer.isBuffer(row.blob) ? row.blob : Buffer.from(row.blob), true)
+    const dict = new Map<number, { sample: string; haplotype: string; contig: string }>()
+    if (ids.length) {
+      const st = d.prepare('SELECT contig_id AS id, sample, haplotype, contig FROM contig_dict WHERE contig_id = ?')
+      for (const cid of ids.slice(0, 5000)) { const r = st.get(cid) as any; if (r) dict.set(cid, r) }
+    }
+    let mult: Map<number, number> | null = null
+    try {
+      const m = d.prepare('SELECT blob FROM node_hap_mult WHERE node_rowid = ?').get(rid) as { blob: Buffer } | undefined
+      if (m) { const L = listAll(fmt, Buffer.isBuffer(m.blob) ? m.blob : Buffer.from(m.blob), true); mult = new Map(L.ids.map((h, i) => [h, L.vals[i]])) }
+    } catch { /* node_hap_mult 無し */ }
+    const c2h = contigToHap(d)
+    const by = new Map<string, { hap: string; sample: string; contigs: string[]; copies?: number }>()
+    for (const cid of ids) {
+      const r = dict.get(cid); if (!r) continue
+      const key = r.haplotype || r.sample
+      let e = by.get(key); if (!e) { e = { hap: key, sample: r.sample, contigs: [] }; by.set(key, e)
+        const h = cid < c2h.length ? c2h[cid] : -1; if (mult && h >= 0 && mult.has(h)) e.copies = mult.get(h) }
+      e.contigs.push(r.contig)
+    }
+    const haps = [...by.values()].sort((a, b) => a.hap.localeCompare(b.hap))
+    res.json({ haps, total: ids.length, available: true })
   } catch (e) { res.status(500).json({ error: String(e) }) }
 })

@@ -53,7 +53,7 @@ export interface OverviewHandle { viewClient(): [number, number] | null; draw():
 export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps, onCenterToggle: () => void): OverviewHandle {
   host.innerHTML = `<div style="display:flex;align-items:stretch;border-bottom:1px solid #ddd;background:#fff">
     <div style="width:${LAB}px;height:32px;flex-shrink:0;padding:1px 6px;box-sizing:border-box;font:10px/13px system-ui;color:#555;overflow:hidden">
-      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="color:#333">全体図</b> <span class="ovn"></span> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
+      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="color:#333">Overview</b> <span class="ovn"></span> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
       <div class="ovh" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#222"></div>
     </div>
     <div style="position:relative;flex:1;min-width:0"><canvas class="ovcv" style="display:block;cursor:pointer"></canvas></div></div>`

@@ -30,5 +30,5 @@ export function naReason(av: AvailMap | undefined | null, key: string): string |
 export function naTag(av: AvailMap | undefined | null, key: string): string | null {
   const a = av?.[key]
   if (!a || a.ok) return null
-  return a.why === 'none' ? 'この DB に無い' : a.why === 'failed' ? '取り込み失敗' : '読めない'
+  return a.why === 'none' ? 'Not in DB' : a.why === 'failed' ? 'Import failed' : 'Unreadable'
 }

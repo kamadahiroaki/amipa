@@ -258,3 +258,22 @@ function sumF4(b: Buffer, lo: number, hi: number): number {
 export function rangeSumFn(fmt: CovFmt): (b: Buffer, lo: number, hi: number) => number {
   return fmt === 'f4' ? sumF4 : fmt === 'f2' ? sumF2 : fmt === 'f1' ? sumF1 : sumF0
 }
+
+// ── blob の全要素（id と付随値）を取り出す（ノードを通るパスの一覧。11-11）──────────────
+export function listAll(fmt: CovFmt, b: Buffer, hasVal = true): { ids: number[]; vals: number[] } {
+  const ids: number[] = [], vals: number[] = []
+  if (!b || b.length < 4) return { ids, vals }
+  if (fmt === 'f2') {
+    let o = 0
+    const uv = () => { let x = 0, sh = 0; for (;;) { const c = b[o++]; x += (c & 0x7f) * Math.pow(2, sh); if (c < 0x80) break; sh += 7 } return x }
+    const n = uv(); uv(); let id = 0
+    for (let i = 0; i < n; i++) { id += uv(); ids.push(id) }
+    if (hasVal) for (let i = 0; i < n; i++) vals.push(b[o + i] ?? 0)
+    return { ids, vals }
+  }
+  let n: number, w: number
+  if (fmt === 'f4') { const h = b.readUInt32LE(0); n = h & 0xffffff; w = (h >>> 24) || 4 } else { n = b.readUInt32LE(0); w = fmt === 'f1' ? 2 : 4 }
+  for (let i = 0; i < n; i++) { const p = 4 + w * i; ids.push(w === 1 ? b[p] : w === 2 ? b.readUInt16LE(p) : b.readUInt32LE(p)) }
+  if (hasVal) { const v0 = 4 + w * n; for (let i = 0; i < n; i++) vals.push(b[v0 + i] ?? 0) }
+  return { ids, vals }
+}
