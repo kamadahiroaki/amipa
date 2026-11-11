@@ -20,7 +20,7 @@ export interface OverviewDeps {
   onHoverPeak: (p: OvPeak | null) => void
   target?: () => [number, number] | null                  // 下のブロック列の左右端（画面の座標）。全体図の横の範囲をこれに揃える（11-10）
 }
-export const MAX_TAGS = 6
+export const MAX_TAGS = 30   // 11-11: 6 → 30（全体表示で染色体ごとに札が出るように）
 const fmtbp = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(2) + ' Mb' : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kb' : Math.round(n) + ' bp'
 
 // 山: 座標の隙間（全長の 0.5%、下限 2,000）と染色体の境目で連なりに分け、重い順に札。全体の 2% 未満の連なりは札を付けない（帯には描く）
@@ -41,7 +41,7 @@ export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => 
     const x0 = Math.min(...r.map(lo)), x1 = Math.max(...r.map(hi)); const byX = r.slice().sort((a, b) => a.x - b.x); let acc = 0, xm = x0; for (const p of byX) { acc += p.w; if (acc >= w / 2) { xm = p.x; break } }
     return { letter: '', x0, x1, xm, n: r.length, w, share: w / tot, label: labelOf(xm), names: r.map(p => p.name), wx: pc(wx, 0.5), wy: pc(wy, 0.5), box: [pc(wx, 0.1), pc(wy, 0.1), pc(wx, 0.9), pc(wy, 0.9)] as [number, number, number, number], full: [pc(wx, 0.02), pc(wy, 0.02), pc(wx, 0.98), pc(wy, 0.98)] as [number, number, number, number], inView: x1 >= view[0] && x0 <= view[1] }
   }).sort((a, b) => b.w - a.w)
-  const cand = peaks.filter(p => p.share >= 0.02).slice(0, MAX_TAGS)
+  const cand = peaks.filter(p => p.share >= 0.005).slice(0, MAX_TAGS)   // 11-11: 2% → 0.5%（ヒトの小さな染色体は全体の 1〜2%）
   const extra = new Map<OvPeak, number>(); for (const p of cand) { p.letter = tagOf(p.xm, 0, p.x0, p.x1); extra.set(p, 0) }
   for (let it = 0; it < 4; it++) { const cnt = new Map<string, number>(); for (const p of cand) cnt.set(p.letter, (cnt.get(p.letter) || 0) + 1)
     const dup = cand.filter(p => cnt.get(p.letter)! > 1); if (!dup.length) break
@@ -52,7 +52,7 @@ export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => 
 export interface OverviewHandle { viewClient(): [number, number] | null; draw(): void; setBands(b: OvBand[]): void; setPoints(pts: OvPoint[], peaks: OvPeak[], note: string): void; setMarker(x: number | null, label?: string): void; setHoverLetter(l: string | null): void; peaks(): OvPeak[]; centerWeighted(): boolean; destroy(): void }
 export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps, onCenterToggle: () => void): OverviewHandle {
   host.innerHTML = `<div style="display:flex;align-items:stretch;border-bottom:1px solid #ddd;background:#fff">
-    <div style="width:${LAB}px;height:29px;flex-shrink:0;padding:1px 6px;box-sizing:border-box;font:10px/13px system-ui;color:#555;overflow:hidden">
+    <div style="width:${LAB}px;height:32px;flex-shrink:0;padding:1px 6px;box-sizing:border-box;font:10px/13px system-ui;color:#555;overflow:hidden">
       <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="color:#333">全体図</b> <span class="ovn"></span> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
       <div class="ovh" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#222"></div>
     </div>
@@ -60,7 +60,7 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
   const cv = host.querySelector('.ovcv') as HTMLCanvasElement; const g = cv.getContext('2d')!
   const chk = host.querySelector('.ovc') as HTMLInputElement; const noteEl = host.querySelector('.ovn') as HTMLElement; const hovEl = host.querySelector('.ovh') as HTMLElement
   chk.addEventListener('change', onCenterToggle)
-  const H = 29, BAND = 9, HIST0 = 10, HIST1 = 24, STR0 = 25, STR1 = 29   // 11-10: 58 → 29 px
+  const H = 32, BAND = 13, HIST0 = 14, HIST1 = 27, STR0 = 28, STR1 = 32   // 11-10: 58 → 29 px、11-11: 染色体名を読める大きさに（帯 9 → 13 px）
   let bands: OvBand[] = [], pts: OvPoint[] = [], pks: OvPeak[] = [], marker: { x: number; label: string } | null = null, hovL: string | null = null, drag: [number, number] | null = null
   const W = () => Math.max(50, cv.parentElement!.clientWidth)
   const total = () => Math.max(1, deps.totalBp())
@@ -73,7 +73,7 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(H * dpr); cv.style.width = w + 'px'; cv.style.height = H + 'px' }
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, H); g.fillStyle = '#fff'; g.fillRect(0, 0, w, H)
     // 染色体（灰の交互。名前は入る幅があれば）
-    g.font = '9px system-ui'; g.textBaseline = 'middle'; let k = 0
+    g.font = '600 11px system-ui'; g.textBaseline = 'middle'; let k = 0
     for (const b of bands) { const a = px(b.x0), c = px(b.x1 + 1); g.fillStyle = k++ % 2 ? '#d5d9de' : '#eceef1'; g.fillRect(a, 0, Math.max(1, c - a), BAND)
       const nm = b.name || `区間 ${k}`; const tw = g.measureText(nm).width; if (c - a >= tw + 6) { g.fillStyle = b.name ? '#333' : '#888'; g.fillText(nm, a + 3, BAND / 2 + 1) } }
     if (!bands.length) { g.fillStyle = '#eceef1'; g.fillRect(4, 0, w - 8, BAND) }

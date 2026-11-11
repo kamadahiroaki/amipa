@@ -28,7 +28,7 @@ export const OPS: Record<string, (q: Q) => OpResult> = {
     try { r.avail = dataAvail(String(q.db)); if (r.hasReads && !r.avail.reads.ok) r.hasReads = false } catch { /* 無くても従来どおり */ }
     return r
   }),
-  range: q => { const r = range(q); if (!r) return bad('bad x0/x1'); return withT(q, t => travRange(t, Math.floor(r[0]), Math.floor(r[1]), { minOverlap: Number(q.min) || 0, minAnchors: minanch(q), hid: q.hid != null && q.hid !== '' ? Number(q.hid) : undefined })) },
+  range: q => { const r = range(q); if (!r) return bad('bad x0/x1'); return withT(q, t => travRange(t, Math.floor(r[0]), Math.floor(r[1]), { minOverlap: Number(q.min) || 0, minAnchors: minanch(q), hid: q.hid != null && q.hid !== '' ? Number(q.hid) : undefined, dups: q.dups === '1' })) },
   path: q => withT(q, t => { const pid = Number(q.pid); return { path: t.paths[pid], trav: travOfPath(t, pid), reps: repsOfRange(t, [pid]) } }),
   atoms: q => withT(q, t => travAtomStats(t, minanch(q))),
   chroms: q => withT(q, t => { const t0 = Date.now(); const bands = travChroms(t); return { bands, ms: Date.now() - t0 } }),

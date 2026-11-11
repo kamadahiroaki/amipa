@@ -23,7 +23,7 @@ interface Props {
   getVisibleNodes?: () => { name: string; x: number; y: number }[]   // 同じノードの位置（全体図の山・グラフ側の札）
   getGraphViewport?: () => { x1: number; x2: number; y1: number; y2: number } | null
   onPeaks?: (peaks: OvPeak[] | null) => void        // 全体図の山（文字つき）
-  onPeakHover?: (letter: string | null, names: string[] | null) => void
+  onPeakHover?: (letter: string | null, names: string[] | null, color?: number | null) => void
   onPeakPicked?: (peak: OvPeak) => void
 }
 export default function TravPanel({ db, onVisible, onSelectHap, onSelectHaps, onSelectContig, onFilter, onGraphRange, onReady, onHoverNodes, hapMarks, onRange, getVisibleNames, getVisibleNodes, getGraphViewport, onPeaks, onPeakHover, onPeakPicked }: Props) {
@@ -48,7 +48,7 @@ export default function TravPanel({ db, onVisible, onSelectHap, onSelectHaps, on
       getVisibleNodes: () => cbRef.current.getVisibleNodes?.() ?? [],
       getGraphViewport: () => cbRef.current.getGraphViewport?.() ?? null,
       onPeaks: p => cbRef.current.onPeaks?.(p),
-      onPeakHover: (l, n) => cbRef.current.onPeakHover?.(l, n),
+      onPeakHover: (l, n, c) => cbRef.current.onPeakHover?.(l, n, c),
       onPeakPicked: q => cbRef.current.onPeakPicked?.(q),
     })
     hRef.current.setHapMarks(hapMarks ?? new Map())

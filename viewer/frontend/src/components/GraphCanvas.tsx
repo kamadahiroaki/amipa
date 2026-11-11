@@ -193,6 +193,7 @@ interface Props {
   floodMaxHop?: number                       // ランプ正規化用の最大 hop（=D）
   msaHighlight?: Set<string> | null          // MSA 対象に選択中のノード名(グラフ上でリング強調)
   msaHoverNodes?: Set<string> | null         // MSA パネルで hover 中の列のノード群(強い強調。排他アレルは複数)
+  msaHoverColor?: number | null               // その強調の色（Traversals のブロックの色）。無ければマゼンタ
   blockColors?: BlockColorMap | null         // Blocks パネル（多解像度 MSA）の窓・段に合わせた塗り分け。null=無効
   onVisibleAtoms?: (atoms: [number, number, number, number][]) => void   // 木: 見えているノードが属する原子・重み（割合の和）・合意座標の最小/最大（葉。無ければ -1）。Blocks の帯・ミニマップ
 }
@@ -317,7 +318,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     cnvMode, cnvNodes, cnvColors, onCnvSuppress, seqMode, baseMap, coverageMin,
     nodeScale, edgeMin, mapMapq, hapSel, maxRows, onLodClamp, detailDepthMode, maxEdgePx, maxEdgeReads, showNodeNames, showNodeBp, labelScale, labelColor, labelOffset, showRefPos, refContigs, nodeColors,
     selectedPaths, ribbons, layerZoom, zoomWindow, worldBbox, layerOffset, suppressHeavyWarning,
-    floodMode, floodResult, floodSeedComp, floodMaxHop, msaHighlight, msaHoverNodes, blockColors, onVisibleAtoms,
+    floodMode, floodResult, floodSeedComp, floodMaxHop, msaHighlight, msaHoverNodes, msaHoverColor, blockColors, onVisibleAtoms,
     onViewportChange, onHeavyView, onNodeSelect, onLoadingChange, onFetchProgress, onFastPath,
     onRibbonEdited, onNodesEdited }, ref
 ) {
@@ -374,7 +375,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   }, [floodMode, floodResult, floodSeedComp, floodMaxHop])
 
   useEffect(() => { msaHiRef.current = msaHighlight ?? null; renderRef.current?.() }, [msaHighlight])
-  useEffect(() => { msaHoverRef.current = msaHoverNodes ?? null; renderRef.current?.() }, [msaHoverNodes])
+  const msaHoverColorRef = useRef<number | null>(null)
+  useEffect(() => { msaHoverRef.current = msaHoverNodes ?? null; msaHoverColorRef.current = msaHoverColor ?? null; renderRef.current?.() }, [msaHoverNodes, msaHoverColor])
 
   // Edge width = Paths(breadth=hb)。値は edge fetch に相乗り済なので再描画のみで反映。
   useEffect(() => { breadthModeRef.current = breadthMode; renderRef.current?.() }, [breadthMode])
@@ -1542,9 +1544,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       // ホバー中のノードの強調（11-05）: リングをやめ、該当ノードを濃いマゼンタで塗る（厚みも最低 3 px）。該当が多い（山・ブロック）ときは他を薄くする
       //   （拡大率が低く小さなノードが多いと、固定の大きさのリングが重なって塊になった）。リングは該当が少なく大きく描かれるときだけ（uiLayer 側）
       const hovSet = msaHoverRef.current && msaHoverRef.current.size ? msaHoverRef.current : null
-      const hovMany = !!hovSet && hovSet.size > HOV_FEW
+      const hovMany = !!hovSet   // 11-11: 強調中は数に依らず他を薄く（ブロックの色で塗るので、同じ色の他のノードと紛れないように）
+      const hovCol = msaHoverColorRef.current ?? 0xe0157a
       edgeLayer.alpha = hovMany ? 0.2 : 1   // 他を薄くするときは辺も
       ribbonLayer.alpha = hovSet ? 0.15 : 1; pathLayer.alpha = hovSet ? 0.15 : 1   // 強調中はリボンと選んだパスの線をごく薄く（11-10: 重ねると強調が埋もれた。消すと「リボンが出ない」ように見えた）
+      const hovPolys: [number, number, number, number, number, number, number, number][] = []
       for (const n of visibleNodes) {
         if (hiddenNodeIds.has(n.id)) continue
         const isHovN = !!hovSet && hovSet.has(n.node_name)
@@ -1553,7 +1557,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         if (n.xCoord + bound < renderRect.x1 || n.xCoord - bound > renderRect.x2) continue
         if (n.yCoord + bound < renderRect.y1 || n.yCoord - bound > renderRect.y2) continue
         drawnCount++
-        const hh  = isHovN ? Math.max(Math.min(constHalfThick, hw), 1.5 / zoom) : Math.min(constHalfThick, hw)   // 厚み一定(長さに依らず)。短すぎるノードは長さで頭打ち（ホバー中は最低 3 px）
+        const hh  = isHovN ? Math.max(Math.min(constHalfThick, hw), 2.5 / zoom) : Math.min(constHalfThick, hw)   // 厚み一定(長さに依らず)。短すぎるノードは長さで頭打ち（ホバー中は最低 3 px）
         // side1(+hw,3'/exit)側を尖端(5点目=接続点)にし、両肩を inset だけ内側へ寄せて向きを示す。
         // 葉は lang、集約(スーパーノード)は符号解決済み PCA 軸(emitter §4d')で angle が向きを持つ。
         const inset = hw * NODE_TIP_INSET
@@ -1613,7 +1617,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           : regionModeRef.current ? regionToColor(n.region_class, regionDictRef.current)
           : geneModeRef.current   ? geneCountToColor(n.gene_count, n.ref_bp, n.ref_bp_end)
           : null
-        const fillColor = isHovN ? 0xe0157a
+        const fillColor = isHovN ? hovCol
                         : floodFill != null ? floodFill
                         : linkColor != null ? linkColor
                         : shouldGrey ? 0xe9ecef
@@ -1629,7 +1633,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
 
         {
           const G = isHovN ? hovLayer : nodeLayer   // ホバー中はリボンより前の層へ
-          if (isHovN) { G.lineStyle(0); G.beginFill(fillColor, 1.0) }
+          if (isHovN) {
+            // 強調は後でまとめて描く（11-11）: 先に全部の黒い縁取り、次に全部をブロックの色で。1 個ずつだと、重なる小さなノードの縁が前のノードの色を塗りつぶして黒い塊になった
+            hovPolys.push([cx, cy, cos, sin, hw, hh, inset, fillColor])
+          }
           else if (hovMany) { nodeLayer.lineStyle(0); nodeLayer.beginFill(fillColor, 0.15) }   // 他を薄く
           else if (isSelected) {
             nodeLayer.lineStyle(2 / zoom, 0xf08c00, 1.0, 0.5, true)
@@ -1647,14 +1654,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
           }
           // 5点: side0(-hw,5'/enter)側は平ら。side1(+hw,0)=3'/exit=次ノードへの接続点を尖端(5点目)にし、
           // 両肩を inset だけ内側へ寄せる。尖端は流れ(5'→3')の向きを指す。集約は inset=0 で長方形に退化。
-          G.drawPolygon([
+          if (!isHovN) G.drawPolygon([
             cx + cos*(-hw)         - sin*(-hh), cy + sin*(-hw)         + cos*(-hh),
             cx + cos*(-hw)         - sin*  hh,  cy + sin*(-hw)         + cos*  hh,
             cx + cos*( hw - inset) - sin*  hh,  cy + sin*( hw - inset) + cos*  hh,
             cx + cos*  hw,                      cy + sin*  hw,
             cx + cos*( hw - inset) - sin*(-hh), cy + sin*( hw - inset) + cos*(-hh),
           ])
-          G.endFill()
+          if (!isHovN) G.endFill()
         }
         // 選択遺伝子: この ref ノードが gene に重なるなら、**ノード本体に沿って exon 部分区間を塗り分け**
         // (intron=淡緑ベース / exon=濃緑)。node ref_bp スパン ∩ exon を node 軸(hw)に写像する
@@ -1688,6 +1695,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             }
           }
         }
+      }
+      if (hovPolys.length) {
+        const poly = (cx: number, cy: number, cos: number, sin: number, hw: number, hh: number, ins: number) => [
+          cx + cos*(-hw) - sin*(-hh), cy + sin*(-hw) + cos*(-hh), cx + cos*(-hw) - sin*hh, cy + sin*(-hw) + cos*hh,
+          cx + cos*(hw - ins) - sin*hh, cy + sin*(hw - ins) + cos*hh, cx + cos*hw, cy + sin*hw, cx + cos*(hw - ins) - sin*(-hh), cy + sin*(hw - ins) + cos*(-hh)]
+        const e = 1.2 / zoom
+        hovLayer.lineStyle(0); hovLayer.beginFill(0x111111, 0.95)
+        for (const [cx, cy, cos, sin, hw, hh] of hovPolys) { const hwE = Math.max(hw, 2.5 / zoom) + e; hovLayer.drawPolygon(poly(cx, cy, cos, sin, hwE, hh + e, hwE * NODE_TIP_INSET)) }
+        hovLayer.endFill()
+        for (const [cx, cy, cos, sin, hw, hh, ins, col] of hovPolys) { hovLayer.beginFill(col, 1); hovLayer.drawPolygon(poly(cx, cy, cos, sin, Math.max(hw, 2.5 / zoom), hh, ins)); hovLayer.endFill() }
       }
       lastGlyphs = drawnCount   // バッジに実描画数を反映
 

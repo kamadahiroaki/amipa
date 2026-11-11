@@ -1052,8 +1052,10 @@ export default function App() {
   }, [showHint])
   const [trvHov, setTrvHov] = useState<Set<string> | null>(null)   // Traversals の塩基の段でホバー中のノード（マゼンタ）
   const trvHovReq = useRef(0)
+  const [trvHovColor, setTrvHovColor] = useState<number | null>(null)   // Traversals のブロックのホバーで強調する色（ブロックの色。11-11）
   const onTravHover = useCallback((names: string[] | null) => {
     const my = ++trvHovReq.current
+    setTrvHovColor(null)
     if (!names || !names.length || !selectedDb) { setTrvHov(null); return }
     const nm = names.filter(x => /^n\d+$/.test(x)); if (!nm.length) { setTrvHov(null); return }
     void fetchBlockAncestors(selectedDb, mapLayer, nm).then(up => { if (my !== trvHovReq.current) return; setTrvHov(new Set([...nm, ...up])) })   // グラフが粗い層なら祖先も光らせる
@@ -1064,8 +1066,8 @@ export default function App() {
     travApiRef.current?.openNames(names)
   }, [showHint])
   // Traversals の全体図の山（A・B・C…）にカーソル → その山のノードをグラフで強調（11-05。グラフ側の札と枠はユーザ判断で外した）
-  const onTravPeakHover = useCallback((letter: string | null, names: string[] | null) => {
-    void letter; ++trvHovReq.current; setTrvHov(names && names.length ? new Set(names) : null)   // 名前はグラフが描いている層のもの（祖先は引かない）
+  const onTravPeakHover = useCallback((letter: string | null, names: string[] | null, color?: number | null) => {
+    void letter; ++trvHovReq.current; setTrvHov(names && names.length ? new Set(names) : null); setTrvHovColor(color ?? null)   // 名前はグラフが描いている層のもの（祖先は引かない）
   }, [])
   const selHapMarks = useMemo(() => { const m = new Map<string, string>(); for (const [k, v] of ribbonSel) m.set(k, '#' + v.color.toString(16).padStart(6, '0')); return m }, [ribbonSel])
   const trvHoverSet = useMemo(() => (trvHov && trvHov.size ? trvHov : null), [trvHov])   // Traversals の塩基の段でホバー中のノード（グラフでマゼンタ）
@@ -2014,6 +2016,7 @@ export default function App() {
                   floodSeedComp={floodSeedComp}
                   floodMaxHop={floodHops}
                   msaHoverNodes={trvHoverSet}
+                  msaHoverColor={trvHovColor}
                   blockColors={trvColors}
                   nodeColors={trvNodeColors.size ? new Map([...activeNodeColors, ...trvNodeColors]) : activeNodeColors}
                   onViewportChange={(vp, layer, glyphs) => {

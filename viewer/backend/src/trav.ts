@@ -170,7 +170,7 @@ export function travChroms(t: Trav): { x0: number; x1: number; name: string; ref
 // 占めるので、床を範囲の座標数の 1 割（下限は構築の最小 10）まで下げる。chr202122v2 x 1,085,725–1,085,925 で、HG03492#1 の 2 回目の通過（錨 48）が隠れ、
 // その株にだけあるノードがグラフの絞り込みからも漏れた
 export function effFloor(minAnchors: number, x0: number, x1: number): number { return Math.min(minAnchors, Math.max(10, Math.floor((x1 - x0 + 1) * 0.1))) }
-export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number; minAnchors?: number; hid?: number } = {}): any {
+export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number; minAnchors?: number; hid?: number; dups?: boolean } = {}): any {
   const tm: [string, number][] = []; let tl = Date.now(); const lap = (k: string) => { const n = Date.now(); tm.push([k, n - tl]); tl = n }   // 段ごとの時間（遅いときだけログ）
   // hid を指定したらその株の通過だけ（11-11: 画面が参照の株の通過だけを要るのに全株・全ゲノムを取り、ヒトで 27 MB の応答になっていた）。反復・コピー・重なりも付けない
   if (opts.hid != null && Number.isFinite(opts.hid)) {
@@ -191,7 +191,8 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
     return { id: r.id, pid: r.pid, hid: r.hid, i0: r.i0, i1: r.i1, bp: r.bp, x0: Math.round(r.tx0 + a0 * (r.tx1 - r.tx0)), x1: Math.round(r.tx0 + a1 * (r.tx1 - r.tx0)) } }).filter(r => r.x1 >= x0 && r.x0 <= x1)   // 反復自体が区間に掛かるものだけ（通過が掛かるだけでは不足）
   lap('copies+reps'); try { addContigInfo(t, out) } catch (e) { console.warn('[trav/range] contig info', e) }
   lap('contigInfo'); let dups: Dup[] = []
-  try { const rs = redundSpans(t); lap('redund'); dups = [...rs.filter(d => d.x1 >= x0 && d.x0 <= x1), ...pieceOverlaps(out.filter(r => r.nanch >= 50 && !(r as any).fill))] } catch (e) { console.warn('[trav/range] dups', e) }
+  // 行に出ない 2 回目（紫）は求められたときだけ（11-11: 冗長コンティグのトークンを全部読むので、ヒトの初回で 23 秒かかっていた）
+  if (opts.dups) try { const rs = redundSpans(t); lap('redund'); dups = [...rs.filter(d => d.x1 >= x0 && d.x0 <= x1), ...pieceOverlaps(out.filter(r => r.nanch >= 50 && !(r as any).fill))] } catch (e) { console.warn('[trav/range] dups', e) }
   lap('overlaps'); const tot = tm.reduce((a, b) => a + b[1], 0); if (tot > 2000) console.log(`[trav/range] ${x0}-${x1} rows ${out.length} ${tot}ms ` + tm.map(([k, v]) => `${k}=${v}`).join(' '))
   return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: out, copies, reps: repsOut, perHap, dups }
 }
