@@ -254,6 +254,8 @@ export interface GraphCanvasHandle {
 }
 
 const FETCH_ROWS_FACTOR = 8   // タイル取得の行数の上限＝予算 × これ（先読みの範囲は画面の約 4 倍＋格子。11-05）
+// ブロックの色で塗るとき辺と枠を薄くし始める、画面のノードの長さの中央値（px）。?fadepx= で試せる（11-11）
+const FADE_PX = (() => { const v = Number(new URLSearchParams(location.search).get('fadepx')); return Number.isFinite(v) && v > 0 ? v : 2 })()
 const HOV_FEW = 20         // ホバーの強調: 該当がこれ以下ならリングも付け、これを超えたら他のノードを薄くする（11-05）
 const FETCH_MARGIN  = 0.5   // プリフェッチ: ビューポートを各辺 50% 拡張
 const RENDER_MARGIN = 0.05  // 描画範囲: ビューポートを各辺 5% 拡張
@@ -1357,7 +1359,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         const vp = viewport; const lens: number[] = []; let nOn = 0
         for (const n of visibleNodes) { if (n.xCoord < vp.x1 || n.xCoord > vp.x2 || n.yCoord < vp.y1 || n.yCoord > vp.y2) continue; nOn++; if (lens.length < 4000) lens.push(n.radius * 2 * zoom) }
         lens.sort((a, b) => a - b); const medPx = lens.length ? lens[lens.length >> 1] : 0
-        edgeFade = Math.max(Math.max(0, Math.min(1, Math.log(1200 / Math.max(1, nOn)) / Math.log(1200 / 300))), Math.max(0, Math.min(1, (medPx - 6) / 10)))
+        // 11-11: ノードの数では決めない。画面のノードの長さの中央値が FADE_PX 以上なら薄くせず、その半分以下で最も薄く（ノードがごく小さいときだけ薄くする）。
+        //   試すときは URL の ?fadepx=1〜4（既定 2）。以前は 300〜1,200 ノードで薄くし、中央値 16 px 以上なら薄くしなかった
+        void nOn; const F = FADE_PX
+        edgeFade = Math.max(0, Math.min(1, (medPx - F / 2) / (F / 2)))
       }
       const edgeBase = (alpha: number) => edgeLayer.lineStyle(1, lerpColor(0xced4da, 0xadb5bd, edgeFade), 0.3 + (alpha - 0.3) * edgeFade, 0.5, true)
 
@@ -1647,7 +1652,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             // 10-30: Traversals のグラフ連動の色は linkColor（ノードごとの色）で来るので、そちらも同じ扱いに（以前は blockColor だけで、linkColor の枠はほぼ黒 0x343a40）。
             // また短辺 8 px でもまだ縁が濃く見えた（6〜10 px のノードで 1 px の枠が塗りの 3 割前後）→ 24 px 未満は枠なし、それ以上も塗りに近い色で薄く
             const colored = (blockColor != null || linkColor != null) && !shouldGrey && floodFill == null
-            if (colored && 2 * hh * zoom < 24) nodeLayer.lineStyle(0)
+            if (colored && edgeFade >= 1) nodeLayer.lineStyle(0.8 / zoom, darken(fillColor, 0.7), 0.6, 0.5, true)   // 薄くしないときは枠も普通に（11-11）
+            else if (colored && 2 * hh * zoom < 24) nodeLayer.lineStyle(0)
             else if (colored) nodeLayer.lineStyle(0.8 / zoom, darken(fillColor, 0.85), 0.35, 0.5, true)
             else nodeLayer.lineStyle(0.8 / zoom, lineColor, shouldGrey ? 0.4 : 0.6, 0.5, true)
             nodeLayer.beginFill(fillColor, shouldGrey ? 0.7 : 1.0)
