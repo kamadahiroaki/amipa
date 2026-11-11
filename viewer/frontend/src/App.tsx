@@ -1532,7 +1532,7 @@ export default function App() {
                   <div className="ui-menu-row">
                     <div className="ui-seg" role="radiogroup" aria-label="ノードの色">
                       {([
-                        { key: 'hap', label: 'Plain', on: !bandMode && !regionMode && !geneMode, show: true, t: '単色（青）。パスのリボンや Traversals の「塗る」の色はこの上に重なる' },
+                        { key: 'hap', label: 'Plain', on: !bandMode && !regionMode && !geneMode, show: true, t: '単色（青）。パスのリボンや Linear の「Color」の色はこの上に重なる' },
                         { key: 'band', label: 'Band', on: bandMode, show: bandAvail, t: 'ノードを cytoBand の染色で塗る（acen = セントロメア）' },
                         { key: 'region', label: 'Region', on: regionMode, show: regionAvail, t: 'ノードを CHM13 の領域（セントロメア・サテライト）で塗る' },
                         { key: 'gene', label: 'Gene density', on: geneMode, show: geneAvail, t: 'ノードを遺伝子の密度で塗る（粗い拡大での概観）' },
@@ -1579,7 +1579,7 @@ export default function App() {
                 )}
                 <div className="ui-menu-sep" />
                 <button className="ui-menu-item" onClick={() => { resetGraphView(); setShowViewMenu(false) }}
-                  title="グラフの塗りと重ね表示を初期値に戻す（Traversals の塗りと絞り込み、ホバーの強調、色分け、辺の太さ、リボン、パスの選択）">
+                  title="グラフの塗りと重ね表示を初期値に戻す（Linear の塗りと絞り込み、ホバーの強調、色分け、辺の太さ、リボン、パスの選択）">
                   表示を初期値に戻す
                 </button>
               </div>
@@ -1643,7 +1643,7 @@ export default function App() {
                   <button className="ui-menu-item" disabled={!selectedDb} onClick={() => exportRegion('bed')}>
                     <span>Node coordinates (BED)<span className="ui-sub">参照（{refKey ?? 'ref'}）の座標で</span></span></button>
                 )}
-                <div className="ui-menu-note">塩基の整列（FASTA）は Traversals の塩基の段の「書き出し」から</div>
+                <div className="ui-menu-note">塩基の整列（FASTA）は Linear の塩基の段の Export から</div>
                 <div className="ui-menu-sep" />
                 <div className="ui-menu-title">Session</div>
                 <button className="ui-menu-item" disabled={!selectedDb} onClick={() => { saveCurrentState(); setShowExportMenu(false) }}>
@@ -1675,11 +1675,11 @@ export default function App() {
               })
             }}>Alignment</button>
           {naTrav && trvH === 0 ? (
-            <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why}>Traversals</button>
+            <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why}>Linear</button>
           ) : (
           <button className={'ui-btn' + (trvH > 0 ? ' is-on' : '')} aria-pressed={trvH > 0}
-            title="Traversals パネル（錨と通過に基づくシンテニー）"
-            onClick={() => setTrvH(h => h > 0 ? 0 : 360)}>Traversals</button>
+            title="Linear パネル: 全株を共通の座標（合意座標）に並べて比べる"
+            onClick={() => setTrvH(h => h > 0 ? 0 : 360)}>Linear</button>
           )}
           <button className={'ui-btn' + (editMode ? ' is-on' : '')} aria-pressed={editMode}
             title="ノードを動かす・回す。配置を DB に保存できる（閲覧専用の配信では保存しない）"
@@ -1753,7 +1753,7 @@ export default function App() {
               </div>
             </section>
             <section className="ui-section">
-              <h3>Traversals</h3>
+              <h3>Linear</h3>
               <div className="ui-field">
                 <label htmlFor="set-nblk">ブロックの数<span className="ui-help">表示範囲をいくつの区間に分けて色を付けるか</span></label>
                 <input id="set-nblk" type="number" min={1} max={500} step={5} className="ui-input" style={{ width: 80 }}
@@ -1952,8 +1952,8 @@ export default function App() {
           )}
           {selectedDb && maxLayer !== null && trvColors?.filter && (
             <div style={{ position: 'absolute', top: 6, left: '50%', transform: 'translateX(-50%)', zIndex: 20, background: '#e7f5ff', border: '1px solid #74c0fc', borderRadius: 4, padding: '2px 8px', fontSize: 12, color: '#1864ab' }}
-              title="Traversals パネルの「グラフを絞る」が入っているので、表示範囲に属するノードとパスリボンだけを描いている">
-              Filtered to Traversals range{lodClamp ? `（表示予算超過のため layer ${lodClamp.served}）` : ''}
+              title="Linear パネルの「Filter」が入っているので、表示範囲に属するノードとパスリボンだけを描いている">
+              Filtered to Linear range{lodClamp ? `（表示予算超過のため layer ${lodClamp.served}）` : ''}
               {' · '}<span style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }} onClick={() => { setTrvFilter(null); travApiRef.current?.setFilter(false) }}>解除</span>
             </div>
           )}
@@ -2197,7 +2197,7 @@ export default function App() {
                         <>
                           {' · '}
                           <span onClick={() => { travApiRef.current?.setFilter(true) }}
-                            title="Traversals パネルで開いている範囲に属するノードだけを描く（パネルの「グラフを絞る」を入れる）。範囲外を描かないので、同じ予算でより深い層を出せる"
+                            title="Linear パネルで開いている範囲に属するノードだけを描く（パネルの「Filter」を入れる）。範囲外を描かないので、同じ予算でより深い層を出せる"
                             style={{ textDecoration: 'underline', cursor: 'pointer', fontWeight: 700 }}>
                             Filter to range
                           </span>
@@ -2730,7 +2730,7 @@ export default function App() {
       {trvH > 0 && (
         <div
           onMouseDown={onTrvHandleDown}
-          title="Drag to resize Traversals panel"
+          title="Drag to resize Linear panel"
           className="amipa-grip-row"
           style={{ ...handleStyle, height: HANDLE_SIZE, cursor: 'row-resize', borderTop: '1px solid #c8cdd3' }}
         />
