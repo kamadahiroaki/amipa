@@ -215,7 +215,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   prof('リード: cs を歩く'); // ---- 行の向き ----
   const dcache = C.order
   const dense_of_name = new Map<string, number>()
-  const pre: { r: any; nodes: string[]; ors: number[]; rev: boolean }[] = []
+  const pre: { r: any; nodes: string[]; ors: number[]; rev: boolean; cflip?: boolean }[] = []
   for (const r of runs) { const nodes = (r.ids as number[]).map(nname); let wp = 0, wm = 0; nodes.forEach((n, i) => { if (r.ors[i]) wp += L(n); else wm += L(n) })
     pre.push({ r, nodes, ors: r.ors, rev: wm > wp }); r.ids.forEach((t: number, i: number) => { if (!dense_of_name.has(nodes[i])) dense_of_name.set(nodes[i], t) }) }
   const disp = (p: { nodes: string[]; rev: boolean }) => (p.rev ? [...p.nodes].reverse() : p.nodes)
@@ -226,12 +226,17 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     const bseq = disp(pre[bi]); const bpos = new Map<string, number>(); bseq.forEach((n, k) => { if (!bpos.has(n)) bpos.set(n, k) })
     const ctrend = (seq: string[]) => { if (!dcache) return 0; const cs: number[] = []; for (const n of seq) { const d = dense_of_name.get(n); if (d != null && d >= 0 && d < dcache.length && dcache[d] >= 0) cs.push(dcache[d]) } return cs.length >= 2 ? signSum(cs) : 0 }
     const btrend = ctrend(bseq)
-    pre.forEach((p, k) => { if (k === bi || fixed.has(k)) return; const sq = disp(p); const sh: number[] = []; for (const n of sq) { const b = bpos.get(n); if (b != null) sh.push(b) }
-      let t = sh.length >= 2 ? signSum(sh) : 0; if (t === 0 && btrend !== 0) t = ctrend(sq) * (btrend > 0 ? 1 : -1); if (t < 0) p.rev = !p.rev })
+    pre.forEach((p, k) => { if (k === bi) return; const sq = disp(p); const sh: number[] = []; for (const n of sq) { const b = bpos.get(n); if (b != null) sh.push(b) }
+      let t = sh.length >= 2 ? signSum(sh) : 0
+      // コンティグの主な向きで決めた行（fixed）も、この窓で基準の行と共有するノードの順がはっきり逆なら裏返す（11-11）。
+      //   逆位の通過は主な向きだと合意と逆順になり、全ノードが「列の順と違う位置」＝写しの列に回って、参照型の行と 1 列もそろわなかった
+      //   （HPRC chr10:79.5–80.2 Mb の 710 kb 逆位の 5 本）。裏返せば合意の列に入り、向きの違いは逆位の印（inv）で出る
+      if (fixed.has(k)) { if (sh.length >= 4 && -t >= Math.max(3, 0.3 * (sh.length - 1))) { p.rev = !p.rev; p.cflip = true } return }   // cflip ＝コンティグの主な向きと逆に通る（逆位）。行全体に紫の帯
+      if (t === 0 && btrend !== 0) t = ctrend(sq) * (btrend > 0 ? 1 : -1); if (t < 0) p.rev = !p.rev })
   }
   const has_h = pre.some(p => !p.r.rd)
   const rc_votes = new Map<string, number>(); const raw: any[] = []
-  for (const { r, nodes, ors, rev } of pre) {
+  for (const { r, nodes, ors, rev, cflip } of pre) {
     const cells = new Map<string, string>(); const inv: string[] = []; let occ: string[] = [], occ_inv: boolean[] = [], occ_st: string[] = []; const rdo: string[] | undefined = r.rdocc; const vote = !(rdo && has_h)
     nodes.forEach((n, k_) => { const o = ors[k_]; const st_ = rdo ? rdo[k_] : (seqleaf.get(n) ?? '?'); const iv_ = (!o) !== rev; const s = iv_ ? rc(st_) : st_
       occ.push(s); occ_inv.push(iv_); occ_st.push(st_); if (cells.has(n)) return; if (iv_) inv.push(n); if (vote) rc_votes.set(n, (rc_votes.get(n) ?? 0) + (iv_ ? 1 : -1)); cells.set(n, s) })
@@ -242,7 +247,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     let hseq_ = nodes.map((n_, i) => (ors[i] ? (seqleaf.get(n_) ?? 'N') : rc(seqleaf.get(n_) ?? 'N'))).join('')
     if (rdo) hseq_ = rdo.map((st_, i) => (ors[i] ? st_ : rc(st_))).join('').replace(/-/g, '').replace(/\./g, '')
     raw.push({ rdinfo: r.rd ? { sample: r.rd.sample, name: r.rd.name, mapq: r.rd.mapq, nins: r.nins ?? 0 } : null, rins: rins_, occ, occ_inv, occ_st, seqn: rev ? [...nodes].reverse() : nodes, hseq: hseq_, samp: r.samp, label: r.label, path: r.path,
-      strand: rev ? '-' : '+', cells, inv, ends: rev ? [ce[1], ce[0]] : [ce[0], ce[1]], nodes: new Set(nodes), seq: rev ? [...nodes].reverse() : nodes, isref: r.isref, brk: brk_ })
+      strand: rev ? '-' : '+', cells, inv, ends: rev ? [ce[1], ce[0]] : [ce[0], ce[1]], nodes: new Set(nodes), seq: rev ? [...nodes].reverse() : nodes, isref: r.isref, brk: brk_, cflip: !!cflip })
   }
   const normRow = (r: any) => { const seqn: string[] = r.seq, oi: boolean[] = r.occ_inv, ost: string[] = r.occ_st; const occ: string[] = r.occ = [...r.occ0]
     let i = 0
@@ -439,6 +444,8 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   const invcols = (r: any) => { const out_: number[][] = []; let st_: number | null = null
     cols.forEach((c, ci) => { const k_ = r._oc[ci]; const f_ = k_ != null && (r.occ_inv[k_] !== ((rc_votes.get(r.seqn[k_]) ?? 0) > 0)); if (f_ && st_ == null) st_ = ci; if (!f_ && st_ != null) { out_.push([st_, ci - 1]); st_ = null } })
     if (st_ != null) out_.push([st_, cols.length - 1]); return out_ }
+  // コンティグの主な向きと逆に通る行（cflip）: 行が塩基を持つ列の最初から最後までを 1 本の逆位の帯に
+  const ctgInvCols = (r: any) => { let a = -1, b = -1; cols.forEach((_c, ci) => { if (r._oc[ci] != null) { if (a < 0) a = ci; b = ci } }); return a >= 0 ? [[a, b]] : [] }
   const invmaj = (r: any) => { const iv = new Set(r.inv); return [...r.cells.keys()].filter((n: string) => iv.has(n) !== ((rc_votes.get(n) ?? 0) > 0)) }
   const ord = raw.map((_, i) => i).sort((i, j) => cmpPy([!raw[i].isref, raw[i].seq, raw[i].label], [!raw[j].isref, raw[j].seq, raw[j].label]) || i - j)
   const rows2 = ord.map(i => raw[i])
@@ -449,6 +456,6 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   const pick = (c: any) => { const o: any = {}; for (const k of ['kind', 'nodes', 'g', 'rb', 'variant', 'off', 'bp', 'so', 'nl', 'cp', 'ri']) if (k in c) o[k] = c[k]; return o }
   return { name: label, bp: minA ? minA[0] : null, refname, nrow: rows2.length, nallele: nu, scan: { leaves: leaves.length, contigs: pis.length, tokens: ntokAll },
     cols: cols.map(pick),
-    rows: rows2.map(r => ({ samp: r.samp, label: r.label, path: r.path, strand: r.strand, seq: r.seq, isref: r.isref, allele: r.allele, inv: invmaj(r), invc: invcols(r), hseq: r.hseq ?? '', read: r.rdinfo,
+    rows: rows2.map(r => ({ samp: r.samp, label: r.label, path: r.path, strand: r.strand, seq: r.seq, isref: r.isref, allele: r.allele, inv: invmaj(r), invc: r.cflip ? ctgInvCols(r) : invcols(r), cinv: !!r.cflip, hseq: r.hseq ?? '', read: r.rdinfo,
       rins: r.rdinfo ? (((r.rins || []).concat(r.rext || [])).length ? (r.rins || []).concat(r.rext || []) : null) : null, seqt: r.seqt !== r.seq ? r.seqt : null, ends: r.ends ?? [false, false], brk: r.brk ?? [] })) }
 }
