@@ -15,16 +15,32 @@ function worker(): Worker {
   const nw = new Worker(path.join(__dirname, isTs ? 'travWorker.ts' : 'travWorker.js'), { execArgv: isTs ? ['-r', 'ts-node/register/transpile-only'] : [] })
   nw.on('message', (m: any) => { const p = pending.get(m.id); if (p) { pending.delete(m.id); p.resolve(m) } })
   nw.on('error', e => console.error('[travworker] error:', e))
-  nw.on('exit', code => { console.error(`[travworker] exit ${code}`); if (w === nw) w = null; for (const p of pending.values()) p.reject(new Error('trav worker exited ' + code)); pending.clear() })
+  nw.on('exit', code => { console.error(`[travworker] exit ${code}`); if (w === nw) w = null; tbusy = false; for (const p of pending.values()) p.reject(new Error('trav worker exited ' + code)); pending.clear() })
   w = nw; return nw
 }
 
+// 11-11: 要求をメイン側の列に溜め、worker へは 1 本ずつ渡す。以前は届いた順に worker へ投げていたので、全体図の山（locate・小さく速い）が
+//   行・遺伝子・リードなどの重い要求の後ろで数十秒待った。軽い要求を先に回し、接続が切れた要求（画面が範囲を変えて取り消した fetch）は計算せずに捨てる
+const PRIO: Record<string, number> = { root: 0, chroms: 0, atoms: 0, locate: 1, nodes: 1, nleaf: 1, range: 2, path: 2 }   // 無いものは 3
+type TJob = { id: number; op: string; q: Record<string, any>; res: Response; gone: boolean; t0: number; pr: number }
+const tqueue: TJob[] = []; let tbusy = false
+function tpump(): void {
+  while (!tbusy && tqueue.length) {
+    let bi = 0; for (let i = 1; i < tqueue.length; i++) if (tqueue[i].pr < tqueue[bi].pr) bi = i
+    const j = tqueue.splice(bi, 1)[0]
+    if (j.gone || j.res.destroyed) continue
+    tbusy = true; const tw = Date.now() - j.t0
+    new Promise<any>((resolve, reject) => { pending.set(j.id, { resolve, reject }); worker().postMessage({ id: j.id, op: j.op, q: j.q }) })
+      .then(m => { if (!(j.res.writableEnded || j.res.destroyed)) j.res.status(m.status).type('application/json').send(m.body); if (tw + (m.ms || 0) > 2000) console.log(`[travworker] ${j.op} 待ち ${tw} ms 計算 ${m.ms} ms`) })
+      .catch(e => { if (!j.res.headersSent) j.res.status(500).json({ error: String(e) }) })
+      .finally(() => { tbusy = false; tpump() })
+  }
+}
 export function sendTrav(res: Response, op: string, q: Record<string, any>): void {
   if (!USE_WORKER) { const r = runTravOp(op, q); res.status(r.status).json(r.json); return }
-  const id = nextId++
-  new Promise<any>((resolve, reject) => { pending.set(id, { resolve, reject }); worker().postMessage({ id, op, q }) })
-    .then(m => { if (res.writableEnded || res.destroyed) return; res.status(m.status).type('application/json').send(m.body) })
-    .catch(e => { if (!res.headersSent) res.status(500).json({ error: String(e) }) })
+  const j: TJob = { id: nextId++, op, q, res, gone: false, t0: Date.now(), pr: PRIO[op] ?? 3 }
+  res.on('close', () => { if (!res.writableEnded) j.gone = true })
+  tqueue.push(j); tpump()
 }
 
 /** 起動時に worker を立てておく（初回の要求で ts-node の読み込みを待たないように） */

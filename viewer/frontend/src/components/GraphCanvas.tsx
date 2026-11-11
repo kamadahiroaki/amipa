@@ -1546,7 +1546,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const hovSet = msaHoverRef.current && msaHoverRef.current.size ? msaHoverRef.current : null
       const hovMany = !!hovSet   // 11-11: 強調中は数に依らず他を薄く（ブロックの色で塗るので、同じ色の他のノードと紛れないように）
       const hovCol = msaHoverColorRef.current ?? 0xe0157a
-      edgeLayer.alpha = hovMany ? 0.2 : 1   // 他を薄くするときは辺も
+      edgeLayer.alpha = 1   // 11-11: 薄くすると全体の形が分からなくなった。他のノードは灰で塗る（辺はもとから灰）
       ribbonLayer.alpha = hovSet ? 0.15 : 1; pathLayer.alpha = hovSet ? 0.15 : 1   // 強調中はリボンと選んだパスの線をごく薄く（11-10: 重ねると強調が埋もれた。消すと「リボンが出ない」ように見えた）
       const hovPolys: [number, number, number, number, number, number, number, number][] = []
       for (const n of visibleNodes) {
@@ -1637,7 +1637,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             // 強調は後でまとめて描く（11-11）: 先に全部の黒い縁取り、次に全部をブロックの色で。1 個ずつだと、重なる小さなノードの縁が前のノードの色を塗りつぶして黒い塊になった
             hovPolys.push([cx, cy, cos, sin, hw, hh, inset, fillColor])
           }
-          else if (hovMany) { nodeLayer.lineStyle(0); nodeLayer.beginFill(fillColor, 0.15) }   // 他を薄く
+          else if (hovMany) { nodeLayer.lineStyle(0); nodeLayer.beginFill(0xb4bac2, 1) }   // 他は灰（薄くはしない。11-11）
           else if (isSelected) {
             nodeLayer.lineStyle(2 / zoom, 0xf08c00, 1.0, 0.5, true)
             nodeLayer.beginFill(fillColor === 0x228be6 ? 0x74c0fc : fillColor, 1.0)

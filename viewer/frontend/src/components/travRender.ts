@@ -57,8 +57,14 @@ export function mountTrav(host: HTMLElement, opts: TravOpts, cb: TravCallbacks):
 injectStyle(); host.classList.add('tvpanel'); host.innerHTML = BODY
 const $ = (id: string) => host.querySelector('#tv_' + id) as HTMLElement
 const PARAMS = opts.params ?? new URLSearchParams(''); const SYNC = PARAMS.get('sync') === '1'
+// 範囲に依る要求（行・列・遺伝子・リードなど）は、範囲を変えたら取り消す（11-11: サーバは順番待ちのうちに取り消された要求を計算せずに捨てる）
+let navAC = new AbortController()
+const NAV_FREE = /\/api\/trav\/(root|chroms|atoms|locate|ann)\b/
 async function getJson(url: string): Promise<{ ok: boolean; status: number; json: () => Promise<any> }> {
-  if (!SYNC) return fetch(url)
+  if (!SYNC) {
+    try { return await fetch(url, NAV_FREE.test(url) ? undefined : { signal: navAC.signal }) }
+    catch (e) { if ((e as any)?.name === 'AbortError') return { ok: false, status: 0, json: async () => ({}) }; throw e }
+  }
   const x = new XMLHttpRequest(); x.open('GET', url, false); x.send(null); const txt = x.responseText
   return { ok: x.status >= 200 && x.status < 300, status: x.status, json: async () => JSON.parse(txt) }
 }
@@ -266,6 +272,7 @@ async function loadTReads() {
     treads = { key, x0: j.x0, x1: j.x1, ncol: j.ncol, samples: j.samples, dep: j.dep.map(u16), zf: j.zf ? j.zf.map(u8) : undefined, src: j.src, level: j.level, reads: j.reads, overflow: j.overflow }; draw() } catch { /* 出さない */ }
 }
 async function loadRange() {
+  navAC.abort(); navAC = new AbortController()   // 前の範囲の要求を取り消す
   if (!root) return
   if (navKey && navKey !== viewKey()) { navKey = ''; navNoAuto = false; ($('rung') as HTMLSelectElement).value = 'auto' }   // 範囲が変わった: 段の選択を自動に戻す
   if (restoreRung === 'blocks' || restoreRung === 'cols') { ($('rung') as HTMLSelectElement).value = restoreRung; navKey = viewKey(); navNoAuto = true; restoreRung = null }   // 戻る: 浅い段だったなら自動で降りない
