@@ -177,3 +177,39 @@
 .ui-btn.is-na { background: var(--ui-surface); border-style: dashed; }
 .ui-seg button.is-na { border-style: dashed; }
 .ui-na-note { margin-top: 6px; padding: 6px 8px; border: 1px dashed var(--ui-border-strong); border-radius: var(--ui-radius); font-size: var(--ui-fs-xs); color: var(--ui-muted); line-height: 1.5; }
+
+/* ── 配色（11-11）: データを描く所（グラフ・Traversals の本体）は白のまま、操作の枠に色を付ける ──
+   上部の行＝濃紺、左右の欄・道具の行＝薄い青灰、ボタン＝白で縁と影を強めて浮かせる、選択中＝青で塗る。
+   ?ui=plain で以前の白一色に戻る（index で data-ui を付ける） */
+:root:not([data-ui="plain"]) {
+  --ui-bg: #e9eef5;
+  --ui-panel: #eef2f7;
+  --ui-chrome: #1f2b42;
+  --ui-chrome-2: #2b3a57;
+  --ui-chrome-text: #e8edf6;
+  --ui-border: #d5dce6;
+  --ui-border-strong: #b9c3d1;
+  --ui-hover: #e3e9f2;
+}
+:root[data-ui="plain"] { --ui-panel: var(--ui-surface); --ui-chrome: var(--ui-surface); }
+:root:not([data-ui="plain"]) .ui-btn, :root:not([data-ui="plain"]) .ui-seg { box-shadow: 0 1px 2px rgba(16, 24, 40, 0.10); }
+:root:not([data-ui="plain"]) .ui-btn { border-color: var(--ui-border-strong); }
+:root:not([data-ui="plain"]) .ui-btn.is-on, :root:not([data-ui="plain"]) .ui-seg button.is-on {
+  background: var(--ui-accent); border-color: var(--ui-accent-strong); color: #fff; font-weight: 600;
+}
+:root:not([data-ui="plain"]) .ui-seg { border-color: var(--ui-border-strong); }
+/* 上部の行（header だけ。編集の行など他の .ui-topbar は明るいまま） */
+:root:not([data-ui="plain"]) header.ui-topbar { background: var(--ui-chrome); color: var(--ui-chrome-text); border-bottom-color: #121a2b; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-brand { color: #fff; letter-spacing: 0.08em; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-btn { background: var(--ui-chrome-2); border-color: #42527a; color: var(--ui-chrome-text); box-shadow: none; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-btn:hover { background: #3a4b70; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-btn.is-on { background: var(--ui-accent); border-color: #5b8cf2; color: #fff; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-btn-ghost { background: transparent; border-color: transparent; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-btn-ghost:hover, :root:not([data-ui="plain"]) header.ui-topbar .ui-btn-ghost.is-open { background: var(--ui-chrome-2); }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-iconbtn { color: #b8c3d8; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-iconbtn:hover { background: var(--ui-chrome-2); color: #fff; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-divider { background: #42527a; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-search { border-color: #42527a; }
+:root:not([data-ui="plain"]) header.ui-topbar .ui-menu { color: var(--ui-text); }
+/* 濃紺の上部の行の中でも、白い入力欄の文字は濃く（select は color: inherit なので淡い文字を受け継いで読めなかった） */
+:root:not([data-ui="plain"]) header.ui-topbar .ui-select, :root:not([data-ui="plain"]) header.ui-topbar .ui-input, :root:not([data-ui="plain"]) header.ui-topbar .ui-search, :root:not([data-ui="plain"]) header.ui-topbar .ui-search input, :root:not([data-ui="plain"]) header.ui-topbar .ui-search select { color: var(--ui-text); }

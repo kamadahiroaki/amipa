@@ -1823,7 +1823,7 @@ export default function App() {
           <>
             <div style={{
               width: leftW, flexShrink: 0, overflow: 'hidden',
-              background: 'var(--ui-surface)', borderRight: '1px solid var(--ui-border)',
+              background: 'var(--ui-panel)', borderRight: '1px solid var(--ui-border)',
               display: 'flex', flexDirection: 'column', fontSize: 'var(--ui-fs)', color: 'var(--ui-text)',
             }}>
               {/* 11-06 UI 見直し: 見出し＋単位の選択、絞り込み、操作の行、一覧 */}
@@ -2347,7 +2347,7 @@ export default function App() {
         />
 
         {/* Right panel — node detail */}
-        <div style={{ width: rightW, flexShrink: 0, overflowY: 'auto', background: 'var(--ui-surface)', borderLeft: '1px solid var(--ui-border)' }}>
+        <div style={{ width: rightW, flexShrink: 0, overflowY: 'auto', background: 'var(--ui-panel)', borderLeft: '1px solid var(--ui-border)' }}>
           {rightW > 80 && (
             <>
             {/* リード/アラインメント検索（read_name または aln_id） */}
