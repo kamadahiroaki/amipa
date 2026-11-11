@@ -977,7 +977,7 @@ export default function App() {
   // Surrounding panel sizes (px). Start collapsed so graph fills most of the area.
   const [topH,    setTopH]    = useState(0)
   const [bottomH, setBottomH] = useState(0)
-  const [rightW,  setRightW]  = useState(Math.round(window.innerWidth * 0.18))
+  const [rightW,  setRightW]  = useState(Math.max(120, Math.round(window.innerWidth * 0.09)))   // 11-11: 初期幅を半分に（0.18 → 0.09）
   const [trvH, setTrvH] = useState(() => (new URLSearchParams(window.location.search).get('trav') ? 360 : 0))   // 通過（Traversals）パネルの高さ(0=閉)。?trav=1 で開いて始める
   const pendingHapRef = useRef<string | null>(null)                          // パス群の一覧が届いてから切り替える行
   // 行ラベルのクリック → そのハプロタイプのパス群（リボン）を選択／解除。パスパネルが「なし」なら haplotype 粒度で開く
