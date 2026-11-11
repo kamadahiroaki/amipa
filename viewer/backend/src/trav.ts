@@ -5,6 +5,7 @@
 import Database from 'better-sqlite3'
 import zlib from 'zlib'
 import fs from 'fs'
+import { spawn } from 'child_process'
 import path from 'path'
 import { getDbDir, getDb } from './db'
 import { distillFor } from './routes/bubbleMsa'
@@ -59,6 +60,18 @@ function openSidecar(f: string): Database.Database {
   try { const sz = fs.statSync(f).size; if (SIDECAR_MEM_MAX && sz <= SIDECAR_MEM_MAX) return new Database(fs.readFileSync(f)) } catch { /* 読めなければ普通に開く */ }
   return new Database(f, { readonly: true })
 }
+// 大きな .trav（メモリに読まないもの）は、開く前に頭から順に読み流してページキャッシュに載せる（11-11）。
+//   計算ノードで初めて開くと、全体表示の通過の取得（SQLite の表を広く引く）が Lustre の 4 KB ランダム読みになり、ヒトで 34 秒かかった（2 回目は 3 秒）。
+//   順読みは 1.7〜2.4 GB/s 出るので、6.6 GB を数秒で読み、その後のランダム読みはキャッシュに当たる（reference_hpc_storage.md）。AMIPA_TRAV_PREWARM=0 で止める
+function prewarmSeq(f: string): void {
+  if ((process.env.AMIPA_TRAV_PREWARM ?? '1') === '0') return
+  try {
+    const sz = fs.statSync(f).size; if (sz <= SIDECAR_MEM_MAX) return
+    // 別プロセス（cat）で裏で読み流す。worker は待たない（キャッシュに載っていれば読み流しは無駄になるだけで、要求は遅れない）
+    const t0 = Date.now(); const ch = spawn('cat', [f], { stdio: ['ignore', 'ignore', 'ignore'] })
+    ch.on('exit', () => console.log(`[trav] 先読み ${path.basename(f)} ${(sz / 1e9).toFixed(1)} GB ${Date.now() - t0} ms`)); ch.on('error', () => { /* 無くても開ける */ })
+  } catch { /* 先読みできなくても開ける */ }
+}
 export function loadTrav(dbFile: string): Trav | null {
   const p = travPath(dbFile)
   if (!p) return null
@@ -67,6 +80,7 @@ export function loadTrav(dbFile: string): Trav | null {
   const c = cache.get(p)
   if (c && c.mtime === mtime) return c
   if (c) { try { c.db.close() } catch { /* ignore */ } }
+  prewarmSeq(p)
   const db = openSidecar(p)
   const meta: Record<string, any> = {}
   for (const r of db.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]) { try { meta[r.key] = JSON.parse(r.value) } catch { meta[r.key] = r.value } }
@@ -156,21 +170,29 @@ export function travChroms(t: Trav): { x0: number; x1: number; name: string; ref
 // 占めるので、床を範囲の座標数の 1 割（下限は構築の最小 10）まで下げる。chr202122v2 x 1,085,725–1,085,925 で、HG03492#1 の 2 回目の通過（錨 48）が隠れ、
 // その株にだけあるノードがグラフの絞り込みからも漏れた
 export function effFloor(minAnchors: number, x0: number, x1: number): number { return Math.min(minAnchors, Math.max(10, Math.floor((x1 - x0 + 1) * 0.1))) }
-export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number; minAnchors?: number } = {}): any {
+export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: number; minAnchors?: number; hid?: number } = {}): any {
+  const tm: [string, number][] = []; let tl = Date.now(); const lap = (k: string) => { const n = Date.now(); tm.push([k, n - tl]); tl = n }   // 段ごとの時間（遅いときだけログ）
+  // hid を指定したらその株の通過だけ（11-11: 画面が参照の株の通過だけを要るのに全株・全ゲノムを取り、ヒトで 27 MB の応答になっていた）。反復・コピー・重なりも付けない
+  if (opts.hid != null && Number.isFinite(opts.hid)) {
+    const ma0 = effFloor(opts.minAnchors ?? 0, x0, x1)
+    const one = (t.db.prepare('SELECT * FROM trav WHERE hid = ? AND x0 <= ? AND x1 >= ? ORDER BY pid, i0').all(opts.hid, x1, x0) as TravRow[]).filter(r => r.nanch >= ma0)
+    return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: one, copies: [], reps: [], perHap: { [opts.hid]: one.length }, dups: [] }
+  }
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid, i0').all(x1, x0) as TravRow[]
   const mo = opts.minOverlap ?? 0; const ma = effFloor(opts.minAnchors ?? 0, x0, x1)   // 錨が少ない断片（硬い領域のかけら）は既定で出さない。ヒト v2 は 50 錨未満が 8,964 本で、x≈1.52M の 1 か所に 5,298 本集中
   const out = rows.filter(r => r.nanch >= ma && (mo <= 0 || Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo))
-  try { markRepeats(t, out) } catch (e) { console.warn('[trav/range] markRepeats', e) }
-  const copies = t.db.prepare('SELECT id, pid, hid, x0, x1, ia0, ia1, ib0, ib1, bpa, bpb FROM copies WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid').all(x1, x0) as CopyRow[]
+  lap('rows'); try { markRepeats(t, out) } catch (e) { console.warn('[trav/range] markRepeats', e) }
+  lap('markRepeats'); const copies = t.db.prepare('SELECT id, pid, hid, x0, x1, ia0, ia1, ib0, ib1, bpa, bpb FROM copies WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid').all(x1, x0) as CopyRow[]
   const perHap: Record<number, number> = {}
   for (const r of out) perHap[r.hid] = (perHap[r.hid] || 0) + 1
   // 反復（出現単位: その株で 2 回以上出るノードの連なり）。トークン範囲しか持たないので、同じコンティグの通過の中の位置から座標を補間する
   const reps = t.db.prepare('SELECT r.id, r.pid, r.hid, r.i0, r.i1, r.bp, t.x0 AS tx0, t.x1 AS tx1, t.i0 AS ti0, t.i1 AS ti1, t.dir FROM reps r JOIN trav t ON t.pid = r.pid AND t.i0 <= r.i1 AND t.i1 >= r.i0 WHERE t.x0 <= ? AND t.x1 >= ? AND t.nanch >= ?').all(x1, x0, ma) as any[]
   const repsOut = reps.map(r => { const L = Math.max(1, r.ti1 - r.ti0); const f0 = Math.max(0, Math.min(1, (r.i0 - r.ti0) / L)), f1 = Math.max(0, Math.min(1, (r.i1 - r.ti0) / L)); const [a0, a1] = r.dir >= 0 ? [f0, f1] : [1 - f1, 1 - f0]
     return { id: r.id, pid: r.pid, hid: r.hid, i0: r.i0, i1: r.i1, bp: r.bp, x0: Math.round(r.tx0 + a0 * (r.tx1 - r.tx0)), x1: Math.round(r.tx0 + a1 * (r.tx1 - r.tx0)) } }).filter(r => r.x1 >= x0 && r.x0 <= x1)   // 反復自体が区間に掛かるものだけ（通過が掛かるだけでは不足）
-  try { addContigInfo(t, out) } catch (e) { console.warn('[trav/range] contig info', e) }
-  let dups: Dup[] = []
-  try { dups = [...redundSpans(t).filter(d => d.x1 >= x0 && d.x0 <= x1), ...pieceOverlaps(out.filter(r => r.nanch >= 50 && !(r as any).fill))] } catch (e) { console.warn('[trav/range] dups', e) }
+  lap('copies+reps'); try { addContigInfo(t, out) } catch (e) { console.warn('[trav/range] contig info', e) }
+  lap('contigInfo'); let dups: Dup[] = []
+  try { const rs = redundSpans(t); lap('redund'); dups = [...rs.filter(d => d.x1 >= x0 && d.x0 <= x1), ...pieceOverlaps(out.filter(r => r.nanch >= 50 && !(r as any).fill))] } catch (e) { console.warn('[trav/range] dups', e) }
+  lap('overlaps'); const tot = tm.reduce((a, b) => a + b[1], 0); if (tot > 2000) console.log(`[trav/range] ${x0}-${x1} rows ${out.length} ${tot}ms ` + tm.map(([k, v]) => `${k}=${v}`).join(' '))
   return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: out, copies, reps: repsOut, perHap, dups }
 }
 
