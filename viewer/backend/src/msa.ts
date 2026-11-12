@@ -387,19 +387,25 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   const cellchar = (r: any, c: any, which: string, k_: number | undefined): string => { if (k_ == null) return '-'; const s: string = r[which][k_]; if (c.kind === 'ell') return '~'; const k = c.off; return k < s.length ? s[k] : '-' }
   const firstNon = (s: string) => { for (let i = 0; i < s.length; i++) if (s[i] !== '-' && s[i] !== '~') return i; return -1 }
   const lastNon = (s: string) => { for (let i = s.length - 1; i >= 0; i--) if (s[i] !== '-' && s[i] !== '~') return i; return -1 }
+  // 11-12: 行ごと・列ごとに文字列のキーで occ_at を引いていた（210 行 × 3 万列 × 2 回、全ゲノム BRCA2 1 kb で 1.2 秒）。
+  //   列のキー → 列番号の表を 1 回作り、行ごとには持っている出現だけを列に配る
+  const colsOfKey = new Map<string, number[]>(); cols.forEach((c, ci) => { const a = colsOfKey.get(c._k); if (a) a.push(ci); else colsOfKey.set(c._k, [ci]) })
+  const nC = cols.length; const isEll = new Uint8Array(nC), offOf = new Int32Array(nC); cols.forEach((c, ci) => { isEll[ci] = c.kind === 'ell' ? 1 : 0; offOf[ci] = c.off ?? 0 })
+  const rowStr = (occ: string[], oc: Int32Array) => { const buf = Buffer.allocUnsafe(nC)
+    for (let ci = 0; ci < nC; ci++) { const k = oc[ci]; if (k < 0) { buf[ci] = 45; continue } if (isEll[ci]) { buf[ci] = 126; continue } const s0 = occ[k]; const o = offOf[ci]; buf[ci] = o < s0.length ? s0.charCodeAt(o) : 45 }
+    return buf.toString('latin1') }
+  const padDots = (sq: string) => { const i0 = firstNon(sq); if (i0 < 0) return '.'.repeat(sq.length); const i1 = lastNon(sq); return '.'.repeat(i0) + sq.slice(i0, i1 + 1) + '.'.repeat(sq.length - i1 - 1) }
   for (const r of raw) {
-    const oc_ = cols.map(c => r.occ_at.get(c._k) as number | undefined)
-    const sq = cols.map((c, i) => cellchar(r, c, 'occ', oc_[i])).join('')
-    const i0 = firstNon(sq); if (i0 < 0) r.seq = '.'.repeat(sq.length); else { const i1 = lastNon(sq); r.seq = '.'.repeat(i0) + sq.slice(i0, i1 + 1) + '.'.repeat(sq.length - i1 - 1) }
-    const sqt = cols.map((c, i) => cellchar(r, c, 'occ0', oc_[i])).join(''); const j0 = firstNon(sqt)
-    r.seqt = j0 < 0 ? '.'.repeat(sqt.length) : ('.'.repeat(j0) + sqt.slice(j0, lastNon(sqt) + 1)).padEnd(sqt.length, '.')
+    const oc = new Int32Array(nC).fill(-1); for (const [k, v] of r.occ_at as Map<string, number>) { const cs = colsOfKey.get(k); if (cs) for (const ci of cs) oc[ci] = v }
+    r._ocA = oc; r.seq = padDots(rowStr(r.occ, oc)); r.seqt = padDots(rowStr(r.occ0, oc))
   }
-  if (cols.length) {
+  let ocShift = 0
+  prof('行の文字列'); if (cols.length) {
     let t0 = 0; const hraw = raw.filter(r => !r.rdinfo)
     while (t0 < Math.min(40, cols.length - 1) && hraw.some(r => r.seq[t0] === '.' && !r.ends[0])) t0++
     let t1 = cols.length
     while (t1 - 1 > t0 && cols.length - t1 < 40 && hraw.some(r => r.seq[t1 - 1] === '.' && !r.ends[1])) t1--
-    if (t0 || t1 < cols.length) { cols = cols.slice(t0, t1); for (const r of raw) { r.seq = r.seq.slice(t0, t1); r.seqt = r.seqt.slice(t0, t1) } }
+    if (t0 || t1 < cols.length) { cols = cols.slice(t0, t1); ocShift += t0; for (const r of raw) { r.seq = r.seq.slice(t0, t1); r.seqt = r.seqt.slice(t0, t1) } }
   }
   const leafset = new Set(leaves)
   const isVar = (ci: number) => { const vals = new Set<string>(); for (const r of raw) if (!r.rdinfo) vals.add(r.seq[ci]); vals.delete('~'); vals.delete('.'); return vals.size > 1 }
@@ -410,9 +416,10 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   else { const varidx: number[] = []; cols.forEach((c, ci) => { if (c.variant || isVar(ci)) varidx.push(ci) }); [a, b] = varidx.length ? [Math.max(0, varidx[0] - 3), Math.min(cols.length, varidx[varidx.length - 1] + 4)] : [0, cols.length] }
   const max_cols = opt.cap === 0 ? 0 : MAX_COLS
   if (max_cols && b - a > max_cols) b = a + max_cols
-  cols = cols.slice(a, b); for (const r of raw) { r.seq = r.seq.slice(a, b); r.seqt = r.seqt.slice(a, b) }
+  cols = cols.slice(a, b); ocShift += a; for (const r of raw) { r.seq = r.seq.slice(a, b); r.seqt = r.seqt.slice(a, b) }
   cols.forEach((c, ci) => { const vals = new Set<string>(); for (const r of raw) if (!r.rdinfo) vals.add(r.seq[ci]); vals.delete('~'); vals.delete('.'); c.variant = !!c.variant || vals.size > 1 })
-  for (const r of raw) r._oc = cols.map(c => r.occ_at.get(c._k) as number | undefined)
+  prof('切り詰め'); for (const r of raw) { const A = r._ocA as Int32Array; const o: (number | undefined)[] = new Array(cols.length); for (let ci = 0; ci < cols.length; ci++) { const v = A[ci + ocShift]; o[ci] = v < 0 ? undefined : v } r._oc = o; r._ocA = undefined }
+  prof('_oc')
   // リードの、列に置かれなかった通過（株より多い周回・株に無い経路）を連なりごとに 1 つの印にする（10-29）
   for (const r of raw) {
     if (!r.rdinfo) continue
@@ -432,11 +439,11 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     }
     r.rext = ext
   }
-  // リードだけの挿入を列に対応させる: 格納向きの塩基 k-1 と k の間 → その 2 列の境界。片方しか無いときはある方の列の端
+  prof('リードの印'); // リードだけの挿入を列に対応させる: 格納向きの塩基 k-1 と k の間 → その 2 列の境界。片方しか無いときはある方の列の端
   if (raw.some(r => r.rins && r.rins.length)) for (const r of raw) {
     if (!r.rins || !r.rins.length) continue
-    const so_at = new Map<string, number>()
-    cols.forEach((c, ci) => { const q_ = r._oc[ci]; if (q_ == null) return
+    const so_at = new Map<string, number>(); const qset = new Set((r.rins as any[]).map(x => x[3]))   // 11-12: 挿入のある出現の列だけ（以前は全列 × 全ノード、0.8 秒）
+    cols.forEach((c, ci) => { const q_ = r._oc[ci]; if (q_ == null || !qset.has(q_)) return
       (c.nodes as string[]).forEach((n, j) => { const so_ = c.so; const v = so_ && j < so_.length ? so_[j] : null
         if (c.kind === 'ell') { const k = `${q_}|${n}|ell`; if (!so_at.has(k)) so_at.set(k, ci) } else if (v != null && v >= 0) so_at.set(`${q_}|${n}|${v}`, ci) }) })
     const out_: any[] = []
@@ -453,7 +460,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     }
     r.rins = out_
   }
-  let gseq = -1; let lastKey: string | null = null
+  prof('リードの挿入'); let gseq = -1; let lastKey: string | null = null
   for (const c of cols) { const key = JSON.stringify(c.nodes); if (lastKey !== key) { gseq++; lastKey = key } c.g = gseq }
   const invcols = (r: any) => { const out_: number[][] = []; let st_: number | null = null
     cols.forEach((c, ci) => { const k_ = r._oc[ci]; const f_ = k_ != null && (r.occ_inv[k_] !== ((rc_votes.get(r.seqn[k_]) ?? 0) > 0)); if (f_ && st_ == null) st_ = ci; if (!f_ && st_ != null) { out_.push([st_, ci - 1]); st_ = null } })
@@ -461,13 +468,13 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   // コンティグの主な向きと逆に通る行（cflip）: 行が塩基を持つ列の最初から最後までを 1 本の逆位の帯に
   const ctgInvCols = (r: any) => { let a = -1, b = -1; cols.forEach((_c, ci) => { if (r._oc[ci] != null) { if (a < 0) a = ci; b = ci } }); return a >= 0 ? [[a, b]] : [] }
   const invmaj = (r: any) => { const iv = new Set(r.inv); return [...r.cells.keys()].filter((n: string) => iv.has(n) !== ((rc_votes.get(n) ?? 0) > 0)) }
-  const ord = raw.map((_, i) => i).sort((i, j) => cmpPy([!raw[i].isref, raw[i].seq, raw[i].label], [!raw[j].isref, raw[j].seq, raw[j].label]) || i - j)
+  prof('群の番号'); const ord = raw.map((_, i) => i).sort((i, j) => cmpPy([!raw[i].isref, raw[i].seq, raw[i].label], [!raw[j].isref, raw[j].seq, raw[j].label]) || i - j)
   const rows2 = ord.map(i => raw[i])
   const aid = new Map<string, number>(); let nu = 0; for (const r of rows2) { if (!aid.has(r.seq)) aid.set(r.seq, nu++); r.allele = aid.get(r.seq) }
   const anc = cols.filter(c => c.rb).map(c => [c.rb, c.nodes]); let refname: string | null = null; let minA: any = null
   for (const x of anc) if (minA == null || cmpPy(x, minA) < 0) minA = x
   if (minA) { const n_ = (minA[1] as string[]).find(n => refcid.has(n)); if (n_ != null) { const rr = con.prepare('SELECT name FROM ref_contigs WHERE contig_id=?').get(refcid.get(n_)) as { name: string } | undefined; refname = rr ? rr.name : null } }
-  const pick = (c: any) => { const o: any = {}; for (const k of ['kind', 'nodes', 'g', 'rb', 'variant', 'off', 'bp', 'so', 'nl', 'cp', 'ri']) if (k in c) o[k] = c[k]; return o }
+  prof('並べ替え・アレル'); const pick = (c: any) => { const o: any = {}; for (const k of ['kind', 'nodes', 'g', 'rb', 'variant', 'off', 'bp', 'so', 'nl', 'cp', 'ri']) if (k in c) o[k] = c[k]; return o }
   return { name: label, bp: minA ? minA[0] : null, refname, nrow: rows2.length, nallele: nu, scan: { leaves: leaves.length, contigs: pis.length, tokens: ntokAll },
     cols: cols.map(pick),
     rows: rows2.map(r => ({ samp: r.samp, label: r.label, path: r.path, strand: r.strand, seq: r.seq, isref: r.isref, allele: r.allele, inv: invmaj(r), invc: r.cflip ? ctgInvCols(r) : invcols(r), cinv: !!r.cflip, hseq: r.hseq ?? '', read: r.rdinfo,
