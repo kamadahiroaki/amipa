@@ -635,6 +635,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
 
 // 11-12: 索引 <db>.genex とタイル <db>.xtiles から（.genes・distill・全ゲノムの配列を読まない）。遺伝子の座標は前計算（gene_x: 両端 1,500 トークンの錨）、
 //   オルソログ群の材料（遺伝子の錨）・子の座標・ノード名は窓のタイルのトークンから。窓の外のトークンは無いので、子の座標はそこだけ比例で補う
+const LOF_ST = ['ok', 'fs', 'trunc', 'nostart', 'nocds']
 function travGenesX(t: Trav, G: ReturnType<typeof openGeneX> & object, x0: number, x1: number, minAnchors: number, withNodes: boolean): any {
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
   const est = genexCount(G, x0, x1, GENES_MAX); if (est > GENES_MAX) return { tooMany: true, n: est, max: GENES_MAX, genes: [] }   // 通過を読む前に断る
@@ -686,7 +687,9 @@ function travGenesX(t: Trav, G: ReturnType<typeof openGeneX> & object, x0: numbe
         }
         if (per.size) { ch = []; for (const [kind, iv] of per) { iv.sort((u, v) => u[0] - v[0]); let cur: [number, number] | null = null; for (const [lo, hi] of iv) { if (cur && lo <= cur[1] + 1) cur[1] = Math.max(cur[1], hi); else { if (cur) ch.push([kind, cur[0], cur[1]]); cur = [lo, hi] } } if (cur) ch.push([kind, cur[0], cur[1]]) } }
       }
-      out.push({ proj: g.proj ?? null, frac: g.frac ?? 1, gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: !!g.anchored, og: -1, ch, nodes: nodesOut })
+      // 機能喪失の目安（前計算、genelof_build.py）。/genelof と同じ形 { st, aa, ref, src }
+      const lof = g.lof_st != null ? { st: LOF_ST[g.lof_st] ?? 'ok', aa: g.lof_aa ?? undefined, ref: g.lof_ref ?? null, src: g.proj ?? null } : undefined
+      out.push({ proj: g.proj ?? null, frac: g.frac ?? 1, gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: !!g.anchored, og: -1, ch, nodes: nodesOut, lof })
       geneAnch.push(acc)
     }
   }
@@ -703,6 +706,8 @@ function genesGroups(out: any[], geneAnch: number[][], rows: TravRow[], hasProj:
   const NG = out.length; const kinds = out.map(kindOf); const nA = geneAnch.map(a => a.length)
   const shared = new Map<number, number>()   // i * NG + j（i < j）→ 共有する錨の数
   for (const lst of byNode.values()) { if (lst.length < 2 || lst.length > 400) continue
+    // 11-12: このノードを持つ遺伝子がもう全部同じ群なら、組を数えない（同じ群の組は数えても結果が変わらない。1 ノードに 90 株の写しが並ぶと 4,000 組をなめていた）
+    { const r0 = find(lst[0]); let all = true; for (let q = 1; q < lst.length; q++) if (find(lst[q]) !== r0) { all = false; break } if (all) continue }
     for (let a = 0; a < lst.length; a++) for (let b = a + 1; b < lst.length; b++) { let i = lst[a], j = lst[b]; if (i === j || out[i].hid === out[j].hid && out[i].tr === out[j].tr) continue
       if (kinds[i] !== kinds[j]) continue; const ri = find(i), rj = find(j); if (ri === rj) continue
       if (i > j) { const tmp = i; i = j; j = tmp } const key = i * NG + j; const n = (shared.get(key) || 0) + 1; shared.set(key, n)

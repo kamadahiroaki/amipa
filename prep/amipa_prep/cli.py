@@ -585,7 +585,9 @@ def build_stages(b: Bundle, a) -> dict:
              # 11-12: 遺伝子検索の索引（1 遺伝子 1 行の要約・検索語・写しの座標）。viewer は検索で .genes を読まない
              [py, str(PKG / "gsearch_build.py"), str(b.genes) + ".tmp", str(b.trav), str(b.gsearch) + ".tmp"],
              # 11-12: 遺伝子レーンの索引（合意座標の階層ビンに遺伝子と子を並べる）。viewer の /genes は .genes を読まない
-             [py, str(PKG / "genex_build.py"), str(b.genes) + ".tmp", str(b.trav), str(b.genex) + ".tmp"],
+             # 11-12: 遺伝子の写しごとの機能喪失の目安（CDS を組み立てて翻訳）を前計算し、genex の行に入れる
+             [py, str(PKG / "genelof_build.py"), str(b.genes) + ".tmp", str(b.distill), str(b.work / "genelof.npz")],
+             [py, str(PKG / "genex_build.py"), str(b.genes) + ".tmp", str(b.trav), str(b.genex) + ".tmp", "--lof", str(b.work / "genelof.npz")],
              ["mv", "-f", str(b.genes) + ".tmp", str(b.genes)],
              ["mv", "-f", str(b.gsearch) + ".tmp", str(b.gsearch)],
              ["mv", "-f", str(b.genex) + ".tmp", str(b.genex)]],
