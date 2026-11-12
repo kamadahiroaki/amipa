@@ -637,9 +637,9 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
 //   オルソログ群の材料（遺伝子の錨）・子の座標・ノード名は窓のタイルのトークンから。窓の外のトークンは無いので、子の座標はそこだけ比例で補う
 function travGenesX(t: Trav, G: ReturnType<typeof openGeneX> & object, x0: number, x1: number, minAnchors: number, withNodes: boolean): any {
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
+  const est = genexCount(G, x0, x1, GENES_MAX); if (est > GENES_MAX) return { tooMany: true, n: est, max: GENES_MAX, genes: [] }   // 通過を読む前に断る
   const src = windowSource(t, x0, x1, minAnchors); if ('error' in src) return { error: src.error, genes: [] }
   const rows = src.rows; const T0 = Date.now()
-  const est = genexCount(G, x0, x1); if (est > GENES_MAX) return { tooMany: true, n: est, max: GENES_MAX, genes: [] }
   const byPid = new Map<number, any[]>(); for (const g of genexRows(G, x0, x1)) { const a = byPid.get(g.pid); if (a) a.push(g); else byPid.set(g.pid, [g]) }
   for (const a of byPid.values()) a.sort((p, q) => p.s0 - q.s0)
   const idf = idOf(t); const xt = t.xt!; const tA = x0 >> xt.S; let tiles: ReturnType<typeof readTiles> | null = null

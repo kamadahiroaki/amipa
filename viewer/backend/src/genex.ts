@@ -17,13 +17,14 @@ export function openGeneX(travFile: string, genesFile: string | null): GeneX | n
       const okG = !genesFile || String(fs.statSync(genesFile).size) === m.genes_size, okT = String(fs.statSync(travFile).size) === m.trav_size
       if (!okG || !okT) { console.log(`[genex] ${f} は .genes／.trav と合わない（作り直しが要る）`); db.close() }
       else r = { db, shifts: JSON.parse(m.shifts), offsets: JSON.parse(m.offsets), hasProj: m.has_proj === '1',
-        q: db.prepare('SELECT * FROM g_b WHERE bin BETWEEN ? AND ? AND x0 <= ? AND x1 >= ?'), qn: db.prepare('SELECT count(*) AS n FROM g_b WHERE bin BETWEEN ? AND ? AND x0 <= ? AND x1 >= ?') }
+        q: db.prepare('SELECT * FROM g_b WHERE bin BETWEEN ? AND ? AND x0 <= ? AND x1 >= ?'), qn: db.prepare('SELECT count(*) AS n FROM (SELECT 1 FROM g_b WHERE bin BETWEEN ? AND ? AND x0 <= ? AND x1 >= ? LIMIT ?)') }
     } catch (e) { console.log('[genex] ' + String(e)); r = null }
   }
   opened.set(travFile, r); return r
 }
-export function genexCount(G: GeneX, x0: number, x1: number): number {
-  let n = 0; G.shifts.forEach((s, L) => { const o = G.offsets[L]; n += (G.qn.get(o + (x0 >> s), o + (x1 >> s), x1, x0) as { n: number }).n }); return n
+/** 窓の遺伝子の数。cap を超えたら数えるのをやめる（全体表示で 550 万行を数えていた） */
+export function genexCount(G: GeneX, x0: number, x1: number, cap = Infinity): number {
+  let n = 0; for (let L = 0; L < G.shifts.length && n <= cap; L++) { const s = G.shifts[L], o = G.offsets[L]; n += (G.qn.get(o + (x0 >> s), o + (x1 >> s), x1, x0, Number.isFinite(cap) ? cap - n + 1 : -1) as { n: number }).n } return n
 }
 export function genexRows(G: GeneX, x0: number, x1: number): any[] {
   const out: any[] = []; G.shifts.forEach((s, L) => { const o = G.offsets[L]; for (const r of G.q.all(o + (x0 >> s), o + (x1 >> s), x1, x0)) out.push(r) }); return out
