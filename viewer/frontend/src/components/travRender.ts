@@ -43,7 +43,7 @@ export interface TravCallbacks {
   onHoverNodes?: (names: string[] | null) => void                              // 塩基の段でホバーしたノード（グラフで強調）
   onRange?: (v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null) => void   // 表示範囲のノードと色（ブロックの色相）。hide＝範囲外を隠す（集合は葉の名前）。direct＝名前はグラフが描いている層のもの（そのまま薄灰の判定に使う）。fitNames＝寄せる先（葉の名前）
   getVisibleNames?: () => string[]                                             // 主画面のグラフに見えているノード名（広い範囲での塗り分けに使う）
-  getVisibleNodes?: () => { name: string; x: number; y: number }[]           // 同じノードの画面上の位置（world 座標。全体図の山とグラフ側の札の位置）
+  getVisibleNodes?: () => { name: string; x: number; y: number; loc?: { x: number; kind: number; frac?: number; xmin?: number; xmax?: number } }[]           // 同じノードの画面上の位置（world 座標。全体図の山とグラフ側の札の位置）
   getGraphViewport?: () => { x1: number; x2: number; y1: number; y2: number } | null   // グラフの表示範囲（world。全体図の「中央を重く」）
   onPeaks?: (peaks: OvPeak[] | null) => void                                   // 全体図の山（文字つき）→ グラフ側の札
   onPeakHover?: (letter: string | null, names: string[] | null, color?: number | null) => void        // 全体図で山にカーソル → グラフでその山のノードを強調（color ＝ブロックの色。11-11）
@@ -358,6 +358,10 @@ const locCache = new Map<string, LocNode>(); let locHasFill = false
 // 11-12: 問い合わせ中の名前（名前 → その要求の Promise）。全体図の山（refreshOverview）とグラフ連動（rangeByLocate）が同じ名前を同時に投げ、
 //   サーバの 1 本の列に同じ計算が 2 本積まれていた。問い合わせ中の名前は投げずにその返事を待つ
 const locInflight = new Map<string, Promise<void>>()
+// 11-12: グラフの /nodes に合意座標が載っていれば（<db>.tiledx）、問い合わせずに覚える。locate はそれが無い名前だけ
+function prefillLoc(vis?: { name: string; loc?: { x: number; kind: number; frac?: number; xmin?: number; xmax?: number } }[]) {
+  const v = vis ?? cb.getVisibleNodes?.() ?? []; for (const n of v) if (n.loc && !locCache.has(n.name)) { locCache.set(n.name, { name: n.name, ...n.loc }); if (n.loc.kind === 6) locHasFill = true }
+}
 // グラフを動かすたびの問い合わせは、次に動かした時点で取り消す（サーバも実行中の計算を止める）。検索・名前で開くなどの 1 回きりの問い合わせは取り消さない
 let locAC = new AbortController()
 async function locateMany(names: string[], signal?: AbortSignal): Promise<{ nodes: LocNode[]; hasFill: boolean } | null> {
@@ -405,7 +409,7 @@ let ovReq = 0
 async function refreshOverview(signal?: AbortSignal): Promise<OvPeak[]> {
   if (!root || !cb.getVisibleNodes) return []
   const my = ++ovReq; const vis = cb.getVisibleNodes(); if (!vis.length) { lastPeaks = []; ovw.setPoints([], [], 'グラフに見えているノードが無い'); cb.onPeaks?.(null); return [] }
-  const j = await locateMany(vis.map(v => v.name), signal); if (!j || my !== ovReq) return lastPeaks
+  prefillLoc(vis); const j = await locateMany(vis.map(v => v.name), signal); if (!j || my !== ovReq) return lastPeaks
   const vp = ovw.centerWeighted() && cb.getGraphViewport ? cb.getGraphViewport() : null
   const cx = vp ? (vp.x1 + vp.x2) / 2 : 0, cy = vp ? (vp.y1 + vp.y2) / 2 : 0, hw = vp ? Math.max(1e-12, (vp.x2 - vp.x1) / 2) : 1, hh = vp ? Math.max(1e-12, (vp.y2 - vp.y1) / 2) : 1
   const pts: OvPoint[] = []; let nNo = 0, nWide = 0
@@ -439,7 +443,7 @@ async function rangeByLocate(my: number, fitNames?: string[], signal?: AbortSign
   if (!cb.onRange || !root) return
   const names = cb.getVisibleNames ? cb.getVisibleNames() : []
   if (!names.length) { if (fitNames) cb.onRange({ names: [], colors: [], fit: false, hide: false, direct: true, fitNames }); return }
-  const j = await locateMany(names.slice(0, 120000), signal)
+  prefillLoc(); const j = await locateMany(names.slice(0, 120000), signal)
   if (!j || my !== loading) return
   // スーパーノード（kind −2）は、多数派の座標が範囲の外でも、子孫の座標の張り（xmin–xmax）が範囲に掛かれば、範囲に寄せた座標の色で塗る
   // （10-28: 範囲の祖先として絞り込みに入るのに、多数派が隣の区間にあるだけで 4 割が灰になった。ecoli 原子 149–155）

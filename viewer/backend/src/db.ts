@@ -116,12 +116,29 @@ function attachTiled(db: Database.Database, dbPath: string): void {
     try {
       if (!fs.existsSync(p)) continue
       db.prepare('ATTACH DATABASE ? AS tl').run(p)
+      attachTiledX(db, p)
       return
     } catch (e) {
       console.warn('tiled attach failed (R-Tree 経路で続行):', p, String(e))
       return
     }
   }
+}
+
+// 11-12: タイルと同じ鍵 (layer, mkey, id) でノードの合意座標を持つサイドカー `<db>.tiledx`（prep/amipa_prep/tiled_x.py）を tq として ATTACH。
+//   /nodes（タイル経路）がノードと一緒に合意座標を返すので、Traversals の locate がスーパーノードを名前で 1 件ずつ引かなくてよい。
+//   .tiled と大きさが合わない（作り直した）なら付けない。AMIPA_TILEDX=0 で付けない
+function attachTiledX(db: Database.Database, tiledPath: string): void {
+  if ((process.env.AMIPA_TILEDX ?? '1') === '0') return
+  const p = tiledPath.replace(/\.tiled$/, '.tiledx'); if (!fs.existsSync(p)) return
+  try {
+    db.prepare('ATTACH DATABASE ? AS tq').run(p)
+    const m = db.prepare("SELECT value FROM tq.meta WHERE key='tiled_size'").get() as { value: string } | undefined
+    if (!m || m.value !== String(fs.statSync(tiledPath).size)) { console.warn('tiledx は .tiled と合わない（作り直しが要る）:', p); db.prepare('DETACH DATABASE tq').run() }
+  } catch (e) { console.warn('tiledx attach failed:', p, String(e)) }
+}
+export function hasTiledX(db: Database.Database): boolean {
+  try { return !!db.prepare("SELECT 1 FROM pragma_database_list WHERE name='tq'").get() } catch { return false }
 }
 
 export const READS_SUFFIX = '.reads'

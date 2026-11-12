@@ -20,7 +20,7 @@ interface Props {
   hapMarks?: Map<string, string>                    // 主画面で選択中のパス群（ハプロタイプ名 → 色）→ 行ラベルの丸
   onRange?: (v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null) => void   // 表示範囲のノードと色（塗る・範囲外を薄灰か非表示・fitNames があれば寄せる）
   getVisibleNames?: () => string[]                  // グラフに見えているノード名（広い範囲の塗り分け）
-  getVisibleNodes?: () => { name: string; x: number; y: number }[]   // 同じノードの位置（全体図の山・グラフ側の札）
+  getVisibleNodes?: () => { name: string; x: number; y: number; loc?: { x: number; kind: number; frac?: number; xmin?: number; xmax?: number } }[]   // 同じノードの位置（全体図の山・グラフ側の札）。loc＝/nodes に載った合意座標（11-12）
   getGraphViewport?: () => { x1: number; x2: number; y1: number; y2: number } | null
   onPeaks?: (peaks: OvPeak[] | null) => void        // 全体図の山（文字つき）
   onPeakHover?: (letter: string | null, names: string[] | null, color?: number | null) => void

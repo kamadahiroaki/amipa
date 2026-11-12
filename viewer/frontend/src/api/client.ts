@@ -26,6 +26,9 @@ export interface NodeData {
   band_id?: number | null         // ギムザバンド id（band_dict で名前/gie_stain→色）
   gene_count?: number | null      // このノードに重なる distinct 遺伝子数（粗ズームの密度表示用）
   region_class?: number | null    // 領域クラス id（region_dict で名前へ; CHM13 セントロ等）
+  // 11-12: Traversals の合意座標（<db>.tiledx がある DB の /nodes だけ）。/trav/locate と同じ値: tx 座標（無ければ -1）・tk 種類（−2 スーパーノード、6 錨でない葉）・
+  //   tf 多数派の割合・ta/tb 子孫の座標の張り（スーパーノードのみ）
+  tx?: number | null; tk?: number | null; tf?: number | null; ta?: number | null; tb?: number | null
 }
 
 export interface EdgeData {

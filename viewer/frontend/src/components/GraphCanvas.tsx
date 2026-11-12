@@ -22,6 +22,8 @@ export const PATH_COLORS = [
 ]
 
 // 1本のリボン = ある群が現在 layer で通過する super-node の中心列（x 昇順）。
+// 画面に見えているノード（Traversals へ渡す）。loc ＝ /nodes に載ってきた合意座標（<db>.tiledx。無ければ undefined → Traversals が /trav/locate で引く）
+export interface VisNode { name: string; x: number; y: number; loc?: { x: number; kind: number; frac?: number; xmin?: number; xmax?: number } }
 export interface RibbonData {
   color: number
   label?: string   // 凡例用ラベル(= ribbonSel のユニット名 sample/hap/contig)
@@ -243,7 +245,7 @@ export interface GraphCanvasHandle {
   fitBounds: (minx: number, miny: number, maxx: number, maxy: number, targetLayer?: number) => void
   fitSub: () => void   // 絞りモード: 次に届く部分グラフ（範囲のノード）に寄せる（外れ値を除いた矩形）
   getVisibleNames: () => string[]   // 今描いているノードの名前（Traversals の「グラフの範囲を開く」）
-  getVisibleNodes: () => { name: string; x: number; y: number }[]   // 同じノードの world 座標（Traversals の全体図の山・札の位置）
+  getVisibleNodes: () => VisNode[]   // 同じノードの world 座標（Traversals の全体図の山・札の位置）。合意座標があれば loc（11-12）
   getSelectedNodes: () => NodeData[]
   // フェッチ済み(可視)サブグラフ上で A,B 間のノード名を返す(source/sink なら bubble 内部)。DB 非依存・即時。
   nodesBetween: (a: string, b: string) => string[]
@@ -686,8 +688,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     getVisibleNames: () => visibleNodesRef.current.map(n => n.node_name).slice(0, 120000),
     // 画面に見えているノード（11-05）: 表示範囲（ミニマップの赤い枠と同じ）にかかるものだけ。visibleNodesRef は描画のために読んだタイルの全ノードで、
     //   画面の外のタイル 1 枚分（表示幅の約 0.4 倍）まで含み、Traversals の全体図の山が画面の外の染色体まで数えていた
-    getVisibleNodes: () => { const v = getViewportRef.current?.(); const out: { name: string; x: number; y: number }[] = []
-      for (const n of visibleNodesRef.current) { if (v) { const r = n.radius || 0; if (n.xCoord + r < v.x1 || n.xCoord - r > v.x2 || n.yCoord + r < v.y1 || n.yCoord - r > v.y2) continue } out.push({ name: n.node_name, x: n.xCoord, y: n.yCoord }); if (out.length >= 120000) break }
+    getVisibleNodes: () => { const v = getViewportRef.current?.(); const out: VisNode[] = []
+      for (const n of visibleNodesRef.current) { if (v) { const r = n.radius || 0; if (n.xCoord + r < v.x1 || n.xCoord - r > v.x2 || n.yCoord + r < v.y1 || n.yCoord - r > v.y2) continue }
+        out.push(n.tx != null ? { name: n.node_name, x: n.xCoord, y: n.yCoord, loc: { x: n.tx, kind: n.tk ?? -1, frac: n.tf ?? undefined, xmin: n.ta ?? undefined, xmax: n.tb ?? undefined } } : { name: n.node_name, x: n.xCoord, y: n.yCoord }); if (out.length >= 120000) break }
       return out },   // 描画のたびに更新される配列から（visibleNamesRef は編集のドラッグ時にしか入らない）
     getSelectedNodes: () => getSelectedNodesRef.current?.() ?? [],
     nodesBetween: (a, b) => nodesBetweenRef.current?.(a, b) ?? [],

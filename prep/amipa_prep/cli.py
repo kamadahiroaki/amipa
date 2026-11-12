@@ -252,6 +252,7 @@ class Bundle:
         self.distill = Path(str(self.db) + ".distill")
         self.annot = Path(str(self.db) + ".annot")
         self.tiled = Path(str(self.db) + ".tiled")     # 描画用タイル索引（tile_index.py）
+        self.tiledx = Path(str(self.db) + ".tiledx")   # タイルと同じ鍵のノードの合意座標（tiled_x.py、11-12）
         self.trav = Path(str(self.db) + ".trav")       # Traversals の錨・座標・通過（trav_build.py ほか）
         self.travx = Path(str(self.db) + ".travx")     # 範囲の索引と配列ファイル .travx.arr（trav_xindex.py、11-12）
         self.xtiles = Path(str(self.db) + ".xtiles")   # 通過のトークンのタイル（trav_xtiles.py、11-12）
@@ -677,10 +678,12 @@ def build_stages(b: Bundle, a) -> dict:
     #   最も遅い範囲で 17 倍、Reads 幅の葉層は 12〜17 秒 → 30ms（2026-08-27）。DB 本体は不変。
     #   reads の後に置く（rs を焼くため）。入力に reads を含めるので、リードを足すと作り直される。
     if not getattr(a, "no_tiled", False):
+        # 11-12: Traversals があれば、タイルと同じ鍵 (layer, mkey, id) でノードの合意座標を並べる（/nodes が座標を一緒に返し、locate が要らなくなる）
+        txcmd = [[py, str(PKG / "tiled_x.py"), str(b.tiled), str(b.trav), str(b.distill), str(b.tiledx) + ".tmp"], ["mv", "-f", str(b.tiledx) + ".tmp", str(b.tiledx)]] if "trav" in st else []
         st["tiled"] = Stage(
             "tiled",
-            [[py, str(PKG / "tile_index.py"), str(b.db), "--force"]],
-            inputs=[b.db] + ([b.reads_dir] if a.reads else []), outputs=[b.tiled], env=thread_env(1),
+            [[py, str(PKG / "tile_index.py"), str(b.db), "--force"]] + txcmd,
+            inputs=[b.db] + ([b.reads_dir] if a.reads else []) + ([b.trav] if "trav" in st else []), outputs=[b.tiled] + ([b.tiledx] if "trav" in st else []), env=thread_env(1),
             note="描画用タイル索引（Z-order clustered サイドカー。空間索引・hap マスク・辺の hb/rs）",
         )
 

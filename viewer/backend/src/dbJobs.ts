@@ -7,7 +7,7 @@ import type { Database, Statement } from 'better-sqlite3'
 import { guardedAll, guardedFold, cappedCount, FETCH_MS, PROBE_CAP, HARD_ROW_CAP, type GuardResult } from './fetchGuard'
 import { buildSelection, maskWhere, exactFilterRowids, hapIdxEdgeOk, hapIdxInfo, type Selection } from './hapidx'
 import path from 'path'
-import { dbBytes, HUGE_DB_BYTES, readsSchema } from './db'
+import { dbBytes, HUGE_DB_BYTES, readsSchema, hasTiledX } from './db'
 import { spatialSource, spatialCount } from './spatial'
 import { tiledInfo, TILED_OFF, zranges, buildTiledNodesSql, tiledNodesParams, tiledNodeMask,
          buildTiledEdgesSql, rangesParams } from './tiled'
@@ -254,7 +254,7 @@ function nodesViewport(d: Database, job: Extract<QueryJob, { kind: 'nodes' }>, c
     if (ti && tm && L < ti.g.length) {
       const rg = zranges(job.x1, job.x2, job.y1, job.y2, ti.g[L])
       const fa = (wantAttr.band || wantAttr.region || wantAttr.gene) ? fastAnnotSel(d, wantAttr, 'n', 'id') : null
-      const g = ctx.guard(d.prepare(buildTiledNodesSql(rg.length, tm.sql, fa && fa.sel ? fa : null)),
+      const g = ctx.guard(d.prepare(buildTiledNodesSql(rg.length, tm.sql, fa && fa.sel ? fa : null, hasTiledX(d))),
         tiledNodesParams(rg, L, job.x1, job.x2, job.y1, job.y2, tm.params), gopt)
       return done(g, post(g.rows as any[]))
     }

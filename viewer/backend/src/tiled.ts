@@ -100,15 +100,18 @@ const NODE_SEL = `n.id AS id, n.name AS node_name, n.x AS xCoord, n.y AS yCoord,
          n.kind AS kind, n.hb AS hb, n.ref_bp AS ref_bp, n.ref_bp_end AS ref_bp_end, n.ref_contig_id AS ref_contig_id,
          n.is_anchor AS is_anchor, n.ref_multi AS ref_multi, n.ref_strand AS ref_strand, n.layer AS layer`
 const RECT = 'n.x+n.r>=? AND n.x-n.r<=? AND n.y+n.r>=? AND n.y-n.r<=?'
-export function buildTiledNodesSql(nRanges: number, maskSql: string, annot: { sel: string; join: string } | null): string {
+export function buildTiledNodesSql(nRanges: number, maskSql: string, annot: { sel: string; join: string } | null, withX = false): string {
   const asel = annot?.sel ?? '', ajoin = annot?.join ?? ''
+  // 11-12: <db>.tiledx（tq）があれば、同じ鍵で合意座標を相乗りさせる（タイルと同じ並びなので連続した読み）
+  const xsel = withX ? ', q.tx AS tx, q.tk AS tk, q.tf AS tf, q.ta AS ta, q.tb AS tb' : ''
+  const xj = (mk: string) => withX ? ` LEFT JOIN tq.nx q ON q.layer=n.layer AND q.mkey=${mk} AND q.id=n.id` : ''
   return `${rangesCte(nRanges)}
-  SELECT ${NODE_SEL}${asel}
-  FROM rg CROSS JOIN tl.nodes_t n ON n.layer=? AND n.mkey BETWEEN rg.a AND rg.b${ajoin}
+  SELECT ${NODE_SEL}${asel}${xsel}
+  FROM rg CROSS JOIN tl.nodes_t n ON n.layer=? AND n.mkey BETWEEN rg.a AND rg.b${ajoin}${xj('n.mkey')}
   WHERE ${RECT}${maskSql}
   UNION ALL
-  SELECT ${NODE_SEL}${asel}
-  FROM tl.nodes_big n${ajoin}
+  SELECT ${NODE_SEL}${asel}${xsel}
+  FROM tl.nodes_big n${ajoin}${xj('-1')}
   WHERE n.layer=? AND ${RECT}${maskSql}`
 }
 /** buildTiledNodesSql のパラメータ: [範囲..., L, 矩形, マスク..., L, 矩形, マスク...] */
