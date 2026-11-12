@@ -12,6 +12,7 @@ import { distillFor } from './routes/bubbleMsa'
 import { openDistill, Distill } from './distill'
 import { checkCancel } from './travCancel'
 import { openTravX, binQuery, bpAt, nleafX, denseSlice, type TravX } from './travx'
+import { openXTiles, readTiles, rowTokens, forEachRowToken, type XTiles } from './xtiles'
 import { bubbleMsaRanges } from './msa'
 import { readsSourceFor } from './msaReads'
 
@@ -39,6 +40,7 @@ export interface Trav {
   dbFile: string
   genesDb?: Database.Database | null   // <db>.genes（遺伝子レーン用。無ければ null）
   xOfDense?: Int32Array; kindOfDense?: Uint8Array; bpOfDense?: Int32Array; dist?: Distill | null   // 錨の列（travCols）用。初回に読む
+  xt?: XTiles | null  // 11-12: 通過のトークンのタイル <db>.xtiles（あれば cols・nodeset は配列を引かずにこれを読む）
   tx?: TravX | null   // 11-12: 範囲の索引 <db>.travx（あれば xbp を読み込まず、/range・/root・/nleaf・/nodes はこれを引く）
 }
 
@@ -96,7 +98,7 @@ export function loadTrav(dbFile: string): Trav | null {
   let xbp = new Float64Array(0)
   if (xb) { const big = new BigInt64Array(xb.blob.buffer, xb.blob.byteOffset, xb.blob.byteLength / 8); xbp = new Float64Array(big.length); for (let i = 0; i < big.length; i++) xbp[i] = Number(big[i]) }
   const hapPaths: number[][] = haps.map(() => []); for (const r of paths) hapPaths[r.hid].push(r.pid)
-  const t: Trav = { file: p, mtime, db, meta, H: haps.length, R: Number(meta.R ?? xbp.length - 1), haps, paths, atoms, bounds, xbp, hapPaths, dbFile, tx }
+  const t: Trav = { file: p, mtime, db, meta, H: haps.length, R: Number(meta.R ?? xbp.length - 1), haps, paths, atoms, bounds, xbp, hapPaths, dbFile, tx, xt: tx ? openXTiles(p) : null }
   cache.set(p, t)
   return t
 }
@@ -474,14 +476,31 @@ function idMapOf(t: Trav): BigInt64Array {
   const arr = im ? new BigInt64Array(im.blob.buffer.slice(im.blob.byteOffset, im.blob.byteOffset + im.blob.byteLength)) : new BigInt64Array(0)
   ;(t as any).__idmap = arr; return arr
 }
-export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAnchors = 50): any {
-  const T00 = Date.now()
+// 窓の通過と、通過ごとの窓のトークンの読み手（11-12）。タイル（.xtiles）と索引（.travx）があればそれを、無ければ distill と全ゲノムの配列（従来）
+type TokFn = (d: number, isA: boolean, xa: number, ti: number, bp: number) => void
+interface WinSrc { rows: TravRow[]; each: (r: TravRow, fn: TokFn) => number; leafKey: (d: number) => number }
+function windowSource(t: Trav, x0: number, x1: number, minAnchors: number): WinSrc | { error: string } {
+  const floor = effFloor(minAnchors, x0, x1)
+  if (t.tx && t.xt) {
+    const rows = txRows(t, x0, x1).filter(r => r.nanch >= floor).sort((a, b) => a.hid - b.hid || a.pid - b.pid || a.i0 - b.i0)
+    const xt = t.xt; const tA = x0 >> xt.S; let tiles: ReturnType<typeof readTiles> | null = null
+    return { rows, leafKey: d => d, each: (r, fn) => { if (!tiles) tiles = readTiles(xt, tA, x1 >> xt.S); const T = rowTokens(xt, tiles, tA, r.id); forEachRowToken(T, r.dir, x0, x1, fn); return T.n } }
+  }
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
   const X = t.xOfDense!, K = t.kindOfDense!, BP = t.bpOfDense!, dist = t.dist!
+  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, floor) as TravRow[]
+  try { markRepeats(t, rows) } catch (e) { console.warn('[trav/cols] markRepeats', e) }
+  return { rows, leafKey: d => d, each: (r, fn) => {
+    // distill のパス番号: .trav の pid は distill の p_names の順（構築器が同じ順で読む）。名前で引くと重複した名前（ヒト v2 の分割された W 行）で別のパスに当たる
+    const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) return 0
+    const wt = windowTokens(t, r, pi, x0, x1); forEachWindowToken(r, wt.toks, wt.s0, x0, x1, X, K, (d, isA, xa, ti) => fn(d, isA, xa, ti, BP[d])); return wt.nread } }
+}
+export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAnchors = 50): any {
+  const T00 = Date.now()
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); const W = x1 - x0 + 1; if (W <= 0) return { error: 'empty' }
   ncol = Math.max(1, Math.min(W, Math.floor(ncol) || 1))
-  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, effFloor(minAnchors, x0, x1)) as TravRow[]
-  try { markRepeats(t, rows) } catch (e) { console.warn('[trav/cols] markRepeats', e) }
+  const src0 = windowSource(t, x0, x1, minAnchors); if ('error' in src0) return { error: src0.error }
+  const src = src0; const rows = src.rows
   // 読む量の見積もり: 通過のうち窓に掛かる割合（x が錨の番号に比例するとして）× トークン数 ＋ 余白。ヒトは 1 通過が 100 万トークンなので全長で数えると小さな窓でも断ってしまう
   let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
   if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, x0, x1 }
@@ -489,21 +508,18 @@ export function travCols(t: Trav, x0: number, x1: number, ncol: number, minAncho
   const nanch = new Uint16Array(ncol); for (let c = 0; c < ncol; c++) { const a = Math.ceil(c * W / ncol), b = Math.ceil((c + 1) * W / ncol); nanch[c] = Math.min(65535, Math.max(0, b - a)) }
   type RowOut = { id: number; pid: number; hid: number; dir: number; copy: number; rep?: boolean; tw0: number; tw1: number; pres: Uint8Array; cls: Uint8Array; ins: Uint16Array; bpc: Uint32Array; h1: Uint32Array; h2: Uint32Array; has: Uint8Array; frq: Uint8Array }
   const outs: RowOut[] = []
-  const T0 = Date.now(); let tRead = 0, tMix = 0, nread = 0
-  const leafSeen = new Uint8Array(X.length); let nleafW = 0
+  const T0 = Date.now(); const tRead = 0; let tMix = 0, nread = 0
+  const leafSeen = new Set<number>(); let nleafW = 0
   for (const r of rows) {
-    // distill のパス番号: .trav の pid は distill の p_names の順（構築器が同じ順で読む）。名前で引くと重複した名前（ヒト v2 の分割された W 行）で別のパスに当たる
-    const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
-    const wt = windowTokens(t, r, pi, x0, x1); const toks = wt.toks, s0 = wt.s0; tRead += wt.tRead; nread += wt.nread
     const pres = new Uint8Array(ncol), cls = new Uint8Array(ncol).fill(255), ins = new Uint16Array(ncol), h1 = new Uint32Array(ncol), h2 = new Uint32Array(ncol), has = new Uint8Array(ncol); const cnt = new Uint16Array(ncol); const insb = new Float64Array(ncol); const bpcf = new Float64Array(ncol)   // bpcf = この行のトークンの bp の合計（錨も錨でないノードも。各行の並びの幅）
     let tw0 = -1, tw1 = -1
     const tm0 = Date.now()
-    forEachWindowToken(r, toks, s0, x0, x1, X, K, (d, isA, xa, ti) => {
-      if (!leafSeen[d]) { leafSeen[d] = 1; nleafW++ }   // 窓の中で通過が通る異なるノード＝塩基の段が集める葉（段の自動切替に使う）
+    nread += src.each(r, (d, isA, xa, ti, bpd) => {
+      if (!leafSeen.has(d)) { leafSeen.add(d); nleafW++ }   // 窓の中で通過が通る異なるノード＝塩基の段が集める葉（段の自動切替に使う）
       const c = Math.min(ncol - 1, Math.floor((xa - x0) * ncol / W)); has[c] = 1
       h1[c] = Math.imul(h1[c] ^ d, 0x01000193) >>> 0; h2[c] = (Math.imul(h2[c], 0x9E3779B1) + d + 1) >>> 0
-      bpcf[c] += BP[d]
-      if (isA) { cnt[c]++; if (tw0 < 0 || ti < tw0) tw0 = ti; if (ti > tw1) tw1 = ti } else insb[c] += BP[d]
+      bpcf[c] += bpd
+      if (isA) { cnt[c]++; if (tw0 < 0 || ti < tw0) tw0 = ti; if (ti > tw1) tw1 = ti } else insb[c] += bpd
     })
     tMix += Date.now() - tm0
     const bpc = new Uint32Array(ncol); for (let c = 0; c < ncol; c++) { pres[c] = nanch[c] ? Math.min(255, Math.round(255 * cnt[c] / nanch[c])) : 0; ins[c] = Math.min(65535, Math.round(insb[c])); bpc[c] = Math.min(0xffffffff, Math.round(bpcf[c])) }
@@ -656,18 +672,16 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
 
 // ---- 窓のノード集合（グラフをこの範囲に絞る用）: 窓に当たる錨と、その錨に付く錨でないノードの名前（葉）。最大 max 個 ----
 export function travNodeSet(t: Trav, x0: number, x1: number, minAnchors = 50, max = 20000): any {
-  if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', names: [] }
-  const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!; const idf = idOf(t)
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1)); if (x1 < x0) return { error: 'empty', names: [] }
-  const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? AND nanch >= ? ORDER BY hid, pid, i0').all(x1, x0, effFloor(minAnchors, x0, x1)) as TravRow[]
+  const src = windowSource(t, x0, x1, minAnchors); if ('error' in src) return { error: src.error, names: [] }
+  const rows = src.rows; const idf = idOf(t)
   let ntok = 0; for (const r of rows) { const span = Math.max(1, r.x1 - r.x0 + 1); const ov = Math.max(0, Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1); ntok += Math.ceil((r.i1 - r.i0 + 1) * Math.min(1, ov / span) * 1.2) + 1000 }
   if (ntok > COLS_SCAN_MAX) return { tooBig: true, ntok, max: COLS_SCAN_MAX, names: [] }
-  const seen = new Uint8Array(X.length); const names: string[] = []; const xs: number[] = []; let truncated = false; const T0 = Date.now()
-  outer: for (const r of rows) {
-    const pi = (dist.names[r.pid] === t.paths[r.pid].path) ? r.pid : dist.pidx.get(t.paths[r.pid].path); if (pi == null) continue
-    const wt = windowTokens(t, r, pi, x0, x1); let full = false
-    forEachWindowToken(r, wt.toks, wt.s0, x0, x1, X, K, (d, _isA, xa) => { if (full || seen[d]) return; seen[d] = 1; if (names.length >= max) { truncated = true; full = true; return } names.push('n' + idf(d)); xs.push(xa) })   // xs = 付いている錨の座標（塗り分け用）
-    if (full) break outer
+  const seen = new Set<number>(); const names: string[] = []; const xs: number[] = []; let truncated = false; const T0 = Date.now()
+  for (const r of rows) {
+    let full = false
+    src.each(r, (d, _isA, xa) => { if (full || seen.has(d)) return; seen.add(d); if (names.length >= max) { truncated = true; full = true; return } names.push('n' + idf(d)); xs.push(xa) })   // xs = 付いている錨の座標（塗り分け用）
+    if (full) break
   }
   return { x0, x1, n: names.length, truncated, ms: Date.now() - T0, names, xs }
 }
