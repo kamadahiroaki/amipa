@@ -401,8 +401,9 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   const isVar = (ci: number) => { const vals = new Set<string>(); for (const r of raw) if (!r.rdinfo) vals.add(r.seq[ci]); vals.delete('~'); vals.delete('.'); return vals.size > 1 }
   const intidx: number[] = []; cols.forEach((c, ci) => { if ((c.nodes as string[]).some(n => leafset.has(n))) intidx.push(ci) })
   let a: number, b: number
-  if (intidx.length) { a = Math.max(0, Math.min(...intidx) - 3); b = Math.min(cols.length, Math.max(...intidx) + 4) }
-  else { const varidx: number[] = []; cols.forEach((c, ci) => { if (c.variant || isVar(ci)) varidx.push(ci) }); [a, b] = varidx.length ? [Math.max(0, Math.min(...varidx) - 3), Math.min(cols.length, Math.max(...varidx) + 4)] : [0, cols.length] }
+  // intidx・varidx は列の順に積むので先頭が最小・末尾が最大（11-12: Math.min(...a) は列が十数万を超えると呼び出しの段数あふれで落ちた。全ゲノム BRCA2 の 2 kb 窓）
+  if (intidx.length) { a = Math.max(0, intidx[0] - 3); b = Math.min(cols.length, intidx[intidx.length - 1] + 4) }
+  else { const varidx: number[] = []; cols.forEach((c, ci) => { if (c.variant || isVar(ci)) varidx.push(ci) }); [a, b] = varidx.length ? [Math.max(0, varidx[0] - 3), Math.min(cols.length, varidx[varidx.length - 1] + 4)] : [0, cols.length] }
   const max_cols = opt.cap === 0 ? 0 : MAX_COLS
   if (max_cols && b - a > max_cols) b = a + max_cols
   cols = cols.slice(a, b); for (const r of raw) { r.seq = r.seq.slice(a, b); r.seqt = r.seqt.slice(a, b) }
