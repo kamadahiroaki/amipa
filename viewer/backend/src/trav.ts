@@ -12,7 +12,8 @@ import { distillFor } from './routes/bubbleMsa'
 import { openDistill, Distill } from './distill'
 import { checkCancel } from './travCancel'
 import { openTravX, binQuery, bpAt, nleafX, denseSlice, type TravX } from './travx'
-import { openXTiles, readTiles, rowTokens, forEachRowToken, type XTiles } from './xtiles'
+import { openXTiles, readTiles, rowTokens, forEachRowToken, type XTiles, type RowToks } from './xtiles'
+import { openGeneX, genexCount, genexRows, genexChildren } from './genex'
 import { bubbleMsaRanges } from './msa'
 import { readsSourceFor } from './msaReads'
 
@@ -552,6 +553,7 @@ function genesDbOf(t: Trav): Database.Database | null {
 }
 const GENES_MAX = Number(process.env.AMIPA_TRAV_GENES_MAX) || 30_000
 export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, withNodes = false): any {
+  { const gx = t.tx && t.xt ? openGeneX(t.file, genesPathOf(t)) : null; if (gx) return travGenesX(t, gx, x0, x1, minAnchors, withNodes) }
   const gdb = genesDbOf(t); if (!gdb) return { error: 'この DB には .genes サイドカーが無い', genes: [] }
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い', genes: [] }
   const X = t.xOfDense!, K = t.kindOfDense!, dist = t.dist!
@@ -628,6 +630,70 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
     }
   }
   const T1 = Date.now()
+  return genesGroups(out, geneAnch, rows, hasProj, x0, x1, T0, T1)
+}
+
+// 11-12: 索引 <db>.genex とタイル <db>.xtiles から（.genes・distill・全ゲノムの配列を読まない）。遺伝子の座標は前計算（gene_x: 両端 1,500 トークンの錨）、
+//   オルソログ群の材料（遺伝子の錨）・子の座標・ノード名は窓のタイルのトークンから。窓の外のトークンは無いので、子の座標はそこだけ比例で補う
+function travGenesX(t: Trav, G: ReturnType<typeof openGeneX> & object, x0: number, x1: number, minAnchors: number, withNodes: boolean): any {
+  x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
+  const src = windowSource(t, x0, x1, minAnchors); if ('error' in src) return { error: src.error, genes: [] }
+  const rows = src.rows; const T0 = Date.now()
+  const est = genexCount(G, x0, x1); if (est > GENES_MAX) return { tooMany: true, n: est, max: GENES_MAX, genes: [] }
+  const byPid = new Map<number, any[]>(); for (const g of genexRows(G, x0, x1)) { const a = byPid.get(g.pid); if (a) a.push(g); else byPid.set(g.pid, [g]) }
+  for (const a of byPid.values()) a.sort((p, q) => p.s0 - q.s0)
+  const idf = idOf(t); const xt = t.xt!; const tA = x0 >> xt.S; let tiles: ReturnType<typeof readTiles> | null = null
+  const out: any[] = []; const geneAnch: number[][] = []; let n = 0
+  for (const r of rows) {
+    const gs = byPid.get(r.pid); if (!gs) continue
+    let T: RowToks | null = null
+    const tok = () => { if (!T) { if (!tiles) tiles = readTiles(xt, tA, x1 >> xt.S); T = rowTokens(xt, tiles, tA, r.id) } return T }
+    const lb = (v: number) => { const A = tok(); let lo = 0, hi = A.n; while (lo < hi) { const m = (lo + hi) >> 1; if (A.ti[m] < v) lo = m + 1; else hi = m } return lo }
+    for (const g of gs) {
+      const s0 = Math.max(r.i0, g.s0), e0 = Math.min(r.i1 + 1, g.e0); if (e0 <= s0) continue
+      if (++n > GENES_MAX) return { tooMany: true, n, max: GENES_MAX, genes: [] }
+      // 遺伝子の錨（オルソログ群の材料）: 両端 1,500 トークンのうち窓のタイルにあるもの
+      const A = tok(); const acc: number[] = []; let lo = Infinity, hi = -1
+      const take = (a: number, b: number) => { for (let k = lb(a); k < A.n && A.ti[k] < b; k++) if (A.anchor[k]) { acc.push(A.d[k]); if (A.x[k] < lo) lo = A.x[k]; if (A.x[k] > hi) hi = A.x[k] } }
+      take(s0, Math.min(e0, s0 + 1500)); if (e0 - 1500 > s0 + 1500) take(Math.max(s0, e0 - 1500), e0)
+      // 座標: 遺伝子が通過に収まれば前計算（gene_x）。通過の端で切れる遺伝子（逆位の境界など）は、従来どおり切った範囲の両端の錨から（窓のタイルにあれば）、無ければ通過の座標の範囲に切る
+      let gx0 = g.x0, gx1 = g.x1
+      if (g.s0 < r.i0 || g.e0 > r.i1 + 1) { if (hi >= 0) { gx0 = lo; gx1 = hi } else { gx0 = Math.max(g.x0, r.x0); gx1 = Math.min(g.x1, r.x1); if (gx1 < gx0) { gx0 = r.x0; gx1 = r.x1 } } }
+      if (gx1 < x0 || gx0 > x1) continue
+      let ch: [string, number, number][] | undefined; let nodesOut: any
+      if (rows.length <= 400 && n <= 20000) {
+        const L = Math.max(1, g.e0 - g.s0); const span2 = gx1 - gx0; const rev = r.dir < 0
+        const propX = (tk: number) => { const f = Math.max(0, Math.min(1, (tk - g.s0) / L)); return rev ? gx1 - f * span2 : gx0 + f * span2 }
+        // 遺伝子のトークンの座標（錨はその座標、錨でなければ直前の錨、前に無ければ次の錨）。窓のタイルにあるトークンだけ
+        const k0 = lb(g.s0), k1 = lb(g.e0); const xs = new Float64Array(Math.max(0, k1 - k0)).fill(-1); let last = -1
+        for (let k = k0; k < k1; k++) { if (A.anchor[k]) last = A.x[k]; xs[k - k0] = last }
+        let nxt = -1; for (let k = xs.length - 1; k >= 0; k--) { if (xs[k] < 0) xs[k] = nxt; else nxt = xs[k] }
+        // 窓のタイルに無いトークン: 遺伝子の中で窓の前・後ろなら窓の外の座標（読んだタイルの外）、途中の抜けは比例で
+        const xOut0 = (tA << xt.S) - 1, xOut1 = ((x1 >> xt.S) + 1) << xt.S
+        const toX = (tk0: number) => { const tk = Math.max(g.s0, Math.min(g.e0 - 1, tk0)); if (xs.length) { let lo2 = k0, hi2 = k1; while (lo2 < hi2) { const m = (lo2 + hi2) >> 1; if (A.ti[m] < tk) lo2 = m + 1; else hi2 = m } const k = Math.min(k1 - 1, lo2) - k0; if (k >= 0 && A.ti[k + k0] === tk && xs[k] >= 0) return xs[k]
+            if (tk < A.ti[k0]) return rev ? xOut1 : xOut0; if (tk > A.ti[k1 - 1]) return rev ? xOut0 : xOut1 } return propX(tk) }
+        const chs = genexChildren(g.ch)
+        const per = new Map<string, [number, number][]>()
+        for (const c of chs) { const kind = /cds/i.test(c.type) ? 'cds' : /utr/i.test(c.type) ? 'utr' : 'exon'; const a = toX(c.s0), b = toX(c.e0); const lo = Math.round(Math.min(a, b)), hi = Math.round(Math.max(a, b)); if (!per.has(kind)) per.set(kind, []); per.get(kind)!.push([lo, hi]) }
+        if (withNodes && out.length < 5000) {
+          const ta = Math.max(s0, g.s0), tb = Math.min(e0, g.e0), tc = Math.min(tb, ta + 6000); const names: string[] = new Array(tc - ta).fill('')
+          for (let k = lb(ta); k < A.n && A.ti[k] < tc; k++) names[A.ti[k] - ta] = 'n' + idf(A.d[k])
+          const byParent = new Map<string, { len: number; parts: typeof chs }>(); for (const c of chs) { if (!/cds/i.test(c.type)) continue; const k = c.parent == null ? '' : String(c.parent); const e = byParent.get(k) || { len: 0, parts: [] }; e.len += Math.max(0, c.end - c.start + 1); e.parts.push(c); byParent.set(k, e) }
+          let bestP: typeof chs = []; let bestLen = -1; for (const e of byParent.values()) if (e.len > bestLen) { bestLen = e.len; bestP = e.parts }
+          const cds = bestP.map(c => ({ s0: Math.max(ta, c.s0), e0: Math.min(tc, c.e0), phase: Number(c.phase) || 0, strand: c.strand, so: c.so, eo: c.eo, gs0: c.s0 })).filter(c => c.e0 > c.s0).map(c => ({ names: names.slice(c.s0 - ta, c.e0 - ta), phase: c.phase, strand: c.strand, so: c.so, eo: c.eo, first: c.gs0 === g.s0 }))
+          const exon = chs.filter(c => !/cds/i.test(c.type) && !/utr/i.test(c.type)).map(c => names.slice(Math.max(ta, c.s0) - ta, Math.min(tc, c.e0) - ta))
+          nodesOut = { names, cds, exon, t0: ta, t1: tc }
+        }
+        if (per.size) { ch = []; for (const [kind, iv] of per) { iv.sort((u, v) => u[0] - v[0]); let cur: [number, number] | null = null; for (const [lo, hi] of iv) { if (cur && lo <= cur[1] + 1) cur[1] = Math.max(cur[1], hi); else { if (cur) ch.push([kind, cur[0], cur[1]]); cur = [lo, hi] } } if (cur) ch.push([kind, cur[0], cur[1]]) } }
+      }
+      out.push({ proj: g.proj ?? null, frac: g.frac ?? 1, gid: g.gid, pid: g.pid, hid: r.hid, tr: r.id, x0: gx0, x1: gx1, s0: g.s0, e0: g.e0, start: g.start, end: g.end, strand: g.strand, fwd: ((g.strand === '-' ? -1 : 1) * (r.dir >= 0 ? 1 : -1)) > 0, type: g.type, name: g.name, locus: g.locus, product: g.product, pseudo: !!g.pseudo, anchored: !!g.anchored, og: -1, ch, nodes: nodesOut })
+      geneAnch.push(acc)
+    }
+  }
+  return genesGroups(out, geneAnch, rows, G.hasProj, x0, x1, T0, Date.now())
+}
+// 窓の遺伝子（通過ごとに集めたもの）から、オルソログ群・有無とコピー数・旁系を作って返す（11-12: 従来の経路とタイルの経路で共有するため切り出した）
+function genesGroups(out: any[], geneAnch: number[][], rows: TravRow[], hasProj: boolean, x0: number, x1: number, T0: number, T1: number): any {
   // オルソログ群: 同じ種類（タンパク質コード＋擬似／RNA／その他）の遺伝子で、錨（ノード）を 2 個以上、または小さい方の 10% 以上共有するものを結ぶ（連結成分）
   const kindOf = (g: any) => (g.pseudo || /pseudo/i.test(g.type)) ? 'cds' : /^(cds|gene|mrna|protein_coding|protein-coding)$/i.test(g.type) ? 'cds' : /rna/i.test(g.type) ? 'rna' : 'other'
   const par = out.map((_, i) => i); const find = (i: number): number => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i] } return i }
