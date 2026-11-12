@@ -4,6 +4,7 @@
 import path from 'path'
 import fs from 'fs'
 import { getDbDir } from './db'
+import { TravCancelled } from './travCancel'
 import { dataAvail } from './availability'
 import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, travReads, travNLeaf, travReadSamples, travGeneLof, travMsa, travChroms, type Trav } from './trav'
 
@@ -47,5 +48,5 @@ export const OPS: Record<string, (q: Q) => OpResult> = {
 
 export function runTravOp(op: string, q: Q): OpResult {
   const f = OPS[op]; if (!f) return { status: 404, json: { error: 'unknown op ' + op } }
-  try { return f(q) } catch (err) { return { status: 500, json: { error: String(err) } } }
+  try { return f(q) } catch (err) { if (err instanceof TravCancelled) return { status: 499, json: { error: 'cancelled' } }; return { status: 500, json: { error: String(err) } } }
 }

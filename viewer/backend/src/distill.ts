@@ -2,6 +2,7 @@
 // Blocks パネルの「座位ごとのアレル」（錨の間の各株のノード列）を、Ctx も Python も無しに TS で作るため。
 import fs from 'fs'
 import path from 'path'
+import { checkCancel } from './travCancel'
 
 interface Npy { fd: number; dtype: 'int32' | 'int64' | 'uint32'; itemsize: number; dataOffset: number; n: number }
 
@@ -58,6 +59,7 @@ export class Distill {
   ntok(pi: number): number { const a = Number(this.off[pi]); const b = pi + 1 < this.off.length ? Number(this.off[pi + 1]) : this.tok.n; return b - a }
   // パス pi のトークン [s0, e0) を dense id の配列で（Float64Array で返す: int64 も安全に表せる範囲）
   read(pi: number, s0: number, e0: number): Float64Array {
+    checkCancel()   // 11-12: 取り消された Traversals の要求はここで抜ける（worker の外では何もしない）
     const base = Number(this.off[pi]); const n = Math.max(0, e0 - s0); const out = new Float64Array(n); if (!n) return out
     let buf: Buffer
     if (this.tokMem) { const a = (base + s0) * this.tok.itemsize; buf = Buffer.from(this.tokMem.subarray(a, a + n * this.tok.itemsize)) }   // 揃った位置の写し（型付き配列の境界のため）
@@ -69,6 +71,7 @@ export class Distill {
   }
   // パス pi のトークン [s0, e0) の向き（p_ori.npy、1 = 格納向き）。11-04（gene_lof を TS に移すため）
   readOri(pi: number, s0: number, e0: number): Uint8Array {
+    checkCancel()
     if (this.ori === undefined) { try { this.ori = openNpy(path.join(this.dir, 'p_ori.npy')); this.oriMem = loadWhole(this.ori) } catch { this.ori = null } }
     const n = Math.max(0, e0 - s0); const out = new Uint8Array(n); if (!n || !this.ori) return out.fill(1)
     const base = Number(this.off[pi]); const a = (base + s0) * this.ori.itemsize

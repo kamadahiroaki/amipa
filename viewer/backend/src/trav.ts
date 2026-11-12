@@ -10,6 +10,7 @@ import path from 'path'
 import { getDbDir, getDb } from './db'
 import { distillFor } from './routes/bubbleMsa'
 import { openDistill, Distill } from './distill'
+import { checkCancel } from './travCancel'
 import { bubbleMsaRanges } from './msa'
 import { readsSourceFor } from './msaReads'
 
@@ -655,7 +656,8 @@ export function travLocate(t: Trav, names: string[]): any {
   // 錨でない葉の座標（x_fill: 同じパスで直前の錨の x の bp 多数決。xfill_build.py が足す）
   const XF: Int32Array | null = (() => { const c = (t as any).__xfill; if (c !== undefined) return c; const r = arrRow(t.db, 'x_fill'); const v = r ? new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)) : null; (t as any).__xfill = v; return v })()
   // 上限は画面側の送る上限（120,000）と同じに（11-05: 5,000 で切っていたため、見えているノードが多い広い表示で 6 割が灰色のままだった。fly16 全体 12,303 個）
-  const nodes = names.slice(0, 120000).map(nm => {
+  const nodes = names.slice(0, 120000).map((nm, i) => {
+    if ((i & 1023) === 0) checkCancel()   // 11-12: スーパーノードの 1 件引きは初回 1 件数 ms。取り消されたら途中で抜ける
     const m = /^n(\d+)$/.exec(nm)
     if (!m) { const r = qs ? (qs.get(nm) as { x: number; frac: number; bp: number; xmin: number; xmax: number } | undefined) : undefined; return r ? { name: nm, x: r.x, kind: -2, frac: r.frac, bp: r.bp, xmin: r.xmin, xmax: r.xmax } : { name: nm, x: -1, kind: -1 } }
     const d = dof(Number(m[1]))
@@ -817,6 +819,7 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
   const pieces = new Map<number, number[]>(); let overflow = false; const t0 = Date.now()
   const wide = !!XD && W > PIECE_MAX_W; if (wide) overflow = true
   for (let c = 0; c < ncol && !wide; c++) {
+    checkCancel()
     const xa = Math.floor(x0 + c * W / ncol), xb = Math.max(xa, Math.floor(x0 + (c + 1) * W / ncol) - 1); const mid = (xa + xb) >> 1
     let d = -1; for (let k = 0; k <= Math.min(16, xb - xa); k++) { for (const x of [mid + k, mid - k]) { if (x < xa || x > xb || x < 0 || x >= dox.length) continue; if (dox[x] >= 1) { d = dox[x]; break } } if (d >= 1) break }
     if (d < 1 || d >= NX) continue

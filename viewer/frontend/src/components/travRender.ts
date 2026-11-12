@@ -333,8 +333,8 @@ async function loadRange() {
         const jf = await rf.json(); if (!(jf.tooBig || jf.error || jf.truncated)) setNames = jf.names as string[]; else if (hideOn) $('info').textContent += ` | グラフを絞る: ${jf.error || `範囲が広すぎるので絞らない（ノード ${fmt(jf.n ?? 0)} 個以上。塗り分けだけ）`}`   /* 11-05: 打ち切った集合で絞ると範囲の先頭だけが残り、残りが消えた（fly16 の chrX 全体） */
       }
       // 絞り（非表示）と塗り分けは別の通り道（10-28: 絞ると塗りが消え、塩基の段の見える範囲を送ると絞りが外れて上の層に戻っていた）
-      if (hideOn && setNames) { rangeMode = 'set'; cb.onRange({ names: setNames, colors: null, fit: false, hide: true, fitNames }); await rangeByLocate(my) }
-      else { rangeMode = 'locate'; cb.onRange({ names: [], colors: null, fit: false, hide: true }); await rangeByLocate(my, fitNames) }   // hide＋空＝絞りを外す
+      if (hideOn && setNames) { rangeMode = 'set'; cb.onRange({ names: setNames, colors: null, fit: false, hide: true, fitNames }); await rangeByLocate(my, undefined, navAC.signal) }
+      else { rangeMode = 'locate'; cb.onRange({ names: [], colors: null, fit: false, hide: true }); await rangeByLocate(my, fitNames, navAC.signal) }   // hide＋空＝絞りを外す
     } else if (cb.onRange) { rangeMode = 'none'; cb.onRange(null) }
   } catch (e) { showErr('range', e) }
   $('busy').style.display = 'none'; draw(); if (my === loading) void refreshOverview()   // 山の「表示中」を今の範囲に合わせる（座標は覚えてあるので問い合わせは新しい名前だけ）
@@ -351,12 +351,32 @@ async function loadRange() {
 // ---- 見えているノードの座標（11-05）: 名前 → 座標の結果を覚えておき、グラフを動かすたびに新しく見えた名前だけを問い合わせる ----
 type LocNode = { name: string; x: number; kind: number; frac?: number; xmin?: number; xmax?: number }
 const locCache = new Map<string, LocNode>(); let locHasFill = false
-async function locateMany(names: string[]): Promise<{ nodes: LocNode[]; hasFill: boolean }> {
-  const need = names.filter(n => !locCache.has(n))
-  if (need.length) {
-    if (locCache.size + need.length > 400000) locCache.clear()
-    const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: need.slice(0, 120000) }) }); const j = await r.json()
-    for (const n of (j.nodes || []) as LocNode[]) locCache.set(n.name, n); locHasFill = !!j.hasFill
+// 11-12: 問い合わせ中の名前（名前 → その要求の Promise）。全体図の山（refreshOverview）とグラフ連動（rangeByLocate）が同じ名前を同時に投げ、
+//   サーバの 1 本の列に同じ計算が 2 本積まれていた。問い合わせ中の名前は投げずにその返事を待つ
+const locInflight = new Map<string, Promise<void>>()
+// グラフを動かすたびの問い合わせは、次に動かした時点で取り消す（サーバも実行中の計算を止める）。検索・名前で開くなどの 1 回きりの問い合わせは取り消さない
+let locAC = new AbortController()
+async function locateMany(names: string[], signal?: AbortSignal): Promise<{ nodes: LocNode[]; hasFill: boolean } | null> {
+  for (let round = 0; round < 2; round++) {   // 2 回目: 待っていた他人の要求が取り消されて埋まらなかった名前を自分で引き直す
+    const need: string[] = []; const waits = new Set<Promise<void>>()
+    for (const n of names) { if (locCache.has(n)) continue; const p = locInflight.get(n); if (p) waits.add(p); else need.push(n) }
+    if (need.length) {
+      if (locCache.size + need.length > 400000) locCache.clear()
+      const batch = need.slice(0, 120000)
+      let p: Promise<void> | null = null
+      p = (async () => {
+        try {
+          const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: batch }), signal }); const j = await r.json()
+          for (const n of (j.nodes || []) as LocNode[]) locCache.set(n.name, n); if (j.hasFill != null) locHasFill = !!j.hasFill
+        } catch { /* 取り消し・失敗: 名前は埋まらないまま（次に引き直す） */ }
+        finally { for (const n of batch) if (locInflight.get(n) === p) locInflight.delete(n) }
+      })()
+      for (const n of batch) locInflight.set(n, p); waits.add(p)
+    }
+    if (!waits.size) break
+    await Promise.all(waits)
+    if (signal?.aborted) return null
+    if (names.every(n => locCache.has(n))) break
   }
   return { nodes: names.map(n => locCache.get(n) ?? { name: n, x: -1, kind: -1 }), hasFill: locHasFill }
 }
@@ -377,10 +397,10 @@ const ovw: OverviewHandle = mountOverview($('ovw'), LAB, {
 }, () => { void refreshOverview() })
 // 全体図の山を引き直す。見えているノードを座標に引き、山（文字つき）を全体図とグラフ側の札（onPeaks）に送る
 let ovReq = 0
-async function refreshOverview(): Promise<OvPeak[]> {
+async function refreshOverview(signal?: AbortSignal): Promise<OvPeak[]> {
   if (!root || !cb.getVisibleNodes) return []
   const my = ++ovReq; const vis = cb.getVisibleNodes(); if (!vis.length) { lastPeaks = []; ovw.setPoints([], [], 'グラフに見えているノードが無い'); cb.onPeaks?.(null); return [] }
-  const j = await locateMany(vis.map(v => v.name)); if (my !== ovReq) return lastPeaks
+  const j = await locateMany(vis.map(v => v.name), signal); if (!j || my !== ovReq) return lastPeaks
   const vp = ovw.centerWeighted() && cb.getGraphViewport ? cb.getGraphViewport() : null
   const cx = vp ? (vp.x1 + vp.x2) / 2 : 0, cy = vp ? (vp.y1 + vp.y2) / 2 : 0, hw = vp ? Math.max(1e-12, (vp.x2 - vp.x1) / 2) : 1, hh = vp ? Math.max(1e-12, (vp.y2 - vp.y1) / 2) : 1
   const pts: OvPoint[] = []; let nNo = 0, nWide = 0
@@ -410,12 +430,12 @@ function goRange(x0: number, x1: number, fit: boolean) {
   if (x1 - x0 < 50) { const x = (x0 + x1) / 2; const a = root.atoms[atomAt(x)]; x0 = Math.max(a.x0, x - 3000); x1 = Math.min(a.x1, x + 3000); located = [Math.round(x)] } else located = []
   pushHist(); view = [Math.max(0, Math.floor(x0)), Math.min(root.R - 1, Math.ceil(x1))]; userMoved = true; explicitFit = fit; loadRange()
 }
-async function rangeByLocate(my: number, fitNames?: string[]) {
+async function rangeByLocate(my: number, fitNames?: string[], signal?: AbortSignal) {
   if (!cb.onRange || !root) return
   const names = cb.getVisibleNames ? cb.getVisibleNames() : []
   if (!names.length) { if (fitNames) cb.onRange({ names: [], colors: [], fit: false, hide: false, direct: true, fitNames }); return }
-  const j = await locateMany(names.slice(0, 120000))
-  if (my !== loading) return
+  const j = await locateMany(names.slice(0, 120000), signal)
+  if (!j || my !== loading) return
   // スーパーノード（kind −2）は、多数派の座標が範囲の外でも、子孫の座標の張り（xmin–xmax）が範囲に掛かれば、範囲に寄せた座標の色で塗る
   // （10-28: 範囲の祖先として絞り込みに入るのに、多数派が隣の区間にあるだけで 4 割が灰になった。ecoli 原子 149–155）
   const nodes0 = (j.nodes || []) as { name: string; x: number; kind: number; xmin?: number; xmax?: number }[]
@@ -1664,7 +1684,7 @@ async function locate(names: string[], single: boolean) {
   // 11-05: グラフ → パネルは「全体図に示して、移るかはユーザが選ぶ」。以前は黙って範囲を移し、グラフも寄せ直していた
   //   （グラフ上で近いが合意座標では遠いノードの所で、クリックするとグラフが縮小した。複数の場所が混ざった画面では最大の連なりを勝手に開いた）
   if (single) {   // グラフでノードをクリック: 全体図に ▼ の印。表示範囲の中ならその位置に縦線、外なら案内だけ（▼ のクリックで移る）
-    const j = await locateMany(names.slice(0, 50)); const xs = j.nodes.filter(n => n.x >= 0 && !(n.kind === -2 && (n.frac ?? 1) < 0.5)).map(n => n.x).sort((a, b) => a - b)
+    const j = await locateMany(names.slice(0, 50)); if (!j) return; const xs = j.nodes.filter(n => n.x >= 0 && !(n.kind === -2 && (n.frac ?? 1) < 0.5)).map(n => n.x).sort((a, b) => a - b)
     if (!xs.length) { $('info').textContent = `グラフ → パネル: ${names[0]} は合意座標を持たない（反復などで場所が 1 つに決まらないノード、または粗い層のスーパーノード）`; $('info').style.color = '#c0392b'; ovw.setMarker(null); return }
     const x = xs[Math.floor(xs.length / 2)]; ovw.setMarker(x, `${names[0]}  ${chromLabel(x)}`); located = [x]
     const inView = x >= view[0] && x <= view[1]
@@ -1729,7 +1749,7 @@ function setState(st: any, tries = 0) { if (!st) return; if (!root || (st.db && 
   if (Array.isArray(st.rsamp)) { readSel = st.rsamp.map(String); readSelLabel() }
   if (st.base) { baseAutoState = true; pendingMode = st.bmode2 === 'base' ? 'base' : 'node' } blocks = makeBlocks(); void loadRange() }
 let baseAutoState = false
-return { getState, setState, setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked) reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; void refreshOverview(); if (rangeMode === 'none' || base) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, setFilter(on: boolean) { const el = $('gfilter') as HTMLInputElement; if (el.checked !== on) { el.checked = on; loadRange() } }, setNBlocks(n: number) { const el = $('nblk') as HTMLInputElement; if (el.value !== String(n)) { el.value = String(n); el.dispatchEvent(new Event('change')) } }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { unfit.forEach(f => f()); wrapRO.disconnect(); loading++; document.removeEventListener('mousedown', onPopDoc); document.removeEventListener('keydown', onCopyKey); ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
+return { getState, setState, setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked) reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; locAC.abort(); locAC = new AbortController(); const sg = locAC.signal; void refreshOverview(sg); if (rangeMode === 'none' || base) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading, undefined, sg) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, setFilter(on: boolean) { const el = $('gfilter') as HTMLInputElement; if (el.checked !== on) { el.checked = on; loadRange() } }, setNBlocks(n: number) { const el = $('nblk') as HTMLInputElement; if (el.value !== String(n)) { el.value = String(n); el.dispatchEvent(new Event('change')) } }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { unfit.forEach(f => f()); wrapRO.disconnect(); loading++; document.removeEventListener('mousedown', onPopDoc); document.removeEventListener('keydown', onCopyKey); ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
 
 }
 
