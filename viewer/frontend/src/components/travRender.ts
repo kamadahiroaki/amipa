@@ -71,6 +71,8 @@ async function getJson(url: string): Promise<{ ok: boolean; status: number; json
   const x = new XMLHttpRequest(); x.open('GET', url, false); x.send(null); const txt = x.responseText
   return { ok: x.status >= 200 && x.status < 300, status: x.status, json: async () => JSON.parse(txt) }
 }
+// リードの名前（11-12）: ブロックの段のリードは名前なしで届く。ホバーしたリードだけ引き、次のホバーから出す
+async function readNameOf(r: { a: number; n: string }) { try { const j = await (await fetch(`/api/trav/readname?db=${encodeURIComponent(db)}&a=${r.a}`)).json(); r.n = j.n || `#${r.a}` } catch { r.n = `#${r.a}` } }
 const cv = $('cv') as HTMLCanvasElement; const g = cv.getContext('2d')!; const tip = $('tip'); const ov = $('ov') as HTMLCanvasElement; const og = ov.getContext('2d')!
 // 塩基・ノードの段の見出し（11-11 に 70 → 50 px）
 const BH_BOX = 6, BH_REF = 19, BH_MARK = 33, BH_A = 39, BH_TOP = BH_A + 11
@@ -1020,7 +1022,7 @@ function treadsHover(e: MouseEvent): boolean {
   const B = L.blocks.find(b => e.offsetY >= b.y && e.offsetY < b.y + b.h); if (!B) { tip.style.display = 'none'; return true }
   const x = xOfPx(e.offsetX); const c = Math.floor((x - T.x0) / (T.x1 - T.x0 + 1) * T.ncol); const ok = c >= 0 && c < T.ncol; const lines = [`${B.s < 0 ? '全サンプル' : T.samples[B.s]}  座標 ${fmt(Math.floor(x))}  深さ ${ok ? (B.s < 0 ? T.depAll![c] : T.dep[B.s][c]) : 0}（${T.src === 'xdepth' ? 'この列をまたぐリードの数' : 'この列で標本した錨 1 個を通る整列の数'}）${T.zf && ok && B.s >= 0 ? `  リードが通らない錨 ${Math.round(100 * T.zf[B.s][c] / 255)}%（そのサンプルに無いアレルなど）` : ''}`]
   if (B.detail && T.reads && e.offsetY >= B.laneY) { const li = Math.floor((e.offsetY - B.laneY) / TR_LANE); const lane = B.lanes[li]
-    if (lane) for (const i of lane) { const r = T.reads[i]; if (c >= r.p[0] - 1 && c <= r.p[r.p.length - 1] + 1) { lines.push(`リード ${r.n}（${T.samples[r.s] ?? ''}・整列 #${r.a}）  座標 ${fmt(Math.floor(trColX(T, r.p[0])))}–${fmt(Math.floor(trColX(T, r.p[r.p.length - 1] + 1)))}${r.p.length > 2 ? `  ${r.p.length / 2} 片（間は錨を外れた所）` : ''}`); break } } }
+    if (lane) for (const i of lane) { const r = T.reads[i]; if (c >= r.p[0] - 1 && c <= r.p[r.p.length - 1] + 1) { if (!r.n) { r.n = '…'; void readNameOf(r) } lines.push(`リード ${r.n}（${T.samples[r.s] ?? ''}・整列 #${r.a}）  座標 ${fmt(Math.floor(trColX(T, r.p[0])))}–${fmt(Math.floor(trColX(T, r.p[r.p.length - 1] + 1)))}${r.p.length > 2 ? `  ${r.p.length / 2} 片（間は錨を外れた所）` : ''}`); break } } }
   tip.style.display = 'block'; tip.style.left = (e.clientX + 12) + 'px'; tip.style.top = (e.clientY + 12) + 'px'; tip.textContent = lines.join('\n'); return true
 }
 function drawCore() {

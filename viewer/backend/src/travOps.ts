@@ -6,7 +6,7 @@ import fs from 'fs'
 import { getDbDir } from './db'
 import { TravCancelled } from './travCancel'
 import { dataAvail } from './availability'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, travReads, travNLeaf, travReadSamples, travGeneLof, travMsa, travChroms, type Trav } from './trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, travReads, travReadName, travNLeaf, travReadSamples, travGeneLof, travMsa, travChroms, type Trav } from './trav'
 
 export interface OpResult { status: number; json: any }
 type Q = Record<string, any>
@@ -42,6 +42,7 @@ export const OPS: Record<string, (q: Q) => OpResult> = {
   locate: q => withT(q, t => travLocate(t, Array.isArray(q.names) ? (q.names as unknown[]).filter(x => typeof x === 'string') as string[] : String(q.names || '').split(',').filter(x => x))),
   findgene: q => withT(q, t => travFindGene(t, String(q.q || ''), Math.max(1, Math.min(300, Number(q.limit) || 60)))),
   msa: q => withT(q, t => { const t0 = Date.now(); const o: any = travMsa(t, q.req || {}, { label: q.label, flank: q.flank != null ? Number(q.flank) : 0, cap: q.cap != null ? Number(q.cap) : null, maxLeaves: q.maxLeaves != null ? Number(q.maxLeaves) : null, maxTokens: q.maxTokens ? Number(q.maxTokens) : undefined }); if (o && !o.error) o.ms = Date.now() - t0; return o }),
+  readname: q => withT(q, t => travReadName(t, Number(q.a))),
   genelof: q => withT(q, t => travGeneLof(t, (Array.isArray(q.gids) ? q.gids : []).filter((x: unknown) => Number.isInteger(x)))),
   genedensity: q => withT(q, t => travGeneDensity(t, Number(q.x0) || 0, Number(q.x1) || 1e12, Number(q.nbin) || 300, minanch(q))),
 }

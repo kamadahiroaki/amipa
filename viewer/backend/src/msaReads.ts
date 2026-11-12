@@ -34,6 +34,9 @@ class SeekableZstd {
 export interface ReadsSource {
   sampleName: Map<number, string>
   nodeAlnIds(gid: number): number[]
+  // 11-12: 窓のノード（id が連続）の整列を範囲 1 回で引く（node_reads は塊ごとに gfa_id の順に並ぶので、塊ごとに連続した読みになる）。gid → 整列 id
+  nodeAlnIdsRange(lo: number, hi: number, want?: Set<number>): Map<number, number[]>
+  sampleOf(aln: number): number   // 整列 id → サンプル番号（read_chunk の id の範囲から。read_aln を読まない）
   alnInfo(ids: number[]): Map<number, [number, number, string]>   // aln_id → [sample_no, voff, read_name]
   fetchLines(rows: [number, number, number][]): string[]          // [(sample_no, aln_id, voff)] → 行（入力の順）
 }
@@ -56,8 +59,12 @@ export function readsSourceFor(dbPath: string): ReadsSource | null {
   const resolve = (recorded: string) => { const b = path.basename(recorded), d = path.dirname(path.resolve(dbPath)); for (const c of [recorded, path.join(d, 'reads', b), path.join(d, b)]) if (fs.existsSync(c)) return c; return recorded }   // 11-11: 記録の絶対パスを先に（DB_DIR/reads に同じ名前の古い GAF があるとオフセットがずれ、リードの行が全部消えた）
   const reader = (sn: number) => { let r = readers.get(sn); if (!r) { const s = src.get(sn)!; if (s[1] !== 'zstd') throw new Error('BGZF のリード実体は TS 版では読めない（旧アトラス）'); r = new SeekableZstd(resolve(s[0])); readers.set(sn, r) } return r }
   const decode = (blob: Buffer, prev: number) => { const out: number[] = []; let shift = 0, cur = 0; for (const b of blob) { cur += (b & 0x7f) * 2 ** shift; if (b & 0x80) { shift += 7 } else { prev += cur; out.push(prev); cur = 0; shift = 0 } } return out }
+  const qRange = hasChunk ? db.prepare('SELECT gfa_id, chunk_no, postings FROM node_reads WHERE gfa_id BETWEEN ? AND ?') : db.prepare('SELECT gfa_id, NULL AS chunk_no, postings FROM node_reads WHERE gfa_id BETWEEN ? AND ?')
+  const chunks = hasChunk ? (db.prepare('SELECT base_aln_id AS b, n_aln AS n, sample_no AS s FROM read_chunk ORDER BY base_aln_id').all() as { b: number; n: number; s: number }[]) : []
   const rs: ReadsSource = {
     sampleName,
+    nodeAlnIdsRange: (lo, hi, want) => { const m = new Map<number, number[]>(); for (const r of qRange.all(lo, hi) as any[]) { if (want && !want.has(r.gfa_id)) continue; const v = decode(r.postings, r.chunk_no == null ? 0 : (base.get(r.chunk_no) ?? 0)); const a = m.get(r.gfa_id); if (a) { for (const x of v) a.push(x) } else m.set(r.gfa_id, v) } return m },
+    sampleOf: aln => { let lo = 0, hi = chunks.length - 1, k = -1; while (lo <= hi) { const md = (lo + hi) >> 1; if (chunks[md].b <= aln) { k = md; lo = md + 1 } else hi = md - 1 } return k >= 0 && aln < chunks[k].b + chunks[k].n ? chunks[k].s : -1 },
     nodeAlnIds: gid => { const out: number[] = []; for (const r of qNode.all(gid) as any[]) out.push(...decode(r.postings, r.chunk_no == null ? 0 : (base.get(r.chunk_no) ?? 0))); return out },
     alnInfo: ids => { const m = new Map<number, [number, number, string]>(); for (let i = 0; i < ids.length; i += 900) { const ch = ids.slice(i, i + 900); for (const r of db.prepare(`SELECT aln_id, sample_no, voff, read_name FROM read_aln WHERE aln_id IN (${ch.map(() => '?').join(',')})`).all(...ch) as any[]) m.set(r.aln_id, [r.sample_no, r.voff, r.read_name]) } return m },
     fetchLines: rows => { const ord = rows.map((_, i) => i).sort((a, b) => rows[a][0] - rows[b][0] || rows[a][2] - rows[b][2]); const out = new Array<string>(rows.length); for (const i of ord) out[i] = reader(rows[i][0]).readLine(rows[i][2]); return out },

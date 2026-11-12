@@ -886,7 +886,7 @@ export function travGeneDensity(t: Trav, x0: number, x1: number, nbin: number, m
 // 範囲 [x0, x1] を ncol 列に切り、列ごとに錨のノードを 1 個標本して <db>.reads の転置索引（node_reads: ノード → 整列 id、サンプルごとのチャンク）を引く。
 // 返すもの: サンプルごとの列の深さ（そのノードを通る整列の数）と、整列ごとの「掛かる列の片」（標本の列が GAP 列以上抜けたら次の片）。GAF は読まない。
 // 整列が maxReads を超えたら片は返さず深さだけ（overflow）。画面は詰めた段が多すぎるときも深さだけにする
-interface ReadsDb { db: Database.Database; chunk: Map<number, { sn: number; base: number }>; samples: string[]; stmt: Database.Statement }
+interface ReadsDb { db: Database.Database; chunk: Map<number, { sn: number; base: number }>; samples: string[]; stmt: Database.Statement; range: Database.Statement }
 const readsCache = new Map<string, ReadsDb | null>()
 function readsDbOf(t: Trav): ReadsDb | null {
   if (readsCache.has(t.file)) return readsCache.get(t.file)!
@@ -897,7 +897,7 @@ function readsDbOf(t: Trav): ReadsDb | null {
     const db = new Database(p, { readonly: true })
     const chunk = new Map<number, { sn: number; base: number }>(); for (const c of db.prepare('SELECT chunk_no, sample_no, base_aln_id FROM read_chunk').all() as any[]) chunk.set(c.chunk_no, { sn: c.sample_no, base: c.base_aln_id })
     const samples: string[] = []; for (const s of db.prepare('SELECT sample_no, sample_id FROM read_src ORDER BY sample_no').all() as any[]) samples[s.sample_no] = s.sample_id
-    r = { db, chunk, samples, stmt: db.prepare('SELECT chunk_no, postings FROM node_reads WHERE gfa_id=?') }
+    r = { db, chunk, samples, stmt: db.prepare('SELECT chunk_no, postings FROM node_reads WHERE gfa_id=?'), range: db.prepare('SELECT gfa_id, chunk_no, postings FROM node_reads WHERE gfa_id BETWEEN ? AND ?') }
   }
   readsCache.set(t.file, r); return r
 }
@@ -936,6 +936,7 @@ function xdepthCols(X: XDepth, x0: number, x1: number, ncol: number): { dep: Uin
   return { dep, zf, level: L }
 }
 const PIECE_MAX_W = Number(process.env.AMIPA_TRAV_READS_PIECE_W) || 50_000   // これより広い範囲はリードの片を作らない（索引を引かない）
+export function travReadName(t: Trav, aln: number): any { const R = readsDbOf(t); if (!R) return { error: 'no .reads sidecar' }; const r = R.db.prepare('SELECT read_name FROM read_aln WHERE aln_id = ?').get(aln) as { read_name: string } | undefined; return { a: aln, n: r ? r.read_name : '' } }
 export function travReadSamples(t: Trav): string[] { const R = readsDbOf(t); return R ? R.samples.filter(Boolean) : [] }
 export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxReads = 4000, only: string[] | null = null): any {
   const R = readsDbOf(t); if (!R) return { error: 'no .reads sidecar' }
@@ -952,12 +953,26 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
   const GAP = 3; const S = R.samples.length; const dep = Array.from({ length: S }, () => new Uint16Array(ncol))
   const pieces = new Map<number, number[]>(); let overflow = false; const t0 = Date.now()
   const wide = !!XD && W > PIECE_MAX_W; if (wide) overflow = true
+  // 列ごとの代表のノード（列の中央に近い錨）を先に決め、その整列を id の範囲 1 回で引く（11-12: 以前は列ごとに 1 件ずつ、2 Mb で 2,328 回）
+  const colNode = new Int32Array(ncol).fill(-1)
   for (let c = 0; c < ncol && !wide; c++) {
-    checkCancel()
     const xa = Math.floor(x0 + c * W / ncol), xb = Math.max(xa, Math.floor(x0 + (c + 1) * W / ncol) - 1); const mid = (xa + xb) >> 1
     let d = -1; for (let k = 0; k <= Math.min(16, xb - xa); k++) { for (const x of [mid + k, mid - k]) { if (x < xa || x > xb || x < 0 || x >= doxLen) continue; const v = doxAt(x); if (v >= 1) { d = v; break } } if (d >= 1) break }
-    if (d < 1 || d >= NX) continue
-    for (const row of R.stmt.all(idf(d)) as { chunk_no: number; postings: Buffer }[]) {
+    if (d >= 1 && d < NX) colNode[c] = idf(d)
+  }
+  const wantG = new Set<number>(); for (const g of colNode) if (g >= 0) wantG.add(g)
+  const post = new Map<number, { chunk_no: number; postings: Buffer }[]>()
+  if (wantG.size) {
+    // id が飛び飛び（窓が複数の染色体の継ぎ目にまたがるなど）なら塊に分けて引く
+    const ids = [...wantG].sort((a, b) => a - b); let i = 0
+    while (i < ids.length) { let j = i; while (j + 1 < ids.length && ids[j + 1] - ids[j] <= 65536) j++
+      for (const r of R.range.all(ids[i], ids[j]) as { gfa_id: number; chunk_no: number; postings: Buffer }[]) { if (!wantG.has(r.gfa_id)) continue; const a = post.get(r.gfa_id); if (a) a.push(r); else post.set(r.gfa_id, [r]) }
+      i = j + 1 }
+  }
+  for (let c = 0; c < ncol && !wide; c++) {
+    checkCancel()
+    const g = colNode[c]; if (g < 0) continue
+    for (const row of (post.get(g) ?? []).sort((p, q) => p.chunk_no - q.chunk_no)) {
       const ch = R.chunk.get(row.chunk_no); if (!ch || !keep(ch.sn)) continue; const buf = row.postings; let shift = 0, cur = 0, prev = ch.base, n = 0
       for (let i = 0; i < buf.length; i++) { const b = buf[i]; cur += (b & 0x7f) * 2 ** shift; if (b & 0x80) { shift += 7; continue } prev += cur; cur = 0; shift = 0; n++
         if (overflow) continue
@@ -967,9 +982,8 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
   }
   let reads: any[] | null = null
   if (!overflow) {
-    const ids = [...pieces.keys()]; const name = new Map<number, string>()
-    for (let i = 0; i < ids.length; i += 900) { const ch = ids.slice(i, i + 900); for (const r of R.db.prepare(`SELECT aln_id, read_name FROM read_aln WHERE aln_id IN (${ch.map(() => '?').join(',')})`).all(...ch) as any[]) name.set(r.aln_id, r.read_name) }
-    reads = ids.map(a => { const p = pieces.get(a)!; return { a, s: p[0], n: name.get(a) || '', p: p.slice(1) } })
+    // 名前は返さない（11-12: 最大 4,000 本の名前を read_aln から 1 件ずつ引いていた。画面はホバーしたリードだけ /trav/readname で引く）
+    reads = [...pieces.keys()].map(a => { const p = pieces.get(a)!; return { a, s: p[0], n: '', p: p.slice(1) } })
   }
   const idx = R.samples.map((_, s) => s).filter(keep)   // 返すサンプル（reads の s はこの並びの番号に付け直す）
   const remap = new Map(idx.map((s, i) => [s, i])); if (reads) for (const r of reads) r.s = remap.get(r.s) ?? r.s

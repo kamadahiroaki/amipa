@@ -147,15 +147,19 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     // 窓全体から選ぶ（10-29）: 窓のノードを最大 200 個標本し、標本を順に回って、まだ選んでいないリードを 1 本ずつ取る（サンプルごとに上限まで）
     const step = Math.max(1, Math.floor(win_ids.size / 200)); const probe = wsorted.filter((_, i) => i % step === 0)
     const cand = new Map<number, number>(); let plist: number[][] = []
-    for (const gid of probe) { const al_ = RS.nodeAlnIds(gid).slice(0, 2000); plist.push(al_); for (const aid of al_) cand.set(aid, (cand.get(aid) ?? 0) + 1) }
-    const info = new Map<number, [number, number, string]>()
-    for (const [aid, v] of RS.alnInfo([...cand.keys()])) { if (want.size && !want.has(RS.sampleName.get(v[0]) as string)) continue; info.set(aid, v) }
-    plist = plist.map(al_ => al_.filter(a => info.has(a)).sort((a, b) => cand.get(b)! - cand.get(a)!))
-    const got = new Map<number, number>(), chosen = new Set<number>(), pick: [number, number, number, string][] = []; const pos_ = plist.map(() => 0); let more = true
+    // 11-12: 標本のノードの整列を、id の範囲 1 回で引く（以前は標本 200 個を 1 件ずつ）。サンプルは整列 id の範囲から（read_aln を読むのは選んだ整列だけ）
+    const pmap = RS.nodeAlnIdsRange(probe.length ? probe[0] : 0, probe.length ? probe[probe.length - 1] : -1, new Set(probe))
+    for (const gid of probe) { const al_ = (pmap.get(gid) ?? []).slice(0, 2000); plist.push(al_); for (const aid of al_) cand.set(aid, (cand.get(aid) ?? 0) + 1) }
+    const snOf = new Map<number, number>()
+    for (const aid of cand.keys()) { const sn = RS.sampleOf(aid); if (sn < 0) continue; if (want.size && !want.has(RS.sampleName.get(sn) as string)) continue; snOf.set(aid, sn) }
+    plist = plist.map(al_ => al_.filter(a => snOf.has(a)).sort((a, b) => cand.get(b)! - cand.get(a)!))
+    const got = new Map<number, number>(), chosen = new Set<number>(), pick0: [number, number][] = []; const pos_ = plist.map(() => 0); let more = true
     while (more) { more = false
       for (let pi_ = 0; pi_ < plist.length; pi_++) { const al_ = plist[pi_]
-        while (pos_[pi_] < al_.length) { const a = al_[pos_[pi_]]; pos_[pi_]++; if (chosen.has(a)) continue; const [sn, vo, rn] = info.get(a)!; if ((got.get(sn) ?? 0) >= maxr) continue
-          chosen.add(a); got.set(sn, (got.get(sn) ?? 0) + 1); pick.push([sn, a, vo, rn]); more = true; break } } }
+        while (pos_[pi_] < al_.length) { const a = al_[pos_[pi_]]; pos_[pi_]++; if (chosen.has(a)) continue; const sn = snOf.get(a)!; if ((got.get(sn) ?? 0) >= maxr) continue
+          chosen.add(a); got.set(sn, (got.get(sn) ?? 0) + 1); pick0.push([sn, a]); more = true; break } } }
+    const info = RS.alnInfo(pick0.map(p => p[1])); const pick: [number, number, number, string][] = []
+    for (const [sn, a] of pick0) { const v = info.get(a); if (v) pick.push([sn, a, v[1], v[2]]) }
     prof('リード: 標本と選択'); const lines = RS.fetchLines(pick.map(([sn, a, vo]) => [sn, a, vo] as [number, number, number]))
     prof('リード: GAF の行の取り出し'); const read_meta: any[] = []
     pick.forEach(([sn], i) => {

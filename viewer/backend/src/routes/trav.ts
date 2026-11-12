@@ -11,7 +11,7 @@ import { searchGenes, geneCopies } from '../geneSearch'
 export const travRouter = Router()
 
 // 11-04: 計算は travWorker（travOps.ts）で。メインは要求を渡して返事をそのまま返すだけ
-for (const op of ['root', 'range', 'path', 'atoms', 'chroms', 'nodes', 'cols', 'nleaf', 'reads', 'genes', 'nodeset', 'locate', 'genedensity'])
+for (const op of ['root', 'range', 'path', 'atoms', 'chroms', 'nodes', 'cols', 'nleaf', 'reads', 'genes', 'nodeset', 'locate', 'genedensity', 'readname'])
   travRouter.get('/trav/' + op, (req, res) => sendTrav(res, op, req.query as Record<string, string>))
 // 11-12: 遺伝子検索は索引 <db>.gsearch をメインスレッドで直接引く（worker の列に並ばない）。索引が無い DB だけ従来どおり worker へ
 travRouter.get('/trav/findgene', (req, res) => {
