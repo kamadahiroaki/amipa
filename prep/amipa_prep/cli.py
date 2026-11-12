@@ -255,6 +255,7 @@ class Bundle:
         self.trav = Path(str(self.db) + ".trav")       # Traversals の錨・座標・通過（trav_build.py ほか）
         self.xdepth = Path(str(self.db) + ".xdepth")   # 座標ごとのリードの深さ（reads_xdepth.py）
         self.genes = Path(str(self.db) + ".genes")     # 株ごとの遺伝子（genes_build.py → genes_project.py）
+        self.gsearch = Path(str(self.db) + ".gsearch") # 遺伝子検索の索引（gsearch_build.py、11-12）
         self.ann = Path(str(self.db) + ".ann")         # 参照座標の反復・変異の注釈（ann_build.py）。.annot（band/gene/region）とは別
         self.reads_dir = self.root / "reads"
         self.state_path = self.root / "state.json"
@@ -571,8 +572,11 @@ def build_stages(b: Bundle, a) -> dict:
              [py, str(PKG / "genes_project.py"), str(raw), str(b.distill), str(b.genes) + ".tmp"],
              # 11-04: viewer が初回に計算していた遺伝子の座標・密度の印・名前の表を前計算（genes_index.py）。.trav の座標を使うので trav を入力に
              [py, str(PKG / "genes_index.py"), str(b.genes) + ".tmp", str(b.trav), str(b.distill)],
-             ["mv", "-f", str(b.genes) + ".tmp", str(b.genes)]],
-            inputs=[b.distill, Path(a.gff_dir)] + ([b.trav] if "trav" in st else []), outputs=[b.genes], env=thread_env(1),
+             # 11-12: 遺伝子検索の索引（1 遺伝子 1 行の要約・検索語・写しの座標）。viewer は検索で .genes を読まない
+             [py, str(PKG / "gsearch_build.py"), str(b.genes) + ".tmp", str(b.trav), str(b.gsearch) + ".tmp"],
+             ["mv", "-f", str(b.genes) + ".tmp", str(b.genes)],
+             ["mv", "-f", str(b.gsearch) + ".tmp", str(b.gsearch)]],
+            inputs=[b.distill, Path(a.gff_dir)] + ([b.trav] if "trav" in st else []), outputs=[b.genes, b.gsearch], env=thread_env(1),
             note="株ごとの遺伝子（GFF → パスのトークン範囲、参照の注釈を写す）",
         )
 

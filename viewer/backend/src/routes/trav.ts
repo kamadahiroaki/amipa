@@ -6,12 +6,24 @@ import fs from 'fs'
 import Database from 'better-sqlite3'
 import { sendTrav } from '../travClient'
 import { annPathOf } from '../travOps'
+import { searchGenes, geneCopies } from '../geneSearch'
 
 export const travRouter = Router()
 
 // 11-04: 計算は travWorker（travOps.ts）で。メインは要求を渡して返事をそのまま返すだけ
-for (const op of ['root', 'range', 'path', 'atoms', 'chroms', 'nodes', 'cols', 'nleaf', 'reads', 'genes', 'nodeset', 'locate', 'findgene', 'genedensity'])
+for (const op of ['root', 'range', 'path', 'atoms', 'chroms', 'nodes', 'cols', 'nleaf', 'reads', 'genes', 'nodeset', 'locate', 'genedensity'])
   travRouter.get('/trav/' + op, (req, res) => sendTrav(res, op, req.query as Record<string, string>))
+// 11-12: 遺伝子検索は索引 <db>.gsearch をメインスレッドで直接引く（worker の列に並ばない）。索引が無い DB だけ従来どおり worker へ
+travRouter.get('/trav/findgene', (req, res) => {
+  const q = req.query as Record<string, string>; if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  try { const r = searchGenes(q.db, String(q.q || ''), Math.max(1, Math.min(300, Number(q.limit) || 60))); if (r) { res.json({ ...r, index: true }); return } }
+  catch (e) { console.log('[gsearch] ' + String(e)) }
+  sendTrav(res, 'findgene', q)
+})
+travRouter.get('/trav/genecopies', (req, res) => {
+  const q = req.query as Record<string, string>; if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
+  const r = geneCopies(q.db, Number(q.sid)); if (!r) { res.status(404).json({ error: 'no .gsearch' }); return } res.json(r)
+})
 travRouter.post('/trav/locate', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; if (!b.db) { res.status(400).json({ error: 'Missing db' }); return } sendTrav(res, 'locate', { db: String(b.db), names: Array.isArray(b.names) ? b.names : [] }) })
 
 // 撮影・試験用: 指定 ms 待ってから 1×1 の GIF を返す（headless firefox で <img src=…/api/sleep?ms=8000> を置くと load がその分遅れ、非同期の描画を待てる）
