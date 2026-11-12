@@ -71,3 +71,17 @@ export function denseSlice(X: TravX, x0: number, x1: number): Int32Array | null 
   const b = readArr(X, 'dense_of_x', Math.floor(x0), Math.floor(x1) - Math.floor(x0) + 1); if (!b) return null
   return new Int32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength))
 }
+
+/** dense id の集まりについて、配列（order・refbp・refcid）の値を引く。id を近いもの（間 4,096 以下）の塊にまとめ、塊ごとに 1 回の連続した読み（11-12）。
+ *  窓のノードの id はほぼ連続するので、ふつうは 1〜数回 */
+export function arrByIds(X: TravX, name: string, ids: Iterable<number>): Map<number, number> | null {
+  if (!X.arr || !X.arr.hdr[name]) return null
+  const dt = X.arr.hdr[name][1]; const s = [...new Set(ids)].filter(v => v >= 0).sort((a, b) => a - b); const out = new Map<number, number>()
+  let i = 0
+  while (i < s.length) { let j = i; while (j + 1 < s.length && s[j + 1] - s[j] <= 4096) j++
+    const a = s[i], b = s[j]; const buf = readArr(X, name, a, b - a + 1)
+    if (buf) { const v = dt === 'int64' ? null : new Int32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
+      for (let k = i; k <= j; k++) { const o = s[k] - a; if (dt === 'int64') { if ((o + 1) * 8 <= buf.length) out.set(s[k], Number(buf.readBigInt64LE(o * 8))) } else if (v && o < v.length) out.set(s[k], v[o]) } }
+    i = j + 1 }
+  return out
+}

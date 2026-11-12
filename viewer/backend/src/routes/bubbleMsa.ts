@@ -66,7 +66,7 @@ bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
   // 11-04: .trav があれば Traversals の worker の TS 版（msa.ts）で計算する（python 版と 4 グラフ×8 窓で出力同一、5〜10 倍速い）。
   //   .trav が無い古い DB と AMIPA_MSA_TS=0 のときだけ常駐の python（bubble_msa.py）
   if ((process.env.AMIPA_MSA_TS ?? '1') !== '0' && argv.includes('--synteny') && argv[argv.indexOf('--synteny') + 1].endsWith('.trav')) {
-    sendTrav(res, 'msa', { db, req: { ranges, label: b.label ?? 'Traversals', ...(b.reads && typeof b.reads === 'object' ? { reads: b.reads } : {}) }, label: String(b.label ?? 'Traversals'), flank: Number(flank),
+    sendTrav(res, 'msa', { db, req: { ranges, label: b.label ?? 'Traversals', ...(b.reads && typeof b.reads === 'object' ? { reads: b.reads } : {}), ...(Array.isArray(b.xwin) ? { xwin: b.xwin } : {}) }, label: String(b.label ?? 'Traversals'), flank: Number(flank),
       cap: argv.includes('--cap') ? Number(argv[argv.indexOf('--cap') + 1]) : null, maxLeaves: argv.includes('--max-leaves') ? Number(argv[argv.indexOf('--max-leaves') + 1]) : null })
     return
   }

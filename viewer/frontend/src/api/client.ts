@@ -780,9 +780,10 @@ export interface BubbleMsaResp {
   cols?: MsaCol[]; rows?: MsaRow[]; error?: string
 }
 // Traversals の塩基の段: 各行（パス）のトークン範囲で塩基レベル MSA
-export async function fetchBubbleMsaRanges(dbFile: string, ranges: (string | number)[][], label: string, flank = 0, cap?: number, maxLeaves?: number, reads?: { max: number; samples?: string[] }): Promise<BubbleMsaResp> {
+// xwin: 窓の合意座標 [x0, x1]（11-12）。あればサーバは通過のトークンを窓のタイルから読む
+export async function fetchBubbleMsaRanges(dbFile: string, ranges: (string | number)[][], label: string, flank = 0, cap?: number, maxLeaves?: number, reads?: { max: number; samples?: string[] }, xwin?: [number, number]): Promise<BubbleMsaResp> {
   try {
-    const res = await fetch('/api/bubble_msa/ranges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(reads ? { reads } : {}), db: dbFile, ranges, label, flank, ...(cap != null ? { cap } : {}), ...(maxLeaves != null ? { maxLeaves } : {}) }) })
+    const res = await fetch('/api/bubble_msa/ranges', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(reads ? { reads } : {}), ...(xwin ? { xwin } : {}), db: dbFile, ranges, label, flank, ...(cap != null ? { cap } : {}), ...(maxLeaves != null ? { maxLeaves } : {}) }) })
     if (!res.ok) return { error: 'request failed (' + res.status + ')' }
     return res.json()
   } catch (e) { return { error: String(e) } }

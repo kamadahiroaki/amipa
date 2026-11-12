@@ -559,7 +559,7 @@ def build_stages(b: Bundle, a) -> dict:
              [py, str(PKG / "trav_xfill.py"), str(tmp_trav), str(b.distill)],
              [py, str(PKG / "trav_super.py"), str(b.db), str(tmp_trav), str(b.distill)],
              # 11-12: 範囲の問い合わせの索引（階層ビン・前計算した反復の判定とコンティグの情報・染色体の帯）と位置で読む配列（xbp・葉の累積数・dense_of_x）
-             [py, str(PKG / "trav_xindex.py"), str(tmp_trav), str(b.distill), str(b.travx) + ".tmp"],
+             [py, str(PKG / "trav_xindex.py"), str(tmp_trav), str(b.distill), str(b.travx) + ".tmp", "--db", str(b.db)],
              # 11-12: 通過のトークンを合意座標のタイルにまとめる（cols・nodeset・genes が全ゲノムの配列を引かずに読む）
              [py, str(PKG / "trav_xtiles.py"), str(tmp_trav), str(b.distill), str(b.xtiles) + ".tmp"],
              ["mv", "-f", str(tmp_trav), str(b.trav)],

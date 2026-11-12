@@ -508,7 +508,8 @@ async function openBase(ranges: number[][], label: string, mode: 'node' | 'base'
   if (!root) return
   const my = ++loading; $('busy').style.display = 'inline'
   const wantReads = !!(root as any)?.hasReads && (($('breads') as HTMLInputElement | null)?.checked !== false)
-  const d = await fetchBubbleMsaRanges(db, ranges, label, 0, 0, 3000, wantReads ? { max: numOf('breadmax', 40), ...(readSel.length ? { samples: readSel } : {}) } : undefined)   // cap 0＝畳まない（画面側で畳む）、葉の上限 3,000
+  // xwin＝今の範囲（11-12）: サーバは通過のトークンをこの範囲のタイルから読む（範囲の外のトークンは distill を読むので、ずれていても結果は同じ）
+  const d = await fetchBubbleMsaRanges(db, ranges, label, 0, 0, 3000, wantReads ? { max: numOf('breadmax', 40), ...(readSel.length ? { samples: readSel } : {}) } : undefined, [Math.floor(view[0]), Math.ceil(view[1])])   // cap 0＝畳まない（画面側で畳む）、葉の上限 3,000
   if (my !== loading) return
   $('busy').style.display = 'none'
   if (d.error || !d.cols || !d.rows || !d.cols.length) { $('info').textContent = `塩基の段: ${d.error || '列が無い'}`; $('info').style.color = '#c0392b'; return }

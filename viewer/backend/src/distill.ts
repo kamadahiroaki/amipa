@@ -69,6 +69,21 @@ export class Distill {
     else { const v = new Int32Array(buf.buffer, buf.byteOffset, n); out.set(v) }
     return out
   }
+  // ノードの塩基配列（11-12）: s_seq.bin を s_seq_off で切る。s_id が 1..N の連番（meta.dense_identity）のときだけ（S 行の番号＝dense id − 1）。
+  //   id を近いものの塊にまとめ、塊ごとに s_seq_off と s_seq を 1 回ずつ読む（窓のノードの id はほぼ連続）。使えなければ null（本体 DB の leaf_seq を引く）
+  private soff: Npy | null | undefined; private sfd = -1
+  seqByDense(ids: Iterable<number>): Map<number, string> | null {
+    if (this.soff === undefined) { try { const m = JSON.parse(fs.readFileSync(path.join(this.dir, 'meta.json'), 'utf8')); if (m.dense_identity && m.has_seq) { this.soff = openNpy(path.join(this.dir, 's_seq_off.npy')); this.sfd = fs.openSync(path.join(this.dir, 's_seq.bin'), 'r') } else this.soff = null } catch { this.soff = null } }
+    const so = this.soff; if (!so) return null
+    const s = [...new Set(ids)].filter(v => v >= 1 && v < so.n).sort((a, b) => a - b); const out = new Map<number, string>(); let i = 0
+    while (i < s.length) { let j = i; while (j + 1 < s.length && s[j + 1] - s[j] <= 4096) j++
+      const a = s[i], b = s[j]; const ob = Buffer.alloc((b - a + 2) * so.itemsize); fs.readSync(so.fd, ob, 0, ob.length, so.dataOffset + (a - 1) * so.itemsize)
+      const at = (k: number) => so.itemsize === 8 ? Number(ob.readBigInt64LE(k * 8)) : ob.readInt32LE(k * 4)
+      const base = at(0), end = at(b - a + 1); const sb = Buffer.alloc(end - base); if (sb.length) fs.readSync(this.sfd, sb, 0, sb.length, base)
+      for (let k = i; k <= j; k++) { const o = s[k] - a; out.set(s[k], sb.toString('latin1', at(o) - base, at(o + 1) - base)) }
+      i = j + 1 }
+    return out
+  }
   // パス pi のトークン [s0, e0) の向き（p_ori.npy、1 = 格納向き）。11-04（gene_lof を TS に移すため）
   readOri(pi: number, s0: number, e0: number): Uint8Array {
     checkCancel()

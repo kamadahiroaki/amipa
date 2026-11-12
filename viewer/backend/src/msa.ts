@@ -38,6 +38,10 @@ export interface MsaCtx {
   denseOf: (v: number) => number        // 元 id → dense（無ければ -1）
   order: ArrayLike<number> | null       // dense → 合意の並び（.trav の x、錨でない葉は x_fill。無ければ -1）
   reads?: ReadsSource | null            // <db>.reads（msaReads.ts）。無ければリードの行は出さない
+  // 11-12（設計 plans/viewer-cold-bounded.md 4c）: 窓のタイル・配列ファイル・distill の配列から引く口。無ければ従来（distill のパスごとの読み・本体 DB の leaf_seq と nodes）
+  tok?: { read: (pi: number, a: number, b: number) => Float64Array; ori: (pi: number, a: number, b: number) => Uint8Array } | null
+  nodeInfo?: ((ids: number[]) => { seq: Map<number, string>; refbp: Map<number, number>; refcid: Map<number, number> } | null) | null
+  orderOf?: ((denses: number[]) => Map<number, number>) | null
 }
 function bisectRight(a: number[], x: number, lo: number, hi: number): number { while (lo < hi) { const m = (lo + hi) >> 1; if (x < a[m]) hi = m; else lo = m + 1 } return lo }
 
@@ -48,7 +52,8 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   const MAX_LEAVES = opt.maxLeaves ? Math.max(1, Math.floor(opt.maxLeaves)) : 400
   const maxTokens = opt.maxTokens || 800_000_000
   const off = (pi: number) => Number(dist.off[pi]); const ntok = (pi: number) => dist.ntok(pi)
-  const tokRange = (pi: number, a: number, b: number) => dist.read(pi, a, b)
+  const tokRange = (pi: number, a: number, b: number) => C.tok ? C.tok.read(pi, a, b) : dist.read(pi, a, b)
+  const oriRange = (pi: number, a: number, b: number) => C.tok ? C.tok.ori(pi, a, b) : dist.readOri(pi, a, b)
   const nname = (t: number) => 'n' + C.idOf(t)
   const con: Database.Database = getDb(C.dbFile)
   // ---- 範囲 ----
@@ -116,7 +121,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
       grp.forEach(([s0, e0], gi) => {
         const lo = gi === 0 ? Math.max(0, s0 - flank) : s0; const hi = gi === grp.length - 1 ? Math.min(nb, e0 + flank) : e0
         if (gi > 0) brks.push([tk.length, s0 - grp[gi - 1][1]])
-        const t = tokRange(pi, lo, hi), o = dist.readOri(pi, lo, hi); for (let i = 0; i < t.length; i++) { tk.push(t[i]); oo.push(o[i]) }
+        const t = tokRange(pi, lo, hi), o = oriRange(pi, lo, hi); for (let i = 0; i < t.length; i++) { tk.push(t[i]); oo.push(o[i]) }
       })
       const lo0 = Math.max(0, grp[0][0] - flank), hi1 = Math.min(nb, grp[grp.length - 1][1] + flank)
       const cuts = [0]; let seen = new Set<number>()
@@ -177,7 +182,9 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   const needSet = new Set<string>(); for (const r of runs) for (const t of r.ids) needSet.add(nname(t)); for (const r of runs) if (r.rd) for (const [gid] of r.rd.toks) needSet.add('n' + gid)
   const need = [...needSet].sort((a, b) => idn(a) - idn(b))
   const seqleaf = new Map<string, string>(), refbp = new Map<string, number>(), refcid = new Map<string, number>()
-  for (let i = 0; i < need.length; i += 400) { const ch = need.slice(i, i + 400); const ph = ch.map(() => '?').join(',')
+  const ni = C.nodeInfo ? C.nodeInfo(need.map(idn)) : null
+  if (ni) { for (const [id, sq] of ni.seq) seqleaf.set('n' + id, sq); for (const [id, rb] of ni.refbp) { refbp.set('n' + id, rb); const c = ni.refcid.get(id); if (c != null && c >= 0) refcid.set('n' + id, c) } }
+  else for (let i = 0; i < need.length; i += 400) { const ch = need.slice(i, i + 400); const ph = ch.map(() => '?').join(',')
     for (const [lid, s] of con.prepare(`SELECT leaf_id, seq FROM leaf_seq WHERE leaf_id IN (${ph})`).raw().all(...ch.map(idn)) as any[][]) seqleaf.set('n' + lid, typeof s === 'string' ? s : Buffer.from(s).toString('latin1'))
     for (const [nm, rb, rcid] of con.prepare(`SELECT node_name, MIN(ref_bp), ref_contig_id FROM nodes WHERE node_name IN (${ph}) AND ref_bp IS NOT NULL GROUP BY node_name`).raw().all(...ch) as any[][]) { refbp.set(nm, Number(rb)); if (rcid != null) refcid.set(nm, Number(rcid)) } }
   const L = (n: string) => (seqleaf.get(n) ?? '').length
@@ -213,7 +220,9 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     r.rins = rins.filter(x => tpos.has(x[3])).map(([n_, k_, q_, t_]) => [n_, k_, q_, tpos.get(t_)!])
   }
   prof('リード: cs を歩く'); // ---- 行の向き ----
-  const dcache = C.order
+  // 合意の並び: 窓の行のノードだけ引く（11-12: 配列ファイルから。以前は全ゲノムの配列を丸ごと作った）
+  const dcache: ArrayLike<number> | null = C.orderOf ? (() => { const ds: number[] = []; for (const r of runs) for (const t of r.ids as number[]) ds.push(t); const m = C.orderOf!(ds)
+    return new Proxy({ length: Number.MAX_SAFE_INTEGER } as any, { get: (o, k) => (k === 'length' ? o.length : (m.get(Number(k)) ?? -1)) }) as ArrayLike<number> })() : C.order
   const dense_of_name = new Map<string, number>()
   const pre: { r: any; nodes: string[]; ors: number[]; rev: boolean; cflip?: boolean }[] = []
   for (const r of runs) { const nodes = (r.ids as number[]).map(nname); let wp = 0, wm = 0; nodes.forEach((n, i) => { if (r.ors[i]) wp += L(n); else wm += L(n) })

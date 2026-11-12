@@ -11,7 +11,7 @@ import { getDbDir, getDb } from './db'
 import { distillFor } from './routes/bubbleMsa'
 import { openDistill, Distill } from './distill'
 import { checkCancel } from './travCancel'
-import { openTravX, binQuery, bpAt, nleafX, denseSlice, type TravX } from './travx'
+import { openTravX, binQuery, bpAt, nleafX, denseSlice, arrByIds, type TravX } from './travx'
 import { openXTiles, readTiles, rowTokens, forEachRowToken, type XTiles, type RowToks } from './xtiles'
 import { openGeneX, genexCount, genexRows, genexChildren } from './genex'
 import { bubbleMsaRanges } from './msa'
@@ -1049,6 +1049,45 @@ export function travGeneLof(t: Trav, gids: number[]): any {
 }
 
 // ---- 塩基の段（11-04 に bubble_msa.py の範囲モードから移した。msa.ts）----
+// 11-12（手順 4c）: 窓の合意座標 xwin が要求にあれば、通過のトークン・向きは窓のタイル（前後 1 タイルの余白）から、塩基は distill の s_seq を id の塊で、
+//   参照座標と合意の並びは .travx.arr を id の塊で引く。全ゲノムの配列（x_of_dense・kind・bp・x_fill の並べ直し）と本体 DB の leaf_seq・nodes を読まない。
+//   タイルに無いトークン（窓から遠く延びる泡の端など）だけ distill を読む。dense id が元の id と同じ DB（id_identity）だけ
+// dense id ＝ 元の GFA id か（.trav の meta.id_identity、古い .trav は distill の meta.json の dense_identity）
+function isIdentity(t: Trav): boolean {
+  if (t.meta.id_identity === true || t.meta.id_identity === 'true' || t.meta.id_identity === 1) return true
+  const c = (t as any).__ident; if (c != null) return c
+  let v = false; try { const dir = distillFor(path.join(getDbDir(), path.basename(t.dbFile))); if (dir) v = !!JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8')).dense_identity } catch { /* */ }
+  ;(t as any).__ident = v; return v
+}
+function travMsaX(t: Trav, req: any, opt: { label?: string; flank?: number; cap?: number | null; maxLeaves?: number | null; maxTokens?: number }, x0: number, x1: number): any {
+  const xt = t.xt!, tx = t.tx!; const dir = distillFor(path.join(getDbDir(), path.basename(t.dbFile))); if (!dir) return null
+  const dist = t.dist ?? openDistill(dir); const PADT = 1
+  const tA = Math.max(0, (x0 >> xt.S) - PADT), tB = Math.min(xt.ntile - 1, (x1 >> xt.S) + PADT); const tiles = readTiles(xt, tA, tB)
+  const xa = tA << xt.S, xb = Math.min(t.R - 1, ((tB + 1) << xt.S) - 1)
+  // パスごとに、窓のタイルにあるトークンを番号の順に（同じパスの通過をまとめる）
+  const byPid = new Map<number, { ti: Int32Array; d: Int32Array; rev: Uint8Array; n: number }>()
+  { const rows = txRows(t, xa, xb); const per = new Map<number, RowToks[]>(); for (const r of rows) { const T = rowTokens(xt, tiles, tA, r.id); if (!T.n) continue; const a = per.get(r.pid); if (a) a.push(T); else per.set(r.pid, [T]) }
+    for (const [pid, Ts] of per) { const all: [number, number, number][] = []; for (const T of Ts) for (let k = 0; k < T.n; k++) all.push([T.ti[k], T.d[k], T.rev[k]]); all.sort((p, q) => p[0] - q[0])
+      const ti = new Int32Array(all.length), d = new Int32Array(all.length), rev = new Uint8Array(all.length); let n = 0; for (const [a, b, c] of all) { if (n && ti[n - 1] === a) continue; ti[n] = a; d[n] = b; rev[n] = c; n++ }
+      byPid.set(pid, { ti, d, rev, n }) } }
+  let nHit = 0, nMiss = 0
+  const find = (pi: number, a: number, b: number): [ReturnType<typeof byPid.get>, number] | null => {
+    const m = byPid.get(pi); if (!m || b <= a) return null; let lo = 0, hi = m.n; while (lo < hi) { const md = (lo + hi) >> 1; if (m.ti[md] < a) lo = md + 1; else hi = md }
+    const k = lo; if (k + (b - a) > m.n || m.ti[k] !== a || m.ti[k + (b - a) - 1] !== b - 1) return null; return [m, k] }
+  const tok = {
+    read: (pi: number, a: number, b: number) => { const f = find(pi, a, b); if (!f) { if (b > a) nMiss++; return dist.read(pi, a, b) } nHit++; const [m, k] = f; const out = new Float64Array(b - a); for (let i = 0; i < b - a; i++) out[i] = m!.d[k + i]; return out },
+    ori: (pi: number, a: number, b: number) => { const f = find(pi, a, b); if (!f) { if (b > a) nMiss++; return dist.readOri(pi, a, b) } const [m, k] = f; const out = new Uint8Array(b - a); for (let i = 0; i < b - a; i++) out[i] = m!.rev[k + i] ? 0 : 1; return out },
+  }
+  const nodeInfo = (ids: number[]) => { const seq = dist.seqByDense(ids); if (!seq) return null; const rb = arrByIds(tx, 'refbp', ids), rc = arrByIds(tx, 'refcid', ids); if (!rb || !rc) return null
+    const refbp = new Map<number, number>(); for (const [k, v] of rb) if (v >= 0) refbp.set(k, v); return { seq, refbp, refcid: rc } }
+  if (!tx.arr?.hdr.order || !tx.arr?.hdr.refbp) return null
+  const reads = req && req.reads ? readsSourceFor(path.join(getDbDir(), path.basename(t.dbFile))) : null
+  const N = Number(t.meta.N) || Infinity
+  const o = bubbleMsaRanges({ dbFile: t.dbFile, dist, idOf: d => d, denseOf: v => (v >= 1 && v <= N ? v : -1), order: null, reads, tok, nodeInfo, orderOf: ds => arrByIds(tx, 'order', ds) ?? new Map() }, req, opt)
+  if (o && !o.error) { o.tiles = { hit: nHit, miss: nMiss } }
+  if (nMiss > 20) console.log(`[trav/msa] タイルに無いトークンの読み ${nMiss} 回（${x0}-${x1}）`)
+  return o
+}
 // 合意の並び（python 版の _order_array と同じ）: 錨は x_of_dense、錨でない葉は x_fill
 function orderArray(t: Trav): Float64Array | null {
   const c = (t as any).__order; if (c !== undefined) return c
@@ -1058,6 +1097,10 @@ function orderArray(t: Trav): Float64Array | null {
   ;(t as any).__order = o; return o
 }
 export function travMsa(t: Trav, req: any, opt: { label?: string; flank?: number; cap?: number | null; maxLeaves?: number | null; maxTokens?: number }): any {
+  const xw = Array.isArray(req?.xwin) && req.xwin.length === 2 ? [Math.floor(Number(req.xwin[0])), Math.floor(Number(req.xwin[1]))] : null
+  if (xw && t.tx && t.xt && isIdentity(t) && Number.isFinite(xw[0]) && Number.isFinite(xw[1]) && xw[1] >= xw[0]) {
+    const o = travMsaX(t, req, opt, xw[0], xw[1]); if (o) return o
+  }
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
   const reads = req && req.reads ? readsSourceFor(path.join(getDbDir(), path.basename(t.dbFile))) : null
   return bubbleMsaRanges({ dbFile: t.dbFile, dist: t.dist!, idOf: idOf(t), denseOf: denseOf(t), order: orderArray(t), reads }, req, opt)

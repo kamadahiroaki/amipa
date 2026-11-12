@@ -2,7 +2,7 @@
 """Traversals の範囲の問い合わせ用の索引 <db>.travx と配列ファイル <db>.travx.arr（2026-11-12、trav 段の後）。
 設計 amipa-lab/plans/viewer-cold-bounded.md の ④・⑨（速さはキャッシュに頼らず、1 要求の読みに上限）。
 
-使い方: trav_xindex.py <db>.trav <db>.distill <out>.travx      （<out>.travx.arr も書く）
+使い方: trav_xindex.py <db>.trav <db>.distill <out>.travx [--db <db>]     （<out>.travx.arr も書く）
 
 以前の viewer は、
   - /range のたびに idx_trav_x(x0, x1) で「x0 ≤ 範囲の右端」の行を全部なめ（全ゲノムで 90 行を返すのに 4,300 回・18 MB の読み）、
@@ -25,6 +25,9 @@
 - xbp (int64, R+1) … 座標 → 累積 bp
 - nleafcum (int64, R+2) … nleafcum[x] ＝ x_fill（錨はその座標、錨でない葉は直前の錨の座標）が x 未満の葉の数。範囲の葉の数は 2 値の差
 - dense_of_x (int32, R) … 座標 → 錨のノード（dense id）
+- order (int32, N+1) … ノード（dense id）の合意の並び: 錨は x_of_dense、錨でない葉は x_fill（無ければ -1）。塩基の段が列の順と行の向きに使う（以前は全ゲノムの配列を丸ごと作っていた）
+- refbp (int64, N+1), refcid (int32, N+1) … ノード（dense id）の参照座標（参照パスの上の最小の開始位置、0 始まり）と参照コンティグの番号（本体の ref_contigs.contig_id）。
+    参照で通らないノードは -1。--db があるときだけ。以前は塩基の段が本体 DB（213 GB）の nodes を名前で 1 件ずつ引いていた。本体の nodes.ref_bp と一致（chr13 で確認）
 """
 import json, os, sqlite3, sys, time
 from collections import defaultdict
@@ -32,7 +35,9 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from trav_arrays import get_array
 
-trav, distill, out = sys.argv[1:4]
+import argparse
+_ap = argparse.ArgumentParser(); _ap.add_argument("trav"); _ap.add_argument("distill"); _ap.add_argument("out"); _ap.add_argument("--db")
+_A = _ap.parse_args(); trav, distill, out = _A.trav, _A.distill, _A.out
 t0 = time.time()
 def log(m): print(f"[{time.time()-t0:7.1f}s] {m}", flush=True)
 
@@ -231,8 +236,43 @@ if xf is not None:
     v = np.asarray(xf, dtype=np.int64); v = v[(v >= 0) & (v <= R)]
     cnt = np.bincount(v, minlength=R + 1)[:R + 1]
     arrs["nleafcum"] = np.concatenate([[0], np.cumsum(cnt)]).astype(np.int64)   # [x] ＝ x 未満の数（長さ R+2）
+xo = get_array(tr, "x_of_dense")
+if xo is not None:
+    od = np.asarray(xo, np.int64).copy()
+    if xf is not None:
+        xfa = np.asarray(xf, np.int64); m = min(len(od), len(xfa)); sel = (od[:m] < 0) & (xfa[:m] >= 0); od[:m][sel] = xfa[:m][sel]
+    arrs["order"] = od.astype(np.int32)
 dx = get_array(tr, "dense_of_x")
 if dx is not None: arrs["dense_of_x"] = np.asarray(dx, dtype=np.int32)
+if _A.db:   # 参照座標: 本体の ref_contigs の名前のパスに沿って bp を足し上げる（パスの開始 p_start から）
+    mc = sqlite3.connect(f"file:{_A.db}?mode=ro", uri=True)
+    rcrows = mc.execute("SELECT contig_id, ref_key, name FROM ref_contigs").fetchall()
+    rc = {nm: cid for cid, _k, nm in rcrows}; rck = {(str(k).lower(), nm): cid for cid, k, nm in rcrows}
+    def cid_of(pn):   # 名前がそのまま（GRCh38.chr13）か、PanSN（GCF_000148365.1#1#NC_017631.1）で頭が ref_key・最後の # の後がコンティグ名
+        if pn in rc: return rc[pn]
+        if "#" in pn:
+            ctg = pn[pn.rfind("#") + 1:]; head = pn.split("#")[0].lower()
+            for (k, nm), cid in rck.items():
+                if nm == ctg and (head == k or head.startswith(k + ".") or head.startswith(k)): return cid
+        return None
+    dnames = open(f"{distill}/p_names.txt").read().split("\n")
+    sid = np.load(f"{distill}/s_id.npy").astype(np.int64)
+    try: so_ = np.load(f"{distill}/s_seq_off.npy").astype(np.int64); sbp = so_[1:] - so_[:-1]
+    except Exception: sbp = np.load(f"{distill}/s_bp.npy").astype(np.int64)
+    NB = int(sid.max()) + 1; bpd = np.zeros(NB, np.int64); bpd[sid] = sbp
+    refbp = np.full(NB, np.iinfo(np.int64).max, np.int64); refcid = np.full(NB, -1, np.int32)
+    p_start_ = np.load(f"{distill}/p_start.npy") if os.path.exists(f"{distill}/p_start.npy") else None
+    nref = 0
+    for pi, nm in enumerate(dnames):
+        cid = cid_of(nm)
+        if cid is None: continue
+        tk = np.asarray(p_tok[int(p_off[pi]): int(p_off[pi + 1])], np.int64)
+        if not len(tk): continue
+        ps = (int(p_start_[pi]) if p_start_ is not None else 0) + np.concatenate([[0], np.cumsum(bpd[tk])[:-1]])
+        better = ps < refbp[tk]; np.minimum.at(refbp, tk, ps); refcid[tk[better]] = cid; nref += 1
+    refbp[refbp == np.iinfo(np.int64).max] = -1
+    arrs["refbp"] = refbp; arrs["refcid"] = refcid
+    log(f"参照座標: 参照パス {nref}、座標のあるノード {int((refbp >= 0).sum()):,}")
 hdr = {}; pos = 4096
 for nm, a in arrs.items(): hdr[nm] = [pos, str(a.dtype), int(a.size)]; pos += a.nbytes; pos = (pos + 4095) // 4096 * 4096
 hb = json.dumps(hdr).encode(); assert len(hb) < 4096
