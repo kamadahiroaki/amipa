@@ -78,6 +78,7 @@ if os.path.exists(out): os.remove(out)
 o = sqlite3.connect(out); o.execute("PRAGMA journal_mode=OFF"); o.execute("PRAGMA synchronous=OFF")
 o.execute("CREATE TABLE g_b(bin INT, x0 INT, gid INT, x1 INT, pid INT, hid INT, s0 INT, e0 INT, start INT, end INT, strand TEXT, type TEXT, name TEXT, locus TEXT, product TEXT, pseudo INT, proj INT, frac REAL, anchored INT, ch BLOB, PRIMARY KEY(bin, x0, gid)) WITHOUT ROWID")
 o.executemany(f"INSERT INTO g_b VALUES ({','.join('?' * 20)})", out_rows)
+o.execute("CREATE INDEX g_bx ON g_b(bin, x0, x1)")   # 件数（多すぎるかの判定）を子の塊を読まずに数える
 st_ = os.stat(genes); st2 = os.stat(trav)
 o.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
 o.executemany("INSERT INTO meta VALUES (?,?)", [("format", "1"), ("R", str(R)), ("shifts", json.dumps(shifts)), ("offsets", json.dumps(offsets)), ("has_proj", "1" if has_proj else "0"),
