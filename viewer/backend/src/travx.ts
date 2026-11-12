@@ -30,6 +30,7 @@ export function openTravX(travFile: string): TravX | null {
         r = { db, R: Number(m.R), shifts: JSON.parse(m.shifts), offsets: JSON.parse(m.offsets), cdir: JSON.parse(m.cdir), arr,
           q: {
             trav: db.prepare(`SELECT ${tc.join(', ')} FROM trav_b WHERE bin BETWEEN ? AND ? AND x0 <= ? AND x1 >= ?`),
+            travHid: db.prepare(`SELECT ${tc.join(', ')} FROM trav_b WHERE bin BETWEEN ? AND ? AND x0 <= ? AND x1 >= ? AND hid = ?`),
             copies: db.prepare(`SELECT ${cc.join(', ')} FROM copies_b WHERE bin BETWEEN ? AND ? AND x0 <= ? AND x1 >= ?`),
             reps: db.prepare('SELECT id, pid, hid, i0, i1, bp, x0, x1, tnanch FROM reps_b WHERE bin BETWEEN ? AND ? AND x0 <= ? AND x1 >= ?'),
             chroms: db.prepare('SELECT x0, x1, name, ref FROM chroms ORDER BY x0'),
@@ -41,9 +42,9 @@ export function openTravX(travFile: string): TravX | null {
 }
 
 /** 区間 [x0, x1] に掛かる行（段ごとにビンの範囲を 1 回ずつ読む） */
-export function binQuery<T>(X: TravX, stmt: Database.Statement, x0: number, x1: number): T[] {
+export function binQuery<T>(X: TravX, stmt: Database.Statement, x0: number, x1: number, ...more: unknown[]): T[] {
   const out: T[] = []; const a = Math.max(0, Math.floor(x0)), b = Math.max(a, Math.floor(x1))
-  X.shifts.forEach((s, L) => { const o = X.offsets[L]; for (const r of stmt.all(o + (a >> s), o + (b >> s), b, a) as T[]) out.push(r) })
+  X.shifts.forEach((s, L) => { const o = X.offsets[L]; for (const r of stmt.all(o + (a >> s), o + (b >> s), b, a, ...more) as T[]) out.push(r) })
   return out
 }
 

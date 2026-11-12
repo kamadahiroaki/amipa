@@ -183,7 +183,7 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
   // hid を指定したらその株の通過だけ（11-11: 画面が参照の株の通過だけを要るのに全株・全ゲノムを取り、ヒトで 27 MB の応答になっていた）。反復・コピー・重なりも付けない
   if (opts.hid != null && Number.isFinite(opts.hid)) {
     const ma0 = effFloor(opts.minAnchors ?? 0, x0, x1)
-    const one = (t.tx ? txRows(t, x0, x1).filter(r => r.hid === opts.hid).sort((a, b) => a.pid - b.pid || a.i0 - b.i0) : t.db.prepare('SELECT * FROM trav WHERE hid = ? AND x0 <= ? AND x1 >= ? ORDER BY pid, i0').all(opts.hid, x1, x0) as TravRow[]).filter(r => r.nanch >= ma0)
+    const one = (t.tx ? txRows(t, x0, x1, opts.hid).sort((a, b) => a.pid - b.pid || a.i0 - b.i0) : t.db.prepare('SELECT * FROM trav WHERE hid = ? AND x0 <= ? AND x1 >= ? ORDER BY pid, i0').all(opts.hid, x1, x0) as TravRow[]).filter(r => r.nanch >= ma0)
     return { x0, x1, bp0: bpOf(t, x0), bp1: bpOf(t, x1 + 1), trav: one, copies: [], reps: [], perHap: { [opts.hid]: one.length }, dups: [] }
   }
   if (t.tx) return travRangeX(t, x0, x1, opts)
@@ -206,9 +206,9 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
   return { x0, x1, bp0: bpOf(t, x0), bp1: bpOf(t, x1 + 1), trav: out, copies, reps: repsOut, perHap, dups }
 }
 // 11-12: 索引 <db>.travx から。反復の判定・trim・コンティグの情報は前計算の列（trav_xindex.py）。窓に依らない（以前は表示範囲に入った行だけで判定していた）
-function txRows(t: Trav, x0: number, x1: number): TravRow[] {
+function txRows(t: Trav, x0: number, x1: number, hid?: number): TravRow[] {
   // 行は新しい物に詰め替える（delete で列を消すと V8 の遅い形の物になり、全体表示の 10 万行で 2 倍遅かった）
-  return binQuery<any>(t.tx!, t.tx!.q.trav, x0, x1).map(r => {
+  return (hid != null ? binQuery<any>(t.tx!, t.tx!.q.travHid, x0, x1, hid) : binQuery<any>(t.tx!, t.tx!.q.trav, x0, x1)).map(r => {
     const p = t.paths[r.pid]
     const o: any = { id: r.id, pid: r.pid, hid: r.hid, i0: r.i0, i1: r.i1, x0: r.x0, x1: r.x1, dir: r.dir, copy: r.copy, nanch: r.nanch, bp: r.bp, bp0: r.bp0, fill: r.fill,
       rep: r.rep < 0 ? undefined : r.rep === 1, pn: p ? p.path : '', cs: r.cs, ce: r.ce, fs: !!r.fs, fe: !!r.fe, cs0: !!r.cs0, ce1: false, ceL: !!r.ceL }
@@ -694,15 +694,20 @@ export function travLocate(t: Trav, names: string[]): any {
   // 錨でない葉の座標（x_fill: 同じパスで直前の錨の x の bp 多数決。xfill_build.py が足す）
   const XF: Int32Array | null = (() => { const c = (t as any).__xfill; if (c !== undefined) return c; const r = arrRow(t.db, 'x_fill'); const v = r ? new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)) : null; (t as any).__xfill = v; return v })()
   // 上限は画面側の送る上限（120,000）と同じに（11-05: 5,000 で切っていたため、見えているノードが多い広い表示で 6 割が灰色のままだった。fly16 全体 12,303 個）
+  // 11-12: スーパーノードの座標は super 表を名前で 1 件ずつ引く（初回 1 件 1〜7 ms）。1 要求で 1.5 秒を超えたら残りは「まだ」（kind −3）で返し、
+  //   画面が次の問い合わせで引き直す（列を数十秒ふさがない）。本来の直し方は合意座標をグラフのタイルに持たせること（plans/viewer-cold-bounded.md ①）
+  const T0 = Date.now(); let late = 0
   const nodes = names.slice(0, 120000).map((nm, i) => {
-    if ((i & 1023) === 0) checkCancel()   // 11-12: スーパーノードの 1 件引きは初回 1 件数 ms。取り消されたら途中で抜ける
+    if ((i & 1023) === 0) checkCancel()   // 11-12: 取り消されたら途中で抜ける
     const m = /^n(\d+)$/.exec(nm)
+    if (!m && qs && (late > 0 || ((i & 63) === 0 && Date.now() - T0 > 1500))) { late++; return { name: nm, x: -1, kind: -3 } }
     if (!m) { const r = qs ? (qs.get(nm) as { x: number; frac: number; bp: number; xmin: number; xmax: number } | undefined) : undefined; return r ? { name: nm, x: r.x, kind: -2, frac: r.frac, bp: r.bp, xmin: r.xmin, xmax: r.xmax } : { name: nm, x: -1, kind: -1 } }
     const d = dof(Number(m[1]))
     if (d < 0) return { name: nm, x: -1, kind: -1 }
     if (X[d] >= 0) return { name: nm, x: X[d], kind: K[d] }; if (XF && XF[d] >= 0) return { name: nm, x: XF[d], kind: 6 }; return { name: nm, x: -1, kind: K[d] }   // kind 6 ＝ 錨でない葉に直前の錨の座標を与えたもの
   })
-  return { nodes, R: t.R, hasSuper, hasFill: !!XF }
+  if (late) console.log(`[trav/locate] ${late} 件は時間切れ（${Date.now() - T0} ms）。次の問い合わせで引き直す`)
+  return { nodes, R: t.R, hasSuper, hasFill: !!XF, late }
 }
 
 // ---- 遺伝子名の検索（Traversals パネルの検索欄）: 名前・locus の前方一致、産物の部分一致。見つかった遺伝子ごとに座標（両端 1,500 トークンの錨の x）----

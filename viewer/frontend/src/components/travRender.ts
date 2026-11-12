@@ -357,17 +357,18 @@ const locInflight = new Map<string, Promise<void>>()
 // グラフを動かすたびの問い合わせは、次に動かした時点で取り消す（サーバも実行中の計算を止める）。検索・名前で開くなどの 1 回きりの問い合わせは取り消さない
 let locAC = new AbortController()
 async function locateMany(names: string[], signal?: AbortSignal): Promise<{ nodes: LocNode[]; hasFill: boolean } | null> {
+  const tried = new Set<string>()   // この呼び出しで自分が問い合わせた名前（時間切れで埋まらなくても、この呼び出しの中では引き直さない）
   for (let round = 0; round < 2; round++) {   // 2 回目: 待っていた他人の要求が取り消されて埋まらなかった名前を自分で引き直す
     const need: string[] = []; const waits = new Set<Promise<void>>()
-    for (const n of names) { if (locCache.has(n)) continue; const p = locInflight.get(n); if (p) waits.add(p); else need.push(n) }
+    for (const n of names) { if (locCache.has(n) || tried.has(n)) continue; const p = locInflight.get(n); if (p) waits.add(p); else need.push(n) }
     if (need.length) {
       if (locCache.size + need.length > 400000) locCache.clear()
-      const batch = need.slice(0, 120000)
+      const batch = need.slice(0, 120000); for (const n of batch) tried.add(n)
       let p: Promise<void> | null = null
       p = (async () => {
         try {
           const r = await fetch('/api/trav/locate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, names: batch }), signal }); const j = await r.json()
-          for (const n of (j.nodes || []) as LocNode[]) locCache.set(n.name, n); if (j.hasFill != null) locHasFill = !!j.hasFill
+          for (const n of (j.nodes || []) as LocNode[]) if (n.kind !== -3) locCache.set(n.name, n); if (j.hasFill != null) locHasFill = !!j.hasFill   // −3＝サーバの時間切れ（覚えず、次に引き直す）
         } catch { /* 取り消し・失敗: 名前は埋まらないまま（次に引き直す） */ }
         finally { for (const n of batch) if (locInflight.get(n) === p) locInflight.delete(n) }
       })()
@@ -376,7 +377,7 @@ async function locateMany(names: string[], signal?: AbortSignal): Promise<{ node
     if (!waits.size) break
     await Promise.all(waits)
     if (signal?.aborted) return null
-    if (names.every(n => locCache.has(n))) break
+    if (names.every(n => locCache.has(n) || tried.has(n))) break
   }
   return { nodes: names.map(n => locCache.get(n) ?? { name: n, x: -1, kind: -1 }), hasFill: locHasFill }
 }

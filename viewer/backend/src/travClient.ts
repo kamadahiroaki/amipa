@@ -23,7 +23,8 @@ function worker(): Worker {
 
 // 11-11: 要求をメイン側の列に溜め、worker へは 1 本ずつ渡す。以前は届いた順に worker へ投げていたので、全体図の山（locate・小さく速い）が
 //   行・遺伝子・リードなどの重い要求の後ろで数十秒待った。軽い要求を先に回し、接続が切れた要求（画面が範囲を変えて取り消した fetch）は計算せずに捨てる
-const PRIO: Record<string, number> = { root: 0, chroms: 0, atoms: 0, locate: 1, nodes: 1, nleaf: 1, range: 2, path: 2 }   // 無いものは 3
+// 11-12: locate（グラフ連動）は範囲の行（range）より後に。初回のスーパーノードの引きが重く、範囲の表示が後ろで待った
+const PRIO: Record<string, number> = { root: 0, chroms: 0, atoms: 0, nodes: 1, nleaf: 1, range: 2, path: 2, locate: 3 }   // 無いものは 3
 type TJob = { id: number; op: string; q: Record<string, any>; res: Response; gone: boolean; t0: number; pr: number }
 const tqueue: TJob[] = []; let tbusy = false
 function tpump(): void {
