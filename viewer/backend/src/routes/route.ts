@@ -10,7 +10,7 @@ import { getDb, getDbDir } from '../db'
 import { spatialSource } from '../spatial'
 import { openDistill } from '../distill'
 import { distillFor } from './bubbleMsa'
-import { openAnc, ancOf, ancCode } from '../anc'
+import { openAnc, ancOf, ancCode, ancSlice } from '../anc'
 
 import { sendBg } from '../bgClient'
 
@@ -98,7 +98,12 @@ export function routeHandler(req: { query: any }, res: any): void {
     for (let fi = 0; fi < pids.length; fi++) {
       const pid = pids[fi]; const nt = dist.ntok(pid)
       const tok = dist.read(pid, 0, nt), ori = dist.readOri(pid, 0, nt)
-      if (ANC && codeIdx) { const ids = new Set<number>(); for (let i = 0; i < nt; i++) ids.add(idOfT(tok[i])); for (const [leafId, c] of ancOf(ANC, L, ids)) { const k = codeIdx.get(c); if (k !== undefined) leafAnc.set(leafId, k) } }
+      if (ANC && codeIdx) {   // 番号がまとまっていれば範囲 1 回の型付き配列で（11-12: Map で 100 万個を引くと 1 秒かかった）
+        let lo = Infinity, hi = -1; for (let i = 0; i < nt; i++) { const v = idOfT(tok[i]); if (v < lo) lo = v; if (v > hi) hi = v }
+        const sl = hi - lo <= 8_000_000 ? ancSlice(ANC, L, lo, hi) : null
+        if (sl) { for (let i = 0; i < nt; i++) { const v = idOfT(tok[i]); if (leafAnc.has(v)) continue; const c = sl[v - lo]; if (c === 0xFFFFFFFF) continue; const k = codeIdx.get(c); if (k !== undefined) leafAnc.set(v, k) } }
+        else if (L >= ANC.maxlayer) { for (let i = 0; i < nt; i++) { const v = idOfT(tok[i]); const k = codeIdx.get(v); if (k !== undefined) leafAnc.set(v, k) } }
+        else { const ids = new Set<number>(); for (let i = 0; i < nt; i++) ids.add(idOfT(tok[i])); for (const [leafId, c] of ancOf(ANC, L, ids)) { const k = codeIdx.get(c); if (k !== undefined) leafAnc.set(leafId, k) } } }
       let bpd: ArrayLike<number> | null = bpd0, bpBase = 0; let bpMap: Map<number, number> | null = null
       if (ident && nt) { let lo = Infinity, hi = -1; for (let i = 0; i < nt; i++) { const t = tok[i]; if (t < lo) lo = t; if (t > hi) hi = t }
         if (hi - lo <= 8_000_000) { const r = dist.bpRange(lo, hi); if (r) { bpd = r; bpBase = lo } }

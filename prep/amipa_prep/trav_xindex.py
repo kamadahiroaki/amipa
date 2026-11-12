@@ -27,7 +27,9 @@
 - dense_of_x (int32, R) … 座標 → 錨のノード（dense id）
 - order (int32, N+1) … ノード（dense id）の合意の並び: 錨は x_of_dense、錨でない葉は x_fill（無ければ -1）。塩基の段が列の順と行の向きに使う（以前は全ゲノムの配列を丸ごと作っていた）
 - refbp (int64, N+1), refcid (int32, N+1) … ノード（dense id）の参照座標（参照パスの上の最小の開始位置、0 始まり）と参照コンティグの番号（本体の ref_contigs.contig_id）。
-    参照で通らないノードは -1。--db があるときだけ。以前は塩基の段が本体 DB（213 GB）の nodes を名前で 1 件ずつ引いていた。本体の nodes.ref_bp と一致（chr13 で確認）
+    参照で通らないノードは -1。--db があるときだけ。
+- refori (int8, N+1) … 参照パスがそのノードを通る向きの bp 加重の多数派（1＝格納向き、0＝逆、参照が通らなければ -1）。本体の emit.py の ref_orient と同じ。
+    パスのリボンがコンティグ単位の逆位を判定するのに使う（rel ＝ 向き XOR refori、基準は contig_dict.ref_baseline）以前は塩基の段が本体 DB（213 GB）の nodes を名前で 1 件ずつ引いていた。本体の nodes.ref_bp と一致（chr13 で確認）
 """
 import json, os, sqlite3, sys, time
 from collections import defaultdict
@@ -261,6 +263,7 @@ if _A.db:   # 参照座標: 本体の ref_contigs の名前のパスに沿って
     except Exception: sbp = np.load(f"{distill}/s_bp.npy").astype(np.int64)
     NB = int(sid.max()) + 1; bpd = np.zeros(NB, np.int64); bpd[sid] = sbp
     refbp = np.full(NB, np.iinfo(np.int64).max, np.int64); refcid = np.full(NB, -1, np.int32)
+    p_ori_ = np.load(f"{distill}/p_ori.npy", mmap_mode="r"); rc_ = np.zeros(NB, np.float64); rs_ = np.zeros(NB, np.float64)
     p_start_ = np.load(f"{distill}/p_start.npy") if os.path.exists(f"{distill}/p_start.npy") else None
     nref = 0
     for pi, nm in enumerate(dnames):
@@ -270,8 +273,11 @@ if _A.db:   # 参照座標: 本体の ref_contigs の名前のパスに沿って
         if not len(tk): continue
         ps = (int(p_start_[pi]) if p_start_ is not None else 0) + np.concatenate([[0], np.cumsum(bpd[tk])[:-1]])
         better = ps < refbp[tk]; np.minimum.at(refbp, tk, ps); refcid[tk[better]] = cid; nref += 1
+        oo = np.asarray(p_ori_[int(p_off[pi]): int(p_off[pi + 1])], np.float64); bw = np.maximum(bpd[tk], 1).astype(np.float64)
+        np.add.at(rc_, tk, bw); np.add.at(rs_, tk, oo * bw)
     refbp[refbp == np.iinfo(np.int64).max] = -1
     arrs["refbp"] = refbp; arrs["refcid"] = refcid
+    arrs["refori"] = np.where(rc_ > 0, (rs_ * 2 >= rc_).astype(np.int8), np.int8(-1)).astype(np.int8)
     log(f"参照座標: 参照パス {nref}、座標のあるノード {int((refbp >= 0).sum()):,}")
 hdr = {}; pos = 4096
 for nm, a in arrs.items(): hdr[nm] = [pos, str(a.dtype), int(a.size)]; pos += a.nbytes; pos = (pos + 4095) // 4096 * 4096

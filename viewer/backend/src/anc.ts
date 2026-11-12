@@ -31,3 +31,11 @@ export function ancOf(A: Anc, L: number, ids: Iterable<number>): Map<number, num
     i = j + 1 }
   return out
 }
+
+/** 層 L の祖先を葉の番号 [a, b] の範囲で 1 回に読む（添字 ＝ 番号 − a）。最深層なら null（葉そのもの） */
+export function ancSlice(A: Anc, L: number, a: number, b: number): Uint32Array | null {
+  if (L >= A.maxlayer) return null
+  const base = A.off[String(L)]; if (base == null) return null
+  a = Math.max(0, a); b = Math.min(A.n, b); const buf = Buffer.alloc(Math.max(0, (b - a + 1) * 4)); if (buf.length) fs.readSync(A.fd, buf, 0, buf.length, base + a * 4)
+  return new Uint32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
+}

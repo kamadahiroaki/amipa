@@ -50,7 +50,7 @@ export function binQuery<T>(X: TravX, stmt: Database.Statement, x0: number, x1: 
 
 function readArr(X: TravX, name: string, i0: number, n: number): Buffer | null {
   if (!X.arr || !X.arr.hdr[name]) return null
-  const [off, dt, len] = X.arr.hdr[name]; const w = dt === 'int64' ? 8 : 4
+  const [off, dt, len] = X.arr.hdr[name]; const w = dt === 'int64' ? 8 : dt === 'int8' || dt === 'uint8' ? 1 : 4
   const a = Math.max(0, Math.min(len, i0)), e = Math.max(a, Math.min(len, i0 + n)); const b = Buffer.alloc((e - a) * w)
   if (b.length) fs.readSync(X.arr.fd, b, 0, b.length, off + a * w)
   return b
@@ -80,8 +80,13 @@ export function arrByIds(X: TravX, name: string, ids: Iterable<number>): Map<num
   let i = 0
   while (i < s.length) { let j = i; while (j + 1 < s.length && s[j + 1] - s[j] <= 4096) j++
     const a = s[i], b = s[j]; const buf = readArr(X, name, a, b - a + 1)
-    if (buf) { const v = dt === 'int64' ? null : new Int32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
-      for (let k = i; k <= j; k++) { const o = s[k] - a; if (dt === 'int64') { if ((o + 1) * 8 <= buf.length) out.set(s[k], Number(buf.readBigInt64LE(o * 8))) } else if (v && o < v.length) out.set(s[k], v[o]) } }
+    if (buf) { const v = dt === 'int64' || dt === 'int8' ? null : new Int32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
+      for (let k = i; k <= j; k++) { const o = s[k] - a; if (dt === 'int64') { if ((o + 1) * 8 <= buf.length) out.set(s[k], Number(buf.readBigInt64LE(o * 8))) } else if (dt === 'int8') { if (o < buf.length) out.set(s[k], buf.readInt8(o)) } else if (v && o < v.length) out.set(s[k], v[o]) } }
     i = j + 1 }
   return out
+}
+
+/** 配列 name の [a, b] を 1 回で読む（int8 / int32）。添字 ＝ 番号 − a */
+export function arrSlice8(X: TravX, name: string, a: number, b: number): Int8Array | null {
+  const buf = readArr(X, name, a, b - a + 1); if (!buf) return null; return new Int8Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength))
 }

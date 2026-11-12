@@ -8,6 +8,12 @@ import { tiledInfo, TILED_OFF, morton, zranges, rangesParams, buildTiledEdgesSql
 import { covFmt, rangeMaxFn, rangeSumFn, listAll } from '../covBlob'
 
 import { sendBg } from '../bgClient'
+import { openAnc, ancOf, ancCode, ancSlice } from '../anc'
+import { openTravX, arrByIds, arrSlice8 } from '../travx'
+import { openDistill } from '../distill'
+import { distillFor } from './bubbleMsa'
+import { getDbDir } from '../db'
+import path from 'path'
 
 export const pathsRouter = Router()
 
@@ -195,6 +201,60 @@ pathsRouter.get('/path_groups', (req, res) => {
 // bbox(x1,y1,x2,y2): 指定時は nodes_rtree/edges_rtree で層 L ∩ 矩形に絞る（深層で全層走査を回避）。
 //   viewer は現ビューポートを FETCH_MARGIN 拡張した矩形を渡し、パン settle 毎に再取得する（陳腐化防止）。
 //   無指定なら層全体（minimap 等の後方互換）。
+
+// コンティグ単位のリボン（11-12）。使えない条件なら null（呼び手は従来の経路）
+function ribbonByContigs(d: any, db: string, L: number, rect: { x1: number; x2: number; y1: number; y2: number }, lo: number, hi: number): any | null {
+  if (hi - lo + 1 > 8) return null
+  const ti = tiledInfo(d); if (!ti || L >= ti.g.length || !ti.edgeCols) return null
+  const dbPath = path.join(getDbDir(), path.basename(db)); const A = openAnc(dbPath); if (!A) return null
+  const dir = distillFor(dbPath); if (!dir) return null; const dist = openDistill(dir); if (!dist.identity()) return null
+  const kr = d.prepare('SELECT key, ref_baseline AS b FROM contig_dict WHERE contig_id BETWEEN ? AND ?').all(lo, hi) as { key: string; b: number | null }[]
+  if (!kr.length) return null; const keys = kr.map(r => r.key); const baseOf = new Map(kr.map(r => [r.key, r.b ?? 0]))
+  // 逆位は本体の emit.py と同じ定義: 参照と共有する葉のステップだけ、rel ＝ 向き XOR 参照の向き（.travx.arr の refori）、
+  //   コンティグの基準（contig_dict.ref_baseline）から外れた bp の割合を祖先ごとに合算し、round(255·割合) ≥ 128 を逆位
+  const TX = openTravX(dbPath + '.trav'); if (!TX || !TX.arr?.hdr.refori) return null
+  const sp = spatialSource(d, L, rect); if (!sp.tiled) return null
+  const rows = d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r FROM ${sp.from}`).all(...sp.params) as { id: number; name: string; x: number; y: number; a: number; r: number }[]
+  const byCode = new Map<number, number>(); rows.forEach((r, i) => { const c = ancCode(r.name); if (c >= 0) byCode.set(c, i) })
+  const okb = new Float64Array(rows.length), devb = new Float64Array(rows.length); const hit = new Uint8Array(rows.length); const pairs = new Set<string>()
+  for (const key of keys) for (const pid of dist.pidsOf(key)) {
+    const nt = dist.ntok(pid); if (!nt) continue
+    const tok = dist.read(pid, 0, nt), ori = dist.readOri(pid, 0, nt); const ids = tok as unknown as number[]
+    const base = baseOf.get(key) ?? 0
+    let lo2 = Infinity, hi2 = -1; for (let i = 0; i < nt; i++) { const t = tok[i]; if (t < lo2) lo2 = t; if (t > hi2) hi2 = t }
+    const dense = hi2 - lo2 <= 8_000_000   // 番号がまとまっていれば範囲の型付き配列で（Map を作らない）。散っていれば番号の塊ごとの Map
+    const bpr = dense ? dist.bpRange(lo2, hi2) : null
+    const aS = dense ? ancSlice(A, L, lo2, hi2) : null, rS = dense ? arrSlice8(TX, 'refori', lo2, hi2) : null
+    const am = dense ? null : ancOf(A, L, ids), ro = dense ? null : (arrByIds(TX, 'refori', ids) ?? new Map<number, number>())
+    const ancAt = (t: number) => { if (aS) { const v = aS[t - lo2]; return v === 0xFFFFFFFF ? undefined : v } if (dense && L >= A.maxlayer) return t; return am!.get(t) }
+    const roAt = (t: number) => rS ? rS[t - lo2] : ro!.get(t)
+    let prev = -1
+    for (let i = 0; i < nt; i++) { const t = tok[i]; const c = ancAt(t); const k = c === undefined ? undefined : byCode.get(c)
+      if (k === undefined) { prev = -1; continue }
+      hit[k] = 1
+      const r0 = roAt(t); if (r0 !== undefined && r0 >= 0) { const bp = Math.max(1, bpr ? bpr[t - lo2] : 1); if (((ori[i] ? 1 : 0) ^ r0) !== base) devb[k] += bp; else okb[k] += bp }
+      if (prev >= 0 && prev !== k) pairs.add(prev < k ? prev + ',' + k : k + ',' + prev)
+      prev = k }
+  }
+  const idx = new Map<number, number>(); const nodes: any[] = []
+  rows.forEach((r, i) => { if (!hit[i]) return; idx.set(r.id, i); const tot = okb[i] + devb[i]; const inv = tot > 0 && Math.round(255 * devb[i] / tot) >= 128
+    nodes.push({ id: r.id, name: r.name, x: r.x, y: r.y, a: r.a, r: r.r, frac: 1, inv }) })
+  // 辺: タイルの edges_t（矩形）のうち、コンティグが続けて通った組だけ。端点は rodAxisExpr と同じ式
+  const rg = zranges(rect.x1, rect.x2, rect.y1, rect.y2, ti.g[L]); const seen = new Set<number>(); const edges: any[] = []
+  const end = (P: { x: number; y: number; r: number; a: number }, sign: number, Q: { x: number; y: number }): [number, number] => {
+    if (sign === 0) { const dx = Q.x - P.x, dy = Q.y - P.y; const dd = Math.sqrt(dx * dx + dy * dy) || 1; return [P.x + P.r * dx / dd, P.y + P.r * dy / dd] }
+    return [P.x + sign * P.r * Math.cos(P.a), P.y + sign * P.r * Math.sin(P.a)] }
+  const invOf = new Map(nodes.map(n => [n.id, n.inv]))
+  for (const e of d.prepare(buildTiledEdgesSql(rg.length, '', '', '', '', false)).all(...rangesParams(rg), L, rect.x1, rect.x2, rect.y1, rect.y2) as any[]) {
+    if (seen.has(e.id)) continue; seen.add(e.id); const i = idx.get(e.src_id), j = idx.get(e.tgt_id); if (i === undefined || j === undefined) continue
+    if (!pairs.has(i < j ? i + ',' + j : j + ',' + i)) continue
+    const P = rows[i], Q = rows[j]; const [sx, sy] = end(P, e.src_sign, Q), [ex, ey] = end(Q, e.tgt_sign, P)
+    const o: any = { su: P.id, tv: Q.id, sx, sy, ex, ey }; if (invOf.get(P.id) && invOf.get(Q.id)) o.inv = true; edges.push(o)
+  }
+  const anyInv = nodes.some(n => n.inv)
+  return { nodes, edges: anyInv ? edges.map(e => ({ ...e, inv: !!e.inv })) : edges }
+}
+
 export function ribbonHandler(req: { query: any }, res: any): void {
   const { db, layer, groups } = req.query as Record<string, string>
   if (!db || layer == null || !groups) { res.status(400).json({ error: 'Missing params' }); return }
@@ -269,10 +329,18 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       // θ>0 は cov の値そのものが必要なので従来経路（blob を読む）に落ちる。
       // AMIPA_RIBBON_NO_MASK=1 で旧経路（blob を読む）に固定できる。同一リクエストで
       // マスク経路と blob 経路の応答が完全一致することを確かめるための逃げ道。
+      const TP: [string, number][] = []; let tp = Date.now(); const lap = (k: string) => { const n = Date.now(); TP.push([k, n - tp]); tp = n }   // 11-12: 段ごとの時間（遅いときログ）
       const rsel = (theta === 0 && (process.env.AMIPA_RIBBON_NO_MASK ?? process.env.GGB_RIBBON_NO_MASK) !== '1') ? (() => {
         try { return buildSelection(d, `${lo}-${hi}`) } catch { return null }
       })() : null
       const useMask = !!rsel && !rsel.exact
+      // ── コンティグ単位の選択（hap の一部だけ）の速い経路（11-12）────────────
+      //   hap マスクでは厳密に絞れないので、従来は本体の node_contig_cov・node_contig_inv・edges をノードごとに引いていた（全ゲノム層 16 で初回 3 秒）。
+      //   /route と同じく、コンティグのトークンを葉 → 祖先の配列（<db>.anc）で層 L のノードに写し、矩形の中で通ったノード・続けて通った組（辺）・
+      //   逆向きに通った bp の割合（逆位）を出す。本体を読まない。θ=0・矩形あり・タイル経路・dense＝id・コンティグ 8 本まで
+      if (theta === 0 && hasBbox && !useMask && (process.env.AMIPA_RIBBON_CONTIG ?? '1') !== '0') {
+        const fast = ribbonByContigs(d, db, L, rect, lo, hi); if (fast) { res.json(fast); return }
+      }
       let covered: { id: number; name: string; x: number; y: number; a: number; r: number; frac: number }[] = []
       let invByMask = false; const invMask = new Set<number>()   // 11-12: tiledx の逆位マスクで決めた逆位のノード
       if (useMask && rsel) {
@@ -306,6 +374,7 @@ export function ribbonHandler(req: { query: any }, res: any): void {
         // θ=0 の通過判定なので frac は「通る」の 1 でよい（frac は frontend の描画では未使用）。
         covered = rows.map(r => ({ id: r.id, name: r.name, x: r.x, y: r.y, a: r.a, r: r.r, frac: 1 }))
         if (invByMask) for (const r of rows as any[]) if (r.iv) invMask.add(r.id)
+        lap('nodes')
       } else {
       const allRows = (hasBbox
         ? (() => { const sp = spOf(); return d.prepare(
@@ -347,7 +416,7 @@ export function ribbonHandler(req: { query: any }, res: any): void {
           if (rangeMaxCov(b, lo, hi, true) >= INV_THRESH) invIds.add(ir.id)
         }
       }
-      const idByName = new Map<string, number>(covered.map(r => [r.name, r.id]))
+      lap('inv'); const idByName = new Map<string, number>(covered.map(r => [r.name, r.id]))
       let edges: any[]
       if (idByName.size === 0) {
         edges = []
@@ -428,6 +497,7 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       } else {
         edges = filterEdges(relevantEdges([...idByName.keys()]), idByName)
       }
+      lap('edges'); { const tot = TP.reduce((a, b) => a + b[1], 0); if (tot > 1000) console.log(`[ribbon] L${L} ${covered.length} nodes ${edges.length} edges ${tot} ms ` + TP.map(([k, v]) => `${k}=${v}`).join(' ')) }
       const nodes = covered.map(r => ({ id: r.id, name: r.name, x: r.x, y: r.y, a: r.a, r: r.r, frac: r.frac,
                                         inv: invIds.has(r.id) }))
       // エッジ逆位 = 両端ノードとも逆位(逆位区間内の辺)。invIds が空なら全 false。
