@@ -253,6 +253,7 @@ class Bundle:
         self.annot = Path(str(self.db) + ".annot")
         self.tiled = Path(str(self.db) + ".tiled")     # 描画用タイル索引（tile_index.py）
         self.trav = Path(str(self.db) + ".trav")       # Traversals の錨・座標・通過（trav_build.py ほか）
+        self.travx = Path(str(self.db) + ".travx")     # 範囲の索引と配列ファイル .travx.arr（trav_xindex.py、11-12）
         self.xdepth = Path(str(self.db) + ".xdepth")   # 座標ごとのリードの深さ（reads_xdepth.py）
         self.genes = Path(str(self.db) + ".genes")     # 株ごとの遺伝子（genes_build.py → genes_project.py）
         self.gsearch = Path(str(self.db) + ".gsearch") # 遺伝子検索の索引（gsearch_build.py、11-12）
@@ -555,8 +556,12 @@ def build_stages(b: Bundle, a) -> dict:
              [py, str(PKG / "trav_build.py"), "--distill", str(b.distill), "--seed-ref", a.ref_key, "--out", str(tmp_trav)],
              [py, str(PKG / "trav_xfill.py"), str(tmp_trav), str(b.distill)],
              [py, str(PKG / "trav_super.py"), str(b.db), str(tmp_trav), str(b.distill)],
-             ["mv", "-f", str(tmp_trav), str(b.trav)]],
-            inputs=[b.distill, b.db], outputs=[b.trav],
+             # 11-12: 範囲の問い合わせの索引（階層ビン・前計算した反復の判定とコンティグの情報・染色体の帯）と位置で読む配列（xbp・葉の累積数・dense_of_x）
+             [py, str(PKG / "trav_xindex.py"), str(tmp_trav), str(b.distill), str(b.travx) + ".tmp"],
+             ["mv", "-f", str(tmp_trav), str(b.trav)],
+             ["mv", "-f", str(b.travx) + ".tmp.arr", str(b.travx) + ".arr"],
+             ["mv", "-f", str(b.travx) + ".tmp", str(b.travx)]],
+            inputs=[b.distill, b.db], outputs=[b.trav, b.travx],
             env={**thread_env(1), "NUMBA_NUM_THREADS": "1"},
             note="Traversals の錨・座標・通過（種は参照パス）",
         )

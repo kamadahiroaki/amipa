@@ -11,6 +11,7 @@ import { getDbDir, getDb } from './db'
 import { distillFor } from './routes/bubbleMsa'
 import { openDistill, Distill } from './distill'
 import { checkCancel } from './travCancel'
+import { openTravX, binQuery, bpAt, nleafX, denseSlice, type TravX } from './travx'
 import { bubbleMsaRanges } from './msa'
 import { readsSourceFor } from './msaReads'
 
@@ -38,6 +39,7 @@ export interface Trav {
   dbFile: string
   genesDb?: Database.Database | null   // <db>.genes（遺伝子レーン用。無ければ null）
   xOfDense?: Int32Array; kindOfDense?: Uint8Array; bpOfDense?: Int32Array; dist?: Distill | null   // 錨の列（travCols）用。初回に読む
+  tx?: TravX | null   // 11-12: 範囲の索引 <db>.travx（あれば xbp を読み込まず、/range・/root・/nleaf・/nodes はこれを引く）
 }
 
 const cache = new Map<string, Trav>()
@@ -81,7 +83,8 @@ export function loadTrav(dbFile: string): Trav | null {
   const c = cache.get(p)
   if (c && c.mtime === mtime) return c
   if (c) { try { c.db.close() } catch { /* ignore */ } }
-  prewarmSeq(p)
+  const tx = openTravX(p)
+  if (!tx) prewarmSeq(p)   // 11-12: 索引があれば .trav（全ゲノム 6.6 GB）を読み流さない
   const db = openSidecar(p)
   const meta: Record<string, any> = {}
   for (const r of db.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]) { try { meta[r.key] = JSON.parse(r.value) } catch { meta[r.key] = r.value } }
@@ -89,20 +92,22 @@ export function loadTrav(dbFile: string): Trav | null {
   const paths = db.prepare('SELECT pid, path, hid, orient, relation, excluded, ntok, bp FROM paths ORDER BY pid').all() as TravPath[]
   const atoms = db.prepare('SELECT * FROM atoms ORDER BY x0').all() as TravAtom[]   // ntangle は version 3 から
   const bounds = db.prepare('SELECT x, support, persistence FROM bounds ORDER BY x').all() as TravBound[]
-  const xb = arrRow(db, 'xbp')
+  const xb = tx ? undefined : arrRow(db, 'xbp')   // 11-12: 索引があれば 531 MB の xbp は読まず、2 値を位置で読む
   let xbp = new Float64Array(0)
   if (xb) { const big = new BigInt64Array(xb.blob.buffer, xb.blob.byteOffset, xb.blob.byteLength / 8); xbp = new Float64Array(big.length); for (let i = 0; i < big.length; i++) xbp[i] = Number(big[i]) }
   const hapPaths: number[][] = haps.map(() => []); for (const r of paths) hapPaths[r.hid].push(r.pid)
-  const t: Trav = { file: p, mtime, db, meta, H: haps.length, R: Number(meta.R ?? xbp.length - 1), haps, paths, atoms, bounds, xbp, hapPaths, dbFile }
+  const t: Trav = { file: p, mtime, db, meta, H: haps.length, R: Number(meta.R ?? xbp.length - 1), haps, paths, atoms, bounds, xbp, hapPaths, dbFile, tx }
   cache.set(p, t)
   return t
 }
 
+// 座標 x の累積 bp（11-12: 索引があれば配列ファイルから 1 値）
+function bpOf(t: Trav, x: number): number { if (t.tx) return bpAt(t.tx, x) ?? 0; return t.xbp.length ? t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x))] : 0 }
 // 根: メタ・ハプロタイプ・原子・境界（持続度つき）・コンティグの関係の要約
 export function travRoot(t: Trav): any {
   const perHap = t.haps.map((hap, hid) => { const ps = t.hapPaths[hid]; return { hid, hap, ncontig: ps.length, nexcl: ps.filter(pid => t.paths[pid].excluded).length, bp: ps.reduce((a, pid) => a + t.paths[pid].bp, 0) } })
   const refHid = refHidOf(t)
-  return { meta: t.meta, H: t.H, R: t.R, total_bp: t.xbp.length ? t.xbp[t.xbp.length - 1] : 0, haps: perHap, atoms: t.atoms, bounds: t.bounds, refHid, refHap: refHid >= 0 ? t.haps[refHid] : null, cdir: contigDirs(t) }
+  return { meta: t.meta, H: t.H, R: t.R, total_bp: bpOf(t, t.R), haps: perHap, atoms: t.atoms, bounds: t.bounds, refHid, refHap: refHid >= 0 ? t.haps[refHid] : null, cdir: contigDirs(t) }
 }
 
 // コンティグの主な向き（11-05）: pid → +1/−1。同じ株・同じパス名の断片（minigraph-cactus はクリップした区間でコンティグを W 行の断片に切る。fly16 の A2#0#3R は 26 本）を
@@ -110,6 +115,7 @@ export function travRoot(t: Trav): any {
 //   （A2 の 3R の 8 Mb 逆位）や、逆位の近くだけを表示したときに、逆位の片に印が付かなかった
 export function contigDirs(t: Trav): number[] {
   const c = (t as any).__cdir; if (c) return c
+  if (t.tx) { (t as any).__cdir = t.tx.cdir; return t.tx.cdir }   // 11-12: 前計算
   const sum = new Float64Array(t.paths.length)
   for (const r of t.db.prepare('SELECT pid, dir, bp FROM trav').raw().iterate() as Iterable<[number, number, number]>) sum[r[0]] += r[1] * r[2]
   const byKey = new Map<string, number>(); t.paths.forEach((p, pid) => { const k = p.hid + '\t' + p.path; byKey.set(k, (byKey.get(k) || 0) + sum[pid]) })
@@ -131,6 +137,7 @@ export function refHidOf(t: Trav): number {
 //   (3) どちらも無ければ空（画面側で「区間 k」）。参照の無い短い隙間（全長の 0.2% 未満）で同じ名前に挟まれたものは前後に吸収する
 export function travChroms(t: Trav): { x0: number; x1: number; name: string; ref: boolean }[] {
   const c = (t as any).__chroms; if (c) return c
+  if (t.tx) { const o = (t.tx.q.chroms.all() as any[]).map(r => ({ x0: r.x0, x1: r.x1, name: r.name, ref: !!r.ref })); (t as any).__chroms = o; return o }   // 11-12: 前計算
   // コンティグ名＝最後の # の後。頭にサンプル名が付く形（GRCh38#0#GRCh38.chr1）はそれを外す
   //   （# の無い参照のパス名 GRCh38.chr1 も、株の名前 GRCh38#0 のサンプル部分を頭から外す）
   const contig = (p: string) => { const c = p.slice(p.lastIndexOf('#') + 1); const smp = p.includes('#') ? p.split('#')[0] : ''; if (smp && c.startsWith(smp + '.')) return c.slice(smp.length + 1); if (!p.includes('#')) { const d = c.indexOf('.'); if (d > 0 && t.haps.some(h => h.split('#')[0] === c.slice(0, d))) return c.slice(d + 1) } return c }
@@ -176,9 +183,10 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
   // hid を指定したらその株の通過だけ（11-11: 画面が参照の株の通過だけを要るのに全株・全ゲノムを取り、ヒトで 27 MB の応答になっていた）。反復・コピー・重なりも付けない
   if (opts.hid != null && Number.isFinite(opts.hid)) {
     const ma0 = effFloor(opts.minAnchors ?? 0, x0, x1)
-    const one = (t.db.prepare('SELECT * FROM trav WHERE hid = ? AND x0 <= ? AND x1 >= ? ORDER BY pid, i0').all(opts.hid, x1, x0) as TravRow[]).filter(r => r.nanch >= ma0)
-    return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: one, copies: [], reps: [], perHap: { [opts.hid]: one.length }, dups: [] }
+    const one = (t.tx ? txRows(t, x0, x1).filter(r => r.hid === opts.hid).sort((a, b) => a.pid - b.pid || a.i0 - b.i0) : t.db.prepare('SELECT * FROM trav WHERE hid = ? AND x0 <= ? AND x1 >= ? ORDER BY pid, i0').all(opts.hid, x1, x0) as TravRow[]).filter(r => r.nanch >= ma0)
+    return { x0, x1, bp0: bpOf(t, x0), bp1: bpOf(t, x1 + 1), trav: one, copies: [], reps: [], perHap: { [opts.hid]: one.length }, dups: [] }
   }
+  if (t.tx) return travRangeX(t, x0, x1, opts)
   const rows = t.db.prepare('SELECT * FROM trav WHERE x0 <= ? AND x1 >= ? ORDER BY hid, pid, i0').all(x1, x0) as TravRow[]
   const mo = opts.minOverlap ?? 0; const ma = effFloor(opts.minAnchors ?? 0, x0, x1)   // 錨が少ない断片（硬い領域のかけら）は既定で出さない。ヒト v2 は 50 錨未満が 8,964 本で、x≈1.52M の 1 か所に 5,298 本集中
   const out = rows.filter(r => r.nanch >= ma && (mo <= 0 || Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo))
@@ -195,7 +203,29 @@ export function travRange(t: Trav, x0: number, x1: number, opts: { minOverlap?: 
   // 行に出ない 2 回目（紫）は求められたときだけ（11-11: 冗長コンティグのトークンを全部読むので、ヒトの初回で 23 秒かかっていた）
   if (opts.dups) try { const rs = redundSpans(t); lap('redund'); dups = [...rs.filter(d => d.x1 >= x0 && d.x0 <= x1), ...pieceOverlaps(out.filter(r => r.nanch >= 50 && !(r as any).fill))] } catch (e) { console.warn('[trav/range] dups', e) }
   lap('overlaps'); const tot = tm.reduce((a, b) => a + b[1], 0); if (tot > 2000) console.log(`[trav/range] ${x0}-${x1} rows ${out.length} ${tot}ms ` + tm.map(([k, v]) => `${k}=${v}`).join(' '))
-  return { x0, x1, bp0: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x0))], bp1: t.xbp[Math.max(0, Math.min(t.xbp.length - 1, x1 + 1))], trav: out, copies, reps: repsOut, perHap, dups }
+  return { x0, x1, bp0: bpOf(t, x0), bp1: bpOf(t, x1 + 1), trav: out, copies, reps: repsOut, perHap, dups }
+}
+// 11-12: 索引 <db>.travx から。反復の判定・trim・コンティグの情報は前計算の列（trav_xindex.py）。窓に依らない（以前は表示範囲に入った行だけで判定していた）
+function txRows(t: Trav, x0: number, x1: number): TravRow[] {
+  // 行は新しい物に詰め替える（delete で列を消すと V8 の遅い形の物になり、全体表示の 10 万行で 2 倍遅かった）
+  return binQuery<any>(t.tx!, t.tx!.q.trav, x0, x1).map(r => {
+    const p = t.paths[r.pid]
+    const o: any = { id: r.id, pid: r.pid, hid: r.hid, i0: r.i0, i1: r.i1, x0: r.x0, x1: r.x1, dir: r.dir, copy: r.copy, nanch: r.nanch, bp: r.bp, bp0: r.bp0, fill: r.fill,
+      rep: r.rep < 0 ? undefined : r.rep === 1, pn: p ? p.path : '', cs: r.cs, ce: r.ce, fs: !!r.fs, fe: !!r.fe, cs0: !!r.cs0, ce1: false, ceL: !!r.ceL }
+    if (r.trim0 >= 0) o.trim = [r.trim0, r.trim1]
+    return o as TravRow
+  })
+}
+function travRangeX(t: Trav, x0: number, x1: number, opts: { minOverlap?: number; minAnchors?: number; dups?: boolean }): any {
+  const mo = opts.minOverlap ?? 0; const ma = effFloor(opts.minAnchors ?? 0, x0, x1)
+  const out = txRows(t, x0, x1).filter(r => r.nanch >= ma && (mo <= 0 || Math.min(r.x1, x1) - Math.max(r.x0, x0) + 1 >= mo))
+    .sort((a, b) => a.hid - b.hid || a.pid - b.pid || a.i0 - b.i0)
+  const copies = (binQuery<CopyRow>(t.tx!, t.tx!.q.copies, x0, x1)).sort((a, b) => a.hid - b.hid || a.pid - b.pid || a.id - b.id)
+  const perHap: Record<number, number> = {}; for (const r of out) perHap[r.hid] = (perHap[r.hid] || 0) + 1
+  const reps = binQuery<any>(t.tx!, t.tx!.q.reps, x0, x1).filter(r => r.tnanch >= ma).map(r => ({ id: r.id, pid: r.pid, hid: r.hid, i0: r.i0, i1: r.i1, bp: r.bp, x0: r.x0, x1: r.x1 }))
+  let dups: Dup[] = []
+  if (opts.dups) try { dups = [...redundSpans(t).filter(d => d.x1 >= x0 && d.x0 <= x1), ...pieceOverlaps(out.filter(r => r.nanch >= 50 && !(r as any).fill))] } catch (e) { console.warn('[trav/range] dups', e) }
+  return { x0, x1, bp0: bpOf(t, x0), bp1: bpOf(t, x1 + 1), trav: out, copies, reps, perHap, dups }
 }
 
 // 通過にコンティグの情報を付ける（11-10。構造変異を見るのにコンティグの切れ目と向きが要る）:
@@ -309,6 +339,14 @@ export function travAtomStats(t: Trav, minAnchors = 50): { atoms: { id: number; 
 // 座標区間の錨のノード名（グラフの強調用）。dense_of_x と id_map から n{元 id}
 export function nodeNamesForRange(t: Trav, x0: number, x1: number, max = 5000): string[] {
   // 11-04: 以前は要求ごとに dense_of_x と id_map（全ゲノムで計 0.9 GB）を SQLite から読み直していた。読み込み済みの配列を使う
+  if (t.tx && t.tx.arr?.hdr.dense_of_x) {   // 11-12: 配列ファイルから。広い範囲は 64 か所の連続した塊を読む（位置ごとの点読みにしない）
+    const idf = idOf(t); const a = Math.max(0, x0), b = Math.min(t.R - 1, x1); const n = b - a + 1; if (n <= 0) return []
+    const out: string[] = []
+    if (n <= max) { const d = denseSlice(t.tx, a, b)!; for (let k = 0; k < d.length; k++) if (d[k] >= 1) out.push('n' + idf(d[k])); return out }
+    const NB = 64, per = Math.ceil(max / NB)
+    for (let k = 0; k < NB; k++) { const s0 = a + Math.floor(k * n / NB); const d = denseSlice(t.tx, s0, Math.min(b, s0 + per - 1))!; for (let i = 0; i < d.length; i++) if (d[i] >= 1) out.push('n' + idf(d[i])) }
+    return out
+  }
   const dense = denseOfX(t); if (!dense.length) return []; const idf = idOf(t)
   const a = Math.max(0, x0), b = Math.min(dense.length - 1, x1); const n = b - a + 1; if (n <= 0) return []
   const step = n > max ? n / max : 1; const out: string[] = []
@@ -814,14 +852,20 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
   const want = only && only.length ? new Set(only) : null   // 選んだサンプルだけ（10-30）。null＝全部
   const keep = (sn: number) => !want || want.has(R.samples[sn])
   const XD = xdepthOf(t)
-  const dox = denseOfX(t), idf = idOf(t), NX = t.xOfDense ? t.xOfDense.length : Infinity; const W = x1 - x0 + 1; ncol = Math.max(4, Math.min(1500, Math.floor(ncol), W))
+  const W = x1 - x0 + 1
+  // 11-12: 索引があれば、窓の dense_of_x だけを 1 回で読む（以前は 266 MB を丸ごと読み込んでいた）。doxAt(x) は窓の外で -1
+  const doxW = t.tx && W <= PIECE_MAX_W + 1 ? denseSlice(t.tx, Math.max(0, x0), Math.min(t.R - 1, x1)) : null
+  const dox0 = doxW ? null : (t.tx && W > PIECE_MAX_W ? new Int32Array(0) : denseOfX(t))
+  const doxLen = doxW ? Math.min(t.R, x1 + 1) : dox0!.length
+  const doxAt = (x: number) => doxW ? (x - Math.max(0, x0) < doxW.length && x >= Math.max(0, x0) ? doxW[x - Math.max(0, x0)] : -1) : dox0![x]
+  const idf = idOf(t), NX = t.xOfDense ? t.xOfDense.length : Infinity; ncol = Math.max(4, Math.min(1500, Math.floor(ncol), W))
   const GAP = 3; const S = R.samples.length; const dep = Array.from({ length: S }, () => new Uint16Array(ncol))
   const pieces = new Map<number, number[]>(); let overflow = false; const t0 = Date.now()
   const wide = !!XD && W > PIECE_MAX_W; if (wide) overflow = true
   for (let c = 0; c < ncol && !wide; c++) {
     checkCancel()
     const xa = Math.floor(x0 + c * W / ncol), xb = Math.max(xa, Math.floor(x0 + (c + 1) * W / ncol) - 1); const mid = (xa + xb) >> 1
-    let d = -1; for (let k = 0; k <= Math.min(16, xb - xa); k++) { for (const x of [mid + k, mid - k]) { if (x < xa || x > xb || x < 0 || x >= dox.length) continue; if (dox[x] >= 1) { d = dox[x]; break } } if (d >= 1) break }
+    let d = -1; for (let k = 0; k <= Math.min(16, xb - xa); k++) { for (const x of [mid + k, mid - k]) { if (x < xa || x > xb || x < 0 || x >= doxLen) continue; const v = doxAt(x); if (v >= 1) { d = v; break } } if (d >= 1) break }
     if (d < 1 || d >= NX) continue
     for (const row of R.stmt.all(idf(d)) as { chunk_no: number; postings: Buffer }[]) {
       const ch = R.chunk.get(row.chunk_no); if (!ch || !keep(ch.sn)) continue; const buf = row.postings; let shift = 0, cur = 0, prev = ch.base, n = 0
@@ -846,6 +890,7 @@ export function travReads(t: Trav, x0: number, x1: number, ncol: number, maxRead
 // 範囲 [x0, x1] の葉（ノード）の数: x_fill（錨はその座標、錨でない葉は直前の錨の座標）が範囲に入るノードを、並べた x_fill の二分探索で数える（10-30）。
 // 段の自動切替（ノード段に降りてよいか）に使う。塩基の段が実際に集める葉（通過のトークンのノード）とほぼ同じ
 export function travNLeaf(t: Trav, x0: number, x1: number): number | null {
+  if (t.tx) { const v = nleafX(t.tx, x0, x1); if (v != null) return v }   // 11-12: 累積の 2 値（以前は x_fill 326 MB を読み込んで並べ替えていた）
   let s = (t as any).__xfs as Int32Array | null | undefined
   if (s === undefined) { const r = arrRow(t.db, 'x_fill')
     if (!r) s = null; else { const a = new Int32Array(r.blob.buffer.slice(r.blob.byteOffset, r.blob.byteOffset + r.blob.byteLength)); s = a.filter(v => v >= 0).sort() }
