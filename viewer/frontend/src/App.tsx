@@ -2763,6 +2763,7 @@ export default function App() {
             onRange={onTravRange}
             getVisibleNames={() => graphRef.current?.getVisibleNames?.() ?? []}
             getVisibleNodes={() => graphRef.current?.getVisibleNodes?.() ?? []}
+            getVisibleLocs={() => graphRef.current?.getVisibleLocs?.() ?? []}
             getGraphViewport={() => mapViewportRef.current}
             onPeakHover={onTravPeakHover}
             onPeakPicked={q => {   // 山を選んだら、グラフをその山のノードの塊（2–98 パーセンタイル）に寄せる（11-05: 塊が画面の半分以上だと寄せない、にしていたら、全体表示で chrX を選んでも動かなかった）

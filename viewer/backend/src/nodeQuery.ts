@@ -247,7 +247,7 @@ export function buildNodesSql(cov: string, hist: string, refSel: string, extraSe
   return `
   SELECT n.rowid AS id, n.node_name, n.is_bubble, n.size,
          n.xCoord, n.yCoord, n.angle, n.radius, n.color,
-         ${cov} AS coverage, ${hist} AS cov_hist, rt.min_layer AS layer${refSel}${extraSel}
+         ${cov} AS coverage, ${hist} AS cov_hist, rt.min_layer AS layer, rt.tx AS tx, rt.tk AS tk, rt.tf AS tf, rt.ta AS ta, rt.tb AS tb${refSel}${extraSel}
   FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid${extraJoin}
 `
 }
@@ -258,7 +258,7 @@ export function buildNodesSqlLegacy(refSel: string, extraSel = '', extraJoin = '
                              sp: SpatialSource): string {
   return `
   SELECT n.rowid AS id, n.node_name, n.is_bubble, n.size,
-         n.xCoord, n.yCoord, n.angle, n.radius, n.color, rt.min_layer AS layer${refSel}${extraSel}
+         n.xCoord, n.yCoord, n.angle, n.radius, n.color, rt.min_layer AS layer, rt.tx AS tx, rt.tk AS tk, rt.tf AS tf, rt.ta AS ta, rt.tb AS tb${refSel}${extraSel}
   FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid${extraJoin}
 `
 }

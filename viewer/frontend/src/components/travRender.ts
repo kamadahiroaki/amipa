@@ -43,6 +43,7 @@ export interface TravCallbacks {
   onHoverNodes?: (names: string[] | null) => void                              // 塩基の段でホバーしたノード（グラフで強調）
   onRange?: (v: { names: string[]; colors: number[] | null; fit: boolean; hide: boolean; direct?: boolean; fitNames?: string[] } | null) => void   // 表示範囲のノードと色（ブロックの色相）。hide＝範囲外を隠す（集合は葉の名前）。direct＝名前はグラフが描いている層のもの（そのまま薄灰の判定に使う）。fitNames＝寄せる先（葉の名前）
   getVisibleNames?: () => string[]                                             // 主画面のグラフに見えているノード名（広い範囲での塗り分けに使う）
+  getVisibleLocs?: () => { name: string; x: number; y: number; loc?: { x: number; kind: number; frac?: number; xmin?: number; xmax?: number } }[]
   getVisibleNodes?: () => { name: string; x: number; y: number; loc?: { x: number; kind: number; frac?: number; xmin?: number; xmax?: number } }[]           // 同じノードの画面上の位置（world 座標。全体図の山とグラフ側の札の位置）
   getGraphViewport?: () => { x1: number; x2: number; y1: number; y2: number } | null   // グラフの表示範囲（world。全体図の「中央を重く」）
   onPeaks?: (peaks: OvPeak[] | null) => void                                   // 全体図の山（文字つき）→ グラフ側の札
@@ -360,7 +361,7 @@ const locCache = new Map<string, LocNode>(); let locHasFill = false
 const locInflight = new Map<string, Promise<void>>()
 // 11-12: グラフの /nodes に合意座標が載っていれば（<db>.tiledx）、問い合わせずに覚える。locate はそれが無い名前だけ
 function prefillLoc(vis?: { name: string; loc?: { x: number; kind: number; frac?: number; xmin?: number; xmax?: number } }[]) {
-  const v = vis ?? cb.getVisibleNodes?.() ?? []; for (const n of v) if (n.loc && !locCache.has(n.name)) { locCache.set(n.name, { name: n.name, ...n.loc }); if (n.loc.kind === 6) locHasFill = true }
+  const v = vis ?? cb.getVisibleLocs?.() ?? cb.getVisibleNodes?.() ?? []; for (const n of v) if (n.loc && !locCache.has(n.name)) { locCache.set(n.name, { name: n.name, ...n.loc }); if (n.loc.kind === 6) locHasFill = true }
 }
 // グラフを動かすたびの問い合わせは、次に動かした時点で取り消す（サーバも実行中の計算を止める）。検索・名前で開くなどの 1 回きりの問い合わせは取り消さない
 let locAC = new AbortController()
@@ -409,7 +410,7 @@ let ovReq = 0
 async function refreshOverview(signal?: AbortSignal): Promise<OvPeak[]> {
   if (!root || !cb.getVisibleNodes) return []
   const my = ++ovReq; const vis = cb.getVisibleNodes(); if (!vis.length) { lastPeaks = []; ovw.setPoints([], [], 'グラフに見えているノードが無い'); cb.onPeaks?.(null); return [] }
-  prefillLoc(vis); const j = await locateMany(vis.map(v => v.name), signal); if (!j || my !== ovReq) return lastPeaks
+  prefillLoc(); prefillLoc(vis); const j = await locateMany(vis.map(v => v.name), signal); if (!j || my !== ovReq) return lastPeaks
   const vp = ovw.centerWeighted() && cb.getGraphViewport ? cb.getGraphViewport() : null
   const cx = vp ? (vp.x1 + vp.x2) / 2 : 0, cy = vp ? (vp.y1 + vp.y2) / 2 : 0, hw = vp ? Math.max(1e-12, (vp.x2 - vp.x1) / 2) : 1, hh = vp ? Math.max(1e-12, (vp.y2 - vp.y1) / 2) : 1
   const pts: OvPoint[] = []; let nNo = 0, nWide = 0
