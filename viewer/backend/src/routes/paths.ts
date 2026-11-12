@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { getDb, getWritableDb, dbBytes, HUGE_DB_BYTES } from '../db'
+import { getDb, getWritableDb, dbBytes, HUGE_DB_BYTES, hasTiledXInv } from '../db'
 import { dbEdgesSigned, edgeXYSelect, EDGE_NODE_JOIN } from '../edgeGeom'
 // contig_id→hap_id の採番は hap 絞り込みと同一定義を使う（重複実装で採番がズレるのを防ぐ）
 import { contigToHap, buildSelection, maskWhere, hapIdxEdgeOk, type Selection } from '../hapidx'
@@ -274,12 +274,16 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       })() : null
       const useMask = !!rsel && !rsel.exact
       let covered: { id: number; name: string; x: number; y: number; a: number; r: number; frac: number }[] = []
+      let invByMask = false; const invMask = new Set<number>()   // 11-12: tiledx の逆位マスクで決めた逆位のノード
       if (useMask && rsel) {
         // ★CROSS JOIN で結合順を固定する（WG でプランナが nodes を外側に選び 10 分超になる件。spatial.ts 参照）。
         //   bbox 無し（層全体）はマスク付き索引を層だけで走査する: tiled なら nodes_t の層全体、R-Tree なら rtree
         const rows = (hasBbox
           ? (() => { const sp = spOf(rsel)
             // 11-12: タイル経路の部分問い合わせは中心・半径・角度・名前を持つ。本体の nodes を行ごとに引かない（WG cold で 3,838 ノード 6 秒の主因）
+            // 逆位: tiledx の hap 単位の逆位マスク（im0, im1）があれば、選んだ hap のビットで判定（64 bit なので SQL の中で）
+            if (sp.tiled && hasTiledXInv(d)) { invByMask = true; const mk = rsel.mask; return d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r,
+              CASE WHEN rt.im0 IS NULL THEN 0 WHEN (rt.im0 & ?) != 0 OR (rt.im1 & ?) != 0 THEN 1 ELSE 0 END AS iv FROM ${sp.from}`).all(mk[0] ?? 0n, mk[1] ?? 0n, ...sp.params) }
             if (sp.tiled) return d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r FROM ${sp.from}`).all(...sp.params)
             return d.prepare(
             `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
@@ -301,6 +305,7 @@ export function ribbonHandler(req: { query: any }, res: any): void {
           })()) as CRow[]
         // θ=0 の通過判定なので frac は「通る」の 1 でよい（frac は frontend の描画では未使用）。
         covered = rows.map(r => ({ id: r.id, name: r.name, x: r.x, y: r.y, a: r.a, r: r.r, frac: 1 }))
+        if (invByMask) for (const r of rows as any[]) if (r.iv) invMask.add(r.id)
       } else {
       const allRows = (hasBbox
         ? (() => { const sp = spOf(); return d.prepare(
@@ -326,7 +331,8 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       // 逆位判定: blob=[count][ids][invfrac(0-255=逆位bp割合)]。範囲内 contig の invfrac 最大が閾値以上を逆位とする。
       // 閾値は emit でなくここで掛ける＝再ビルド不要で可変(既定 0.5=128)。
       const INV_THRESH = 128
-      if (hasNodeContigInv(d) && covered.length) {
+      if (invByMask) { for (const id of invMask) invIds.add(id) }
+      else if (hasNodeContigInv(d) && covered.length) {
         const coveredIds = new Set(covered.map(c => c.id))
         const irows = (hasBbox
           ? (() => { const sp = spOf(); return d.prepare(

@@ -679,7 +679,7 @@ def build_stages(b: Bundle, a) -> dict:
     #   reads の後に置く（rs を焼くため）。入力に reads を含めるので、リードを足すと作り直される。
     if not getattr(a, "no_tiled", False):
         # 11-12: Traversals があれば、タイルと同じ鍵 (layer, mkey, id) でノードの合意座標を並べる（/nodes が座標を一緒に返し、locate が要らなくなる）
-        txcmd = [[py, str(PKG / "tiled_x.py"), str(b.tiled), str(b.trav), str(b.distill), str(b.tiledx) + ".tmp"], ["mv", "-f", str(b.tiledx) + ".tmp", str(b.tiledx)]] if "trav" in st else []
+        txcmd = [[py, str(PKG / "tiled_x.py"), str(b.tiled), str(b.trav), str(b.distill), str(b.tiledx) + ".tmp", "--db", str(b.db)], ["mv", "-f", str(b.tiledx) + ".tmp", str(b.tiledx)]] if "trav" in st else []
         st["tiled"] = Stage(
             "tiled",
             [[py, str(PKG / "tile_index.py"), str(b.db), "--force"]] + txcmd,

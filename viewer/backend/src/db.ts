@@ -137,6 +137,13 @@ function attachTiledX(db: Database.Database, tiledPath: string): void {
     if (!m || m.value !== String(fs.statSync(tiledPath).size)) { console.warn('tiledx は .tiled と合わない（作り直しが要る）:', p); db.prepare('DETACH DATABASE tq').run() }
   } catch (e) { console.warn('tiledx attach failed:', p, String(e)) }
 }
+/** tiledx に逆位のマスク（im0, im1）があるか（11-12） */
+export function hasTiledXInv(db: Database.Database): boolean {
+  if (!hasTiledX(db)) return false
+  const c = (db as any).__txinv; if (c != null) return c
+  let v = false; try { v = (db.prepare('PRAGMA tq.table_info(nx)').all() as { name: string }[]).some(r => r.name === 'im0') } catch { v = false }
+  ;(db as any).__txinv = v; return v
+}
 export function hasTiledX(db: Database.Database): boolean {
   try { return !!db.prepare("SELECT 1 FROM pragma_database_list WHERE name='tq'").get() } catch { return false }
 }

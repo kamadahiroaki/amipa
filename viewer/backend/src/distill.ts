@@ -84,6 +84,18 @@ export class Distill {
       i = j + 1 }
     return out
   }
+  // dense id が元の id と同じか（meta.json の dense_identity）。同じなら id_map を読まなくてよい（11-12）
+  private ident: boolean | undefined
+  identity(): boolean { if (this.ident === undefined) { try { this.ident = !!JSON.parse(fs.readFileSync(path.join(this.dir, 'meta.json'), 'utf8')).dense_identity } catch { this.ident = false } } return this.ident }
+  // dense id [a, b] のノードの bp（s_seq_off の差）を 1 回の連続した読みで。dense_identity かつ s_seq_off があるときだけ（無ければ null）。添字は d − a（11-12）
+  bpRange(a: number, b: number): Int32Array | null {
+    if (!this.identity()) return null
+    if (this.soff === undefined) { try { this.soff = openNpy(path.join(this.dir, 's_seq_off.npy')); this.sfd = fs.openSync(path.join(this.dir, 's_seq.bin'), 'r') } catch { this.soff = null } }
+    const so = this.soff; if (!so || a < 1 || b < a || b >= so.n) return null
+    const n = b - a + 1; const buf = Buffer.alloc((n + 1) * so.itemsize); fs.readSync(so.fd, buf, 0, buf.length, so.dataOffset + (a - 1) * so.itemsize)
+    const at = (k: number) => so.itemsize === 8 ? Number(buf.readBigInt64LE(k * 8)) : buf.readInt32LE(k * 4)
+    const out = new Int32Array(n); let prev = at(0); for (let k = 0; k < n; k++) { const v = at(k + 1); out[k] = v - prev; prev = v } return out
+  }
   // パス pi のトークン [s0, e0) の向き（p_ori.npy、1 = 格納向き）。11-04（gene_lof を TS に移すため）
   readOri(pi: number, s0: number, e0: number): Uint8Array {
     checkCancel()

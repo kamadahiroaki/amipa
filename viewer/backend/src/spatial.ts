@@ -16,7 +16,7 @@
 import type Database from 'better-sqlite3'
 import { tiledInfo, TILED_OFF, zranges, rangesCte, rangesParams, type TiledInfo } from './tiled'
 import { hapIdxInfo, maskWhere, type Selection } from './hapidx'
-import { hasTiledX } from './db'
+import { hasTiledX, hasTiledXInv } from './db'
 
 export interface Rect { x1: number; x2: number; y1: number; y2: number }
 export interface SpatialSource {
@@ -55,7 +55,8 @@ export function spatialSource(d: Database.Database, L: number, rect: Rect,
     const mw = sel ? maskWhere('n', sel) : { sql: '', params: [] as bigint[] }
     // 11-12: <db>.tiledx（tq）があれば合意座標の列も（同じ鍵の連続した読み）。無ければ NULL
     const tx = hasTiledX(d)
-    const xs = tx ? ', q.tx AS tx, q.tk AS tk, q.tf AS tf, q.ta AS ta, q.tb AS tb' : ', NULL AS tx, NULL AS tk, NULL AS tf, NULL AS ta, NULL AS tb'
+    const inv = tx && hasTiledXInv(d)
+    const xs = (tx ? ', q.tx AS tx, q.tk AS tk, q.tf AS tf, q.ta AS ta, q.tb AS tb' : ', NULL AS tx, NULL AS tk, NULL AS tf, NULL AS ta, NULL AS tb') + (inv ? ', q.im0 AS im0, q.im1 AS im1' : ', NULL AS im0, NULL AS im1')
     const xj = (mk: string) => tx ? ` LEFT JOIN tq.nx q ON q.layer=n.layer AND q.mkey=${mk} AND q.id=n.id` : ''
     const from = `(${rangesCte(rg.length)}
       SELECT ${T_COLS('n')}${xs}
@@ -80,7 +81,7 @@ export function spatialSource(d: Database.Database, L: number, rect: Rect,
   const nm = aux ? 'r.nm' : 'NULL'
   const mw = sel ? maskWhere('r', sel) : { sql: '', params: [] as bigint[] }
   const from = `(SELECT r.rowid AS rowid, r.min_layer, r.max_layer, r.min_x, r.max_x, r.min_y, r.max_y,
-      ${cx} AS cx, ${cy} AS cy, ${rad} AS rad, ${ang} AS ang, ${nm} AS nm, NULL AS tx, NULL AS tk, NULL AS tf, NULL AS ta, NULL AS tb
+      ${cx} AS cx, ${cy} AS cy, ${rad} AS rad, ${ang} AS ang, ${nm} AS nm, NULL AS tx, NULL AS tk, NULL AS tf, NULL AS ta, NULL AS tb, NULL AS im0, NULL AS im1
     FROM ${rtree} r
     WHERE r.min_layer=? AND r.max_layer=? AND r.max_x>=? AND r.min_x<=? AND r.max_y>=? AND r.min_y<=?${mw.sql}) ${alias}`
   return { from, params: [L, L, rect.x1, rect.x2, rect.y1, rect.y2, ...mw.params], tiled: false, hasNm: !!aux }
