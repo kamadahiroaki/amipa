@@ -256,6 +256,7 @@ class Bundle:
         self.trav = Path(str(self.db) + ".trav")       # Traversals の錨・座標・通過（trav_build.py ほか）
         self.travx = Path(str(self.db) + ".travx")     # 範囲の索引と配列ファイル .travx.arr（trav_xindex.py、11-12）
         self.xtiles = Path(str(self.db) + ".xtiles")   # 通過のトークンのタイル（trav_xtiles.py、11-12）
+        self.anc = Path(str(self.db) + ".anc")         # 葉 → 各層の祖先（anc_build.py、11-12）
         self.xdepth = Path(str(self.db) + ".xdepth")   # 座標ごとのリードの深さ（reads_xdepth.py）
         self.genes = Path(str(self.db) + ".genes")     # 株ごとの遺伝子（genes_build.py → genes_project.py）
         self.gsearch = Path(str(self.db) + ".gsearch") # 遺伝子検索の索引（gsearch_build.py、11-12）
@@ -559,6 +560,8 @@ def build_stages(b: Bundle, a) -> dict:
              [py, str(PKG / "trav_build.py"), "--distill", str(b.distill), "--seed-ref", a.ref_key, "--out", str(tmp_trav)],
              [py, str(PKG / "trav_xfill.py"), str(tmp_trav), str(b.distill)],
              [py, str(PKG / "trav_super.py"), str(b.db), str(tmp_trav), str(b.distill)],
+             # 11-12: 葉 → 各層の祖先の配列（/route が本体の親をたどらない）。trav_super.py が work/ に残した本体の nodes の表を使う
+             [py, str(PKG / "anc_build.py"), str(b.db), str(b.anc) + ".tmp"],
              # 11-12: 範囲の問い合わせの索引（階層ビン・前計算した反復の判定とコンティグの情報・染色体の帯）と位置で読む配列（xbp・葉の累積数・dense_of_x）
              [py, str(PKG / "trav_xindex.py"), str(tmp_trav), str(b.distill), str(b.travx) + ".tmp", "--db", str(b.db)],
              # 11-12: 通過のトークンを合意座標のタイルにまとめる（cols・nodeset・genes が全ゲノムの配列を引かずに読む）
@@ -566,8 +569,9 @@ def build_stages(b: Bundle, a) -> dict:
              ["mv", "-f", str(tmp_trav), str(b.trav)],
              ["mv", "-f", str(b.travx) + ".tmp.arr", str(b.travx) + ".arr"],
              ["mv", "-f", str(b.travx) + ".tmp", str(b.travx)],
-             ["mv", "-f", str(b.xtiles) + ".tmp", str(b.xtiles)]],
-            inputs=[b.distill, b.db], outputs=[b.trav, b.travx, b.xtiles],
+             ["mv", "-f", str(b.xtiles) + ".tmp", str(b.xtiles)],
+             ["mv", "-f", str(b.anc) + ".tmp", str(b.anc)]],
+            inputs=[b.distill, b.db], outputs=[b.trav, b.travx, b.xtiles, b.anc],
             env={**thread_env(1), "NUMBA_NUM_THREADS": "1"},
             note="Traversals の錨・座標・通過（種は参照パス）",
         )
