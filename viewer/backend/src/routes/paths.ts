@@ -4,7 +4,7 @@ import { dbEdgesSigned, edgeXYSelect, EDGE_NODE_JOIN } from '../edgeGeom'
 // contig_id→hap_id の採番は hap 絞り込みと同一定義を使う（重複実装で採番がズレるのを防ぐ）
 import { contigToHap, buildSelection, maskWhere, hapIdxEdgeOk, type Selection } from '../hapidx'
 import { spatialSource } from '../spatial'
-import { tiledInfo, TILED_OFF, morton } from '../tiled'
+import { tiledInfo, TILED_OFF, morton, zranges, rangesParams, buildTiledEdgesSql } from '../tiled'
 import { covFmt, rangeMaxFn, rangeSumFn, listAll } from '../covBlob'
 
 import { sendBg } from '../bgClient'
@@ -278,7 +278,10 @@ export function ribbonHandler(req: { query: any }, res: any): void {
         // ★CROSS JOIN で結合順を固定する（WG でプランナが nodes を外側に選び 10 分超になる件。spatial.ts 参照）。
         //   bbox 無し（層全体）はマスク付き索引を層だけで走査する: tiled なら nodes_t の層全体、R-Tree なら rtree
         const rows = (hasBbox
-          ? (() => { const sp = spOf(rsel); return d.prepare(
+          ? (() => { const sp = spOf(rsel)
+            // 11-12: タイル経路の部分問い合わせは中心・半径・角度・名前を持つ。本体の nodes を行ごとに引かない（WG cold で 3,838 ノード 6 秒の主因）
+            if (sp.tiled) return d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r FROM ${sp.from}`).all(...sp.params)
+            return d.prepare(
             `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
                     n.angle AS a, n.radius AS r
              FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid`).all(...sp.params) })()
@@ -342,6 +345,18 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       let edges: any[]
       if (idByName.size === 0) {
         edges = []
+      } else if (useMask && rsel && hasBbox && rsel.tiledEdges && (() => { const ti = tiledInfo(d); return !!ti && L < ti.g.length && ti.edgeCols.has('hm0') })()) {
+        // 11-12: タイルの edges_t（辺ごとの hap マスク hm0.. を持つ）を矩形とマスクで引く。端点はノードの位置から（edgeGeom の rodAxisExpr と同じ式）。
+        //   以前は被覆ノードの名前で本体の edges と edge_contig_cov を引いていた（1 辺ごとのランダム読み）
+        const ti = tiledInfo(d)!; const rg = zranges(x1, x2, y1, y2, ti.g[L]); const em = maskWhere('e', rsel)
+        const byId = new Map(covered.map(c => [c.id, c])); const seen = new Set<number>(); edges = []
+        const end = (A: { x: number; y: number; r: number; a: number }, sign: number, B: { x: number; y: number }): [number, number] => {
+          if (sign === 0) { const dx = B.x - A.x, dy = B.y - A.y; const dd = Math.sqrt(dx * dx + dy * dy) || 1; return [A.x + A.r * dx / dd, A.y + A.r * dy / dd] }
+          return [A.x + sign * A.r * Math.cos(A.a), A.y + sign * A.r * Math.sin(A.a)] }
+        for (const e of d.prepare(buildTiledEdgesSql(rg.length, '', '', '', em.sql, false)).all(...rangesParams(rg), L, x1, x2, y1, y2, ...em.params) as any[]) {
+          if (seen.has(e.id)) continue; seen.add(e.id); const A = byId.get(e.src_id), B = byId.get(e.tgt_id); if (!A || !B) continue
+          const [sx, sy] = end(A, e.src_sign, B), [ex, ey] = end(B, e.tgt_sign, A); edges.push({ su: A.id, tv: B.id, sx, sy, ex, ey })
+        }
       } else if (useMask && rsel && rsel.edgeTable && signed) {   // edge_hm(edge_rowid) を持つ旧 DB だけ。tiled v4 の辺マスクは名前では引けないので blob 経路へ
         // エッジ側もマスクで済ませる（`edge_contig_cov` は 161 B/行なので触らずに済むと大きい）。
         // ノード側と同じ条件（θ=0 かつ hap 単位選択）でマスクは厳密なので blob 再確認は不要。
