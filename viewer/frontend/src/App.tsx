@@ -1388,6 +1388,10 @@ export default function App() {
     )
 
     setSearchStatus('idle')
+    // 11-16: 完全一致が 1 つ、または候補が 1 つだけなら Enter でそのまま移る（遺伝子の検索と同じ。以前は候補をクリックする必要があった）
+    const exact = results.filter(r => r.node_name === q)
+    const exactCi = exact.length ? exact : results.filter(r => r.node_name.toLowerCase() === q.toLowerCase())
+    if (exactCi.length === 1 || results.length === 1) { setSearchResults(results); handleSearchSelect(exactCi.length === 1 ? exactCi[0] : results[0]); return }
     setSearchResults(results)
     setShowSearchDropdown(true)
   }
