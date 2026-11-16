@@ -6,7 +6,7 @@ import fs from 'fs'
 import { getDbDir } from './db'
 import { TravCancelled } from './travCancel'
 import { dataAvail } from './availability'
-import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, travReads, travReadName, travNLeaf, travReadSamples, travGeneLof, travMsa, travChroms, travRefX, type Trav } from './trav'
+import { loadTrav, travRoot, travRange, travOfPath, repsOfRange, travAtomStats, nodeNamesForRange, travCols, travGenes, travNodeSet, travLocate, travFindGene, travGeneDensity, travReads, travReadName, travNLeaf, travReadSamples, travGeneLof, travMsa, travChroms, travRefX, travPathBp, type Trav } from './trav'
 
 export interface OpResult { status: number; json: any }
 type Q = Record<string, any>
@@ -32,6 +32,7 @@ export const OPS: Record<string, (q: Q) => OpResult> = {
   range: q => { const r = range(q); if (!r) return bad('bad x0/x1'); return withT(q, t => travRange(t, Math.floor(r[0]), Math.floor(r[1]), { minOverlap: Number(q.min) || 0, minAnchors: minanch(q), hid: q.hid != null && q.hid !== '' ? Number(q.hid) : undefined, dups: q.dups === '1' })) },
   path: q => withT(q, t => { const pid = Number(q.pid); return { path: t.paths[pid], trav: travOfPath(t, pid), reps: repsOfRange(t, [pid]) } }),
   atoms: q => withT(q, t => travAtomStats(t, minanch(q))),
+  pathbp: q => { const it = Array.isArray(q.items) ? (q.items as unknown[]).filter((v): v is [number, number] => Array.isArray(v) && v.length === 2 && v.every(Number.isFinite)) : []; return withT(q, t => ({ items: travPathBp(t, it, Number(q.x0) || 0, Number(q.x1) || 0) })) },
   refx: q => { const a = Number(q.start), b = Number(q.end); if (!Number.isFinite(a) || !Number.isFinite(b)) return bad('bad start/end'); return withT(q, t => travRefX(t, { ref: q.ref ? String(q.ref) : undefined, chrom: q.chrom ? String(q.chrom) : undefined, path: q.path ? String(q.path) : undefined, start: a, end: b })) },
   chroms: q => withT(q, t => { const t0 = Date.now(); const bands = travChroms(t); return { bands, ms: Date.now() - t0 } }),
   nodes: q => withT(q, t => ({ names: nodeNamesForRange(t, Math.floor(Number(q.x0)), Math.floor(Number(q.x1)), Number(q.max) || 5000) })),

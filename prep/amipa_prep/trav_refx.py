@@ -8,7 +8,8 @@
 点 (pid, bp, x) として残す。bp はそのトークンのコンティグ上の開始位置（0 始まり。パスの先頭の位置 p_start.npy を足す。W 行の断片は SeqStart から）。間隔は参照の株（meta.params.seed_ref と
 GRCh38・CHM13）が --ref-step、その他が --other-step。読み手は前後の点を線形に補う（点の間で x が bp と釣り合わないときは補わない）。
 
-ファイル: SQLite。refx(pid, bp, x) PRIMARY KEY (pid, bp) WITHOUT ROWID と meta(key, value)。1 回の問い合わせは索引を数ページ読むだけ。
+ファイル: SQLite。refx(pid, bp, x, ti) PRIMARY KEY (pid, bp) WITHOUT ROWID、索引 (pid, ti)、meta(key, value)。ti＝パスの中のトークン番号（format 2、11-16。
+範囲の端のトークンのコンティグ上の位置を、手前の点から .xtiles のトークンの bp を足して正確に出す）。1 回の問い合わせは索引を数ページ読むだけ。
 """
 import argparse, json, os, sqlite3, sys, time
 import numpy as np
@@ -42,7 +43,7 @@ log(f"パス {len(paths):,}  通過 {len(rows):,}  参照の株 {sorted(haps.get
 tmp = a.out + ".tmp"
 if os.path.exists(tmp): os.remove(tmp)
 db = sqlite3.connect(tmp); db.execute("PRAGMA journal_mode=OFF"); db.execute("PRAGMA synchronous=OFF")
-db.execute("CREATE TABLE refx(pid INTEGER, bp INTEGER, x INTEGER, PRIMARY KEY(pid, bp)) WITHOUT ROWID")
+db.execute("CREATE TABLE refx(pid INTEGER, bp INTEGER, x INTEGER, ti INTEGER, PRIMARY KEY(pid, bp)) WITHOUT ROWID")
 db.execute("CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
 hid_of = {pid: hid for pid, _, hid in paths}
 npt = 0; k = 0; nrows = len(rows)
@@ -61,13 +62,14 @@ while k < nrows:
         if not len(idx): continue
         b = cum[idx]; _, first = np.unique(b // step, return_index=True)
         sel = np.unique(np.r_[first, len(idx) - 1])
-        pts.append(np.stack([b[sel], X[tk[idx[sel]]]], 1))
+        pts.append(np.stack([b[sel], X[tk[idx[sel]]], idx[sel]], 1))
     if pts:
         P = np.concatenate(pts); P = P[np.argsort(P[:, 0], kind="stable")]
-        db.executemany("INSERT OR IGNORE INTO refx VALUES (?, ?, ?)", ((pid, int(bp), int(x)) for bp, x in P)); npt += len(P)
+        db.executemany("INSERT OR IGNORE INTO refx VALUES (?, ?, ?, ?)", ((pid, int(bp), int(x), int(ti)) for bp, x, ti in P)); npt += len(P)
     k = j
     if pid % 500 == 0: log(f"  pid {pid:,}  点 {npt:,}")
-db.executemany("INSERT INTO meta VALUES (?, ?)", [("format", "1"), ("ref_step", str(a.ref_step)), ("other_step", str(a.other_step)),
+db.execute("CREATE INDEX refx_ti ON refx(pid, ti)")
+db.executemany("INSERT INTO meta VALUES (?, ?)", [("format", "2"), ("ref_step", str(a.ref_step)), ("other_step", str(a.other_step)),
                ("ref_hids", json.dumps(sorted(int(h) for h in refhid))), ("path_offsets", "1" if p_start is not None else "0"), ("trav_size", str(os.path.getsize(a.trav))), ("built", time.strftime("%Y-%m-%d %H:%M:%S"))])
 db.commit(); db.close(); os.replace(tmp, a.out)
 log(f"済: 点 {npt:,}  {os.path.getsize(a.out) / 1e6:.1f} MB → {a.out}")

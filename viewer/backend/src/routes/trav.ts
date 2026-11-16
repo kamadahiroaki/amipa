@@ -24,6 +24,7 @@ travRouter.get('/trav/genecopies', (req, res) => {
   const q = req.query as Record<string, string>; if (!q.db) { res.status(400).json({ error: 'Missing db' }); return }
   const r = geneCopies(q.db, Number(q.sid)); if (!r) { res.status(404).json({ error: 'no .gsearch' }); return } res.json(r)
 })
+travRouter.post('/trav/pathbp', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; if (!b.db) { res.status(400).json({ error: 'Missing db' }); return } sendTrav(res, 'pathbp', { db: String(b.db), items: b.items as any, x0: String(b.x0 ?? 0), x1: String(b.x1 ?? 0) } as any) })   // 11-16: トークン番号 → コンティグ上の位置
 travRouter.post('/trav/locate', (req, res) => { const b = (req.body ?? {}) as Record<string, unknown>; if (!b.db) { res.status(400).json({ error: 'Missing db' }); return } sendTrav(res, 'locate', { db: String(b.db), names: Array.isArray(b.names) ? b.names : [] }) })
 
 // 撮影・試験用: 指定 ms 待ってから 1×1 の GIF を返す（headless firefox で <img src=…/api/sleep?ms=8000> を置くと load がその分遅れ、非同期の描画を待てる）

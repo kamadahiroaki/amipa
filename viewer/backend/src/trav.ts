@@ -138,7 +138,7 @@ export function refHidOf(t: Trav): number {
 //   (1) 参照（種）のパスが通っていれば、そのパス名のコンティグ部分（最後の # の後。例 chr3R）
 //   (2) 参照が通らない所は、通る通過（錨 1,000 以上）のコンティグ名の多数決（chr を除き小文字で比べる。過半数のときだけ）
 //   (3) どちらも無ければ空（画面側で「区間 k」）。参照の無い短い隙間（全長の 0.2% 未満）で同じ名前に挟まれたものは前後に吸収する
-type RefX = { db: Database.Database; below: Database.Statement; above: Database.Statement; inside: Database.Statement; step: number; xPerBp: number }
+type RefX = { db: Database.Database; below: Database.Statement; above: Database.Statement; inside: Database.Statement; step: number; xPerBp: number; byTi: Database.Statement | null }
 /** <db>.refx（prep trav_refx.py）。無い・.trav と合わない（作った時の大きさが違う）ときは null（呼び手は通過の行で粗く写す） */
 function refxOf(t: Trav): RefX | null {
   if ((t as any).__refx !== undefined) return (t as any).__refx
@@ -150,7 +150,8 @@ function refxOf(t: Trav): RefX | null {
       if (Number(m.trav_size) === fs.statSync(t.file).size) {
         const refBp = t.paths.filter(p => p.hid === refHidOf(t)).reduce((s0, p) => s0 + (p.bp || 0), 0)
         r = { db: d, below: d.prepare('SELECT bp, x FROM refx WHERE pid = ? AND bp <= ? ORDER BY bp DESC LIMIT 1'), above: d.prepare('SELECT bp, x FROM refx WHERE pid = ? AND bp >= ? ORDER BY bp LIMIT 1'),
-          inside: d.prepare('SELECT MIN(x) AS a, MAX(x) AS b, COUNT(*) AS n FROM refx WHERE pid = ? AND bp >= ? AND bp < ?'), step: Number(m.other_step) || 16384, xPerBp: refBp > 0 ? t.R / refBp : 0.03 }
+          inside: d.prepare('SELECT MIN(x) AS a, MAX(x) AS b, COUNT(*) AS n FROM refx WHERE pid = ? AND bp >= ? AND bp < ?'), step: Number(m.other_step) || 16384, xPerBp: refBp > 0 ? t.R / refBp : 0.03,
+          byTi: Number(m.format) >= 2 ? d.prepare('SELECT bp, x, ti FROM refx WHERE pid = ? AND ti <= ? ORDER BY ti DESC LIMIT 1') : null }
       } else console.warn(`[refx] ${f} は今の .trav と合わない（作り直す）`) }
   } catch (e) { console.warn('[refx]', e) }
   ;(t as any).__refx = r; return r
@@ -171,6 +172,32 @@ function refxRange(t: Trav, R: RefX, pid: number, a: number, b: number): { x0: n
   const gapBp = ins && ins.n ? 0 : Math.min(p.d, q.d)
   return { x0: Math.min(...xs), x1: Math.max(...xs), ...(gapBp > 4 * R.step ? { gap: true, gapBp } : {}) }
 }
+/** パスのトークン番号 → コンティグ上の位置（11-16、Linear の BED の書き出し）。items＝[pid, ti]。x0..x1＝そのトークンが入っている窓（合意座標）。
+ *  手前の最寄りの .refx の点（同じ通過の中、参照 256 bp・その他 16 kb 以内）の bp に、その点から ti の手前までのトークンの bp を .xtiles から足す。
+ *  読むのは点 1 つ（索引）と、点と窓の間のタイル（上限 64 枚）。届かないときは exact=false で、点からの線形の見積もり */
+export function travPathBp(t: Trav, items: [number, number][], x0: number, x1: number): { bp: number; len: number; exact: boolean }[] | { error: string } {
+  const R = refxOf(t); if (!R || !R.byTi) return { error: '索引 .refx（format 2）が無い' }
+  const xt = t.xt; const useD = !xt && ensureCols(t); if (!xt && !useD) return { error: '.xtiles も distill も無い' }
+  const rowOf = t.db.prepare('SELECT id, i0, i1 FROM trav WHERE pid = ? AND i0 <= ? ORDER BY i0 DESC LIMIT 1')
+  const out: { bp: number; len: number; exact: boolean }[] = []
+  for (const [pid, ti] of items.slice(0, 20000)) {
+    const pt = R.byTi.get(pid, ti) as { bp: number; x: number; ti: number } | undefined; const row = rowOf.get(pid, ti) as { id: number; i0: number; i1: number } | undefined
+    if (!pt || !row || ti > row.i1) { out.push({ bp: -1, len: 0, exact: false }); continue }
+    if (!xt) {   // .xtiles の無い DB: distill のトークン列を点から ti まで読んで足す（点から 16 kb 以内）
+      const pi = (t.dist!.names[pid] === t.paths[pid].path) ? pid : t.dist!.pidx.get(t.paths[pid].path)
+      if (pi == null || ti - pt.ti > 2_000_000) { out.push({ bp: pt.bp, len: 0, exact: false }); continue }
+      const tk = t.dist!.read(pi, pt.ti, ti + 1); let sum = 0; for (let k = 0; k < tk.length - 1; k++) sum += t.bpOfDense![tk[k]]
+      out.push({ bp: pt.bp + sum, len: tk.length ? t.bpOfDense![tk[tk.length - 1]] : 0, exact: tk.length === ti - pt.ti + 1 }); continue }
+    const tA = Math.max(0, Math.min(pt.x, x0) >> xt.S), tB = Math.min(xt.ntile - 1, Math.max(pt.x, x1) >> xt.S)
+    let sum = 0, cnt = 0, len = 0, ok = pt.ti >= row.i0 && tB - tA <= 64
+    if (ok) { const T = rowTokens(xt, readTiles(xt, tA, tB), tA, row.id)
+      for (let k = 0; k < T.n; k++) { const q = T.ti[k]; if (q >= pt.ti && q < ti) { sum += T.bp[k]; cnt++ } else if (q === ti) len = T.bp[k] }
+      ok = cnt === ti - pt.ti }
+    out.push(ok ? { bp: pt.bp + sum, len, exact: true } : { bp: pt.bp, len: 0, exact: false })
+  }
+  return out
+}
+
 /** 参照（または任意のパス）の座標 → 合意座標（11-16、地点の一覧の go 用）。
  *  start/end は 0 始まり・終端を含まない。そのパスの通過（trav 行: パス上の bp0..bp0+bp ↔ 合意座標 x0..x1、向き dir）のうち区間に掛かるものを線形に写す。
  *  読むのはそのパスの trav 行だけ（索引 idx_trav_pid、1 本のパスで数十〜数千行）。精度は通過の中の挿入・欠失の分だけ粗い（approx）。
