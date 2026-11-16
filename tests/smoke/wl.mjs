@@ -29,7 +29,7 @@ const A = W.amipaLinear; if (!A) { console.log('NG: window.amipaLinear が無い
 const P = s => JSON.stringify(A.parse(s))
 for (const s of ['APOL1', 'gene:APOL1', 'chr22:36,253,964-36,266,033', 'CHM13#0#chr22:100-200', 'x:100-200', 'node:12,34', 'path:HG00438#1#JAHBCB010000005.1:5-10', 'two words']) console.log('[parse]', s, '→', P(s))
 const info = () => $('info').textContent
-for (const t of ['APOL1', 'chr22:36,253,964-36,266,033', 'CHM13#chr22:36,228,001-36,242,000', 'x:3215000-3216000', 'chr99:1-2', 'NOSUCHGENE_X']) { const r = await A.go(t); console.log('[go]', t, '→', r.ok, r.resolved ? JSON.stringify(r.resolved) : r.reason, '|', info().slice(0, 90)) }
+for (const t of ['APOL1', 'chr22:36,253,964-36,266,033', 'CHM13#chr22:36,714,080-36,726,149', 'x:3215000-3216000', 'chr99:1-2', 'NOSUCHGENE_X']) { const r = await A.go(t); console.log('[go]', t, '→', r.ok, r.resolved ? JSON.stringify(r.resolved) : r.reason, '|', info().slice(0, 90)) }
 const vcf = ['##fileformat=VCFv4.2', '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHG00438\tHG00621\tCHM13',
   'chr22\t36253964\tsv1\tN\t<DEL>\t.\tPASS\tSVTYPE=DEL;END=36260000\tGT\t0|1\t0|0\t1/1',
   'chr22\t20000000\tbnd1\tN\tN[chr21:30000000[\t.\tPASS\tSVTYPE=BND\tGT\t1|1\t0|1\t0/0',

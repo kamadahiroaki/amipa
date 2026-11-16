@@ -22,5 +22,5 @@ AMIPA_BASE=http://localhost:33041 AMIPA_DIST=$PWD/dist AMIPA_DB=chr202122v2.db \
   AMIPA_FILES="human_genes.txt human_regions.bed human_sv.vcf human_mixed.jsonl" node ../../tests/smoke/wlfiles.mjs
 ```
 
-11-16 の結果（chr202122v2）: APOL1 は遺伝子名で x 3,215,414–3,215,702、GRCh38 の座標で 3,215,409–3,215,700、CHM13 の座標（36,228,001-36,242,000）で 3,206,027–3,206,153。
+11-16 の結果（chr202122v2）: APOL1 は遺伝子名で x 3,215,414–3,215,702、GRCh38 の座標で 3,215,409–3,215,700、CHM13 の座標（36,714,080-36,726,149、GRCh38 の +460,116）で 3,215,412–3,215,701。
 ecoli50 の lacZ は遺伝子名で 29,136–30,063、参照の座標で 29,136–30,064。
