@@ -861,6 +861,9 @@ def execute(b: Bundle, a, want: list[str]) -> None:
         #   場合、最初に立てた計画のままだと後段が「変更なし」と誤判定されて取り残される
         #   （例: emit をやり直したのに annot が古い DB のまま残る）。
         stages = build_stages(b, a)
+        if name not in stages:   # 11-16: 前段の結果で段が無くなった（distill の後でパスが無いと分かると trav 段を作らない）。以前は KeyError で止まった
+            log(f"[{name}] この入力では作らない段（パスが無いなど）→ 飛ばす")
+            continue
         s = stages[name]
         if is_fresh(name, s):
             log(f"[{name}] 変更なし → 飛ばす")
