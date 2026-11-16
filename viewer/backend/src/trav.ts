@@ -138,6 +138,82 @@ export function refHidOf(t: Trav): number {
 //   (1) 参照（種）のパスが通っていれば、そのパス名のコンティグ部分（最後の # の後。例 chr3R）
 //   (2) 参照が通らない所は、通る通過（錨 1,000 以上）のコンティグ名の多数決（chr を除き小文字で比べる。過半数のときだけ）
 //   (3) どちらも無ければ空（画面側で「区間 k」）。参照の無い短い隙間（全長の 0.2% 未満）で同じ名前に挟まれたものは前後に吸収する
+type RefX = { db: Database.Database; below: Database.Statement; above: Database.Statement; inside: Database.Statement; step: number; xPerBp: number }
+/** <db>.refx（prep trav_refx.py）。無い・.trav と合わない（作った時の大きさが違う）ときは null（呼び手は通過の行で粗く写す） */
+function refxOf(t: Trav): RefX | null {
+  if ((t as any).__refx !== undefined) return (t as any).__refx
+  let r: RefX | null = null
+  try {
+    const base = path.join(getDbDir(), path.basename(t.dbFile)); const cands = [base + '.refx']; try { cands.push(fs.realpathSync(base) + '.refx') } catch { /* */ }
+    const f = cands.find(c => fs.existsSync(c))
+    if (f) { const d = openSidecar(f); const m = Object.fromEntries((d.prepare('SELECT key, value FROM meta').all() as any[]).map(o => [o.key, o.value]))
+      if (Number(m.trav_size) === fs.statSync(t.file).size) {
+        const refBp = t.paths.filter(p => p.hid === refHidOf(t)).reduce((s0, p) => s0 + (p.bp || 0), 0)
+        r = { db: d, below: d.prepare('SELECT bp, x FROM refx WHERE pid = ? AND bp <= ? ORDER BY bp DESC LIMIT 1'), above: d.prepare('SELECT bp, x FROM refx WHERE pid = ? AND bp >= ? ORDER BY bp LIMIT 1'),
+          inside: d.prepare('SELECT MIN(x) AS a, MAX(x) AS b, COUNT(*) AS n FROM refx WHERE pid = ? AND bp >= ? AND bp < ?'), step: Number(m.other_step) || 16384, xPerBp: refBp > 0 ? t.R / refBp : 0.03 }
+      } else console.warn(`[refx] ${f} は今の .trav と合わない（作り直す）`) }
+  } catch (e) { console.warn('[refx]', e) }
+  ;(t as any).__refx = r; return r
+}
+/** 区間 [a, b) の x の範囲。端は前後の点を線形に補う（点の間の x の差が bp の差に釣り合わない＝再編成をまたぐときは近い方の点に寄せる） */
+function refxRange(t: Trav, R: RefX, pid: number, a: number, b: number): { x0: number; x1: number; gap?: boolean; gapBp?: number } | null {
+  const at = (pos: number): { x: number; d: number } | null => {
+    const lo = R.below.get(pid, pos) as { bp: number; x: number } | undefined, hi = R.above.get(pid, pos) as { bp: number; x: number } | undefined
+    if (!lo && !hi) return null; if (!lo) return { x: hi!.x, d: hi!.bp - pos }; if (!hi) return { x: lo.x, d: pos - lo.bp }
+    if (hi.bp === lo.bp) return { x: lo.x, d: 0 }
+    const f = (pos - lo.bp) / (hi.bp - lo.bp); const ok = Math.abs(hi.x - lo.x) <= Math.max(64, 4 * R.xPerBp * (hi.bp - lo.bp))
+    if (ok) return { x: Math.round(lo.x + f * (hi.x - lo.x)), d: 0 }
+    return f < 0.5 ? { x: lo.x, d: pos - lo.bp } : { x: hi.x, d: hi.bp - pos }
+  }
+  const p = at(a), q = at(Math.max(a, b - 1)); if (!p || !q) return null
+  const ins = R.inside.get(pid, a, b) as { a: number | null; b: number | null; n: number }
+  const xs = [p.x, q.x]; if (ins && ins.n) xs.push(ins.a!, ins.b!)
+  const gapBp = ins && ins.n ? 0 : Math.min(p.d, q.d)
+  return { x0: Math.min(...xs), x1: Math.max(...xs), ...(gapBp > 4 * R.step ? { gap: true, gapBp } : {}) }
+}
+/** 参照（または任意のパス）の座標 → 合意座標（11-16、地点の一覧の go 用）。
+ *  start/end は 0 始まり・終端を含まない。そのパスの通過（trav 行: パス上の bp0..bp0+bp ↔ 合意座標 x0..x1、向き dir）のうち区間に掛かるものを線形に写す。
+ *  読むのはそのパスの trav 行だけ（索引 idx_trav_pid、1 本のパスで数十〜数千行）。精度は通過の中の挿入・欠失の分だけ粗い（approx）。
+ *  区間がどの通過にも掛からない（錨の無い所）ときは、いちばん近い通過の端を返す（gap=true）。 */
+export function travRefX(t: Trav, q: { ref?: string; chrom?: string; path?: string; start: number; end: number }): any {
+  const norm = (c: string) => c.replace(/^chr/i, '').toLowerCase()
+  const contig = (p: string) => { const c = p.slice(p.lastIndexOf('#') + 1); const smp = p.includes('#') ? p.split('#')[0] : ''; return smp && c.startsWith(smp + '.') ? c.slice(smp.length + 1) : c.replace(/^[A-Za-z0-9]+\.(?=chr)/, '') }
+  let cand: number[] = []
+  if (q.path) { cand = t.paths.map((p, i) => p.path === q.path ? i : -1).filter(i => i >= 0) }
+  else if (q.chrom) {
+    let hids: number[]
+    if (q.ref) { const r = q.ref.toLowerCase(); hids = t.haps.map((h, i) => { const hl = h.toLowerCase(); return hl === r || hl.split('#')[0] === r ? i : -1 }).filter(i => i >= 0) }
+    else hids = [refHidOf(t)]
+    const want = norm(q.chrom); for (const h of hids) for (const pid of t.hapPaths[h] || []) if (norm(contig(t.paths[pid].path)) === want) cand.push(pid)
+    if (!cand.length && !q.ref) t.paths.forEach((p, i) => { if (norm(contig(p.path)) === want) cand.push(i) })   // 参照に無い名前（細菌のアクセッションなど）は全株のパスから
+  }
+  if (!cand.length) return { ok: false, reason: q.path ? `パス ${q.path} が無い` : `参照 ${q.ref || t.haps[refHidOf(t)] || '?'} に ${q.chrom} が無い` }
+  const a = Math.min(q.start, q.end), b = Math.max(q.start, q.end)
+  const rx = refxOf(t)
+  if (rx) {   // 索引 <db>.refx: 前後の点を補う（参照 256 bp・その他 16 kb ごと）
+    const out: any[] = []
+    for (const pid of cand) { const r = refxRange(t, rx, pid, a, b); if (r) out.push({ pid, path: t.paths[pid].path, ...r }) }
+    if (!out.length) return { ok: false, reason: 'そのパスに索引の点が無い' }
+    out.sort((p, q2) => (p.gap ? 1 : 0) - (q2.gap ? 1 : 0) || (q2.x1 - q2.x0) - (p.x1 - p.x0))
+    return { ok: true, index: 'refx', ...out[0], alts: out.length > 1 ? out.slice(1).map(o => ({ path: o.path, x0: o.x0, x1: o.x1, gap: !!o.gap })) : undefined }
+  }
+  const st = t.db.prepare('SELECT x0, x1, dir, bp, bp0 FROM trav WHERE pid = ? ORDER BY i0')
+  const out: any[] = []
+  for (const pid of cand) {
+    const rows = st.all(pid) as { x0: number; x1: number; dir: number; bp: number; bp0: number }[]
+    const xAt = (r: typeof rows[number], pos: number) => { const f = r.bp > 0 ? Math.max(0, Math.min(1, (pos - r.bp0) / r.bp)) : 0; return Math.round(r.dir >= 0 ? r.x0 + f * (r.x1 - r.x0) : r.x1 - f * (r.x1 - r.x0)) }
+    const pieces: [number, number][] = []
+    for (const r of rows) { if (r.bp0 + r.bp <= a || r.bp0 >= b) continue; const u = xAt(r, Math.max(a, r.bp0)), v = xAt(r, Math.min(b, r.bp0 + r.bp)); pieces.push([Math.min(u, v), Math.max(u, v)]) }
+    if (pieces.length) { out.push({ pid, path: t.paths[pid].path, x0: Math.min(...pieces.map(p => p[0])), x1: Math.max(...pieces.map(p => p[1])), pieces: pieces.length > 50 ? pieces.slice(0, 50) : pieces, npieces: pieces.length }); continue }
+    let best: { d: number; x: number } | null = null
+    for (const r of rows) { const d = a >= r.bp0 + r.bp ? a - (r.bp0 + r.bp) : r.bp0 - b; const x = a >= r.bp0 + r.bp ? xAt(r, r.bp0 + r.bp) : xAt(r, r.bp0); if (d >= 0 && (!best || d < best.d)) best = { d, x } }
+    if (best) out.push({ pid, path: t.paths[pid].path, x0: best.x, x1: best.x, gap: true, gapBp: best.d })
+  }
+  if (!out.length) return { ok: false, reason: 'そのパスに通過が無い' }
+  out.sort((p, q2) => (p.gap ? 1 : 0) - (q2.gap ? 1 : 0) || (q2.x1 - q2.x0) - (p.x1 - p.x0))
+  return { ok: true, approx: true, ...out[0], alts: out.length > 1 ? out.slice(1).map(o => ({ path: o.path, x0: o.x0, x1: o.x1, gap: !!o.gap })) : undefined }
+}
+
 export function travChroms(t: Trav): { x0: number; x1: number; name: string; ref: boolean }[] {
   const c = (t as any).__chroms; if (c) return c
   if (t.tx) { const o = (t.tx.q.chroms.all() as any[]).map(r => ({ x0: r.x0, x1: r.x1, name: r.name, ref: !!r.ref })); (t as any).__chroms = o; return o }   // 11-12: 前計算

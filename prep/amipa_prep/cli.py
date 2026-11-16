@@ -256,6 +256,7 @@ class Bundle:
         self.trav = Path(str(self.db) + ".trav")       # Traversals の錨・座標・通過（trav_build.py ほか）
         self.travx = Path(str(self.db) + ".travx")     # 範囲の索引と配列ファイル .travx.arr（trav_xindex.py、11-12）
         self.xtiles = Path(str(self.db) + ".xtiles")   # 通過のトークンのタイル（trav_xtiles.py、11-12）
+        self.refx = Path(str(self.db) + ".refx")       # パスの座標 → 合意座標の索引（trav_refx.py、11-16。Linear の地点の一覧の go）
         self.anc = Path(str(self.db) + ".anc")         # 葉 → 各層の祖先（anc_build.py、11-12）
         self.xdepth = Path(str(self.db) + ".xdepth")   # 座標ごとのリードの深さ（reads_xdepth.py）
         self.genes = Path(str(self.db) + ".genes")     # 株ごとの遺伝子（genes_build.py → genes_project.py）
@@ -566,12 +567,14 @@ def build_stages(b: Bundle, a) -> dict:
              [py, str(PKG / "trav_xindex.py"), str(tmp_trav), str(b.distill), str(b.travx) + ".tmp", "--db", str(b.db)],
              # 11-12: 通過のトークンを合意座標のタイルにまとめる（cols・nodeset・genes が全ゲノムの配列を引かずに読む）
              [py, str(PKG / "trav_xtiles.py"), str(tmp_trav), str(b.distill), str(b.xtiles) + ".tmp"],
+             # 11-16: パスの座標（参照 256 bp・ほか 16 kb ごと）→ 合意座標の点。go("chr1:…") が数ページの読みで引く。中で .tmp に書いて置き換える
+             [py, str(PKG / "trav_refx.py"), str(tmp_trav), str(b.distill), str(b.refx)],
              ["mv", "-f", str(tmp_trav), str(b.trav)],
              ["mv", "-f", str(b.travx) + ".tmp.arr", str(b.travx) + ".arr"],
              ["mv", "-f", str(b.travx) + ".tmp", str(b.travx)],
              ["mv", "-f", str(b.xtiles) + ".tmp", str(b.xtiles)],
              ["mv", "-f", str(b.anc) + ".tmp", str(b.anc)]],
-            inputs=[b.distill, b.db], outputs=[b.trav, b.travx, b.xtiles, b.anc],
+            inputs=[b.distill, b.db], outputs=[b.trav, b.travx, b.xtiles, b.anc, b.refx],
             env={**thread_env(1), "NUMBA_NUM_THREADS": "1"},
             note="Traversals の錨・座標・通過（種は参照パス）",
         )
