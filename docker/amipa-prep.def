@@ -58,7 +58,7 @@ From: python:3.9-slim-bookworm
 %test
     povu -h >/dev/null 2>&1 && echo "povu OK"
     billi decompose --help >/dev/null 2>&1 && echo "billi OK"
-    /opt/bubblefinder/bin/BubbleFinder 2>&1 | grep -q ultrabubbles && echo "BubbleFinder OK"
+    /opt/bubblefinder/bin/BubbleFinder --help >/dev/null 2>&1 && echo "BubbleFinder OK"
     python3 -c "import emit_core, reads_core, tiled_core, numpy, scipy, numba, infomap, Bio, zstandard; print('imports OK')"
     test -f /opt/amipa/prep/amipa_prep/templates/schema.db && echo "template OK"
     python3 /opt/amipa/prep/amipa_prep/cli.py --help >/dev/null && echo "amipa prep OK"

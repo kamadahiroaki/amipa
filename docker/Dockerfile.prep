@@ -68,7 +68,7 @@ ENV AMIPA_EMITTER_REV=$AMIPA_REV \
 # ★**最終イメージで**起動できるかを確かめる（共有ライブラリの取りこぼしはここで落とす）。
 #   実行時まで気付かないと「distill だけ通って povu で止まる」ことになる。
 RUN povu -h >/dev/null \
- && /opt/bubblefinder/bin/BubbleFinder 2>&1 | grep -q ultrabubbles \
+ && /opt/bubblefinder/bin/BubbleFinder --help >/dev/null \
  && ! ldd /usr/local/bin/povu | grep -q "not found" \
  && python3 -c "import emit_core, reads_core, tiled_core, numpy, scipy, numba, infomap, Bio, zstandard" \
  && test -f /opt/amipa/prep/amipa_prep/templates/schema.db \

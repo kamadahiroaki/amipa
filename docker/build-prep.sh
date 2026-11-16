@@ -53,8 +53,9 @@ curl -sSfL -o /tmp/micromamba \
   "https://github.com/mamba-org/micromamba-releases/releases/download/${MICROMAMBA_VERSION}/micromamba-linux-64"
 chmod 0755 /tmp/micromamba
 MAMBA_ROOT_PREFIX=/tmp/mamba /tmp/micromamba create -y -q -p /opt/bubblefinder \
-  -c conda-forge -c bioconda "bubblefinder=${BUBBLEFINDER_VERSION}" >/dev/null
-/opt/bubblefinder/bin/BubbleFinder 2>&1 | grep -q ultrabubbles
+  -c conda-forge -c bioconda "bubblefinder=${BUBBLEFINDER_VERSION}"
+# ★引数なしの BubbleFinder は使い方を出して終了コード 1 になる（pipefail の下で `| grep` すると止まる）。--help は 0
+/opt/bubblefinder/bin/BubbleFinder --help >/dev/null
 rm -rf /tmp/micromamba /tmp/mamba /opt/bubblefinder/pkgs
 chmod -R a+rX /opt/bubblefinder
 echo "[build-prep]   -> /opt/bubblefinder/bin/BubbleFinder ($BUBBLEFINDER_VERSION)"
