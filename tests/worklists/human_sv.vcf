@@ -1,0 +1,12 @@
+##fileformat=VCFv4.2
+##source=amipa-trav tests/worklists（値は架空。遺伝型は乱数）
+##INFO=<ID=SVTYPE,Number=1,Type=String,Description="SV type">
+##INFO=<ID=END,Number=1,Type=Integer,Description="End">
+##INFO=<ID=SVLEN,Number=.,Type=Integer,Description="SV length">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	HG00438	HG00621	HG00673	HG00733	HG00735	HG00741	CHM13
+chr22	36254500	del_APOL1	N	<DEL>	.	PASS	SVTYPE=DEL;END=36258000;SVLEN=-3500	GT	1|0	0|1	0|0	0|0	1|1	0|0	0/0
+chr21	34800000	inv_RUNX1	N	<INV>	.	PASS	SVTYPE=INV;END=34900000;SVLEN=100000	GT	1|0	0|1	0|0	1|1	0|0	0|1	0/0
+chr20	4699500	ins_PRNP	N	<INS>	.	PASS	SVTYPE=INS;SVLEN=300	GT	1|1	1|1	1|1	1|1	1|1	0|0	0/0
+chr22	23290000	bnd_BCR	N	N[chr21:34850000[	.	PASS	SVTYPE=BND	GT	1|0	0|1	0|0	0|0	0|0	0|0	0/0
+chr22	19963000	snv_COMT	G	A	.	PASS	.	GT	0|0	0|0	1|1	0|1	1|0	0|0	1/1

@@ -1,0 +1,9 @@
+track name="Linear worklist example (GRCh38, 0-based)"
+chr22	36253963	36266033	APOL1
+chr20	4699221	4699982	PRNP
+chr21	25881670	26170620	APP
+chr21	34792135	35048899	RUNX1
+chr22	19962527	19968736	COMT
+chr22	23180961	23315522	BCR
+chr22	1000	2000	chr22_p_arm_gap（錨の無い所）
+chr99	1	100	no_such_chrom（わざと見つからない）

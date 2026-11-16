@@ -1,0 +1,12 @@
+# Linear の地点の一覧の例（ヒト: chr202122v2・全ゲノム mc-grch38-v1）。1 行 1 項目、タブの後ろは名札
+APOL1	APOL1（chr22、腎疾患のリスク多型）
+PRNP
+APP
+RUNX1
+COMT
+BCR
+DSCAM	DSCAM（830 kb と長い）
+chr22:36,253,964-36,266,033	APOL1 を座標で
+CHM13#chr22:36,228,001-36,242,000	CHM13 の座標で
+node:n76764185,n76764186	ノード名で（chr202122v2 の APOL1 付近）
+NO_SUCH_GENE	わざと見つからない
