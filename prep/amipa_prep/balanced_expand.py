@@ -84,9 +84,58 @@ def read_distill(distill):
     return nodes, nadj, sideadj
 
 
-def flood_claim(A, Z, AS, ZS, depth, nadj, sideadj, leak_cap=200000):
-    """深さ降順の有界フラッドで各ノードを deepest flubble に claim。
-    返り値: claim(node->F), n_members(F), leak(F)。"""
+FLOOD_MODES = ("through", "legacy")
+
+
+def flood_claim(A, Z, AS, ZS, depth, nadj, sideadj, leak_cap=200000, mode="through"):
+    """深さ降順の有界フラッドで各ノードを、それを内部に含む最も深いバブルに割り当てる（claim）。
+    返り値: claim(node->F), n_members(F), leak(F)。
+
+    mode="through"（既定）: 外側のバブルのフラッドは、内側のバブルが割り当て済みのノードも**通り抜けて**辿り
+      （割り当て直しはしない）、まだ割り当てのないノードだけを自分に割り当てる。各ノードは入れ子の深さの回数だけ
+      辿られる（実測の深さは 7〜18。chr22 pggb 115 万バブルで 2.9 秒）。塊ごとに外周へ飛ぶ線形版も書いたが、
+      割り当ては完全に一致し、外周の管理の分だけ遅かった（5.0 秒）ので採らなかった（2026-11-16）。
+    mode="legacy": 割り当て済みのノードでフラッドを止める旧動作。外側のバブルが内側のバブルの先へ届かず、
+      その先の内部ノードが背骨扱いになる（chrY で 13 %、chr22 pggb で 6 %。2026-11-16 実測）。
+      旧 DB を再現するときだけ使う。"""
+    if mode == "legacy":
+        return _flood_claim_legacy(A, Z, AS, ZS, depth, nadj, sideadj, leak_cap)
+    if mode != "through":
+        raise ValueError(f"unknown flood mode: {mode}")
+    F = A.size
+    claim = {}
+    n_members = np.zeros(F, np.int64)
+    leak = np.zeros(F, np.int8)
+    for fi in np.argsort(-depth, kind="stable"):
+        a_, z_ = int(A[fi]), int(Z[fi])
+        aex = 1 if AS[fi] == "+" else 0
+        seen = set()
+        stack = [s for s in sideadj.get((a_, aex), ()) if s != a_ and s != z_]
+        capped = False
+        while stack:
+            u = stack.pop()
+            if u in seen:
+                continue
+            seen.add(u)
+            if len(seen) > leak_cap:
+                capped = True
+                break
+            for v in nadj.get(u, ()):
+                if v == a_ or v == z_ or v in seen:
+                    continue
+                stack.append(v)
+        if capped:
+            leak[fi] = 1
+            continue
+        new = [u for u in seen if u not in claim]
+        for u in new:
+            claim[u] = fi
+        n_members[fi] = len(new)
+    return claim, n_members, leak
+
+
+def _flood_claim_legacy(A, Z, AS, ZS, depth, nadj, sideadj, leak_cap=200000):
+    """旧動作（割り当て済みのノードで止まる）。flood_claim(mode="legacy") からだけ呼ぶ。"""
     F = A.size
     claim = {}
     n_members = np.zeros(F, np.int64)
@@ -121,7 +170,7 @@ def flood_claim(A, Z, AS, ZS, depth, nadj, sideadj, leak_cap=200000):
 
 
 class ExpandModel:
-    """GFA + povu PVST から balanced expansion の unit 操作を提供する。
+    """GFA + バブル木（pvst）から balanced expansion の unit 操作を提供する。
 
     主な属性: nodes, N, A/Z/AS/ZS, kids, root_children, depth, claim, leak,
               direct_leaves, pure_backbone, ndesc, half, nsplit。
@@ -130,7 +179,7 @@ class ExpandModel:
     """
 
     def __init__(self, gfa, pvst_list, half=0.5, nsplit=4, leak_cap=200000,
-                 verbose=True, distill=None):
+                 verbose=True, distill=None, flood="through"):
         self.half = half
         self.nsplit = nsplit
         self.verbose = verbose
@@ -155,9 +204,9 @@ class ExpandModel:
         self.N = len(nodes)
         self._log(f"nodes={self.N} edges(adj built)")
 
-        self._log("bounded flood (deepest-first)")
+        self._log(f"bounded flood (deepest-first, mode={flood})")
         claim, n_members, leak = flood_claim(A, Z, AS, ZS, depth, nadj, sideadj,
-                                             leak_cap)
+                                             leak_cap, mode=flood)
         self.claim, self.n_members, self.leak = claim, n_members, leak
         self._log(f"claimed={len(claim)} leaks={int(leak.sum())}")
 

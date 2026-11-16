@@ -37,13 +37,13 @@ git clone https://github.com/kamadahiroaki/amipa.git && cd amipa
 docker build -f docker/Dockerfile.viewer -t amipa-viewer \
     --build-arg AMIPA_REV=$(git rev-parse --short HEAD) .    # 3-5 分
 docker build -f docker/Dockerfile.prep   -t amipa-prep \
-    --build-arg AMIPA_REV=$(git rev-parse --short HEAD) .    # 15-25 分（povu と Rust のコンパイル）
+    --build-arg AMIPA_REV=$(git rev-parse --short HEAD) .    # 10-20 分（Rust のコンパイル）
 ```
 
 `AMIPA_REV` は版の刻印（`amipa version` と、アトラスの `db_meta.emitter_rev` に入る）。
 `.git` は context から外してあるので、渡さないと `unknown` になる。
 
-どちらのイメージも最終段で自己テストする（povu が起動するか、ネイティブモジュールが
+どちらのイメージも最終段で自己テストする（BubbleFinder が起動するか、ネイティブモジュールが
 require できるか、python の依存が揃っているか）。共有ライブラリの取りこぼしは
 実行時ではなく `docker build` の時点で落ちる。
 
@@ -56,7 +56,11 @@ env -u APPTAINER_BINDPATH apptainer build --fakeroot amipa-viewer.sif docker/ami
 
 `env -u APPTAINER_BINDPATH` は、サイト設定で共有ディレクトリを bind している環境で必要
 （イメージ側に同名のディレクトリが無いとコンテナ作成に失敗するため）。
-ビルドには外向き通信が要る（povu の依存取得・PyPI・crates.io）。
+ビルドには外向き通信が要る（conda-forge と bioconda・PyPI・crates.io）。
+
+既定のバブル分解器は BubbleFinder。`docker/amipa-prep.def` は手元で使うイメージ用で、選択肢として
+Billi も焼いて入れる（`AMIPA_WITH_BILLI=1`。Billi は再配布できないので、この方法で作ったイメージは配らない）。
+`Dockerfile.prep` は配布用で、Billi を入れない。
 
 ビルド手順の実体は `docker/build-prep.sh` / `docker/build-viewer.sh` の 2 本だけで、
 Docker と Apptainer の両方がこれを呼ぶ（手順が二重化しないようにしてある）。

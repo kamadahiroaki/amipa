@@ -4,6 +4,7 @@
 #
 #   ./run_chrY.sh --gfa /path/chrY.gfa [--out DIR] [--reads S=GAF] [--band F] [--gene F]
 #   ./run_chrY.sh --gfa ... --runner apptainer   # 焼いたイメージで（既定はホストの python）
+#   ./run_chrY.sh --gfa ... --decomposer bubblefinder   # バブル分解器を指定（既定は前処理の既定）
 #
 # chrY で 2〜4 分。所要とメモリの目安は examples/chrY/README.md。
 set -uo pipefail
@@ -22,7 +23,7 @@ while [ $# -gt 0 ]; do
     --name) NAME=$2; shift 2 ;;
     --runner) RUNNER=$2; shift 2 ;;
     --threads) THREADS=$2; shift 2 ;;
-    --reads|--band|--gene|--region|--region-ref) EXTRA+=("$1" "$2"); shift 2 ;;
+    --reads|--band|--gene|--region|--region-ref|--decomposer|--flood) EXTRA+=("$1" "$2"); shift 2 ;;
     *) echo "不明な引数: $1" >&2; exit 2 ;;
   esac
 done

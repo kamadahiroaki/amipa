@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""bubble_membership.py — povu PVST(flubble tree) の各 flubble の**内部メンバノード集合**を
+"""bubble_membership.py — バブル木（pvst。decompose.py が書く）の各バブルの**内部メンバノード集合**を
 GFA 位相から有界フラッドで復元する(対話 2026-06-24)。
 
 背景: PVST/lod_nodes.tsv は flubble を「向き付き境界対(a,z)＋入れ子」でしか持たず、内部メンバ
@@ -15,7 +15,7 @@ GFA 位相から有界フラッドで復元する(対話 2026-06-24)。
   有向シード(a 出口側)＋ a,z 壁で外へ漏れない(過去の無向-only net-graph leak の是正と同方式)。
 
 入力:
-  --pvst        povu の .pvst(複数可)
+  --pvst        バブル木の .pvst(複数可)
   --edges       stage1 *.edge_support.tsv (a, oa, b, ob, support 向き付き)
   --nodes       stage1 *.node_support.tsv (id 列挙; メンバ表の母集合)
 出力(--out プレフィックス):

@@ -4,7 +4,8 @@ AMIPA は以下を利用している。それぞれのライセンスは各プ�
 
 | ソフトウェア | 用途 | 出典 |
 |---|---|---|
-| povu | バブル（入れ子の分岐構造）の分解 | https://github.com/pangenome/povu |
+| BubbleFinder | バブル（入れ子の分岐構造）の分解（既定） | https://github.com/algbio/BubbleFinder |
+| Billi | バブルの分解（選択肢。配布イメージには含まない） | https://github.com/at-cg/billi |
 | Infomap | コミュニティ検出（解像度階層の構築） | https://www.mapequation.org/ |
 | SQLite（R*Tree / FTS5 を含む） | アトラスの格納と空間・文字列索引 | https://sqlite.org/ |
 | NumPy / SciPy / numba | 数値計算とレイアウト | — |
