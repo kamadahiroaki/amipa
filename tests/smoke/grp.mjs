@@ -42,5 +42,13 @@ hf.dispatchEvent(new W.KeyboardEvent('keydown', { key: 'Enter' })); await sleep(
 $('hfindpin').dispatchEvent(new W.MouseEvent('click', { bubbles: true })); await sleep(200); await set(sel, 'pin'); console.log('[pin all + group pin] ok')
 // 系統樹のまとめ＋群
 $('cut').value = '60'; $('cut').dispatchEvent(new W.Event('input')); await sleep(300); await set(ord, 'tree'); await set(sel, 'pin'); console.log('[collapse+group]', W.document.getElementById('tv_cuttxt').textContent)
+// 表にある株だけ（11-16）: 20 株だけの表 → 表示 20 行＋参照、0 一致の表 → 警告で選択肢を切る
+{ await set($('cut'), '100'); $('cut').dispatchEvent(new W.Event('input')); await set(sel, ''); await set(ord, 'name')
+  W.__amipaAttrs('sample\tg\n' + hs.slice(0, 20).map((h, i) => `${h}\t${i % 2 ? 'x' : 'y'}`).join('\n'), 'part.tsv'); console.log('[part]', $('attrinfo').textContent, 'disabled=', $('onlyattr').disabled)
+  const cb = $('onlyattr'); cb.checked = true; cb.dispatchEvent(new W.Event('change')); await sleep(300); console.log('[only in table]', W.document.getElementById('tv_cuttxt').textContent)
+  await set(sel, 'attr:1'); console.log('[only + group g]', W.document.getElementById('tv_cuttxt').textContent)
+  await set(ord, 'tree'); console.log('[only + group + tree]', W.document.getElementById('tv_cuttxt').textContent)
+  cb.checked = false; cb.dispatchEvent(new W.Event('change')); await sleep(300); console.log('[off]', W.document.getElementById('tv_cuttxt').textContent)
+  W.__amipaAttrs('sample\tg\nNOPE1\tx\nNOPE2\ty', 'wrong.tsv'); console.log('[wrong]', $('attrinfo').textContent, 'disabled=', $('onlyattr').disabled) }
 console.log(errors.length ? 'NG\n' + errors.slice(0, 5).map(e => String(e).split('\n').slice(0, 6).join('\n  ')).join('\n') : 'OK 例外なし')
 process.exit(errors.length ? 1 : 0)
