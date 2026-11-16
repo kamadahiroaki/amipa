@@ -1430,7 +1430,8 @@ export default function App() {
       <span className="ui-check">{on ? '✓' : ''}</span><span>{label}</span>
     </button>
   )
-  const anyLabelOn = showNodeNames || showNodeBp || seqMode || showRefPos || coverageTextMode || cnvMode !== 'off'
+  const anyGraphLabelOn = showNodeNames || showNodeBp || seqMode || showRefPos || coverageTextMode || cnvMode !== 'off'
+  const anyAnnotOn = bandMode || regionMode || geneMode || showBandLabels || showRegionMarks || showGeneLabels
 
   if (error) return (
     <div style={{ color: '#c0392b', padding: 20, fontFamily: 'monospace' }}>Error: {error}</div>
@@ -1515,10 +1516,10 @@ export default function App() {
         <div className="ui-spacer" />
 
         <div className="ui-group">
-          {/* ── 表示: 辺の太さ・ノードの色・強調・重ね表示 ── */}
+          {/* ── グラフ（11-16 再編）: ノードと辺そのものの表し方。辺の太さ・ノードの文字・リード由来の数・強調。注釈は Annotations、ミニマップは画面の隅 ── */}
           <div ref={viewMenuRef} className="ui-menu-wrap">
-            <button className={'ui-btn ui-btn-ghost' + (showViewMenu ? ' is-open' : '')} aria-expanded={showViewMenu}
-              onClick={() => setShowViewMenu(v => !v)} title="表示（辺の太さ・ノードの色など）" data-tiny="V ▾">View ▾</button>
+            <button className={'ui-btn ui-btn-ghost' + (showViewMenu ? ' is-open' : '') + (anyGraphLabelOn ? ' is-on' : '')} aria-expanded={showViewMenu}
+              onClick={() => setShowViewMenu(v => !v)} title="グラフの表し方（辺の太さ・ノードの文字・深さ・コピー数・強調）" data-short="Grf ▾" data-tiny="G ▾">Graph ▾</button>
             {showViewMenu && (
               <div className="ui-menu" style={{ minWidth: 300 }}>
                 <div className="ui-menu-title">Edge width</div>
@@ -1545,32 +1546,26 @@ export default function App() {
                       onKeyDown={e => { if (e.key === 'Enter') applyDetailParams() }} onBlur={applyDetailParams} />
                   </div>
                 )}
-                {(bandAvail || regionAvail || geneAvail) && (<>
-                  <div className="ui-menu-sep" />
-                  <div className="ui-menu-title">Node color</div>
-                  <div className="ui-menu-row">
-                    <div className="ui-seg" role="radiogroup" aria-label="ノードの色">
-                      {([
-                        { key: 'hap', label: 'Plain', on: !bandMode && !regionMode && !geneMode, show: true, t: '単色（青）。パスのリボンや Linear の「Color」の色はこの上に重なる' },
-                        { key: 'band', label: 'Band', on: bandMode, show: bandAvail, t: 'ノードを cytoBand の染色で塗る（acen = セントロメア）' },
-                        { key: 'region', label: 'Region', on: regionMode, show: regionAvail, t: 'ノードを CHM13 の領域（セントロメア・サテライト）で塗る' },
-                        { key: 'gene', label: 'Gene density', on: geneMode, show: geneAvail, t: 'ノードを遺伝子の密度で塗る（粗い拡大での概観）' },
-                      ].filter(s => s.show)).map(s => (
-                        <button key={s.key} role="radio" aria-checked={s.on} className={s.on ? 'is-on' : ''} title={s.t}
-                          onClick={() => { setBandMode(s.key === 'band'); setRegionMode(s.key === 'region'); setGeneMode(s.key === 'gene') }}>{s.label}</button>
-                      ))}
+                <div className="ui-menu-sep" />
+                <div className="ui-menu-title">Node labels</div>
+                {menuCheck('Node ID', showNodeNames, () => setShowNodeNames(v => !v))}
+                {menuCheck('Length (bp)', showNodeBp, () => setShowNodeBp(v => !v), 'クラスタは配下の合計 bp。大きいグラフの深い拡大では表示が遅くなる')}
+                {seqAvail && menuCheck('Bases', seqMode, () => setSeqMode(v => !v), '画面内の短いノード（1bp）の塩基をノードの中に書く')}
+                {refposAvail && menuCheck(`Ref position${refKey ? ` (${refKey})` : ''}`, showRefPos, () => setShowRefPos(v => !v), '参照上のおおよその bp 位置を代表のノードの近くに書く')}
+                {menuCheck('Read depth', coverageTextMode, () => setCoverageTextMode(m => !m), '拡大したとき、ノードの上にリードの数を書く', naReads)}
+                {multAvail && (<>
+                  <div className="ui-menu-title">Copy number{cnvMode !== 'off' && cnvSuppressed ? ' ⚠' : ''}</div>
+                  <div className="ui-menu-row" title={ribbonSel.size === 0 ? '左のパスの一覧で、比べたいサンプル／ハプロタイプを選ぶと使える' : '選んだパスの、ノードごとのコピー数をリボンと同じ色で書く'}>
+                    <div className="ui-seg" role="radiogroup" aria-label="コピー数">
+                      {([['off', 'Off', '書かない'], ['all', 'All', '選んだパスすべての、ノードごとのコピー数'], ['diff', 'Differences', '選んだパスの間でコピー数が違うノードだけ（隠れた CNV）']] as const).map(([k, lab, t]) => (
+                        <button key={k} role="radio" aria-checked={cnvMode === k} className={(cnvMode === k ? 'is-on' : '') + (k !== 'off' && ribbonSel.size === 0 ? ' is-na' : '')} title={k !== 'off' && ribbonSel.size === 0 ? '左のパスの一覧でパスを選ぶと使える' : t}
+                          onClick={() => { if (k !== 'off' && ribbonSel.size === 0) { showHint('コピー数: 左のパスの一覧で、比べたいサンプル／ハプロタイプを選ぶ'); return } setCnvMode(k) }}>{lab}</button>))}
                     </div>
                   </div>
                 </>)}
                 <div className="ui-menu-sep" />
-                {menuCheck('Dim unselected', nodeGreyMode,
-                  () => setNodeGreyMode(m => !m),
-                  '左のパスの一覧で選んだパスが通らないノードを薄く描く')}
-                {menuCheck('Match Alignment colors', showAlignColors,
-                  () => setShowAlignColors(v => { alignColorsUserOff.current = v; return !v }),
-                  'Alignment パネルの各ノードの色で、グラフの同じノードも塗る')}
-                {menuCheck('Minimap & legend', showOverlays, () => setShowOverlays(v => !v),
-                  'グラフに重ねて出すミニマップ・凡例・詳細度の箱をまとめて出す／隠す')}
+                {menuCheck('Dim unselected', nodeGreyMode, () => setNodeGreyMode(m => !m), '左のパスの一覧で選んだパスが通らないノードを薄く描く')}
+                {menuCheck('Match Alignment colors', showAlignColors, () => setShowAlignColors(v => { alignColorsUserOff.current = v; return !v }), 'Alignment パネルの各ノードの色で、グラフの同じノードも塗る')}
                 {devMode && menuCheck('近さの色分け（開発）', floodMode, () => setFloodMode(m => {
                   const nm = !m
                   if (!nm) { setFloodResult(null); setFloodSeedComp(null) }
@@ -1605,44 +1600,31 @@ export default function App() {
             )}
           </div>
 
-          {/* ── ラベル: グラフに重ねる文字（併用可）。大きさ・色・ずらしは設定へ ── */}
+          {/* ── 注釈（11-16 再編）: 注釈 1 つ＝1 行に「塗る（1 つだけ）」と「名前（複数可）」を並べる（以前は塗りが View、名前が Labels に分かれていた） ── */}
           <div ref={labelsMenuRef} className="ui-menu-wrap">
-            <button className={'ui-btn ui-btn-ghost' + (showLabelsMenu ? ' is-open' : '') + (anyLabelOn ? ' is-on' : '')} aria-expanded={showLabelsMenu}
-              onClick={() => setShowLabelsMenu(v => !v)} title="ノード名・塩基・参照の位置・深さ・コピー数などの文字を重ねる" data-short="Lbl ▾" data-tiny="L ▾">Labels ▾</button>
+            <button className={'ui-btn ui-btn-ghost' + (showLabelsMenu ? ' is-open' : '') + (anyAnnotOn ? ' is-on' : '')} aria-expanded={showLabelsMenu}
+              onClick={() => setShowLabelsMenu(v => !v)} title="注釈（バンド・領域・遺伝子）の塗りと名前" data-short="Ann ▾" data-tiny="A ▾">Annotations ▾</button>
             {showLabelsMenu && (
               <div className="ui-menu" style={{ minWidth: 260 }}>
-                <div className="ui-menu-title">On nodes</div>
-                {menuCheck('Node ID', showNodeNames, () => setShowNodeNames(v => !v))}
-                {menuCheck('Length (bp)', showNodeBp, () => setShowNodeBp(v => !v), 'クラスタは配下の合計 bp。大きいグラフの深い拡大では表示が遅くなる')}
-                {seqAvail && menuCheck('Bases', seqMode,
-                  () => setSeqMode(v => !v),
-                  '画面内の短いノード（1bp）の塩基をノードの中に書く')}
-                {refposAvail && menuCheck(`Ref position${refKey ? ` (${refKey})` : ''}`, showRefPos, () => setShowRefPos(v => !v), '参照上のおおよその bp 位置を代表のノードの近くに書く')}
-                {menuCheck('Read depth', coverageTextMode,
-                  () => setCoverageTextMode(m => !m),
-                  '拡大したとき、ノードの上にリードの数を書く', naReads)}
-                {multAvail && (<>
-                  <div className="ui-menu-title">Copy number</div>
-                  {(['all', 'diff'] as const).map(mode => (
-                    <Fragment key={mode}>
-                      {menuCheck((mode === 'all' ? 'All' : 'Differences only') + (cnvMode === mode && cnvSuppressed ? ' ⚠' : ''), cnvMode === mode,
-                        () => setCnvMode(m => m === mode ? 'off' : mode),
-                        mode === 'all' ? '選んだパスすべての、ノードごとのコピー数をリボンと同じ色で書く' : '選んだパスの間でコピー数が違うノードだけ書く（隠れた CNV）',
-                        ribbonSel.size === 0 ? { tag: 'Select paths', why: '左のパスの一覧で、比べたいサンプル／ハプロタイプを選ぶと使える' } : null)}
-                    </Fragment>
-                  ))}
-                </>)}
-                {naAnnot && !(bandAvail || regionAvail || geneAvail) && (<>
-                  <div className="ui-menu-title">Annotations</div>
-                  {menuCheck('Bands, genes…', false, () => {}, undefined, naAnnot)}
-                </>)}
-                {(bandAvail || regionAvail || geneAvail) && (<>
-                  <div className="ui-menu-title">Annotations</div>
-                  {bandAvail && menuCheck('Bands', showBandLabels, () => setShowBandLabels(v => !v), 'cytoBand の名前（例 Yq11.221）')}
-                  {regionAvail && menuCheck('Regions', showRegionMarks, () => setShowRegionMarks(v => !v), 'CHM13 の領域の目印の名前')}
-                  {geneAvail && menuCheck('Genes', showGeneLabels, () => setShowGeneLabels(v => !v), '遺伝子の名前（向きの矢印つき）')}
-                </>)}
-                <div className="ui-menu-sep" />
+                {!(bandAvail || regionAvail || geneAvail) ? menuCheck('Bands, genes…', false, () => {}, undefined, naAnnot ?? { tag: 'None', why: 'この DB には注釈（cytoBand・領域・遺伝子）が無い' }) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', columnGap: 14, rowGap: 2, alignItems: 'center', padding: '4px 10px 6px' }}>
+                    <span className="ui-menu-title" style={{ padding: 0 }}>Layer</span><span className="ui-menu-title" style={{ padding: 0 }}>Color</span><span className="ui-menu-title" style={{ padding: 0 }}>Label</span>
+                    {([
+                      { k: 'band', name: 'Bands', show: bandAvail, col: bandMode, lab: showBandLabels, setLab: setShowBandLabels, tc: 'ノードを cytoBand の染色で塗る（acen = セントロメア）', tl: 'cytoBand の名前（例 Yq11.221）' },
+                      { k: 'region', name: 'Regions', show: regionAvail, col: regionMode, lab: showRegionMarks, setLab: setShowRegionMarks, tc: 'ノードを CHM13 の領域（セントロメア・サテライト）で塗る', tl: 'CHM13 の領域の目印の名前' },
+                      { k: 'gene', name: 'Genes', show: geneAvail, col: geneMode, lab: showGeneLabels, setLab: setShowGeneLabels, tc: 'ノードを遺伝子の密度で塗る（粗い拡大での概観）', tl: '遺伝子の名前（向きの矢印つき）' },
+                    ].filter(r => r.show)).map(r => (
+                      <Fragment key={r.k}>
+                        <span>{r.name}</span>
+                        <input type="radio" name="annot-color" checked={r.col} title={r.tc} aria-label={`${r.name}: color`}
+                          onChange={() => { setBandMode(r.k === 'band'); setRegionMode(r.k === 'region'); setGeneMode(r.k === 'gene') }} />
+                        <input type="checkbox" checked={r.lab} title={r.tl} aria-label={`${r.name}: label`} onChange={() => r.setLab((v: boolean) => !v)} />
+                      </Fragment>))}
+                    <span style={{ color: 'var(--ui-muted)' }}>None</span>
+                    <input type="radio" name="annot-color" checked={!bandMode && !regionMode && !geneMode} title="単色（青）。パスのリボンや Linear の「Color」の色はこの上に重なる" aria-label="no annotation color"
+                      onChange={() => { setBandMode(false); setRegionMode(false); setGeneMode(false) }} />
+                    <span />
+                  </div>)}
               </div>
             )}
           </div>
@@ -2338,6 +2320,13 @@ export default function App() {
                     onNavigate={(cx, cy) => graphRef.current?.navigateTo(cx, cy)}
                   />
                 )}
+                {/* 11-16: ミニマップ・凡例の出し入れ（以前は View の中。データの表し方ではなく画面の部品なので、地図アプリのように画面の隅に） */}
+                <button className={'ui-iconbtn' + (showOverlays ? ' is-on' : '')} aria-pressed={showOverlays} aria-label="ミニマップと凡例"
+                  title={showOverlays ? 'ミニマップ・凡例・詳細度の箱を隠す' : 'ミニマップ・凡例・詳細度の箱を出す'}
+                  style={{ position: 'absolute', right: 8, bottom: 8, zIndex: 11, color: '#334155', background: 'rgba(255,255,255,.9)', boxShadow: '0 1px 3px rgba(0,0,0,.2)' }}
+                  onClick={() => setShowOverlays(v => !v)}>
+                  <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.3" /><rect x="8" y="4.5" width="5" height="4" fill={showOverlays ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1" /></svg>
+                </button>
               </>
             : dbIncompatible
             ? <div style={{ padding: 24, fontFamily: 'sans-serif', maxWidth: 560 }}>
