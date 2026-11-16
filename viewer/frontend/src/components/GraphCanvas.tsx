@@ -2918,7 +2918,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         sweepTimer = null
         if (currentLayer < 0) return
         const vp = getViewport()
-        const rect = expandRect(vp, FETCH_MARGIN)
+        const rect = expandRect(vp, fetchMarginNow)
         const gz = curGridZ()
         const miss = getMissingTiles(currentLayer, gz, rect, 'nodes').length
                    + getMissingTiles(currentLayer, gz, rect, 'edges').length
@@ -2946,7 +2946,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
         else if (subBudgetCap < layer && subBudgetBox) { const b = subBudgetBox, v = viewport; const area = (r: Rect) => Math.max(0, r.x2 - r.x1) * Math.max(0, r.y2 - r.y1)
           const ov = area({ x1: Math.max(b.x1, v.x1), y1: Math.max(b.y1, v.y1), x2: Math.min(b.x2, v.x2), y2: Math.min(b.y2, v.y2) })
           if (area(v) < 0.7 * area(b) || ov < 0.5 * area(v)) { subBudgetCap = Infinity; subBudgetBox = null } }   /* 10-28: 予算で粗くした後に拡大・移動しても、拡大に応じた層が同じだと粗いまま残っていた */ const L2 = Math.min(layer, subBudgetCap); currentLayer = L2; onLodClampRef.current?.(L2 < layer ? { requested: layer, served: L2 } : null); ensureSubgraph(L2); return }   // 絞りモード: 範囲駆動で取る（タイルは使わない）。予算で粗くした層は範囲・予算が変わるまで保つ
-      const prefetchRect = expandRect(viewport, FETCH_MARGIN)
+      const prefetchRect = expandRect(viewport, fetchMarginNow)
       const gz = curGridZ()   // 格子解像度はカメラズーム基準（内容層 layer とは独立）
       // 先読み矩形から外れた／層が変わった取得は、この時点で用済み。abort してキュー待ちを減らす。
       abortStaleFetches(prefetchRect, layer)
@@ -3009,6 +3009,15 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
 
     // 非同期 settle の世代。古い pick_layer 応答を適用しないためのガード。
     let settleGen = 0
+    // 11-16: 先読みの幅を画面の予算に合わせる。以前は常に各辺 50%（面積 4 倍＋タイル格子に合わせて最大 5 倍超）で、
+    //   画面に予算いっぱい（2 万弱）のノードがあると 6 万個超を読んでいた（全ゲノムで chr8 に寄せて 6.3 万ノード・21.8 MB）。
+    //   先読みに入るノード ≈ 画面の数 × (1+2m)² が予算の 2 倍以内になる m（下限は描画の余白 5%）
+    let fetchMarginNow = FETCH_MARGIN
+    function marginForBudget(nView: number | undefined, budget: number): number {
+      if (!nView || nView <= 0 || !budget) return FETCH_MARGIN
+      const m = (Math.sqrt((2 * budget) / nView) - 1) / 2
+      return Math.max(RENDER_MARGIN, Math.min(FETCH_MARGIN, m))
+    }
 
     // camera settle 時に層を再評価。
     //   L_zoom : zoom だけの関数（+手動オフセット）。**パンでは変わらない**。
@@ -3020,6 +3029,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const L = chooseLayerByZoom(world.scale.x)
       const mr = maxRowsRef.current
       if (!mr || subOn()) {   // 絞りモードは /pick_layer（範囲外も数える）を使わず、部分グラフの取得で予算を判定する
+        fetchMarginNow = FETCH_MARGIN
         onLodClampRef.current?.(null)
         checkAndFetch(viewport, L)   // currentLayer を L に更新しタイル取得
         maybePromote()               // タイルが揃うまで旧層維持、揃えばシームレス差し替え
@@ -3032,6 +3042,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       fetchPickLayer(dbFile, L, rect, mr, hapSelRef.current).then(r => {
         if (gen !== settleGen) return          // 待っている間に次の settle が来た → 破棄
         const served = r && Number.isInteger(r.layer) ? clamp(r.layer, 0, maxLayer) : L
+        fetchMarginNow = marginForBudget(r?.counts?.[served], mr)
         onLodClampRef.current?.(served < L ? { requested: L, served, counts: r?.counts } : null)
         checkAndFetch(viewport, served)
         maybePromote()

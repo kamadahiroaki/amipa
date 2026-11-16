@@ -9,7 +9,7 @@ export type Target =
   | { kind: 'node'; names: string[] }
   | { kind: 'x'; x0: number; x1: number }                                      // 合意座標
 export type Status = 'todo' | 'later' | 'skip' | 'done'
-export interface WorkRecord { id: string; label: string; targets: Target[]; attrs?: Record<string, string>; groups?: Record<string, string[]>; status: Status; note: string }
+export interface WorkRecord { id: string; label: string; targets: Target[]; attrs?: Record<string, string>; groups?: Record<string, string[]>; status: Status; note: string; stage?: 'node' | 'base' }   // stage: 開く段（無ければ一覧の Open）
 
 const num = (s: string) => Number(s.replace(/[,_]/g, ''))
 
@@ -84,7 +84,7 @@ function fromJsonl(lines: string[]): WorkRecord[] {
     const targets = raw.map((t: any) => typeof t === 'string' ? parseTarget(t) : t && typeof t.kind === 'string' ? t as Target : null).filter((t: Target | null): t is Target => !!t)
     if (!targets.length) continue
     const st: Status = ['todo', 'later', 'skip', 'done'].includes(o.status) ? o.status : 'todo'
-    out.push({ id: String(o.id ?? out.length + 1), label: String(o.label ?? targetText(targets[0])), targets, ...(o.attrs ? { attrs: o.attrs } : {}), ...(o.groups ? { groups: o.groups } : {}), status: st, note: String(o.note ?? '') }) }
+    out.push({ id: String(o.id ?? out.length + 1), label: String(o.label ?? targetText(targets[0])), targets, ...(o.attrs ? { attrs: o.attrs } : {}), ...(o.groups ? { groups: o.groups } : {}), status: st, note: String(o.note ?? ''), ...(o.stage === 'base' || o.stage === 'node' ? { stage: o.stage } : {}) }) }
   return out
 }
 
