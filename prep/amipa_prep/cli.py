@@ -56,6 +56,15 @@ PKG = Path(__file__).resolve().parent                  # …/prep/amipa_prep
 DEFAULT_TEMPLATE = PKG / "templates" / "schema.db"
 # povu は PATH 上（コンテナは /usr/local/bin/povu）。AMIPA_POVU で明示指定できる。
 DEFAULT_POVU = Path(os.environ.get("AMIPA_POVU") or os.environ.get("GGB_POVU") or "povu")
+# バブル分解器（既定 billi）。コンテナは /usr/local/bin/billi・/opt/bubblefinder/bin/BubbleFinder（AMIPA_BILLI / AMIPA_BUBBLEFINDER）
+DEFAULT_BILLI = os.environ.get("AMIPA_BILLI") or "billi"
+DEFAULT_BUBBLEFINDER = os.environ.get("AMIPA_BUBBLEFINDER") or "BubbleFinder"
+DECOMPOSERS = ("billi", "bubblefinder", "povu")
+# 既定の分解器。Billi を同梱しないイメージ（公開イメージ。Billi にはライセンスの表示が無く再配布できない）は
+# AMIPA_DECOMPOSER=bubblefinder を設定して、何も指定しなくても止まらないようにする。
+DEFAULT_DECOMPOSER = os.environ.get("AMIPA_DECOMPOSER") or "billi"
+if DEFAULT_DECOMPOSER not in DECOMPOSERS:
+    DEFAULT_DECOMPOSER = "billi"
 
 # 実行順。annot / reads は入力が指定された時だけ走る。trav（Traversals の錨・通過）はパスがあれば既定で走る（--no-trav で省く）。
 # xdepth（座標ごとのリードの深さ）は reads と trav の両方があるときだけ。genes（株ごとの GFF をパスに写す）は --gff-dir のときだけ。
@@ -441,7 +450,14 @@ def build_stages(b: Bundle, a) -> dict:
         povu_gfa = b.dense_collapse_gfa if b.dense_collapse_gfa.exists() else b.collapse_gfa
     else:
         povu_gfa = b.dense_gfa if b.dense_gfa.exists() else (a.gfa or b.dense_gfa)
-    if getattr(a, "povu_split", 0) and getattr(a, "povu_split", 0) > 0:
+    decomposer = getattr(a, "decomposer", "povu")
+    bubble_dir = b.povu_dir if decomposer == "povu" else b.work / decomposer
+    if decomposer != "povu":
+        # Billi / BubbleFinder: P/W 行を除いて分解し、pvst に揃える（decompose.py）。端の無い環の成分は開いて再実行。
+        exe = a.billi if decomposer == "billi" else a.bubblefinder
+        dec_cmd = [py, str(PKG / "decompose.py"), "--tool", decomposer, "--gfa", str(povu_gfa),
+                   "--out", str(bubble_dir), "--tmp", str(tmp), "--threads", str(threads), "--exe", str(exe)]
+    elif getattr(a, "povu_split", 0) and getattr(a, "povu_split", 0) > 0:
         # ★参照上の関節点で切って切片ごとに povu（メモリ ∝ 切片。chr22 で povu 単体は 110 GB 級、chr1 は 384 GB 超）
         dec_cmd = [py, str(PKG / "povu_split.py"), "--gfa", str(povu_gfa), "--ref", a.ref_key, "--out", str(b.povu_dir),
                    "--target", str(a.povu_split), "--jobs", str(max(1, threads // 2)), "--threads", "2", "--povu", str(a.povu)]
@@ -451,23 +467,25 @@ def build_stages(b: Bundle, a) -> dict:
         "decompose",
         [dec_cmd],
         inputs=[povu_gfa],
-        outputs=[str(b.povu_dir / "*.pvst")],
+        outputs=[str(bubble_dir / "*.pvst")],
         # ★povu は -o のディレクトリを自分では作らない。無いと
         #   「Could not open file …/1.pvst」で落ちる（成分検出まで進んでから落ちるので紛らわしい）。
-        mkdirs=[b.povu_dir],
-        note=f"バブル分解（povu）入力={povu_gfa.name}",
+        mkdirs=[bubble_dir],
+        # 一時領域・スレッド数・実行ファイルの場所は分解の結果を変えない
+        key_exclude=["--tmp", "--threads", "--exe"] if decomposer != "povu" else [],
+        note=f"バブル分解（{decomposer}）入力={povu_gfa.name}",
     )
 
     # ② 統一 LOD 木: **常に 1 スレッド**（Infomap の bit 再現性のため。速度ではなく仕様）。
-    pvsts = sorted(glob.glob(str(b.povu_dir / "*.pvst")))
+    pvsts = sorted(glob.glob(str(bubble_dir / "*.pvst")))
     st["lod"] = Stage(
         "lod",
         [[py, str(PKG / "lod.py"),
           "--distill", str(b.distill), "--pvst", *pvsts,
           "--B", "10", "--threads", "1", "--min-comp", str(a.min_comp),
-          "--edge-weight", "hap", "--chain-ratio", "0",
+          "--edge-weight", "hap", "--chain-ratio", "0", "--flood", getattr(a, "flood", "through"),
           "--out", str(b.tree), "--dump-typed", str(b.typed)]],
-        inputs=[b.distill, b.povu_dir],
+        inputs=[b.distill, bubble_dir],
         outputs=[b.typed],
         env=thread_env(1),
         note=f"統一 LOD 木（pvst {len(pvsts)} 本, 単スレ）",
@@ -740,7 +758,7 @@ def run_cmd(cmd, log_path: Path, env_extra: dict, dry: bool) -> dict:
     return use
 
 
-def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
+def write_manifest(b: Bundle, hash_limit_gb: float, a=None) -> None:
     import sqlite3
     con = sqlite3.connect(f"file:{b.db}?mode=ro", uri=True)
     meta = dict(con.execute("SELECT key,value FROM db_meta"))
@@ -777,6 +795,8 @@ def write_manifest(b: Bundle, hash_limit_gb: float) -> None:
         "maxlayer": row[0] if row else None,
         "features": [x for x in meta.get("features", "").split(",") if x],
         "emitter_rev": meta.get("emitter_rev"),
+        # LOD 木の材料（どのバブル分解器・どの割り当て方で作ったか）
+        "lod": {"decomposer": getattr(a, "decomposer", None), "flood": getattr(a, "flood", None)} if a is not None else None,
         "db_built_at": meta.get("built_at"),
         "files": files,
         "total_bytes": sum(f["bytes"] for f in files),
@@ -845,7 +865,7 @@ def execute(b: Bundle, a, want: list[str]) -> None:
         t0 = time.time(); usage = {}
         for c in s.cmds:
             if c[0] == "<internal:manifest>":
-                write_manifest(b, a.hash_limit_gb)
+                write_manifest(b, a.hash_limit_gb, a)
             else:
                 u = run_cmd(c, b.logs / f"{name}.log", s.env, a.dry_run)
                 for k, v in u.items(): usage[k] = round(usage.get(k, 0) + v, 2) if k.endswith("_s") else max(usage.get(k, 0), v)
@@ -869,7 +889,7 @@ def execute(b: Bundle, a, want: list[str]) -> None:
 
 # ─────────────────────── 資源の見積り（plan） ───────────────────────
 
-def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
+def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0, decomposer: str = "billi") -> dict:
     """段ごとの資源の目安。**HPRC MC-GRCh38 v1.0（GFA 48.3GB）の実測に合わせて較正**してある。
 
     実測 maxvmem / 実時間（= スケジューラのメモリ上限が縛る量。RSS ではない。2026-08-18 の通し）:
@@ -895,7 +915,13 @@ def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0) -> dict:
         # collapse は distill 中間をメモリに載せて全パスを 1 周する。
         # 実測: ecoli50 (GFA 0.39GB) 47 s / 3.7GB。distill をもう 1 回回す分も込み。
         "collapse":  dict(slots=1, total=clamp(9.5 * g, 8, 400), hours=0.2 + g / 30),
-        "decompose": dict(slots=min(8, t), total=clamp(3.4 * g, 8, 400), hours=0.2 + g / 80),
+        # decompose は分解器で桁が違う（2026-11-13 実測、P/W 行を除いた入力。GFA はパス込みの大きさ）:
+        #   billi        chr22 pggb(2.5GB) 17 s / 2.8GB、全ゲノム MC(48GB) 390 s / 50GB、全ゲノム pggb(95GB) 502 s / 68GB。1 スレッド
+        #   bubblefinder 同 6 s / 1.3GB、62 s / 21GB、109 s / 26GB（16 スレッド）
+        #   povu         同 82 s / 8.4GB、5,246 s / 85GB、3,724 s / 167GB（グラフの構造で超線形に膨れる）
+        "decompose": (dict(slots=1, total=clamp(1.3 * g + 2, 4, 400), hours=0.1 + g / 150) if decomposer == "billi" else
+                      dict(slots=min(8, t), total=clamp(0.5 * g + 4, 4, 400), hours=0.1 + g / 300) if decomposer == "bubblefinder" else
+                      dict(slots=min(8, t), total=clamp(3.4 * g, 8, 400), hours=0.2 + g / 80)),
         "lod":       dict(slots=1, total=clamp(3.1 * g, 8, 400), hours=0.2 + g / 45),
         "layout":    dict(slots=t, total=clamp(1.4 * g, 8, 300), hours=0.2 + g / 58),
         "emit":      dict(slots=1, total=clamp(3.3 * g, 24, 480), hours=0.2 + g / 10),
@@ -929,7 +955,7 @@ def show_plan(b: Bundle, a) -> None:
         pth = Path(spec.split("=", 1)[1]) if "=" in spec else None
         if pth and pth.exists():
             gaf_bytes += pth.stat().st_size
-    size = sizing(gfa_bytes, a.threads, gaf_bytes)
+    size = sizing(gfa_bytes, a.threads, gaf_bytes, getattr(a, "decomposer", "billi"))
     stages = [n for n in STAGES if n in build_stages(b, a)]
     if a.json:
         out = {n: {**size[n], "per_slot": -(-size[n]["total"] // size[n]["slots"])} for n in stages}
@@ -984,6 +1010,14 @@ def add_common(p, need_gfa=False):
     p.add_argument("--mem-gib", type=float, default=None, help="③の pivot メモリ予算（既定 MemAvailable の 60%%）")
     p.add_argument("--template", type=Path, default=Path(os.environ.get("GGB_TEMPLATE_DB", DEFAULT_TEMPLATE)),
                    help="④のスキーマ供給用 DB（既定は同梱の空テンプレ）")
+    p.add_argument("--decomposer", choices=DECOMPOSERS, default=DEFAULT_DECOMPOSER,
+                   help="②のバブル分解器。billi（既定。povu と同じバブルを出し、入れ子が正しく、速く軽い）／"
+                        "bubblefinder（最も速く軽いが、内部に閉路を含むバブルを出さない）／povu（従来）")
+    p.add_argument("--billi", default=DEFAULT_BILLI, help="Billi の実行ファイル（既定 AMIPA_BILLI か PATH 上の billi）")
+    p.add_argument("--bubblefinder", default=DEFAULT_BUBBLEFINDER,
+                   help="BubbleFinder の実行ファイル（既定 AMIPA_BUBBLEFINDER か PATH 上の BubbleFinder）")
+    p.add_argument("--flood", choices=("through", "legacy"), default="through",
+                   help="③の LOD 木でバブルの内部を割り当てる方法。through（既定）／legacy（旧動作。内側のバブルの先が背骨扱いになる）")
     p.add_argument("--povu", type=Path, default=Path(os.environ.get("GGB_POVU", DEFAULT_POVU)))
     p.add_argument("--python", default=sys.executable)
     p.add_argument("--ref-key", default="GRCh38", help="参照座標に使うパスの sample key")
@@ -1098,6 +1132,12 @@ def main():
         v = getattr(a, attr, None)
         if v:
             setattr(a, attr, Path(v).resolve())
+    for attr in ("billi", "bubblefinder"):       # PATH 上の名前はそのまま、パスなら絶対化
+        v = getattr(a, attr, None)
+        if v and "/" in str(v):
+            setattr(a, attr, str(Path(v).resolve()))
+    if getattr(a, "povu_split", 0) and a.decomposer != "povu":
+        die("--povu-split は --decomposer povu のときだけ使える")
     if a.reads:
         a.reads = [f"{s.split('=', 1)[0]}={Path(s.split('=', 1)[1]).resolve()}" if "=" in s else s
                    for s in a.reads]

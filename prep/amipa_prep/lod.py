@@ -314,6 +314,9 @@ def main():
                     help="distill_gfa.py 出力ディレクトリ(GFA テキストの代わりに配列を読む)。"
                          "内部 id は dense(chr22 は identity ゆえ元 GFA と bit-identical)")
     ap.add_argument("--pvst", nargs="+", required=True)
+    ap.add_argument("--flood", choices=("through", "legacy"), default="through",
+                    help="バブル内部の割り当て。through=内側のバブルの割り当て済み領域を通り抜ける（既定）、"
+                         "legacy=割り当て済みのノードで止まる旧動作（外側のバブルの内部の一部が背骨扱いになる。旧 DB の再現用）")
     ap.add_argument("--B", type=int, default=10, help="1回展開の最大子数(既定10)")
     ap.add_argument("--min-comp", type=int, default=1000,
                     help="major(本体)成分のしきい値 τ(GFAノード数)。これ未満の成分は debris bin(§8)")
@@ -351,7 +354,7 @@ def main():
     sys.setrecursionlimit(1 << 21)
     t0 = time.time()
 
-    M = ExpandModel(args.gfa, args.pvst, nsplit=args.nsplit, distill=args.distill)
+    M = ExpandModel(args.gfa, args.pvst, nsplit=args.nsplit, distill=args.distill, flood=args.flood)
     N = M.N
 
     log("build super map (node -> layer0 unit)")

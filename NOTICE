@@ -9,6 +9,7 @@ Copyright (c) 2026 AMIPA authors
 --------------------------------------------------------------------------------
 コンポーネント      ライセンス            入手元
 povu                MIT                   https://github.com/pangenome/povu
+BubbleFinder        GPL-3.0               https://github.com/algbio/BubbleFinder
 Infomap             GPL-3.0-or-later      https://github.com/mapequation/infomap
 SQLite              Public Domain         https://sqlite.org/
 NumPy               BSD-3-Clause          https://numpy.org/
@@ -28,18 +29,23 @@ PixiJS              MIT                   https://pixijs.com/
 Debian ベースイメージ 各パッケージのライセンス https://www.debian.org/
 
 同梱している版は `docker/requirements.txt`（Python）、`prep/core/*/Cargo.lock`（Rust）、
-`viewer/*/yarn.lock`（JavaScript）、`docker/build-prep.sh` の POVU_COMMIT（povu）で固定しています。
+`viewer/*/yarn.lock`（JavaScript）、`docker/build-prep.sh` の POVU_COMMIT（povu）・BUBBLEFINDER_VERSION
+（BubbleFinder）で固定しています。
+バブル分解器 Billi（https://github.com/at-cg/billi）はライセンスの表示が無いため配布するイメージには含めず、
+利用者が各自で入手して `--billi` で指定します。
 コンテナ内の各パッケージの著作権表示は `/usr/share/doc/*/copyright` にそのまま残しています。
 
 --------------------------------------------------------------------------------
 GPL コンポーネントに関する表示（重要）
 --------------------------------------------------------------------------------
-本イメージには Infomap（GPL-3.0-or-later）が含まれます。AMIPA の前処理は Infomap を
+本イメージには Infomap（GPL-3.0-or-later）と BubbleFinder（GPL-3.0）が含まれます。AMIPA の前処理は Infomap を
 同一プロセス内で読み込んで使用するため、prep/ 以下は GPL-3.0-or-later で配布します。
 
 GPL に基づき、同梱している GPL コンポーネントの対応するソースコードを入手できます。
 本イメージに含まれるのは上記の入手元で公開されている無改変の版であり、
-`docker/requirements.txt` に記載の版番号で取得できます。
+`docker/requirements.txt`（Infomap）と `docker/build-prep.sh` の BUBBLEFINDER_VERSION（BubbleFinder。
+bioconda の同じ版のレシピとソース）に記載の版番号で取得できます。
+BubbleFinder は別プロセスとして呼び出すだけで、AMIPA のコードとは結合していません。
 入手が困難な場合は本プロジェクトの連絡先までご請求ください（媒体費用実費のみで提供します）。
 
 Debian ベースイメージに含まれる GPL/LGPL のシステムパッケージについても同様に、

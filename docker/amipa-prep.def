@@ -4,7 +4,9 @@
 #     cd <amipa リポジトリのルート>
 #     env -u APPTAINER_BINDPATH apptainer build --fakeroot amipa-prep.sif docker/amipa-prep.def
 #   ★`env -u APPTAINER_BINDPATH` は必須（site の bind 設定でコンテナ作成に失敗するため）
-#   ★ビルドには外向き通信が要る（povu の CPM 依存 / PyPI / crates.io）
+#   ★ビルドには外向き通信が要る（povu の CPM 依存 / conda-forge・bioconda / GitHub / PyPI / crates.io）
+#   ★このイメージは手元（SHIROKANE）で使う物なので Billi を入れる（AMIPA_WITH_BILLI=1）。Billi は
+#     ライセンスの表示が無く再配布できないので、この SIF は配らない。公開イメージは Dockerfile.prep から作る。
 #   実行:
 #     apptainer exec --cleanenv -B "$PWD:/work" amipa-prep.sif amipa prep run --gfa /work/x.gfa --out /work/x.amipa
 Bootstrap: docker
@@ -31,7 +33,7 @@ From: python:3.9-slim-bookworm
     export PATH=/root/.cargo/bin:$PATH
     # ★`chmod +x` では other の読みが付かない（ホストの 0640 が入ると Permission denied）
     chmod 0755 /usr/local/bin/build-prep.sh /usr/local/bin/amipa
-    /usr/local/bin/build-prep.sh /src /opt/amipa
+    AMIPA_WITH_BILLI=1 /usr/local/bin/build-prep.sh /src /opt/amipa
     apt-get $APTOPT purge -y build-essential cmake git pkg-config curl
     apt-get $APTOPT autoremove -y
     rm -rf /src /root/.cargo /root/.rustup /root/.cache
@@ -40,6 +42,9 @@ From: python:3.9-slim-bookworm
 
 %environment
     export AMIPA_POVU=/usr/local/bin/povu
+    export AMIPA_BILLI=/usr/local/bin/billi
+    export AMIPA_BUBBLEFINDER=/opt/bubblefinder/bin/BubbleFinder
+    export AMIPA_DECOMPOSER=billi
     export AMIPA_EMITTER_REV=${AMIPA_EMITTER_REV:-container}
     export PYTHONDONTWRITEBYTECODE=1
     # ★ホストの ~/.local/site-packages を読ませない（apptainer は $HOME を bind するので
@@ -52,6 +57,8 @@ From: python:3.9-slim-bookworm
 
 %test
     povu -h >/dev/null 2>&1 && echo "povu OK"
+    billi decompose --help >/dev/null 2>&1 && echo "billi OK"
+    /opt/bubblefinder/bin/BubbleFinder 2>&1 | grep -q ultrabubbles && echo "BubbleFinder OK"
     python3 -c "import emit_core, reads_core, tiled_core, numpy, scipy, numba, infomap, Bio, zstandard; print('imports OK')"
     test -f /opt/amipa/prep/amipa_prep/templates/schema.db && echo "template OK"
     python3 /opt/amipa/prep/amipa_prep/cli.py --help >/dev/null && echo "amipa prep OK"

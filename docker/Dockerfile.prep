@@ -43,6 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/local/lib/python3.9/site-packages /usr/local/lib/python3.9/site-packages
 COPY --from=builder /usr/local/bin/povu /usr/local/bin/povu
+# BubbleFinder（GPL-3.0）。Billi はライセンスの表示が無く再配布できないので公開イメージには入れない
+COPY --from=builder /opt/bubblefinder /opt/bubblefinder
 # povu が持ち込む自前の共有ライブラリ（libzien.so 等。RPATH がビルド木を指すので同梱が要る）
 COPY --from=builder /usr/local/lib/amipa /usr/local/lib/amipa
 RUN echo /usr/local/lib/amipa > /etc/ld.so.conf.d/amipa.conf && ldconfig
@@ -57,6 +59,8 @@ ENV AMIPA_EMITTER_REV=$AMIPA_REV \
     AMIPA_VERSION=$AMIPA_REV \
     AMIPA_COMMIT=$AMIPA_REV \
     AMIPA_POVU=/usr/local/bin/povu \
+    AMIPA_BUBBLEFINDER=/opt/bubblefinder/bin/BubbleFinder \
+    AMIPA_DECOMPOSER=bubblefinder \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONNOUSERSITE=1 \
     PYTHONPATH=/opt/amipa/prep/amipa_prep
@@ -64,6 +68,7 @@ ENV AMIPA_EMITTER_REV=$AMIPA_REV \
 # ★**最終イメージで**起動できるかを確かめる（共有ライブラリの取りこぼしはここで落とす）。
 #   実行時まで気付かないと「distill だけ通って povu で止まる」ことになる。
 RUN povu -h >/dev/null \
+ && /opt/bubblefinder/bin/BubbleFinder 2>&1 | grep -q ultrabubbles \
  && ! ldd /usr/local/bin/povu | grep -q "not found" \
  && python3 -c "import emit_core, reads_core, tiled_core, numpy, scipy, numba, infomap, Bio, zstandard" \
  && test -f /opt/amipa/prep/amipa_prep/templates/schema.db \
