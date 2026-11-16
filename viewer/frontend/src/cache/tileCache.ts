@@ -181,6 +181,27 @@ function removeTileTable(key: TileKey, state: TileState, table: string) {
   if (state.tables.size === 0) tileIndex.delete(key)
 }
 
+/** rect に掛かる (layer, gz) のキャッシュ済みタイルを訪ねる。
+ *  11-16: 層の切り替えの途中（新しい層のタイルが揃うまで旧層・旧格子 gz を使い続ける）にズームアウトすると、
+ *  細かい旧格子で広い画面を数え上げることになり、タイル数が 4^Δ で膨らむ（全ゲノムで深くズームした所から全体へ寄せると
+ *  毎フレーム数百万枚を引いて数分固まった）。画面のタイル数がキャッシュの枚数より多いときは、キャッシュの方を走査する */
+function forEachCachedTile(layer: number, gz: number, rect: Rect, fn: (t: TileState) => void): void {
+  const w = tileW(gz)
+  const txMin = Math.floor(rect.x1 / w), txMax = Math.floor(rect.x2 / w)
+  const tyMin = Math.floor(rect.y1 / w), tyMax = Math.floor(rect.y2 / w)
+  const nRect = (txMax - txMin + 1) * (tyMax - tyMin + 1)
+  if (nRect <= tileIndex.size) {
+    for (let tx = txMin; tx <= txMax; tx++) for (let ty = tyMin; ty <= tyMax; ty++) { const t = tileIndex.get(mkKey(layer, gz, tx, ty)); if (t) fn(t) }
+    return
+  }
+  const pre = `${layer}/${gz}/`
+  for (const [k, t] of tileIndex) {
+    if (!k.startsWith(pre)) continue
+    const i = k.indexOf('/', pre.length); const tx = Number(k.slice(pre.length, i)), ty = Number(k.slice(i + 1))
+    if (tx >= txMin && tx <= txMax && ty >= tyMin && ty <= tyMax) fn(t)
+  }
+}
+
 // ── 描画用 ID 収集 ────────────────────────────────────────────────────────
 
 /** 指定 rect に含まれるタイルから全 ID を収集して返す。lastUsed も更新する */
@@ -190,13 +211,11 @@ export function getVisibleIds(
   const nodeIds = new Set<number>()
   const edgeIds = new Set<number>()
   const now = Date.now()
-  for (const { tx, ty } of tilesForRect(gz, rect)) {
-    const tile = tileIndex.get(mkKey(layer, gz, tx, ty))
-    if (!tile) continue
+  forEachCachedTile(layer, gz, rect, tile => {
     tile.lastUsed = now
     tile.ids.get('nodes')?.forEach(id => nodeIds.add(id))
     tile.ids.get('edges')?.forEach(id => edgeIds.add(id))
-  }
+  })
   return { nodeIds, edgeIds }
 }
 
