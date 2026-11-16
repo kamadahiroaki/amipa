@@ -3013,10 +3013,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
     //   画面に予算いっぱい（2 万弱）のノードがあると 6 万個超を読んでいた（全ゲノムで chr8 に寄せて 6.3 万ノード・21.8 MB）。
     //   先読みに入るノード ≈ 画面の数 × (1+2m)² が予算の 2 倍以内になる m（下限は描画の余白 5%）
     let fetchMarginNow = FETCH_MARGIN
-    function marginForBudget(nView: number | undefined, budget: number): number {
+    //   見積もりはタイルの格子に合わせた後の面積で（格子が画面に比べて粗いと、合わせるだけで 2〜3 倍に広がる。chr8: 5 割→3 割の幅でも 5.2 万）
+    function marginForBudget(nView: number | undefined, budget: number, vp: Rect, gz: number): number {
       if (!nView || nView <= 0 || !budget) return FETCH_MARGIN
-      const m = (Math.sqrt((2 * budget) / nView) - 1) / 2
-      return Math.max(RENDER_MARGIN, Math.min(FETCH_MARGIN, m))
+      const w = 1 / Math.pow(2, gz); const va = Math.max(1e-12, (vp.x2 - vp.x1) * (vp.y2 - vp.y1))
+      const snapped = (m: number) => { const r = expandRect(vp, m); return (Math.floor(r.x2 / w) + 1 - Math.floor(r.x1 / w)) * (Math.floor(r.y2 / w) + 1 - Math.floor(r.y1 / w)) * w * w }
+      for (const m of [FETCH_MARGIN, 0.35, 0.25, 0.15, RENDER_MARGIN]) if (nView * snapped(m) / va <= 2 * budget) return m
+      return RENDER_MARGIN
     }
 
     // camera settle 時に層を再評価。
@@ -3042,7 +3045,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       fetchPickLayer(dbFile, L, rect, mr, hapSelRef.current).then(r => {
         if (gen !== settleGen) return          // 待っている間に次の settle が来た → 破棄
         const served = r && Number.isInteger(r.layer) ? clamp(r.layer, 0, maxLayer) : L
-        fetchMarginNow = marginForBudget(r?.counts?.[served], mr)
+        fetchMarginNow = marginForBudget(r?.counts?.[served], mr, viewport, curGridZ())
         onLodClampRef.current?.(served < L ? { requested: L, served, counts: r?.counts } : null)
         checkAndFetch(viewport, served)
         maybePromote()
