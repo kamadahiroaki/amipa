@@ -83,7 +83,7 @@ def main():
     ap.add_argument("--gfa", required=True)
     ap.add_argument("--out", required=True, help="出力ディレクトリ prefix")
     ap.add_argument("--emit-dense-gfa", default=None,
-                    help="dense≠identity のとき ①用の密 ID GFA（バブル分解器 povu に渡す） をここに書く。"
+                    help="dense≠identity のとき ①用の密 ID GFA（バブル分解器に渡す） をここに書く。"
                          "identity なら書かない(元 GFA をそのまま使えるため)。")
     ap.add_argument("--emit-seq", dest="emit_seq", action="store_true", default=True,
                     help="葉の塩基配列を s_seq.bin(連結生bytes)+s_seq_off.npy(CSR byte offset, file order, N+1)へ"

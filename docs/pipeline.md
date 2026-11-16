@@ -21,19 +21,18 @@ GFA を 1 回だけ走査し、ノード・エッジ・パス・塩基配列を�
 
 | 分解器 | 特徴 |
 |---|---|
-| `billi`（既定） | [Billi](https://github.com/at-cg/billi)。povu と同じバブルを見つけ、入れ子の親子関係をより正しく出す。povu より速く軽い（全ゲノム規模で数分・数十 GB）。1 スレッド |
-| `bubblefinder` | [BubbleFinder](https://github.com/algbio/BubbleFinder) の ultrabubble。最も速く軽い。ただし内部に閉路を含むバブル（縦列反復や環状ゲノムの一部）は定義上出さないので、その部分は次の段で細切れの階層になる |
-| `povu` | [povu](https://github.com/pangenome/povu)。以前の既定。グラフによってはメモリが大きく膨らむ |
+| `bubblefinder`（既定） | [BubbleFinder](https://github.com/algbio/BubbleFinder) の ultrabubble。最も速く軽い（全ゲノム規模で数分・数十 GB）。ただし内部に閉路を含むバブル（縦列反復や環状ゲノムの一部）は定義上出さないので、その部分は次の段で細切れの階層になる |
+| `billi` | [Billi](https://github.com/at-cg/billi) の panbubble。閉路を含むバブルも見つけ、入れ子の親子関係もより正しく出す。BubbleFinder より数倍遅く重い。1 スレッド |
 
-どの分解器でも出力は同じ形式（povu の `.pvst`）に揃え、次の段はそれだけを読む。分解の前に入力から
+どちらの分解器でも出力は同じ形式（`.pvst`）に揃え、次の段はそれだけを読む。分解の前に入力から
 パス（P 行・W 行）を除く。Billi と BubbleFinder は端の無い連結成分（純粋な環）があると止まるので、
 そのときだけ成分ごとに分岐の無い 1 点で環を開いてやり直し、結果をもとのノードに戻す。
 
 配布しているコンテナイメージには Billi が入っていない（Billi のリポジトリにはライセンスの表示が無く、
-再配布できないため）。イメージの既定は `bubblefinder` で、Billi を使うときは自分で入手してビルドし、
+再配布できないため）。Billi を使うときは自分で入手してビルドし、
 `--billi` で場所を渡す（環境変数 `AMIPA_BILLI` でもよい）。
 
-> 分解器ごとにバブルの呼び名が違う（povu は flubble、Billi は panbubble、BubbleFinder は ultrabubble）。
+> 分解器ごとにバブルの呼び名が違う（BubbleFinder は ultrabubble、Billi は panbubble）。
 > AMIPA 側では一貫して「バブル」と呼ぶ。
 
 ### ③ 階層化（lod）

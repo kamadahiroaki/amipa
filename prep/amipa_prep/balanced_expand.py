@@ -170,7 +170,7 @@ def _flood_claim_legacy(A, Z, AS, ZS, depth, nadj, sideadj, leak_cap=200000):
 
 
 class ExpandModel:
-    """GFA + povu PVST から balanced expansion の unit 操作を提供する。
+    """GFA + バブル木（pvst）から balanced expansion の unit 操作を提供する。
 
     主な属性: nodes, N, A/Z/AS/ZS, kids, root_children, depth, claim, leak,
               direct_leaves, pure_backbone, ndesc, half, nsplit。

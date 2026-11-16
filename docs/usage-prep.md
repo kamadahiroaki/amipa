@@ -94,11 +94,10 @@ amipa prep run --out graph.amipa --force       # 全部やり直す
 
 | オプション | 意味 | 既定 |
 |---|---|---|
-| `--decomposer` | バブル分解器。`billi` / `bubblefinder` / `povu`（違いは[各段の説明](pipeline.md)） | 環境変数 `AMIPA_DECOMPOSER`、無ければ `billi`（配布イメージでは `bubblefinder`） |
+| `--decomposer` | バブル分解器。`bubblefinder` / `billi`（違いは[各段の説明](pipeline.md)） | 環境変数 `AMIPA_DECOMPOSER`、無ければ `bubblefinder` |
 | `--billi` | Billi の実行ファイル | 環境変数 `AMIPA_BILLI`、無ければ PATH 上の `billi` |
 | `--bubblefinder` | BubbleFinder の実行ファイル | 環境変数 `AMIPA_BUBBLEFINDER`、無ければ PATH 上の `BubbleFinder` |
 | `--flood` | 階層を組む段でバブルの内部を割り当てる方法。`legacy` は以前の動作（内側のバブルより先にある外側のバブルの内部を割り当て損ね、その部分がバブルの外として扱われる）で、以前のアトラスを再現するときだけ使う | `through` |
-| `--povu-split` | povu を参照パス上の切れ目で分割して走らせる（`--decomposer povu` のときだけ） | 0（分割しない） |
 
 分解器を変えると、バブル分解の段とそれ以降がやり直しになる。どの分解器で作ったかは出力一式の
 `manifest.json` の `lod` に記録される。
@@ -107,7 +106,7 @@ amipa prep run --out graph.amipa --force       # 全部やり直す
 
 | オプション | 意味 | 既定 |
 |---|---|---|
-| `--threads` | 並列度。バブル分解（povu と BubbleFinder）とレイアウトに効く（階層を組む段は再現性のため常に 1 スレッド） | 見えている CPU 数 |
+| `--threads` | 並列度。バブル分解（BubbleFinder）とレイアウトに効く（階層を組む段は再現性のため常に 1 スレッド） | 見えている CPU 数 |
 | `--tmp` | アトラス本体を組む場所。ランダム書き込みなのでローカルの速いディスクが要る。必要量はおよそ完成アトラスのサイズ | `$TMPDIR` → `/tmp` → `<out>/work/tmp` の順で、空きが足りる最初のもの |
 | `--spill` | 途中の一時ファイル。順次書きなので共有ファイルシステムでも実害は小さいが、必要量がアトラスより桁違いに大きいことがある | `--tmp` と同じ |
 | `--mem-gib` | レイアウトのメモリ予算 | 使用可能量（cgroup 上限やジョブの上限も見る）の 60% |

@@ -26,7 +26,7 @@
 
 | イメージ | AMIPA のコード | 同梱している他のソフトウェア |
 |---|---|---|
-| `amipa-prep` | GPL-3.0-or-later | Infomap（GPL-3.0-or-later）、BubbleFinder（GPL-3.0）、povu（MIT）、Python の各種、Debian のシステムパッケージ |
+| `amipa-prep` | GPL-3.0-or-later | Infomap（GPL-3.0-or-later）、BubbleFinder（GPL-3.0）、Python の各種、Debian のシステムパッケージ |
 | `amipa-viewer` | MIT | Node.js、Debian のシステムパッケージ |
 
 どちらのイメージも Debian をベースにしているため、GPL/LGPL のシステムパッケージを含みます。

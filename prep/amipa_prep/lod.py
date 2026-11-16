@@ -14,7 +14,7 @@ seam(layer0)で App A の葉(layer0 unit)を種別解決:
 用法:
   lod.py --gfa X.gfa --pvst A.pvst [B.pvst ...] [--B 10] [--out tree.tsv]
   ※ GFA と pvst は同一 node-id 空間であること(compact GFA は odgi が再採番するので不可;
-     povu をかけた元 GFA を使う)。
+     バブル分解にかけた元 GFA を使う)。
 """
 import argparse
 import os
@@ -308,7 +308,7 @@ def dump_typed(root, fh):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gfa", default=None,
-                    help="povu をかけた元 GFA(pvst と同じ node-id 空間; compact 不可)。"
+                    help="バブル分解にかけた元 GFA(pvst と同じ node-id 空間; compact 不可)。"
                          "--distill 指定時は不要")
     ap.add_argument("--distill", default=None,
                     help="distill_gfa.py 出力ディレクトリ(GFA テキストの代わりに配列を読む)。"

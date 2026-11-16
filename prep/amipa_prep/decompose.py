@@ -4,16 +4,16 @@
   decompose.py --tool billi        --gfa G --out DIR [--tmp T] [--threads N]
   decompose.py --tool bubblefinder --gfa G --out DIR [--tmp T] [--threads N]
 
-出力は DIR/1.pvst（povu の .pvst と同じ形: `H` 行、`D 0 . <最上位の子>`、`F <idx> >a>z <子> L`）。
+出力は DIR/1.pvst（`H` 行、`D 0 . <最上位の子>`、`F <idx> >a>z <子> L`。以前使っていた povu の形式）。
 lod.py が使うのは各バブルの向き付きの入口・出口と親子関係だけなので、分解器はこれを満たせば差し替えられる。
 
 分解器（2026-11-13〜16 の比較。amipa-lab/notes/bubble_detector_RESULTS.md）:
-  billi        … Billi（panbubble）。povu の flubble と集合が一致し（差 0〜17）、入れ子は povu より正しい。
-                 全ゲノム pggb で 502 s / 68 GB（povu 3,724 s / 167 GB）。1 スレッド。既定。
-  bubblefinder … BubbleFinder `ultrabubbles --clsd-trees`。最も速く軽い（全ゲノム pggb 109 s / 26 GB）が、
+  bubblefinder … BubbleFinder `ultrabubbles --clsd-trees`。既定。最も速く軽い（全ゲノム pggb 109 s / 26 GB）が、
                  内部に閉路を含むバブルは ultrabubble の定義から外れるので出さない（pggb・細菌で被覆 2〜6 % 減、
-                 そのバブルは lod の木で 2〜17 片に割れる）。
-povu は従来どおり cli.py が直接呼ぶ（出力先も work/povu のまま）。
+                 そのバブルは lod の木で 2〜17 片に割れる）。GPL-3.0、イメージに同梱。
+  billi        … Billi（panbubble）。閉路を含むバブルも出し、入れ子もより正しい。全ゲノム pggb で 502 s / 68 GB。
+                 1 スレッド。リポジトリにライセンスの表示が無く再配布できないので、イメージには同梱しない。
+（以前の既定 povu は全ゲノム pggb で 3,724 s / 167 GB かかり、2026-11-16 に外した。）
 
 入力からは P/W 行を除いて渡す（パスは分解に要らず、Billi はパスがあるとアレルのウォークまで数える）。
 Billi・BubbleFinder とも、端（tip）の無い連結成分（純粋な環）があると止まる。そのときだけ、成分ごとに
@@ -136,7 +136,7 @@ def _billi_cols(txt: Path) -> tuple:
 
 def billi_to_pvst(txt: Path, out: Path, remap: dict) -> dict:
     """Billi の BB 行（bbID [bbDpt] parID side1 side2 #alleles）を pvst に。parID が BB:<id> なら親、HP:<id>（hairpin）と -1 は最上位。
-    side1/side2 はそのまま pvst の >a>z になる（povu と向きが全件一致することを chrY〜全ゲノムで確認済み）。"""
+    side1/side2 はそのまま pvst の >a>z になる（以前の povu と向きが全件一致することを chrY〜全ゲノムで確認済み）。"""
     cI, cP, c1, c2 = _billi_cols(txt)
     bid, par, degen = [], [], []
     with open(txt) as f:
@@ -208,7 +208,7 @@ TOK = re.compile(r"\(|\)|,|<([^,>]+),([^>]+)>")
 def bubblefinder_to_pvst(clsd: Path, ub: Path, out: Path, remap: dict) -> dict:
     """BubbleFinder の --clsd-trees（1 行 1 木。葉 <X,Y>、内部 (子,...)<X,Y>）を pvst に。
     符号は「そのノードのどちら側にバブルの内部があるか」（+ = 右, - = 左）。入口 a は内部が右なら '>'、
-    出口 z は内部が左なら '>'（そこへ順向きに入る）。povu と向きが全件一致することを確認済み。
+    出口 z は内部が左なら '>'（そこへ順向きに入る）。以前の povu と向きが全件一致することを確認済み。
     木は superbubble の木で、ultrabubble 以外（ほぼ全部が隣接する ID の自明バブル）を含む。
     ultrabubbles の集合に無い項目は落とし、その子を一段上へつなぐ。木に無い ultrabubble は最上位に置く。"""
     num = lambda s: int(s[:-1])
