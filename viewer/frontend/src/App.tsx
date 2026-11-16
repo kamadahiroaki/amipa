@@ -1396,6 +1396,14 @@ export default function App() {
     setShowSearchDropdown(true)
   }
 
+  // Alignment（旧版）の出し入れ（11-16）
+  function toggleAlign() {
+    setBottomH(h => {
+      if (h > 0) { setActiveAlignRowId(null); setShowAlignColors(false); alignColorsUserOff.current = false; return 0 }
+      return 220
+    })
+  }
+
   // 統合 Find: scope に応じて検索/移動を分岐（入力は共用の searchQuery）。
   function submitFind() {
     if (findScope === 'node') handleSearch()
@@ -1591,6 +1599,12 @@ export default function App() {
                     <span style={{ color: 'var(--ui-muted)' }}>手</span>
                   </div>
                 )}
+                {!naTrav && (<>
+                  <div className="ui-menu-sep" />
+                  <button className="ui-menu-item" onClick={() => { if (bottomH === 0) toggleAlign(); setShowViewMenu(false) }}
+                    title="旧版のリード表示（ノードを 1 つずつ列に足して並べる）。リードは Linear の塩基段（Reads）で見るのが現行。Linear でうまく見えないときに">
+                    <span>Alignment board (legacy)<span className="ui-sub">ノードを列に並べてリードを見る旧版</span></span></button>
+                </>)}
                 <div className="ui-menu-sep" />
                 <button className="ui-menu-item" onClick={() => { resetGraphView(); setShowViewMenu(false) }}
                   title="グラフの塗りと重ね表示を初期値に戻す（Linear の塗りと絞り込み、ホバーの強調、色分け、辺の太さ、リボン、パスの選択）">
@@ -1667,14 +1681,12 @@ export default function App() {
           <button className={'ui-btn' + (showPaths ? ' is-on' : '')} aria-pressed={showPaths}
             title="左にパスの一覧を出す。選んだパスがリボン・比較・絞り込みの対象になる"
             onClick={() => setShowPaths(m => !m)} data-tiny="P">Paths</button>
+          {/* 11-16: Alignment は旧版の扱い（ユーザ決定）。リードは Linear の塩基段で見るのが現行。Linear が使えない（パスの無い）グラフと、開いている間だけ上部バーに出す */}
+          {(naTrav || bottomH > 0) && (
           <button className={'ui-btn' + (bottomH > 0 ? ' is-on' : '')} aria-pressed={bottomH > 0}
-            title="Alignment パネル（ノード・リードの並びの比較）"
-            onClick={() => {
-              setBottomH(h => {
-                if (h > 0) { setActiveAlignRowId(null); setShowAlignColors(false); alignColorsUserOff.current = false; return 0 }
-                return 220
-              })
-            }} data-short="Align" data-tiny="A">Alignment</button>
+            title={naTrav ? 'Alignment（旧版）: ノードを列に並べてリードを見る。このグラフは Linear が使えない（パスが無い）ので、リードはこちらで' : 'Alignment（旧版）を閉じる。リードは Linear の塩基段（Reads）で見るのが現行'}
+            onClick={toggleAlign} data-short="Align" data-tiny="A">Alignment{naTrav ? '' : ' (legacy)'}</button>
+          )}
           {naTrav && trvH === 0 ? (
             <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why} data-tiny="Ln">Linear</button>
           ) : (
