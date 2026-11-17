@@ -2219,21 +2219,25 @@ for (const b of host.querySelectorAll<HTMLButtonElement>('[data-exp]')) b.addEve
 
 // ---- パスの無いグラフの歩みの段（11-17）: 選んだノードを通るリードから局所的な歩みを作り（/api/walks/msa、サーバの walks.ts）、塩基段に出す ----
 //   歩み（合意＋別の道）を株に見立てた仮の root を作り、塩基段の描画（applyBase 以降）をそのまま使う。範囲の段（ブロック・錨の列）は無い
+let walkRadius = 1000   // 種の前後の bp（11-17: 10 kb だとノードが細かい ecoli では整列を見るには広すぎた）
 let walkMode = false, walkNode: string | null = null, walkPending: string | null = null   // walkPending: 読み込みの前に届いたノード
 async function openWalks(name: string) {
   const my = ++loading; walkNode = name; $('busy').style.display = 'inline'; $('busy').textContent = 'Reads…'; $('info').style.color = ''; $('info').textContent = `${name}: そこを通るリードから局所的な歩みを作っている…`
   let d: any
-  try { d = await (await fetch('/api/walks/msa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, node: name, radius: 10000, reads: { max: numOf('breadmax', 200), ...(readSel.length ? { samples: readSel } : {}) } }) })).json() } catch (e) { d = { error: String(e) } }
+  try { d = await (await fetch('/api/walks/msa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, node: name, radius: walkRadius, reads: { max: numOf('breadmax', 200), ...(readSel.length ? { samples: readSel } : {}) } }) })).json() } catch (e) { d = { error: String(e) } }
   if (my !== loading) return; $('busy').style.display = 'none'
   if (d.error || !d.rows) { $('info').textContent = `${name}: ${d.error || '歩みを作れない'}`; $('info').style.color = '#c0392b'; return }
   const wr = (d.rows as any[]).filter(r => !r.read)
   root = { meta: {}, H: wr.length, R: Math.max(1, d.cols.length), total_bp: d.walks?.consensusBp ?? 0, haps: wr.map((r, i) => ({ hid: i, hap: String(r.label).replace(/ ·\d+$/, ''), ncontig: 1, nexcl: 0, bp: 0 })), atoms: [], bounds: [] }
   ;(root as any).hasReads = true
   baseOrder = root.haps.map(h => h.hid); hapOrder = baseOrder.slice(); view = [0, root.R - 1]; cols = null; rows = []
-  applyBase(d, [], `walks ${name}`, base?.mode === 'node' ? 'node' : 'base')
+  const ci = (d.cols as any[]).findIndex(c => (c.nodes || []).includes(name))   // 選んだノードの列を中央に
+  applyBase(d, [], `walks ${name}`, 'base', ci >= 0 ? ci : null)
   const w = d.walks || {}
-  $('info').textContent = `パスの無いグラフ: ${name} を通るリード ${fmt(w.reads ?? 0)} 本から局所的な歩み ${w.nwalks ?? '?'} 本（合意 ${fmtbp(w.consensusBp ?? 0)}・別の道 ${w.alleles ?? 0}・別の場所として除いたリード ${w.otherLocus ?? 0}）· ${fmt(w.msTotal ?? 0)} ms`
+  $('info').innerHTML = `パスの無いグラフ: ${name} を通るリード ${fmt(w.reads ?? 0)} 本から局所的な歩み ${w.nwalks ?? '?'} 本（合意 ${fmtbp(w.consensusBp ?? 0)}・列 ${fmt(d.cols.length)}${ci >= 0 ? `・${name} は列 ${fmt(ci)}` : `・${name} は列に無い`}・別の道 ${w.alleles ?? 0}）· ${fmt(w.msTotal ?? 0)} ms　範囲 前後 ${fmtbp(walkRadius)} <a href="#" data-walk="wide">広げる</a> <a href="#" data-walk="narrow">狭める</a>`
 }
+$('info').addEventListener('click', e => { const a = (e.target as HTMLElement).closest('[data-walk]') as HTMLElement | null; if (!a || !walkMode || !walkNode) return; e.preventDefault()
+  walkRadius = a.dataset.walk === 'wide' ? Math.min(16000, walkRadius * 2) : Math.max(1000, Math.round(walkRadius / 2)); void openWalks(walkNode) })
 
 function getState(): any { const st: any = { db, view: [Math.floor(view[0]), Math.ceil(view[1])], base: !!base, bmode2: base?.mode || null, rsamp: readSel, sel: {}, chk: {} }; st.pins = [...pinnedHaps]
   for (const k of TRAV_SEL) { const el = document.getElementById('tv_' + k) as HTMLInputElement | null; if (el) st.sel[k] = el.value }
