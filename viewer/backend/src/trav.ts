@@ -1126,11 +1126,15 @@ export function travGeneLof(t: Trav, gids: number[]): any {
     const rows = qParts.all(gid) as any[]; if (!rows.length) return null
     const by = new Map<string, any[]>(); for (const r of rows) { const k = String(r.parent); const a = by.get(k); if (a) a.push(r); else by.set(k, [r]) }
     let best: any[] = []; let bestLen = -1; for (const v of by.values()) { const L = v.reduce((s, x) => s + x.end - x.start + 1, 0); if (L > bestLen) { bestLen = L; best = v } }   // 同点は先に出た親（python の max と同じ）
-    best.sort((a, b) => a.s0 - b.s0); const pi = piOf(best[0].pid); if (pi == null) return null
-    const segs = best.map(r => ({ tk: dist.read(pi, r.s0, r.e0), oo: dist.readOri(pi, r.s0, r.e0), so: r.so as number, eo: r.eo as number }))
+    const pi = piOf(best[0].pid); if (pi == null) return null
+    const segs = best.map(r => ({ s0: r.s0 as number, tk: dist.read(pi, r.s0, r.e0), oo: dist.readOri(pi, r.s0, r.e0), so: r.so as number, eo: r.eo as number }))
     const need = new Set<number>(); for (const s of segs) for (let i = 0; i < s.tk.length; i++) need.add(idf(s.tk[i]))
     const seq = new Map<number, string>(); const ids = [...need]
     for (let i = 0; i < ids.length; i += 500) { const ch = ids.slice(i, i + 500); for (const r of mdb.prepare(`SELECT leaf_id, seq FROM leaf_seq WHERE leaf_id IN (${ch.map(() => '?').join(',')})`).all(...ch) as { leaf_id: number; seq: any }[]) seq.set(Number(r.leaf_id), typeof r.seq === 'string' ? r.seq : Buffer.from(r.seq).toString('latin1')) }
+    // 片をパスの上の順に並べる。11-17: 開始トークンだけで並べていたので、隣のエキソンが同じ長いノードに入ると同点になり、逆向きのパスで順が入れ替わった
+    //   （FCGR2B: 逆向きの 48 株すべてで最後の 2 エキソンが入れ替わって偽の trunc）。同点は、そのノードの中で片が始まる位置（ノードの向きを考えた位置）で決める
+    const posIn = (sg: { tk: Float64Array; oo: Uint8Array; so: number }) => { if (!sg.tk.length) return 0; const L0 = (seq.get(idf(sg.tk[0])) ?? 'N').length; return sg.oo[0] ? (sg.so || 0) : L0 - 1 - (sg.so || 0) }
+    segs.sort((a, b) => a.s0 - b.s0 || posIn(a) - posIn(b))
     const out: string[] = []
     for (const sg of segs) {
       const L = (d: number) => (seq.get(idf(d)) ?? '').length

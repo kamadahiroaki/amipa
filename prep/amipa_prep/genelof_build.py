@@ -82,8 +82,13 @@ for j, (s_, e_) in enumerate(zip(starts, ends)):
         for par in seen:
             m = R[R[:, 1] == par]; Lp = int((m[:, 8] - m[:, 7] + 1).sum())
             if Lp > bestL: bestL, best = Lp, m
-        best = best[np.argsort(best[:, 3], kind="stable")]
         pid = int(best[0, 2]); pieces = []
+        # 片をパスの上の順に。11-17: 開始トークン（列 3）だけだと、隣のエキソンが同じ長いノードに入ったとき同点になり、逆向きのパスで順が入れ替わった
+        #   （FCGR2B の逆向きの 48 株すべてが偽の trunc）。同点はそのノードの中で片が始まる位置（ノードの向きを考えた位置）で決める
+        off0 = int(p_off[pid]); t0_ = np.asarray(p_tok[off0 + best[:, 3]], np.int64); o0_ = np.asarray(p_ori[off0 + best[:, 3]])
+        si0 = inv[t0_]; L0 = np.where(si0 >= 0, s_off[np.maximum(si0, 0) + 1] - s_off[np.maximum(si0, 0)], 1)
+        eff = np.where(o0_ != 0, best[:, 5], L0 - 1 - best[:, 5])
+        best = best[np.lexsort((eff, best[:, 3]))]
         for r in best:
             sq = seg_seq(pid, int(r[3]), int(r[4]), int(r[5]), int(r[6]))
             if sq is not None and len(sq): pieces.append(sq)
