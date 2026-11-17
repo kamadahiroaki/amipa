@@ -1,10 +1,10 @@
 import { Router } from 'express'
 import { getDb, getWritableDb, dbBytes, HUGE_DB_BYTES, hasTiledXInv } from '../db'
-import { dbEdgesSigned, edgeXYSelect, EDGE_NODE_JOIN } from '../edgeGeom'
+import { edgeXYSelect, EDGE_NODE_JOIN } from '../edgeGeom'
 // contig_id→hap_id の採番は hap 絞り込みと同一定義を使う（重複実装で採番がズレるのを防ぐ）
-import { contigToHap, buildSelection, maskWhere, hapIdxEdgeOk, type Selection } from '../hapidx'
+import { contigToHap, buildSelection, maskWhere, type Selection } from '../hapidx'
 import { spatialSource } from '../spatial'
-import { tiledInfo, TILED_OFF, morton, zranges, rangesParams, buildTiledEdgesSql } from '../tiled'
+import { tiledInfo, tiledProblem, morton, zranges, rangesParams, buildTiledEdgesSql } from '../tiled'
 import { covFmt, rangeMaxFn, rangeSumFn, listAll } from '../covBlob'
 
 import { sendBg } from '../bgClient'
@@ -47,12 +47,9 @@ pathsRouter.get('/ctg_path', (req, res) => {
 
     type EdgeRow = { source: string; target: string; start_x: number; start_y: number; end_x: number; end_y: number; startc_x: number; startc_y: number; endc_x: number; endc_y: number }
     const dd = getDb(db)
-    // signed スキーマは座標を持たないので nodes(ns/nt)を JOIN して SQL で端点復元(列名は従来どおり)。
-    const edgeSql = dbEdgesSigned(dd)
-      ? `SELECT e.source, e.target, ${edgeXYSelect(true)} FROM edges e ${EDGE_NODE_JOIN}
+    // edges は座標を持たない（signed スキーマ）ので nodes(ns/nt)を JOIN して SQL で端点復元する。
+    const edgeSql = `SELECT e.source, e.target, ${edgeXYSelect(true)} FROM edges e ${EDGE_NODE_JOIN}
          WHERE e.layer_index = 1 AND e.source IN (${ph2}) AND e.target IN (${ph2})`
-      : `SELECT source, target, start_x, start_y, end_x, end_y, startc_x, startc_y, endc_x, endc_y
-         FROM edges WHERE layer_index = 1 AND source IN (${ph2}) AND target IN (${ph2})`
     const edgeRows = dd.prepare(edgeSql).all(...nodeNames, ...nodeNames) as EdgeRow[]
 
     const edgeMap = new Map<string, EdgeRow>()
@@ -198,7 +195,7 @@ pathsRouter.get('/path_groups', (req, res) => {
 // edges: hapcov DB は edge_hap_cov の bit=1（実通過）かつ両端θ通過の辺のみ（偽エッジ排除, spec §4b）。
 //        edge_hap_cov 無しの旧/未再生成DBは「両端ともオンノード」ヒューリスティックにフォールバック。
 //        su/tv=source/target rowid。編集モードのノード移動・回転にリボンを追従させるため（selectedIds と照合）。
-// bbox(x1,y1,x2,y2): 指定時は nodes_rtree/edges_rtree で層 L ∩ 矩形に絞る（深層で全層走査を回避）。
+// bbox(x1,y1,x2,y2): 指定時は空間索引（.tiled）で層 L ∩ 矩形に絞る（深層で全層走査を回避）。
 //   viewer は現ビューポートを FETCH_MARGIN 拡張した矩形を渡し、パン settle 毎に再取得する（陳腐化防止）。
 //   無指定なら層全体（minimap 等の後方互換）。
 
@@ -213,7 +210,7 @@ function ribbonByContigs(d: any, db: string, L: number, rect: { x1: number; x2: 
   // 逆位は本体の emit.py と同じ定義: 参照と共有する葉のステップだけ、rel ＝ 向き XOR 参照の向き（.travx.arr の refori）、
   //   コンティグの基準（contig_dict.ref_baseline）から外れた bp の割合を祖先ごとに合算し、round(255·割合) ≥ 128 を逆位
   const TX = openTravX(dbPath + '.trav'); if (!TX || !TX.arr?.hdr.refori) return null
-  const sp = spatialSource(d, L, rect); if (!sp.tiled) return null
+  const sp = spatialSource(d, L, rect)
   const rows = d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r FROM ${sp.from}`).all(...sp.params) as { id: number; name: string; x: number; y: number; a: number; r: number }[]
   const byCode = new Map<number, number>(); rows.forEach((r, i) => { const c = ancCode(r.name); if (c >= 0) byCode.set(c, i) })
   const okb = new Float64Array(rows.length), devb = new Float64Array(rows.length); const hit = new Uint8Array(rows.length); const pairs = new Set<string>()
@@ -265,40 +262,25 @@ export function ribbonHandler(req: { query: any }, res: any): void {
   // 1/アリル数しか覆えず、上げるとリボンが落ちやすい点に注意。
   const theta = Math.max(0, Math.min(1, Number(req.query.theta ?? 0)))
   const L = Number(layer)
-  // bbox（任意）。4 値そろって数値のときだけ有効。R-tree の矩形重なり判定に使う。
+  // bbox（任意）。4 値そろって数値のときだけ有効。空間索引の矩形重なり判定に使う。
   const bx = ['x1', 'y1', 'x2', 'y2'].map(k => Number(req.query[k as keyof typeof req.query]))
   const hasBbox = bx.every(v => Number.isFinite(v))
   const [x1, y1, x2, y2] = bx
   const rect = { x1, x2, y1, y2 }
   try {
     const d = getDb(db)
-    // 空間ソース（tiled / R-Tree）。層・矩形（・マスク）を内包した部分問い合わせ `rt` を返す。
+    // 空間ソース（.tiled）。層・矩形（・マスク）を内包した部分問い合わせ `rt` を返す。
     // bbox 無しなら層全体（従来どおり nodes.layer_index で）。
     const spOf = (sel: Selection | null = null) => spatialSource(d, L, rect, sel)
-    const signed = dbEdgesSigned(d)
-    // 対象エッジ集合。
-    //  signed: 座標非保存 → 可視/被覆ノード名の集合を種に source 枝を PK probe し、nodes を JOIN して
-    //          端点を SQL 復元(edges_rtree 不要, 件数は集合サイズに有界)。両端在は後段 filterEdges で担保。
-    //  座標保存: 従来どおり bbox 有→edges_rtree、無→層全体。
+    // 対象エッジ集合: 可視/被覆ノード名の集合を種に source 枝を PK probe し、nodes を JOIN して
+    // 端点を SQL 復元（件数は集合サイズに有界）。両端在は後段 filterEdges で担保。
     const relevantEdges = (names: string[]): any[] => {
-      if (signed) {
-        if (names.length === 0) return []
-        const ph = names.map(() => '?').join(',')
-        return d.prepare(
-          `SELECT e.source, e.target, ${edgeXYSelect(false)}
-           FROM edges e ${EDGE_NODE_JOIN}
-           WHERE e.layer_index = ? AND e.source IN (${ph})`).all(L, ...names) as any[]
-      }
-      // 座標保存スキーマ（旧 DB）は edges_rtree を持つ。層は min_layer==max_layer==L
-      return hasBbox
-        ? d.prepare(
-          `SELECT e.source, e.target, e.start_x, e.start_y, e.end_x, e.end_y
-           FROM edges_rtree rt JOIN edges e ON e.rowid = rt.rowid
-           WHERE rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?`)
-          .all(L, L, x1, x2, y1, y2) as any[]
-        : d.prepare(
-          `SELECT source, target, start_x, start_y, end_x, end_y
-           FROM edges WHERE layer_index = ?`).all(L) as any[]
+      if (names.length === 0) return []
+      const ph = names.map(() => '?').join(',')
+      return d.prepare(
+        `SELECT e.source, e.target, ${edgeXYSelect(false)}
+         FROM edges e ${EDGE_NODE_JOIN}
+         WHERE e.layer_index = ? AND e.source IN (${ph})`).all(L, ...names) as any[]
     }
     const filterEdges = (erows: any[], idByName: Map<string, number>) => erows
       .filter((e: any) => idByName.has(e.source) && idByName.has(e.target))
@@ -319,7 +301,7 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       //   `node_contig_cov` は **195 B/行**（blob が 186 B）で、これを rowid 点引きするのは
       //   ビューポート内の行数ぶんのランダム 4KB 読みになる。WG cold では `nodes`(94 B/行) を
       //   引くだけで既に 0.206 秒/2,000 行かかっており、それより太い表を足すと更に重い。
-      //   一方 **hap マスクは R-Tree の補助列(hm0..)に載っている**ので、矩形走査のついでに
+      //   一方 **hap マスクは空間索引（.tiled）の列(hm0..)に載っている**ので、矩形走査のついでに
       //   ほぼ無料で読める（実測 0.029 秒/2,000 行、読みバイト 0）。
       //
       // いつ厳密か: `hapidx.ts buildSelection` の `exact` が **false** のとき
@@ -344,32 +326,22 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       let covered: { id: number; name: string; x: number; y: number; a: number; r: number; frac: number }[] = []
       let invByMask = false; const invMask = new Set<number>()   // 11-12: tiledx の逆位マスクで決めた逆位のノード
       if (useMask && rsel) {
-        // ★CROSS JOIN で結合順を固定する（WG でプランナが nodes を外側に選び 10 分超になる件。spatial.ts 参照）。
-        //   bbox 無し（層全体）はマスク付き索引を層だけで走査する: tiled なら nodes_t の層全体、R-Tree なら rtree
+        // bbox 無し（層全体）はマスク付きの nodes_t / nodes_big を層だけで走査する
         const rows = (hasBbox
           ? (() => { const sp = spOf(rsel)
-            // 11-12: タイル経路の部分問い合わせは中心・半径・角度・名前を持つ。本体の nodes を行ごとに引かない（WG cold で 3,838 ノード 6 秒の主因）
+            // 11-12: 部分問い合わせは中心・半径・角度・名前を持つ。本体の nodes を行ごとに引かない（WG cold で 3,838 ノード 6 秒の主因）
             // 逆位: tiledx の hap 単位の逆位マスク（im0, im1）があれば、選んだ hap のビットで判定（64 bit なので SQL の中で）
-            if (sp.tiled && hasTiledXInv(d)) { invByMask = true; const mk = rsel.mask; return d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r,
+            if (hasTiledXInv(d)) { invByMask = true; const mk = rsel.mask; return d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r,
               CASE WHEN rt.im0 IS NULL THEN 0 WHEN (rt.im0 & ?) != 0 OR (rt.im1 & ?) != 0 THEN 1 ELSE 0 END AS iv FROM ${sp.from}`).all(mk[0] ?? 0n, mk[1] ?? 0n, ...sp.params) }
-            if (sp.tiled) return d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r FROM ${sp.from}`).all(...sp.params)
-            return d.prepare(
-            `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
-                    n.angle AS a, n.radius AS r
-             FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid`).all(...sp.params) })()
+            return d.prepare(`SELECT rt.rowid AS id, rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r FROM ${sp.from}`).all(...sp.params) })()
           : (() => {
             const mw = maskWhere('rt', rsel)
-            if (rsel.tiledNodes) return d.prepare(
+            return d.prepare(
               `SELECT rt.id AS id, rt.name AS name, rt.x AS x, rt.y AS y, rt.ang AS a, rt.r AS r
                FROM tl.nodes_t rt WHERE rt.layer = ?${mw.sql}
                UNION ALL
                SELECT rt.id AS id, rt.name AS name, rt.x AS x, rt.y AS y, rt.ang AS a, rt.r AS r
                FROM tl.nodes_big rt WHERE rt.layer = ?${mw.sql}`).all(L, ...mw.params, L, ...mw.params)
-            return d.prepare(
-              `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
-                      n.angle AS a, n.radius AS r
-               FROM ${rsel.rtree} rt CROSS JOIN nodes n ON n.rowid = rt.rowid
-               WHERE rt.min_layer = ? AND rt.max_layer = ?${mw.sql}`).all(L, L, ...mw.params)
           })()) as CRow[]
         // θ=0 の通過判定なので frac は「通る」の 1 でよい（frac は frontend の描画では未使用）。
         covered = rows.map(r => ({ id: r.id, name: r.name, x: r.x, y: r.y, a: r.a, r: r.r, frac: 1 }))
@@ -432,59 +404,22 @@ export function ribbonHandler(req: { query: any }, res: any): void {
           if (seen.has(e.id)) continue; seen.add(e.id); const A = byId.get(e.src_id), B = byId.get(e.tgt_id); if (!A || !B) continue
           const [sx, sy] = end(A, e.src_sign, B), [ex, ey] = end(B, e.tgt_sign, A); edges.push({ su: A.id, tv: B.id, sx, sy, ex, ey })
         }
-      } else if (useMask && rsel && rsel.edgeTable && signed) {   // edge_hm(edge_rowid) を持つ旧 DB だけ。tiled v4 の辺マスクは名前では引けないので blob 経路へ
-        // エッジ側もマスクで済ませる（`edge_contig_cov` は 161 B/行なので触らずに済むと大きい）。
-        // ノード側と同じ条件（θ=0 かつ hap 単位選択）でマスクは厳密なので blob 再確認は不要。
-        // `edge_hm(edge_rowid PK, hm0..)` は 1 行が細いので rowid 点引きでも安い。
-        const em = maskWhere('ehm', rsel)
+      } else if (hasEdgeContigCov(d)) {
         const covNames = [...idByName.keys()]
-        const CH = 800                       // SQLite のパラメタ上限（既定 999）に収める
+        // 被覆ノード名を種に source 枝 probe→nodes JOIN で端点復元。
+        // ★`source IN (...)` は SQLite のパラメタ上限(既定 999)を超えると
+        //   `too many SQL variables` で失敗する（chr22 の layer>=8 で実際に発生していた既存バグ）。
+        //   分割して回す。
+        const CH = 800
         const erows: any[] = []
         for (let i = 0; i < covNames.length; i += CH) {
           const chunk = covNames.slice(i, i + CH)
           const ph = chunk.map(() => '?').join(',')
           erows.push(...d.prepare(
-            `SELECT e.source, e.target, ${edgeXYSelect(false)}
+            `SELECT e.source, e.target, ${edgeXYSelect(false)}, ecc.blob
              FROM edges e ${EDGE_NODE_JOIN}
-             JOIN ${rsel.edgeTable} ehm ON ehm.edge_rowid = e.rowid
-             WHERE e.layer_index = ? AND e.source IN (${ph})${em.sql}`)
-            .all(L, ...chunk, ...em.params) as any[])
-        }
-        edges = erows
-          .filter((e: any) => idByName.has(e.source) && idByName.has(e.target))
-          .map((e: any) => ({ su: idByName.get(e.source)!, tv: idByName.get(e.target)!,
-                       sx: e.start_x, sy: e.start_y, ex: e.end_x, ey: e.end_y }))
-      } else if (hasEdgeContigCov(d)) {
-        const covNames = [...idByName.keys()]
-        let erows: any[]
-        if (signed) {
-          // 被覆ノード名を種に source 枝 probe→nodes JOIN で端点復元。edges_rtree 不要。
-          // ★`source IN (...)` は SQLite のパラメタ上限(既定 999)を超えると
-          //   `too many SQL variables` で失敗する（chr22 の layer>=8 で実際に発生していた既存バグ）。
-          //   分割して回す。
-          const CH = 800
-          erows = []
-          for (let i = 0; i < covNames.length; i += CH) {
-            const chunk = covNames.slice(i, i + CH)
-            const ph = chunk.map(() => '?').join(',')
-            erows.push(...d.prepare(
-              `SELECT e.source, e.target, ${edgeXYSelect(false)}, ecc.blob
-               FROM edges e ${EDGE_NODE_JOIN}
-               JOIN edge_contig_cov ecc ON ecc.edge_rowid = e.rowid
-               WHERE e.layer_index = ? AND e.source IN (${ph})`).all(L, ...chunk) as any[])
-          }
-        } else {
-          const cols = 'e.source, e.target, e.start_x, e.start_y, e.end_x, e.end_y, ecc.blob'
-          erows = (hasBbox
-            ? d.prepare(
-              `SELECT ${cols} FROM edge_contig_cov ecc
-               JOIN edges_rtree rt ON rt.rowid = ecc.edge_rowid
-               JOIN edges e ON e.rowid = ecc.edge_rowid
-               WHERE rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?`).all(L, L, x1, x2, y1, y2)
-            : d.prepare(
-              `SELECT ${cols} FROM edge_contig_cov ecc
-               JOIN edges e ON e.rowid = ecc.edge_rowid
-               WHERE e.layer_index = ?`).all(L)) as any[]
+             JOIN edge_contig_cov ecc ON ecc.edge_rowid = e.rowid
+             WHERE e.layer_index = ? AND e.source IN (${ph})`).all(L, ...chunk) as any[])
         }
         edges = erows
           .filter((e: any) => {
@@ -512,7 +447,7 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       const t = Math.max(1, Math.round(theta * 255))
       const validHaps = gids.filter(h => h >= 0 && h < nHap)
       type HapRow = { id: number; name: string; x: number; y: number; a: number; r: number; cov: Buffer }
-      // bbox 有→nodes_rtree で層 L ∩ 矩形のノードだけ、無→層全体。cov BLOB を JS で θ 判定。
+      // bbox 有→空間索引で層 L ∩ 矩形のノードだけ、無→層全体。cov BLOB を JS で θ 判定。
       const allRows = (hasBbox
         ? (() => { const sp = spOf(); return d.prepare(
           `SELECT n.rowid AS id, n.node_name AS name, n.xCoord AS x, n.yCoord AS y,
@@ -539,27 +474,12 @@ export function ribbonHandler(req: { query: any }, res: any): void {
         edges = []
       } else if (hasEdgeHapCov(d)) {
         const covNames = [...idByName.keys()]
-        let erows: any[]
-        if (signed) {
-          const ph = covNames.map(() => '?').join(',')
-          erows = covNames.length === 0 ? [] : d.prepare(
-            `SELECT e.source, e.target, ${edgeXYSelect(false)}, ehc.mask
-             FROM edges e ${EDGE_NODE_JOIN}
-             JOIN edge_hap_cov ehc ON ehc.edge_rowid = e.rowid
-             WHERE e.layer_index = ? AND e.source IN (${ph})`).all(L, ...covNames) as any[]
-        } else {
-          const cols = 'e.source, e.target, e.start_x, e.start_y, e.end_x, e.end_y, ehc.mask'
-          erows = (hasBbox
-            ? d.prepare(
-              `SELECT ${cols} FROM edge_hap_cov ehc
-               JOIN edges_rtree rt ON rt.rowid = ehc.edge_rowid
-               JOIN edges e ON e.rowid = ehc.edge_rowid
-               WHERE rt.min_layer = ? AND rt.max_layer = ? AND rt.max_x >= ? AND rt.min_x <= ? AND rt.max_y >= ? AND rt.min_y <= ?`).all(L, L, x1, x2, y1, y2)
-            : d.prepare(
-              `SELECT ${cols} FROM edge_hap_cov ehc
-               JOIN edges e ON e.rowid = ehc.edge_rowid
-               WHERE e.layer_index = ?`).all(L)) as any[]
-        }
+        const ph = covNames.map(() => '?').join(',')
+        const erows: any[] = covNames.length === 0 ? [] : d.prepare(
+          `SELECT e.source, e.target, ${edgeXYSelect(false)}, ehc.mask
+           FROM edges e ${EDGE_NODE_JOIN}
+           JOIN edge_hap_cov ehc ON ehc.edge_rowid = e.rowid
+           WHERE e.layer_index = ? AND e.source IN (${ph})`).all(L, ...covNames) as any[]
         edges = erows
           .filter((e: any) => {
             if (!idByName.has(e.source) || !idByName.has(e.target)) return false   // θで消えた端点への辺は落とす
@@ -579,7 +499,7 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       res.json({ nodes, edges })
       return
     }
-    // 旧スキーマ（node_group_cov テーブル）。bbox 有→nodes_rtree を JOIN して矩形に絞る。
+    // 旧スキーマ（node_group_cov テーブル。emit --path-groups の非既定出力）。bbox 有→空間索引で矩形に絞る。
     const ph = gids.map(() => '?').join(',')
     const nrows = (hasBbox
       ? (() => { const sp = spOf(); return d.prepare(
@@ -852,12 +772,13 @@ pathsRouter.post('/save_edits', (req, res) => {
   let w: ReturnType<typeof getWritableDb> | null = null
   try {
     w = getWritableDb(db)
-    // signed スキーマ(座標非保存)は edges を一切書き戻さない: ノードの中心/角度を剛体変換すれば
+    // edges は座標を持たない（signed スキーマ）ので一切書き戻さない: ノードの中心/角度を剛体変換すれば
     // 端点(center ± r·(cosθ,sinθ) / 相手中心方向)は符号不変のまま自動追従する(T の適用と数式上一致)。
-    const signed = dbEdgesSigned(w)
+    // 空間索引（<db>.tiled）は書き戻す（下）。使える .tiled が無い DB は表示もできないので断る。
+    const ti = tiledInfo(w)
+    if (!ti) { res.status(409).json({ error: tiledProblem(w) ?? '.tiled が使えない' }); return }
     // 子孫展開の再帰を速くする索引（無ければ作成・冪等）
     w.exec('CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_name)')
-    if (!signed) w.exec('CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target)')
     w.exec('CREATE TEMP TABLE IF NOT EXISTS _edit_names(name TEXT PRIMARY KEY)')
 
     const clearNames = w.prepare('DELETE FROM _edit_names')
@@ -875,58 +796,6 @@ pathsRouter.post('/save_edits', (req, res) => {
         yCoord = :sin*xCoord + :cos*yCoord + :ty,
         angle  = angle + :dAngle
       WHERE node_name IN (SELECT name FROM _edit_names)`)
-    // R-Tree の幾何。★`hap_index --draw-aux` で `ang`（angle×ANG_SCALE）補助列がある DB では
-    //   それも一緒に更新する。**触る行は増えない**（幾何が動く行＝ang も動く行）ので、
-    //   上層ノードを動かして子孫全部を書き換えるケースでもコストは実質変わらない。
-    //   （これがエッジに端点座標を持たせられない理由と対照的な点: あちらは行数の多い別の表を
-    //     追加で更新することになるが、こちらは既に更新している行に列が 1 つ増えるだけ。）
-    // 空間索引の書き戻し先: 本体の nodes_rtree（旧 DB。無い DB では触らない）と、<db>.tiled（あれば）。
-    const rtCols = (() => {
-      try { return (w.prepare('PRAGMA table_info(nodes_rtree)').all() as any[]).map(c => String(c.name)) }
-      catch { return [] as string[] }
-    })()
-    const hasRtree = rtCols.includes('min_layer')
-    const rtHasAng = rtCols.includes('ang')
-    const ti = !TILED_OFF ? tiledInfo(w) : null
-    const angScale = (() => {
-      try {
-        const v = (w.prepare("SELECT value FROM hapidx_meta WHERE key='ang_scale'").get() as any)?.value
-        return Number(v) || 1000000
-      } catch { return 1000000 }
-    })()
-    const updNodesRtree = !hasRtree ? null : w.prepare(`
-      UPDATE nodes_rtree SET
-        min_x = (SELECT xCoord - radius FROM nodes WHERE nodes.rowid = nodes_rtree.rowid),
-        max_x = (SELECT xCoord + radius FROM nodes WHERE nodes.rowid = nodes_rtree.rowid),
-        min_y = (SELECT yCoord - radius FROM nodes WHERE nodes.rowid = nodes_rtree.rowid),
-        max_y = (SELECT yCoord + radius FROM nodes WHERE nodes.rowid = nodes_rtree.rowid)${
-        rtHasAng ? `,
-        ang = (SELECT CAST(ROUND(angle * ${angScale}) AS INTEGER) FROM nodes WHERE nodes.rowid = nodes_rtree.rowid)` : ''}
-      WHERE rowid IN (SELECT rowid FROM nodes WHERE node_name IN (SELECT name FROM _edit_names))`)
-    // edges の座標書き戻しは座標保存スキーマ限定。signed は null（端点はノード追従で自動整合）。
-    // source 側は start+startc、target 側は end+endc を変換（片端のみ部分集合内なら該当端のみ動く）
-    const updEdgesSrc = signed ? null : w.prepare(`
-      UPDATE edges SET
-        start_x = :cos*start_x - :sin*start_y + :tx,
-        start_y = :sin*start_x + :cos*start_y + :ty,
-        startc_x = :cos*startc_x - :sin*startc_y + :tx,
-        startc_y = :sin*startc_x + :cos*startc_y + :ty
-      WHERE source IN (SELECT name FROM _edit_names)`)
-    const updEdgesTgt = signed ? null : w.prepare(`
-      UPDATE edges SET
-        end_x = :cos*end_x - :sin*end_y + :tx,
-        end_y = :sin*end_x + :cos*end_y + :ty,
-        endc_x = :cos*endc_x - :sin*endc_y + :tx,
-        endc_y = :sin*endc_x + :cos*endc_y + :ty
-      WHERE target IN (SELECT name FROM _edit_names)`)
-    const updEdgesRtree = signed ? null : w.prepare(`
-      UPDATE edges_rtree SET
-        min_x = (SELECT min(min(start_x,end_x),min(startc_x,endc_x)) FROM edges WHERE edges.rowid=edges_rtree.rowid),
-        max_x = (SELECT max(max(start_x,end_x),max(startc_x,endc_x)) FROM edges WHERE edges.rowid=edges_rtree.rowid),
-        min_y = (SELECT min(min(start_y,end_y),min(startc_y,endc_y)) FROM edges WHERE edges.rowid=edges_rtree.rowid),
-        max_y = (SELECT max(max(start_y,end_y),max(startc_y,endc_y)) FROM edges WHERE edges.rowid=edges_rtree.rowid)
-      WHERE rowid IN (SELECT rowid FROM edges WHERE source IN (SELECT name FROM _edit_names) OR target IN (SELECT name FROM _edit_names))`)
-
     // ── タイル索引（<db>.tiled）の書き戻し ──
     // nodes_t / edges_t は (layer, mkey, …) が主キーの clustered 表で、mkey は中心座標のタイル。
     // ノードが動くとタイルも変わりうるので、旧座標から旧 mkey を出し、その行を新 mkey・新座標で書き換える
@@ -936,22 +805,22 @@ pathsRouter.post('/save_edits', (req, res) => {
     const oldGeom = w.prepare(`
       SELECT n.rowid AS id, n.layer_index AS L, n.xCoord AS x, n.yCoord AS y, n.radius AS r
       FROM nodes n WHERE n.node_name IN (SELECT name FROM _edit_names)`)
-    const updTiledNode = ti ? w.prepare(`
+    const updTiledNode = w.prepare(`
       UPDATE tl.nodes_t SET mkey = :nk,
         x = (SELECT xCoord FROM nodes WHERE rowid = :id), y = (SELECT yCoord FROM nodes WHERE rowid = :id),
         ang = (SELECT angle FROM nodes WHERE rowid = :id)
-      WHERE layer = :L AND mkey = :ok AND id = :id`) : null
-    const updTiledBig = ti ? w.prepare(`
+      WHERE layer = :L AND mkey = :ok AND id = :id`)
+    const updTiledBig = w.prepare(`
       UPDATE tl.nodes_big SET
         x = (SELECT xCoord FROM nodes WHERE rowid = :id), y = (SELECT yCoord FROM nodes WHERE rowid = :id),
         ang = (SELECT angle FROM nodes WHERE rowid = :id)
-      WHERE layer = :L AND id = :id`) : null
-    const updTiledEdges = ti ? w.prepare(`
+      WHERE layer = :L AND id = :id`)
+    const updTiledEdges = w.prepare(`
       UPDATE tl.edges_t SET mkey = :nk,
         ex = (SELECT xCoord FROM nodes WHERE rowid = :id), ey = (SELECT yCoord FROM nodes WHERE rowid = :id)
-      WHERE layer = :L AND mkey = :ok AND ((side = 0 AND src_id = :id) OR (side = 1 AND tgt_id = :id))`) : null
+      WHERE layer = :L AND mkey = :ok AND ((side = 0 AND src_id = :id) OR (side = 1 AND tgt_id = :id))`)
     const tileKey = (L: number, x: number, y: number): bigint => {
-      const g = ti!.g[L], n = 1 << g
+      const g = ti.g[L], n = 1 << g
       const cl = (v: number) => Math.max(0, Math.min(n - 1, Math.floor(v * n)))
       return morton(cl(x), cl(y))
     }
@@ -965,22 +834,16 @@ pathsRouter.post('/save_edits', (req, res) => {
         clearNames.run()
         fillNames.run(JSON.stringify(names))
         // ★タイル索引は旧座標が要るので、nodes を書き換える**前**に旧幾何を読み、書き換え後に適用する
-        const olds = ti ? (oldGeom.all() as { id: number; L: number; x: number; y: number; r: number }[]) : []
+        const olds = oldGeom.all() as { id: number; L: number; x: number; y: number; r: number }[]
         totalNodes += updNodes.run(p).changes
-        updNodesRtree?.run()
-        updEdgesSrc?.run(p)
-        updEdgesTgt?.run(p)
-        updEdgesRtree?.run()
-        if (ti) {
-          for (const o of olds) {
-            if (o.L < 0 || o.L >= ti.g.length) continue
-            const nx = p.cos * o.x - p.sin * o.y + p.tx, ny = p.sin * o.x + p.cos * o.y + p.ty
-            const ok = tileKey(o.L, o.x, o.y), nk = tileKey(o.L, nx, ny)
-            const tw = 1 / (1 << ti.g[o.L])
-            if (o.r > tw / 2) updTiledBig!.run({ id: o.id, L: o.L })
-            else updTiledNode!.run({ id: o.id, L: o.L, ok, nk })
-            updTiledEdges!.run({ id: o.id, L: o.L, ok, nk })
-          }
+        for (const o of olds) {
+          if (o.L < 0 || o.L >= ti.g.length) continue
+          const nx = p.cos * o.x - p.sin * o.y + p.tx, ny = p.sin * o.x + p.cos * o.y + p.ty
+          const ok = tileKey(o.L, o.x, o.y), nk = tileKey(o.L, nx, ny)
+          const tw = 1 / (1 << ti.g[o.L])
+          if (o.r > tw / 2) updTiledBig.run({ id: o.id, L: o.L })
+          else updTiledNode.run({ id: o.id, L: o.L, ok, nk })
+          updTiledEdges.run({ id: o.id, L: o.L, ok, nk })
         }
       }
     })

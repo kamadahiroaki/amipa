@@ -4,7 +4,6 @@
 // worker_threads へ出すには同じクエリ組み立てを worker 側でも走らせる必要があるが、
 // これらは全て (Database, パラメータ) の純粋関数なのでそのまま共有できる。
 // 中身は graph.ts から**無改変で移動**しただけ（コメントも含む）。
-import { maskWhere, type Selection } from './hapidx'
 import type { SpatialSource } from './spatial'
 
 // テーブルの列名集合を接続単位でメモ化（mapq別 coverage_qN 列の有無判定に使う）。
@@ -45,8 +44,6 @@ export function nodeCovExprs(d: any, mapq: number): { cov: string; hist: string 
   return { cov: 'n.coverage', hist: 'n.cov_hist' }
 }
 
-// R-Tree intersection: node bbox overlaps query bbox
-// For point nodes (min=max), this reduces to: x1 <= xCoord <= x2
 // cov/hist は mapq プリセットにより列を差し替えるが、別名で coverage/cov_hist に固定するので
 // frontend・キャッシュ側のデータ形は不変。
 // 参照座標(ref_bp)列がある DB なら node fetch に相乗りさせる（追加往復ゼロ）。無ければ空文字。
@@ -138,49 +135,11 @@ export function nodeAttrSel(d: any, want: { band: boolean; region: boolean; gene
   return { sel, join: ` LEFT JOIN ${srcA.qual}node_annot na ON na.node_rowid = n.rowid` }
 }
 
-// ── 描画専用の高速経路（R-Tree だけで返す）───────────────────────────────────
-//
-// WG cold の律速は「1 行あたりに触る 4KB ページ数」で、現行 `/nodes` は
-//   R-Tree の %_node（空間クラスタ＝連続ページ、ほぼ無料）
-//   ＋ `nodes` 行（rowid 順が空間順と一致しないので実測 1 行 ≒ 1 ランダムページ）
-// の 2 本を触る。実測（functions/covpack/RESULTS.md §12、同一ノード・未アクセス領域・約 2,000 行）:
-//   R-Tree だけ 0.014〜0.028 秒（読み 0 バイト）／`nodes` 行も読む 0.135〜0.206 秒 = **7.5〜9.3x**
-//
-// `hap_index --draw-aux` が載せた補助列（ang/nm/hb/bnd/gcn/rgn）があれば、
-// 描画に要る列を R-Tree だけで揃えられる:
-//   xCoord=(min_x+max_x)/2, yCoord=(min_y+max_y)/2, radius=(max_x-min_x)/2   ← 幾何から導出
-//   angle=ang/ANG_SCALE, node_name=nm, hb, band_id, gene_count, region_class ← 補助列
-//   ref_bp / ref_bp_end / ref_contig_id / is_anchor / ref_multi / ref_strand ← 補助列
-//     （参照座標トラックは**既定 ON**なので、これが無いと高速経路をほぼ使えない。
-//       実測バイトはデータ約 1.9B ＋ レコードヘッダ 6B = +約 8B/行で、効きは 4x → 約 3.4x）
-// ★足りないもの: size / coverage / cov_hist / is_bubble / color / haplotype。
-//   これらはラベル・色モード・フィルタでしか使わないので、**必要になったときだけ**
-//   従来経路（あるいは選択ノードの詳細取得）で読む。だから呼び側が明示的に要求する形にする。
-// ★★描画に使う幾何を **矩形から導出してはいけない**。R-Tree の矩形は float32 で
-//   **外向きに丸められる**（包含保証のための SQLite の仕様）ので、復元値は必ずずれる:
-//     radius = (max_x-min_x)/2  → 必ず過大。深層で **相対 174%**（wgpggb L2 実測）
-//     x      = (min_x+max_x)/2  → 座標の桁(0.2〜0.9)での 1 ulp ≈ 3〜6e-8 が乗る
-//   絶対誤差はどちらも約 1e-7 world で「小さい」が、**深層ノードは自分の radius が
-//   同じオーダー**。実例 mcgrch38 n23316007（size 1bp, L16）:
-//     真値 x=0.21982263076960973 y=0.5923226031850704 radius=4.37e-08
-//     箱から復元         Δx=4.8e-10  **Δy=4.5e-08**  ← 自分の radius より大きい
-//   このノードが 10px で見えるズーム(1px≈8.7e-9 world)では約 5px ずれる。
-//   viewer はノードが見える大きさまでズームするので、効くのは world 比でなく
-//   **そのノード自身の大きさに対する比**。この判断を 2 回間違えた（radius → 位置）。
-//   → 矩形は **空間索引としてだけ** 使い、幾何は cx/cy/rad 補助列から取る。
-//   補助列が無い旧 DB では従来どおり矩形から導出する（後方互換。ずれは残る）。
-/** 高速経路(R-Tree)から **node_annot を直接** 引くための SELECT/JOIN 断片。
- *
- * ★なぜ補助列(bnd/gcn/rgn)を使わないか:
- *   補助列は `hap_index` が R-Tree を作る時に node_annot から焼き込む。emitter は hapidx を
- *   最後に走らせるので、**その後にアノテーションを足すと補助列は NULL のまま**になる
- *   （実際 chr22-fin で ref_bp は入っているのに band/gene/region だけ NULL だった）。
- *   毎回 R-Tree を作り直す(WG で 1h10m〜1h28m)のは後付け拡張の運用として重すぎるので、
- *   アノテーションだけは node_annot を rowid で点引きする。
- *   実測(chr22, cold): 被覆索引 idx_na_cov ありで典型 0.2〜35ms・最悪 153ms。
- *   索引が無いと同じ問い合わせが 2,256ms(269倍)になるので、索引の有無は必ず見る
- *   （gene_blob が平均 51B あり、スカラ 3 つのために太い行を読むことになるため）。
- */
+// ── アノテーション（band/region/gene）の相乗り ───────────────────────────────
+// タイル経路(nx=fast)は nodes 行を読まないので、要求されたときだけ node_annot を id で点引きする。
+//   実測(chr22, cold): 被覆索引 idx_na_cov ありで典型 0.2〜35ms・最悪 153ms。
+//   索引が無いと同じ問い合わせが 2,256ms(269倍)になるので、索引の有無は必ず見る
+//   （gene_blob が平均 51B あり、スカラ 3 つのために太い行を読むことになるため）。
 /** node_annot の所在を返す。サイドカー(`an.node_annot`)を優先し、無ければ主 DB。
  *  サイドカーは物理連続なので走査・点引きが桁で速い（db.ts の attachAnnot のコメント参照）。 */
 export function annotSource(d: any): { qual: string; cols: Set<string> } | null {
@@ -191,7 +150,7 @@ export function annotSource(d: any): { qual: string; cols: Set<string> } | null 
   return null
 }
 
-export function fastAnnotSel(d: any, want: { band: boolean; region: boolean; gene: boolean }, alias = 'r', idCol = 'rowid'):
+export function fastAnnotSel(d: any, want: { band: boolean; region: boolean; gene: boolean }, alias = 'n', idCol = 'id'):
   { sel: string; join: string } {
   const srcA = annotSource(d)
   if (!srcA) return { sel: '', join: '' }
@@ -218,27 +177,7 @@ export function maxLayerOf(d: any): number {
   return v
 }
 
-export function buildNodesSqlFast(rtree: string, angScale: number, maskSql = '',
-                                  hasRad = false, hasXY = false,
-                                  annot: { sel: string; join: string } | null = null): string {
-  return `
-  SELECT r.rowid AS id, r.nm AS node_name,
-         ${hasXY ? 'r.cx' : '(r.min_x + r.max_x) / 2'} AS xCoord,
-         ${hasXY ? 'r.cy' : '(r.min_y + r.max_y) / 2'} AS yCoord,
-         ${hasRad ? 'r.rad' : '(r.max_x - r.min_x) / 2'} AS radius,
-         CAST(r.ang AS REAL) / ${angScale} AS angle,
-         r.hb AS hb,
-         ${annot && annot.sel ? '' : 'r.bnd AS band_id, r.gcn AS gene_count, r.rgn AS region_class,'}
-         r.rbp AS ref_bp, r.rbe AS ref_bp_end, r.rci AS ref_contig_id,
-         r.ranc AS is_anchor, r.rmul AS ref_multi, r.rstr AS ref_strand,
-         r.min_layer AS layer${annot ? annot.sel : ''}
-  FROM ${rtree} r${annot ? annot.join : ''}
-  WHERE r.min_layer = ?
-    AND r.min_x <= ? AND r.max_x >= ?
-    AND r.min_y <= ? AND r.max_y >= ?${maskSql}`
-}
-
-// ビューポート検索の空間索引部は spatial.ts の spatialSource に集約した（tiled / R-Tree の二本立て）。
+// ビューポート検索の空間索引部は spatial.ts の spatialSource に集約した（<db>.tiled）。
 // 部分問い合わせ `rt` を外側にし（CROSS JOIN で結合順を固定）、生存分だけ nodes を rowid 点引きする。
 // ★通常の JOIN だと WG(nodes 2億行)でプランナが nodes を外側に選び 10 分以上返らなかった（実測）。
 // パラメータは sp.params だけ（層・矩形・マスクは全部 sp に内包）。

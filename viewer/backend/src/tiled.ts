@@ -1,11 +1,11 @@
 // タイル順サイドカー `<db>.tiled`（prep/amipa_prep/tile_index.py 産、db.ts が tl として ATTACH）。
 //
-// viewer の描画用ノード/エッジ取得を R-Tree から置き換える。
-//   R-Tree: 矩形検索が木を降りるので cold で 80〜100 ページのランダム読み（WG 1〜4 秒）。
-//           エッジは可視ノードごとに TEXT 索引を 2 回 probe する O(V) 方式で warm でも重い。
-//   tiled : 行が (layer, Morton(tile)) 順に clustered。矩形 → Z-order の連続範囲（数十本）→
-//           各範囲は 1 回の索引降下 + 順次スキャン。エッジも同じ範囲で取る（端点タイルで格納）。
-// 実測(2026-08-26, WG PGGB 313GB cold): 合計 2.4〜8x、最遅 viewport 2.8〜17x、warm でも 3x。
+// viewer の描画用ノード/エッジ取得の**唯一の空間索引**（11-17: R-Tree・.hapidx の経路は外した）。
+//   行が (layer, Morton(tile)) 順に clustered。矩形 → Z-order の連続範囲（数十本）→
+//   各範囲は 1 回の索引降下 + 順次スキャン。エッジも同じ範囲で取る（端点タイルで格納）。
+//   hap マスク語 hm0.. も辺の hb / rs もこの表に焼き込み済み（v4）。
+// 実測(2026-08-26, WG PGGB 313GB cold): R-Tree 比で合計 2.4〜8x、最遅 viewport 2.8〜17x、warm でも 3x。
+// `.tiled` が無い・古い形式の DB は開かない（/api/stats が spec: 'incompatible' と理由を返す。tiledProblem）。
 //
 // ★SQL の作法（実測で踏んだ罠）:
 //   ・`layer=? AND (mkey BETWEEN … OR …)` は SQLite が **層全体の走査** に落とす
@@ -16,13 +16,18 @@ import { tableCols } from './nodeQuery'
 import type { Selection } from './hapidx'
 import { maskWhere } from './hapidx'
 
+/** viewer が読めるサイドカーの形式。v3.x 以前は hap マスクを .hapidx（R-Tree）に頼っていたので読まない */
+export const TILED_SCHEMAS = ['tiled-v4']
+/** 作り直しの案内（/api/stats の incompatible と amipa check で同じ文言） */
+export const TILED_REBUILD_HINT = '空間索引を作り直してください: amipa prep add-tiled --out <バンドル>（DB 本体は作り直さない）'
+
 export interface TiledInfo {
   g: number[]                       // 層 → 格子指数（タイル幅 = 1/2^g、世界座標 [0,1]）
   world: { x0: number; x1: number; y0: number; y1: number }
   hmCols: string[]                  // hap マスク語の列名（hm0..）。空なら絞り込み不可
   hasHb: boolean
   nodeCols: Set<string>
-  edgeCols: Set<string>            // v3.2 以降は source/target（端点名）、v3.3 以降は hb / rs（焼き込み済み）を持つ
+  edgeCols: Set<string>            // source/target（端点名）、hb / rs（焼き込み済み）、hm0..（辺の hap マスク）
 }
 const cache = new WeakMap<object, TiledInfo | null>()
 export function tiledInfo(d: Database.Database): TiledInfo | null {
@@ -31,7 +36,7 @@ export function tiledInfo(d: Database.Database): TiledInfo | null {
   try {
     const meta = new Map<string, string>()
     for (const r of d.prepare('SELECT key, value FROM tl.meta').all() as { key: string; value: string }[]) meta.set(r.key, r.value)
-    if (['tiled-v3.1', 'tiled-v3.2', 'tiled-v3.3', 'tiled-v4'].includes(meta.get('schema') || '')) {
+    if (TILED_SCHEMAS.includes(meta.get('schema') || '')) {
       const w = JSON.parse(meta.get('world') || '[0,1,0,1]') as number[]
       info = {
         g: JSON.parse(meta.get('g_L') || '[]'),
@@ -46,7 +51,20 @@ export function tiledInfo(d: Database.Database): TiledInfo | null {
   cache.set(d, info)
   return info
 }
-export const TILED_OFF = process.env.AMIPA_TILED === '0'
+
+/** この DB が表示できない理由（使える `.tiled` が無い）。使えるなら null */
+export function tiledProblem(d: Database.Database): string | null {
+  if (tiledInfo(d)) return null
+  let schema: string | null = null
+  try {
+    if (!d.prepare("SELECT 1 FROM pragma_database_list WHERE name='tl'").get())
+      return `空間索引（<db>.tiled サイドカー）がありません。${TILED_REBUILD_HINT}`
+    schema = (d.prepare("SELECT value FROM tl.meta WHERE key='schema'").get() as { value: string } | undefined)?.value ?? null
+  } catch { /* 空・壊れたファイル（meta が無い） */ }
+  return schema
+    ? `空間索引 <db>.tiled の形式が古い（${schema}。この viewer は ${TILED_SCHEMAS.join(', ')} だけを読む）。${TILED_REBUILD_HINT}`
+    : `空間索引 <db>.tiled が空か壊れています（meta が読めない）。${TILED_REBUILD_HINT}`
+}
 
 // ── Z-order（Morton）と矩形の分解 ─────────────────────────────────────────
 // キーは最大 2^(2g)。g ≤ 30 なので BigInt で持ち、パラメータも BigInt で渡す（better-sqlite3 は可）。
@@ -118,17 +136,14 @@ export function buildTiledNodesSql(nRanges: number, maskSql: string, annot: { se
 export function tiledNodesParams(r: Array<[bigint, bigint]>, L: number, x1: number, x2: number, y1: number, y2: number, mask: bigint[]): any[] {
   return [...rangesParams(r), L, x1, x2, y1, y2, ...mask, L, x1, x2, y1, y2, ...mask]
 }
-export function tiledNodeMask(sel: Selection | null, info: TiledInfo): { sql: string; params: bigint[] } | null {
-  if (!sel) return { sql: '', params: [] }
-  // マスク語が sel.mask の長さぶん揃っていなければ絞り込みできない（呼び側は R-Tree 経路へ）
-  if (info.hmCols.length < sel.mask.length) return null
-  return maskWhere('n', sel)
+export function tiledNodeMask(sel: Selection | null): { sql: string; params: bigint[] } {
+  return sel ? maskWhere('n', sel) : { sql: '', params: [] }
 }
 
 // ── エッジ ──────────────────────────────────────────────────────────────
-// 端点 id だけ返す。viewer は nodeStore から端点を復元し、両端が無い辺は捨てる（従来と同じ契約）。
+// 端点 id だけ返す。viewer は nodeStore から端点を復元し、両端が無い辺は捨てる。
 // 行は端点ごと（side 0/1）なので同じ辺が 2 行出うる → 呼び側で eid で重複排除する。
-// ★その行の端点 (ex,ey,er) が viewport に重なる行だけ返す（R-Tree 経路の「可視ノードの辺」と同じ意味）。
+// ★その行の端点 (ex,ey,er) が viewport に重なる行だけ返す（＝「可視ノードの辺」）。
 //   これが無いと外側 1 タイルの環にある密な領域の辺まで全部返し、chr22 L10 で 4〜12 倍の余分を転送した。
 const ERECT = 'e.ex+e.er>=? AND e.ex-e.er<=? AND e.ey+e.er>=? AND e.ey-e.er<=?'
 // extraSel/extraJoin: edge_hb(edge_contig_cov)・read_support(rd.edge_read_support) を**要求された時だけ**

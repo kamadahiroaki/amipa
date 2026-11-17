@@ -54,7 +54,6 @@ export function getDb(filename: string): Database.Database {
     db.pragma(`cache_size = -${cacheKbFor(filename)}`)
     if (MMAP_BYTES > 0) db.pragma(`mmap_size = ${MMAP_BYTES}`)
   } catch { /* pragma 失敗は致命的でない: 既定設定で続行 */ }
-  attachHapIdx(db, dbPath)
   attachNameTri(db, dbPath)
   attachAnnot(db, dbPath)
   attachReads(db, dbPath)
@@ -63,21 +62,9 @@ export function getDb(filename: string): Database.Database {
   return db
 }
 
-// hap 絞り込み索引サイドカー `<db>.hapidx`（prep/amipa_prep/hap_index.py 産）があれば ix として ATTACH する。
-// 無ければ何もしない（= 絞り込み機能だけ無効になり従来動作、graceful）。readonly 接続に ATTACH した
-// DB は SQLite が同じフラグで開くので書き込み不可のまま（SQLITE_READONLY を実測確認済）。
-// URI 形式は better-sqlite3 が SQLITE_USE_URI 無効でビルドされており CANTOPEN になるので素のパスで渡す。
-export const HAPIDX_SUFFIX = '.hapidx'
-export function hapIdxPath(dbPath: string): string { return dbPath + HAPIDX_SUFFIX }
-function attachHapIdx(db: Database.Database, dbPath: string): void {
-  const p = hapIdxPath(dbPath)
-  try {
-    if (!fs.existsSync(p)) return
-    db.prepare('ATTACH DATABASE ? AS ix').run(p)
-  } catch (e) {
-    console.warn('hapidx attach failed (絞り込みは無効で続行):', p, String(e))
-  }
-}
+// サイドカーは ATTACH する。readonly 接続に ATTACH した DB は SQLite が同じフラグで開くので書き込み不可のまま
+// （SQLITE_READONLY を実測確認済）。URI 形式は better-sqlite3 が SQLITE_USE_URI 無効でビルドされており
+// CANTOPEN になるので素のパスで渡す。
 
 // アノテーションのサイドカー `<db>.annot`（prep/amipa_prep/annotate.py 産）を an として ATTACH。
 //
@@ -106,7 +93,7 @@ function attachAnnot(db: Database.Database, dbPath: string): void {
 // per-visit の read_node は廃止（WG で 73億行に膨張するため）。base の layered DB は改変しない。
 // 無ければ何もしない（= リード機能だけ無効で従来動作、graceful）。
 // タイル順サイドカー `<db>.tiled`（prep/amipa_prep/tile_index.py 産）を tl として ATTACH。
-// 描画用のノード/エッジ取得を R-Tree から置き換える（詳細 tiled.ts）。無ければ従来の R-Tree 経路。
+// viewer の唯一の空間索引（詳細 tiled.ts）。無い・古い DB は /api/stats が incompatible を返す。
 // data/db は実体への symlink で運用しているので、symlink 側と実体側の両方を探す。
 export const TILED_SUFFIX = '.tiled'
 function attachTiled(db: Database.Database, dbPath: string): void {
@@ -119,7 +106,7 @@ function attachTiled(db: Database.Database, dbPath: string): void {
       attachTiledX(db, p)
       return
     } catch (e) {
-      console.warn('tiled attach failed (R-Tree 経路で続行):', p, String(e))
+      console.warn('tiled attach failed (この DB は表示できない):', p, String(e))
       return
     }
   }

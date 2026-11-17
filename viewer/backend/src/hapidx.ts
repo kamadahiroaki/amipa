@@ -1,24 +1,14 @@
 // hap 絞り込み（選択サンプル/ハプロタイプ/コンティグが通るノード・エッジだけ返す）の共通ロジック。
 //
-// データは prep/amipa_prep/hap_index.py が作るサイドカー `<db>.hapidx`（db.ts が ix として ATTACH）:
-//   ix.nodes_rtree_hm  rtree(id, min_x,max_x, min_y,max_y, min_layer,max_layer, +hm0..+hm{W-1})
-//   ix.edge_hm(edge_rowid PK, hm0..hm{W-1})
-//   ix.hap_dict(hap_id PK, name, sample, haplotype, cid_lo, cid_hi, n_contig)
-//   ix.hapidx_meta(words, mode=exact|bucket, bits, n_hap, ...)
+// マスクは `<db>.tiled`（v4, db.ts が tl として ATTACH）の nodes_t / edges_t に焼き込まれている:
+//   tl.meta(hap_layout=tiled, words, bits, n_hap, mode) ＋ nodes_t.hm0.. / edges_t.hm0..
+// 矩形走査のついでにマスクを読むので、棄却候補の太い nodes 行を読まずに済む。
+// （11-17: 旧来の置き場所＝本体 nodes_rtree の補助列・サイドカー `<db>.hapidx` は読まなくなった）
 //
-// なぜ R-Tree の補助列か: 密領域の遅さは R-Tree 探索(50ns/entry)ではなく「候補全件の行を実体化する」
-// こと(nodes 行 1.6us/行, node_contig_cov の太い blob 25us/行)と Lustre cold random I/O。よって
-// マスク判定は **nodes 行を読む前** に済ませる必要がある。
-// SQLite の R-Tree 補助列は リーフページ(%_node)ではなく **%_rowid 影テーブル** に入る
-// (`CREATE TABLE ..._rowid(rowid INTEGER PRIMARY KEY, nodeno, a0, a1)`)。つまり候補ごとに
-// %_rowid を rowid 点引きする形になるが、そこは **細くて rowid クラスタな表**(約28B/行)なので
-// 「棄却1件 = 細い表の1読み」で済み、太い nodes 行(20列)を読むより桁で安い。
-// 実測 (chr22 密領域, functions/hapfilter/RESULTS.md): 現行比 cold 1.7-4.7x / warm 2.5-2.7x。
-//
-// H(ハプロタイプ数)スケール: マスク幅 W は hap_index が H から決め上限で打ち止めるので、
+// H(ハプロタイプ数)スケール: マスク幅 W は tile_index が H から決め上限で打ち止めるので、
 //   mode=exact  → マスクだけで厳密
 //   mode=bucket → マスクは保守的(上位集合)。**必ず node_contig_cov / edge_contig_cov blob で
-//                 厳密判定を追加する**（needExact()）。誤りは出ない・効きが鈍るだけ。
+//                 厳密判定を追加する**（Selection.exact）。誤りは出ない・効きが鈍るだけ。
 // コンティグ粒度の選択(hap の一部の contig だけ)も同様に上位集合なので厳密判定を足す。
 
 import type { Database } from 'better-sqlite3'
@@ -29,52 +19,15 @@ export interface HapIdxInfo {
   mode: 'exact' | 'bucket'
   bits: number
   nHap: number
-  /** マスク付き R-Tree の参照名。'nodes_rtree'(emitter 統合) か 'ix.nodes_rtree_hm'(サイドカー)。
-   *  タイルサイドカー(v4)がマスクを持つ DB では null（R-Tree を使わない） */
-  rtree: string | null
-  /** エッジマスク表の参照名。無ければ null（ノード絞り込みのみ / タイル側に焼き込み済み） */
-  edgeTable: string | null
-  /** マスク語が `<db>.tiled` の nodes_t / edges_t に焼き込まれているか（v4）。spatial.ts はこちらを優先 */
+  /** マスク語が `<db>.tiled` の nodes_t / edges_t にあるか */
   tiledNodes: boolean
   tiledEdges: boolean
-  /** 描画用補助列(ang/nm/hb/bnd/gcn/rgn)が R-Tree に載っているか（hap_index --draw-aux） */
-  drawAux: boolean
-  /** rad 補助列（= nodes.radius の真値）があるか。無い旧 DB は矩形から導出＝過大になる */
-  hasRad: boolean
-  /** cx/cy 補助列（= nodes.xCoord/yCoord の真値）があるか。無いと中心が float32 の 1 ulp ずれる */
-  hasXY: boolean
-  /** ang 補助列の倍率（angle = ang / angScale）。既定 1e6 */
-  angScale: number
 }
 
 const infoCache = new WeakMap<any, HapIdxInfo | null>()
 
-// マスクの置き場所は 2 通りある。どちらも「rtree の第1列は rowid 別名」なので SQL は r.rowid で統一できる。
-//   A) emitter 統合: main.nodes_rtree そのものが +hm0.. を持つ（幾何の重複なし。新しい DB）
-//   B) サイドカー  : ix.nodes_rtree_hm（<db>.hapidx を ATTACH。既存 DB を作り直さずに済む）
-function readMeta(d: Database, schema: string): Map<string, string> | null {
-  try {
-    const rows = d.prepare(`SELECT key, value FROM ${schema}hapidx_meta`).all() as
-      { key: string; value: string }[]
-    return new Map(rows.map(r => [r.key, r.value]))
-  } catch { return null }
-}
-// PRAGMA は schema 修飾を `PRAGMA <schema>.table_info(<table>)` の形で書く必要がある
-// （`PRAGMA table_info(ix.foo)` は通らない）。schema は '' か 'ix.'。
-function rtreeHasMask(d: Database, schema: string, table: string): boolean {
-  try {
-    return (d.prepare(`PRAGMA ${schema}table_info(${table})`).all() as any[])
-      .some(c => c.name === 'hm0')
-  } catch { return false }
-}
-function tableExists(d: Database, table: string): boolean {
-  try { d.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get(); return true } catch { return false }
-}
-
-// C) タイルサイドカー v4: tl.meta(hap_layout=tiled, words, bits, n_hap, mode) ＋ nodes_t.hm0.. / edges_t.hm0..
-//    R-Tree も .hapidx も無い新しい DB はこれだけを持つ。tiled.ts を import すると循環になるので直接引く。
+// tiled.ts を import すると循環になるので tl.meta を直接引く。
 function tiledMaskInfo(d: Database): HapIdxInfo | null {
-  if (process.env.AMIPA_TILED === '0') return null
   try {
     const m = new Map((d.prepare('SELECT key, value FROM tl.meta').all() as { key: string; value: string }[])
       .map(r => [r.key, r.value]))
@@ -87,56 +40,15 @@ function tiledMaskInfo(d: Database): HapIdxInfo | null {
     if (!has(nc)) return null
     return {
       words, bits, nHap, mode: m.get('mode') === 'bucket' ? 'bucket' : 'exact',
-      rtree: null, edgeTable: null, tiledNodes: true, tiledEdges: has(ec),
-      drawAux: false, hasRad: false, hasXY: false, angScale: 1000000,
+      tiledNodes: true, tiledEdges: has(ec),
     }
   } catch { return null }
 }
 
-/** マスクが使える形なら諸元を返す。無ければ null（呼び側は従来経路へ）。 */
+/** マスクが使える形なら諸元を返す。無ければ null（絞り込みは無効＝全件を返す）。 */
 export function hapIdxInfo(d: Database): HapIdxInfo | null {
   if (infoCache.has(d)) return infoCache.get(d)!
-  let out: HapIdxInfo | null = tiledMaskInfo(d)
-  if (out) { infoCache.set(d, out); return out }
-  for (const [schema, bare, edge] of [
-    ['', 'nodes_rtree', 'edge_hm'],                 // A) emitter 統合（main の nodes_rtree に補助列）
-    ['ix.', 'nodes_rtree_hm', 'edge_hm'],           // B) サイドカー（<db>.hapidx を ATTACH）
-  ] as const) {
-    const rtree = schema + bare
-    if (!rtreeHasMask(d, schema, bare)) continue
-    const m = readMeta(d, schema)
-    if (!m) continue
-    const words = Number(m.get('words'))
-    const bits = Number(m.get('bits'))
-    const nHap = Number(m.get('n_hap'))
-    const mode = m.get('mode') === 'bucket' ? 'bucket' : 'exact'
-    // 想定外のスキーマ/幅では黙って誤らないよう機能を切る（従来動作にフォールバック）。
-    if (m.get('schema') !== '1' || m.get('layout') !== 'rtree_aux') continue
-    if (!Number.isInteger(words) || words < 1 || words > 64) continue
-    if (bits !== 64 * words) continue
-    if (m.get('node_done') !== '1') continue        // 構築中/中断は使わない
-    // 描画用補助列。`nm` が実際に引けるかまで確かめる（meta だけ立っていて列が無い事故を防ぐ）
-    const auxCols: string[] = (() => {
-      try { return (d.prepare(`PRAGMA ${schema}table_info(${bare})`).all() as any[])
-        .map(c => String(c.name)) } catch { return [] }
-    })()
-    const drawAux = m.get('draw_aux') === '1' && auxCols.includes('nm')
-    // rad / cx,cy は後から足した列なので、meta でなく **列の実在**で判定する
-    // （先に作った DB は draw_aux=1 でもこれらを持たない）
-    const hasRad = drawAux && auxCols.includes('rad')
-    const hasXY = drawAux && auxCols.includes('cx') && auxCols.includes('cy')
-    out = {
-      words, mode, bits, nHap, rtree,
-      edgeTable: (m.get('edge_done') === '1' && tableExists(d, schema + edge))
-        ? schema + edge : null,
-      tiledNodes: false, tiledEdges: false,
-      drawAux,
-      hasRad,
-      hasXY,
-      angScale: Number(m.get('ang_scale')) || 1000000,
-    }
-    break
-  }
+  const out = tiledMaskInfo(d)
   infoCache.set(d, out)
   return out
 }
@@ -144,7 +56,7 @@ export function hapIdxInfo(d: Database): HapIdxInfo | null {
 /** エッジ側マスクが使えるか（--skip-edges や edge_contig_cov 無し DB では無い）。 */
 export function hapIdxEdgeOk(d: Database): boolean {
   const i = hapIdxInfo(d)
-  return !!(i && (i.edgeTable || i.tiledEdges))
+  return !!(i && i.tiledEdges)
 }
 
 // contig_id → hap_id（distinct (sample,haplotype) を contig_id 昇順で採番）。
@@ -185,11 +97,7 @@ function hapContigCount(d: Database): Int32Array {
 export interface Selection {
   /** 選択された contig_id レンジ（両端含む・正規化済み） */
   ranges: [number, number][]
-  /** マスク付き R-Tree の参照名（'nodes_rtree' か 'ix.nodes_rtree_hm'）。タイル側にマスクがある DB では null */
-  rtree: string | null
-  /** エッジマスク表の参照名（無ければ null） */
-  edgeTable: string | null
-  /** マスクが `<db>.tiled` の nodes_t / edges_t にある（spatial.ts / dbJobs の tiled 経路が使う） */
+  /** マスクが `<db>.tiled` の nodes_t / edges_t にある（spatial.ts / dbJobs が使う） */
   tiledNodes: boolean
   tiledEdges: boolean
   /** マスク語（SQLite の signed INTEGER 表現。長さ = words） */
@@ -259,8 +167,6 @@ export function buildSelection(d: Database, raw: unknown): Selection | null {
   if (words.every(w => w === 0n)) return null
   return {
     ranges,
-    rtree: info.rtree,
-    edgeTable: info.edgeTable,
     tiledNodes: info.tiledNodes,
     tiledEdges: info.tiledEdges,
     mask: words.map(toSigned),
@@ -269,7 +175,7 @@ export function buildSelection(d: Database, raw: unknown): Selection | null {
   }
 }
 
-/** `(r.hm0 & ?)!=0 OR ...` のような WHERE 断片。マスクが立っていない語は条件から省く。 */
+/** `(n.hm0 & ?)!=0 OR ...` のような WHERE 断片。マスクが立っていない語は条件から省く。 */
 export function maskWhere(alias: string, sel: Selection): { sql: string; params: bigint[] } {
   const parts: string[] = []
   const params: bigint[] = []

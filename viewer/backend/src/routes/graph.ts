@@ -7,28 +7,17 @@ import { segNamesFor } from '../segNames'
 import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { poolAvailable, runOnWorker, AbandonedError, progressFor, type WorkerReply } from '../workerPool'
 import { runQueryJob, plainCtx, type QueryJob } from '../dbJobs'
-import {
-  tableCols, nodeCovExprs, refPosSel, compSel, kindSel, nodeExtraSel, nodeAttrSel,
-  buildNodesSql, buildNodesSqlLegacy, parseNodes,
-} from '../nodeQuery'
-import {
-  edgesHasSigns, edgeRsExpr, edgeExtraSel, buildSignedEdgesSql, signedEdgeBranchParams,
-  buildEdgesSql, edgesQueryLegacy,
-} from '../edgeQuery'
-import { hasSignSchema, VISIBLE_NODE_SUBQUERY } from '../edgeGeom'
+import { tableCols, parseNodes } from '../nodeQuery'
 import { spatialSource, spatialCount } from '../spatial'
+import { buildSelection, type Selection } from '../hapidx'
 import {
-  buildSelection, maskWhere, hapIdxEdgeOk, exactFilterRowids, type Selection,
-} from '../hapidx'
-import {
-  guardedAll, setGuardHeaders, cappedCount, probeCapFor, FETCH_MS, PROBE_CAP,
+  guardedAll, setGuardHeaders, probeCapFor, FETCH_MS, PROBE_CAP,
 } from '../fetchGuard'
 
 export const graphRouter = Router()
 
-// hap 絞り込み（sel=<contig_id レンジ列>）。マスクの置き場所（main.nodes_rtree の補助列 or
-// サイドカー ix.nodes_rtree_hm）は hapidx.ts が解決し Selection.rtree に入る。無い/選択が空なら
-// null で従来経路。棄却候補は太い nodes 行を読まずに済むのが要点（実測 functions/hapfilter/RESULTS.md）。
+// hap 絞り込み（sel=<contig_id レンジ列>）。マスクは <db>.tiled の hm0.. 列（hapidx.ts）。無い/選択が空なら
+// null で絞り込みなし。棄却候補は太い nodes 行を読まずに済むのが要点（実測 functions/hapfilter/RESULTS.md）。
 function selOf(d: any, req: any): Selection | null {
   try { return buildSelection(d, (req.query as any).sel) } catch { return null }
 }
@@ -272,8 +261,7 @@ graphRouter.get('/goto', (req, res) => {
       return
     }
     // LOD DB に必ずある列のみ（haplotype/coverage は legacy 経路と同じく含めない）。
-    // 候補選択は nodes 単独（＝索引だけで決まる）で行い、rtree JOIN は確定した 1 行にだけ効かせる。
-    // layer は nodes.layer_index（= R-Tree の min_layer と同値。R-Tree を持たない DB でも動く）
+    // 候補選択は nodes 単独（＝索引だけで決まる）で行う。layer は nodes.layer_index
     const COLS = `n.rowid AS id, n.node_name, n.is_bubble, n.size,
                   n.xCoord, n.yCoord, n.angle, n.radius, n.color,
                   n.layer_index AS layer,
@@ -281,7 +269,7 @@ graphRouter.get('/goto', (req, res) => {
     const FROM = 'FROM nodes n'
 
     // 1) 含有。★勝者の rowid だけを **被覆索引の中で** 決め、太い表アクセスはその 1 行に限定する。
-    //    表示列や nodes_rtree を最初から JOIN すると候補ごとに表を引くことになり、
+    //    表示列を最初から引くと候補ごとに表を引くことになり、
     //    コンティグ後半を狙うほど遅い（chr22 コールド実測 bp=45Mb で 29.8s。索引だけで決めれば 0.11s）。
     const span = refMaxSpan(d)
     const lo = span == null ? null : target - span
@@ -349,7 +337,7 @@ graphRouter.get('/nodes_by_name', (req, res) => {
 })
 
 // 選択した 1 ノードの「描画では使わない属性」を後から引く。
-// 描画の高速経路(nx=fast, buildNodesSqlFast)は R-Tree だけを読むので size/kind/haplotype/coverage/
+// 描画の高速経路(nx=fast)は .tiled の行だけを読むので size/kind/haplotype/coverage/
 // comp_id/parent_name を返さない。ノード詳細パネルはそれらを出すので、ノードが選択されたときだけ
 // node_name の索引(idx_nodes_node_name)で 1 行引き直す(WG でもシーク 1 回で済む)。
 graphRouter.get('/node_info', (req, res) => {
@@ -372,8 +360,7 @@ graphRouter.get('/node_info', (req, res) => {
   }
 })
 
-// LOD-A: layer L・ビューポート矩形内のグリフ数を厳密カウント（§5）。空間ソース（tiled / R-Tree）は
-// spatial.ts が選ぶ。予算 V_max による層の hard cap 判定に使う。深すぎる層を広ビューで数えないよう、
+// LOD-A: layer L・ビューポート矩形内のグリフ数を厳密カウント（§5）。空間ソースは spatial.ts（.tiled）。予算 V_max による層の hard cap 判定に使う。深すぎる層を広ビューで数えないよう、
 // フロントは d_world 予測で候補層を絞ってから叩くこと。
 // 絞り込み時は層自動選択がこの値を見るので、絞り込むと同じ予算でより深い層に降りられる
 // （実測: V_max=20000 の密ビューで L7 止まり → 1 hap 絞り込みで L12=葉レベル）。
@@ -543,7 +530,7 @@ graphRouter.get('/fetch_progress', (req, res) => {
   res.json(progressFor(pid))
 })
 
-// ミニマップ用のグリッド集約。**nodes 表には一切触らず nodes_rtree だけ**を読み、要求矩形を
+// ミニマップ用のグリッド集約。**nodes 表には一切触らず空間索引（.tiled）だけ**を読み、要求矩形を
 // gw×gh のセルに分けてセルごとの占有件数と重心を返す。
 //
 // なぜ必要か（2026-08-03 実測 / chr22 最密セル・layer 9・ミニマップの context 矩形）:
@@ -557,12 +544,11 @@ graphRouter.get('/fetch_progress', (req, res) => {
 // グリッド解像度はキャンバスの画素数に一致させる想定。**1 画素より細かい情報は元々表示できない**
 // ので、1 画素未満のノードは形状も回転も失って構わない。逆にセルの件数(c)で密度を濃淡表現できる。
 //
-// ただし **1 画素より大きく描かれるノードは向き(angle)が見える**。角度は rtree の bbox
-// (xCoord±radius の正方形)には入っていないので、そこだけは nodes を引く必要がある。
-// 幸い数が少ないので安い。chr22 の context 矩形での実測（≥2px のノード数 / 総数）:
+// ただし **1 画素より大きく描かれるノードは向き(angle)が見える**。そこだけは角度付きで個別に返す。
+// 数が少ないので安い。chr22 の context 矩形での実測（≥2px のノード数 / 総数）:
 //   主層 4→ctx 1: 70/1,115   6→3: 298/3,060   8→5: 1,203/7,679
 //   10→7: 2,671/16,596       12→9: **0**/76,753   ← 最深層では角度は本当に見えない
-// そこで `max_x-min_x`（= radius*2、rtree に入っている）で振り分け、大きいものだけ
+// そこで `max_x-min_x`（= radius*2）で振り分け、大きいものだけ
 // xCoord/yCoord/radius/angle を取って返す（`nodes` 配列）。クライアントはセルを塗った上に
 // この向き付きロッドを重ねる。
 // ※ 大きいノードは cells にも含めたまま（重複して数える）。こうしておけば `nodes` 側が cap で
@@ -572,7 +558,7 @@ const GRID_BIG_CAP = 4000  // 向き付きで返す上限（超えたら残り�
 //
 // ⚠ maxRows は渡さない/使わない。あれは /pick_layer 経由の**層フォールバックの入力**であり、
 //   ミニマップは「メイン層 - 一定オフセット」を必ず描きたいので層を動かされては困る。
-//   backend 側の行数打ち切りも R-Tree の走査順で切るだけなので、使うと空間的に偏った絵になる。
+//   backend 側の行数打ち切りも索引の走査順で切るだけなので、使うと空間的に偏った絵になる。
 //   ここは層を固定したまま**空間的に均一な間引き**をするのが正解。
 graphRouter.get('/nodes_grid', (req, res) => {
   const { db, layer, x1, x2, y1, y2 } = req.query as Record<string, string>
@@ -610,10 +596,10 @@ graphRouter.get('/nodes_grid', (req, res) => {
   function runNodesGridInline() {
   try {
     const d = getDb(db)
-    // hap 絞り込みも同じ rtree のマスク補助列(hm0/hm1)で効く。従来ミニマップは sel を渡しておらず
+    // hap 絞り込みも同じ空間索引のマスク列(hm0/hm1)で効く。従来ミニマップは sel を渡しておらず
     // **絞り込み中でも絞り込み前の絵**を描いていた（速度以前に表示が食い違っていた）。
     const sel = selOf(d, req)
-    const sp = spatialSource(d, L, { x1: ax1, x2: ax2, y1: ay1, y2: ay2 }, sel, 'r')   // tiled / R-Tree
+    const sp = spatialSource(d, L, { x1: ax1, x2: ax2, y1: ay1, y2: ay2 }, sel, 'r')   // <db>.tiled
     // セル添字は「矩形内へクランプ」する。空間索引は矩形と**重なる**ものを返すので、
     // 中心が矩形外のノードが入りうる（クランプしないと負や gw 以上の添字が出る）。
     const gx = `MAX(0, MIN(${gw - 1}, CAST((r.min_x + r.max_x) / 2.0 - ? AS REAL) / ? * ${gw}))`
@@ -630,14 +616,10 @@ graphRouter.get('/nodes_grid', (req, res) => {
       [ax1, w, ay1, h, ...sp.params],
       { timeMs: FETCH_MS, exemptTime: L <= 0 })
     setGuardHeaders(res, g, L, 'nodes_grid')
-    // 1 画素より大きく描かれるノードだけ、向き(angle)込みで個別に返す。角度を空間ソースが持たない
-    // （補助列の無い R-Tree）ときだけ nodes を引く。件数が少ないので安い（上のコメントの実測参照）。
+    // 1 画素より大きく描かれるノードだけ、向き(angle)込みで個別に返す（空間ソースが角度を持つ）。
     const bigW = GRID_BIG_PX * (w / gw)
-    const big = d.prepare(sp.tiled || sp.hasNm
-      ? `SELECT r.cx AS x, r.cy AS y, r.rad AS r, r.ang AS a FROM ${sp.from} WHERE (r.max_x - r.min_x) >= ? LIMIT ?`
-      : `SELECT n.xCoord AS x, n.yCoord AS y, n.radius AS r, n.angle AS a
-         FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = r.rowid
-         WHERE (r.max_x - r.min_x) >= ? LIMIT ?`
+    const big = d.prepare(
+      `SELECT r.cx AS x, r.cy AS y, r.rad AS r, r.ang AS a FROM ${sp.from} WHERE (r.max_x - r.min_x) >= ? LIMIT ?`
     ).all(...sp.params, bigW, GRID_BIG_CAP + 1) as any[]
     // world 座標は 0..1 の正規化座標なので 7 桁で 1e-7 の分解能。ミニマップは高々 1024 画素なので
     // 過剰なほど十分で、JSON をそのまま返すより素直に小さくなる（実測 640KB → 300KB 台）。

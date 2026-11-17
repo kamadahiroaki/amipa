@@ -73,7 +73,7 @@ function safeName(db: string): string | null {
 //   同じ要求の 2 回目が 0.17 秒（588x）。原因は本体ではなく **サイドカー**で、
 //   `/edges` が `rd.edge_read_support`（1.2 億行・18GB）を葉層で毎回引くため。
 //   本体だけ温めても一番痛い所が冷たいままなので、隣のサイドカーも順に読む。
-const SIDECARS = ['.tiled', '.reads', '.annot', '.hapidx', '.nametri']   // .tiled が描画の主役なので先頭
+const SIDECARS = ['.tiled', '.reads', '.annot', '.nametri']   // .tiled が描画の主役なので先頭
 // 11-04: Traversals の材料（.trav・.genes・.ann・.xdepth と distill のパスの表・向き）も読む。全ゲノムで計 約 37 GB。
 //   ★最後に読む: ページキャッシュは 1 回しか触っていないページから捨てるので、先に読むと後の 294 GB（本体・サイドカー）に押し出された
 //   （先頭に置いた版では、先読みの完了後も新しい窓の遺伝子が 9〜13 秒。同じノードで dd 直後なら 1.7〜2.4 秒）

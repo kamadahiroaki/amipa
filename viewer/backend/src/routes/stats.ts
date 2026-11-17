@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3'
 import { hapIdxInfo, hapIdxEdgeOk } from '../hapidx'
 import { getDb, dbBytes, HUGE_DB_BYTES, readsSchema } from '../db'
 import { startPrewarm, prewarmState, PREWARM_ON_OPEN } from '../prewarm'
-import { tiledInfo, TILED_OFF } from '../tiled'
+import { tiledInfo, tiledProblem } from '../tiled'
 
 export const statsRouter = Router()
 
@@ -18,42 +18,7 @@ function metaNum(d: Database.Database, key: string): number | null {
   return null
 }
 
-// world 全体 bbox を R-tree の**ルートノード**（全要素の外接矩形を内包）から O(1) で取得する。
-// `SELECT MIN(min_x)... FROM nodes_rtree` は 2M 行を全走査して数秒〜十数秒かかり、しかも
-// better-sqlite3 は同期実行なのでイベントループを塞いで layer0 の fetch まで待たせる。
-// ルートノード blob: [2:4]=セル数(BE u16), offset4 から 1 セル=32B（rowid8B + float32×6 BE:
-// minx,maxx,miny,maxy,minL,maxL）。全セルの x,y MBR の和が world bbox。
-function worldBboxFromRtree(d: Database.Database):
-  { x0: number; x1: number; y0: number; y1: number } | undefined {
-  try {
-    const row = d.prepare('SELECT data FROM nodes_rtree_node WHERE nodeno = 1').get() as
-      { data: Buffer } | undefined
-    const buf = row?.data
-    if (!Buffer.isBuffer(buf) || buf.length < 4) return undefined
-    const nCell = buf.readUInt16BE(2)
-    const CELL = 8 + 6 * 4
-    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity
-    for (let i = 0; i < nCell; i++) {
-      const b = 4 + i * CELL
-      if (b + 24 > buf.length) break
-      const minx = buf.readFloatBE(b + 8),  maxx = buf.readFloatBE(b + 12)
-      const miny = buf.readFloatBE(b + 16), maxy = buf.readFloatBE(b + 20)
-      if (minx < x0) x0 = minx
-      if (maxx > x1) x1 = maxx
-      if (miny < y0) y0 = miny
-      if (maxy > y1) y1 = maxy
-    }
-    if (Number.isFinite(x0) && x1 > x0 && y1 > y0) return { x0, x1, y0, y1 }
-  } catch { /* rtree shape differs / very old DB */ }
-  return undefined
-}
-
-function tiledBuiltAt(d: Database.Database): string | null {
-  try { return (d.prepare("SELECT value FROM tl.meta WHERE key='built_at'").get() as any)?.value ?? null }
-  catch { return null }
-}
-
-// /stats は**軽量クエリのみ**（stats 1 行 + R-tree ルート読み）。nodes 全走査はしない。
+// /stats は**軽量クエリのみ**（stats 1 行 + .tiled の meta）。nodes 全走査はしない。
 // これで DB 選択直後の「Connecting...」が長引かない（全 DB で数十 ms）。maxCoverage は
 // coverage モードでしか要らないので別エンドポイントに分離（下記 /max_coverage）。
 // プリウォームの進捗。frontend は DB 選択後これをポーリングして「% と速度」を出す。
@@ -73,21 +38,15 @@ statsRouter.get('/stats', (req, res) => {
   if (PREWARM_ON_OPEN) { try { startPrewarm(db) } catch { /* 温めは失敗しても本処理に影響させない */ } }
 
   // 現行 LOD-A 仕様の適合レベルを判定して返す（旧 DB を「ハング/遅延」でなく「通知」で扱うため）:
-  //   incompatible = stats/3D R-tree が無い or 破損 → 表示不可（frontend で明示通知）
-  //   legacy       = stats+R-tree はあるが layer_zoom 無し → 動くが LOD 較正が最適でない（警告バナー）
+  //   incompatible = stats が無い or 破損、または使える空間索引（<db>.tiled v4）が無い → 表示不可（frontend で明示通知）
+  //   legacy       = stats+.tiled はあるが layer_zoom 無し → 動くが LOD 較正が最適でない（警告バナー）
   //   ok           = layer_zoom あり（現行 emitter 出力）
   let d: ReturnType<typeof getDb>
   try { d = getDb(db) }
   catch (e) { res.json({ spec: 'incompatible', reason: 'DB を開けません: ' + String(e) }); return }
 
-  // 空間索引は「タイルサイドカー `<db>.tiled`」か「3D R-Tree（旧 DB）」のどちらか。
-  // 新しい DB は R-Tree を持たず tiled だけを持つ（spatial.ts）。
-  const ti = !TILED_OFF ? tiledInfo(d) : null
-  let rtree3D = false
-  try {
-    rtree3D = (d.prepare('PRAGMA table_info(nodes_rtree)').all() as { name: string }[])
-      .some(c => c.name === 'min_layer')
-  } catch { /* rtree 無し */ }
+  // 空間索引はタイルサイドカー `<db>.tiled` だけ（spatial.ts）。11-17: 本体の nodes_rtree（旧 DB）は読まなくなった。
+  const ti = tiledInfo(d)
 
   let row: { maxlayer: number | null; data: string } | undefined
   try {
@@ -97,19 +56,15 @@ statsRouter.get('/stats', (req, res) => {
     return
   }
   if (!row) { res.json({ spec: 'incompatible', reason: 'stats が空です' }); return }
-  if (!rtree3D && !ti) {
-    res.json({ spec: 'incompatible', reason: '空間索引がありません（<db>.tiled サイドカーも 3D R-tree（nodes_rtree.min_layer）も無い。amipa prep add-tiled で作れる）' }); return
-  }
+  if (!ti) { res.json({ spec: 'incompatible', reason: tiledProblem(d) }); return }
 
   const data = typeof row.data === 'string' ? JSON.parse(row.data) : row.data
   const maxLayer: number = row.maxlayer ?? data?.maxlayer ?? 0
   const hasLayerZoom = Array.isArray(data?.layer_zoom) && data.layer_zoom.length > 0
   const spec: 'ok' | 'legacy' = hasLayerZoom ? 'ok' : 'legacy'
 
-  // world bbox（z_fit 用）は R-tree ルートから O(1)。取れなければ frontend は W=1 でフォールバック。
-  let world: { x0: number; x1: number; y0: number; y1: number } | undefined
-  if (ti) world = ti.world
-  else { try { world = worldBboxFromRtree(d) } catch { /* ignore */ } }
+  // world bbox（z_fit 用）は .tiled の meta から。
+  const world = ti.world
 
   const hapcov = (() => {
     try { d.prepare('SELECT n_hap FROM hapcov_meta LIMIT 1').get(); return true }
@@ -157,32 +112,17 @@ statsRouter.get('/stats', (req, res) => {
   const geneAvail = has('gene_cnt')
   const regionAvail = has('region_class')
 
-  // hap 絞り込み取得（選択サンプル/hap が通るノード・エッジだけ描画）: サイドカー `<db>.hapidx`
-  // (prep/amipa_prep/hap_index.py 産)が ATTACH できていれば有効。有→frontend が絞り込みトグルを出す。
-  // mode=bucket は「マスクが上位集合＝backend が blob で厳密判定を追加する」ことを表す(効きは鈍る)。
-  // ★rad / rtreeBuiltAt も返す。db_meta.built_at は ④ emit の時刻で、後から
-  //   `hap_index --into-db` だけ回しても**変わらない**。実際に radius 修正の再構築後に
-  //   「built_at が 05:59:04 のままだがこれで合っているのか」となったので、
-  //   R-Tree 側の時刻と rad の有無を別に出して見分けられるようにする。
-  //   rad=false は「radius を矩形から導出＝深層で相対 174% 過大」の DB。
+  // hap 絞り込み取得（選択サンプル/hap が通るノード・エッジだけ描画）: `.tiled` にマスク列（hm0..）があれば有効。
+  // 有→frontend が絞り込みトグルを出す。mode=bucket は「マスクが上位集合＝backend が blob で厳密判定を追加する」
+  // ことを表す(効きは鈍る)。（応答の名前 hapidx は旧サイドカー `<db>.hapidx` の名残。frontend が読むので残す）
   const hapidx = (() => {
     const i = hapIdxInfo(d)
     if (!i) return null
-    const hm = (() => {
-      try {
-        return Object.fromEntries((d.prepare('SELECT key,value FROM hapidx_meta').all() as any[])
-          .map(r => [r.key, r.value]))
-      } catch { return {} as Record<string, string> }
-    })()
-    // tiled(v4) のマスクなら radius は真値（rad 警告は R-Tree 由来の話）。built_at はサイドカーの meta から
-    return { nHap: i.nHap, words: i.words, mode: i.mode, edges: hapIdxEdgeOk(d),
-             rad: i.hasRad || i.tiledNodes,
-             rtreeBuiltAt: hm.rtree_built_at ?? hm.built_at ?? (i.tiledNodes ? tiledBuiltAt(d) : null) }
+    return { nHap: i.nHap, words: i.words, mode: i.mode, edges: hapIdxEdgeOk(d) }
   })()
 
   // layer_nodes は stats.data 由来のみ尊重（無い旧 DB は GROUP BY 全走査せず frontend の pow フォールバック）。
-  // タイル順サイドカー(<db>.tiled)が付いていれば描画取得は R-Tree でなくそちら（tiled.ts）。
-  const tiled = !!ti
+  const tiled = true   // 互換のため残す（表示できる DB は必ず .tiled を持つ）
   res.json({ spec, maxLayer, ...data, world, hapcov, contigcov, refpos, hbAvail, multAvail,
     bandAvail, geneAvail, regionAvail, hapidx, tiled })
 })

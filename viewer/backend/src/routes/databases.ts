@@ -4,7 +4,6 @@ import { execSync } from 'child_process'
 import { READONLY } from '../config'
 import { getDb, getDbDir, readsSchema } from '../db'
 import { dataAvail } from '../availability'
-import { tiledInfo, TILED_OFF } from '../tiled'
 
 export const databasesRouter = Router()
 
@@ -54,27 +53,11 @@ databasesRouter.get('/version', (req, res) => {
       const has = (t: string) => { try { d.prepare(`SELECT 1 FROM ${t} LIMIT 1`).get(); return true } catch { return false } }
       let mtime: string | null = null
       try { mtime = fs.statSync(`${getDbDir()}/${db.replace(/[^A-Za-z0-9._-]/g, '')}`).mtime.toISOString() } catch { /* */ }
-      // ★rtree_built_at / rad も返す。db_meta.built_at は ④ emit の時刻で、後から
-      //   `hap_index --into-db` だけ回しても変わらない（radius 修正の再構築で実際に
-      //   「built_at が古いままだがこれで合っているのか」となった）。R-Tree は描画の
-      //   高速経路が読む実体なので、そちらの時刻と rad の有無を上部バーで見せる。
-      const hmeta: Record<string, string> = {}
-      try {
-        for (const r of d.prepare('SELECT key, value FROM hapidx_meta').all() as
-             { key: string; value: string }[]) hmeta[r.key] = r.value
-      } catch { /* hapidx 無し */ }
-      const rtreeCols = (() => {
-        try { return (d.prepare('PRAGMA table_info(nodes_rtree)').all() as any[])
-          .map(c => String(c.name)) } catch { return [] as string[] }
-      })()
       out.db = {
         name: db,
         built_at: meta.built_at ?? null,
         emitter_rev: meta.emitter_rev ?? null,
         mtime,
-        rtree_built_at: hmeta.rtree_built_at ?? hmeta.built_at ?? null,
-        // rad 警告は「R-Tree の矩形から radius を導出している旧 DB」だけ。tiled は真値を持つ
-        rad: rtreeCols.includes('rad') || (!TILED_OFF && !!tiledInfo(d)),
         features: {
           seq: has('leaf_seq'),
           inv: has('node_contig_inv'),

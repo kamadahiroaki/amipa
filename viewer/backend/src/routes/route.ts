@@ -56,10 +56,9 @@ export function routeHandler(req: { query: any }, res: any): void {
     const bpd0 = ident ? null : dist.bpOfDense()
     // 1) 矩形の中の層 L のノード
     const sp = spatialSource(d, L, { x1, x2, y1, y2 })
-    const nodes = (sp.tiled   // 11-12: タイル経路は中心・半径・角度・名前を持つ（本体の nodes を引かない）
-      ? d.prepare(`SELECT rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r FROM ${sp.from}`).all(...sp.params)
-      : d.prepare(`SELECT n.node_name AS name, n.xCoord AS x, n.yCoord AS y, n.angle AS a, n.radius AS r
-                             FROM ${sp.from} CROSS JOIN nodes n ON n.rowid = rt.rowid`).all(...sp.params)) as { name: string; x: number; y: number; a: number; r: number }[]
+    // 11-12: 空間ソース（.tiled）は中心・半径・角度・名前を持つ（本体の nodes を引かない）
+    const nodes = d.prepare(`SELECT rt.nm AS name, rt.cx AS x, rt.cy AS y, rt.ang AS a, rt.rad AS r FROM ${sp.from}`)
+      .all(...sp.params) as { name: string; x: number; y: number; a: number; r: number }[]
     // 11-12: <db>.anc（葉 → 各層の祖先）があれば、本体の nodes を親の索引で下へたどらない（層 13 の初回 12.6 秒の主因）。
     //   コンティグのトークンの葉の祖先を層 L の配列から引き、矩形の中のノードなら添字を付ける（下の 3) で使う ancIdx）
     const ANC = (process.env.AMIPA_ANC ?? '1') !== '0' ? openAnc(path.join(getDbDir(), path.basename(q.db))) : null

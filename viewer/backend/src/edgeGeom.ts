@@ -71,8 +71,3 @@ export function rodEndpoint(nA: RodNode, nB: RodNode, sign: number): { x: number
 export const EDGE_NODE_JOIN =
   'JOIN nodes ns ON ns.layer_index = e.layer_index AND ns.node_name = e.source ' +
   'JOIN nodes nt ON nt.layer_index = e.layer_index AND nt.node_name = e.target'
-
-// 可視ノード集合(nodes_rtree ∩ 矩形, 層 L)。パラメータ順 = [L, x2, x1, y2, y1]。
-export const VISIBLE_NODE_SUBQUERY =
-  'SELECT n.node_name FROM nodes_rtree rt JOIN nodes n ON n.rowid = rt.rowid ' +
-  'WHERE rt.min_layer = ? AND rt.min_x <= ? AND rt.max_x >= ? AND rt.min_y <= ? AND rt.max_y >= ?'

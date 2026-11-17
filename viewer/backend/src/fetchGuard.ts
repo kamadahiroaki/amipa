@@ -27,7 +27,7 @@
 //   2. 時間 abort は永続化しない。毎回再評価し、部分読みで温まった分だけ次回は深くなる。
 //   3. 打ち切ったことは必ずヘッダで通知する（黙って部分データを返さない）。
 
-import type { Database, Statement } from 'better-sqlite3'
+import type { Statement } from 'better-sqlite3'
 import type { Response } from 'express'
 
 /**
@@ -190,30 +190,6 @@ export function setGuardHeaders(res: Response, g: GuardResult<any>, layer?: numb
     lv(`[guard] ${what} truncated by ${g.reason}: layer=${layer} rows=${g.rows.length} ` +
        `${g.ms.toFixed(0)}ms`)
   }
-}
-
-/**
- * 打ち切りカウント。`LIMIT` が R-Tree 走査に押し込まれて**早期終了する**ので、
- * 密度に依らずコストが cap 行ぶんで一定になる（実測: 全域 3,317,200 件でも warm 0.24ms）。
- * 仕事量が cap で有界なので単発 statement でも暴走しない（＝ここに時間ガードは不要）。
- *
- * @param rtree 'nodes_rtree' か 'ix.nodes_rtree_hm'（hap 絞り込み時）
- * @param mask  絞り込みの WHERE 断片（`maskWhere` の sql）。マスク条件があると LIMIT は
- *              「該当行」しか止めないので O(候補) になる点に注意。
- */
-export function cappedCount(
-  d: Database, rtree: string, layer: number,
-  rect: { x1: number; x2: number; y1: number; y2: number },
-  cap: number, mask = '', maskParams: any[] = [],
-): number {
-  const sql =
-    `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${rtree} r
-      WHERE r.min_layer = ? AND r.max_layer = ?
-        AND r.max_x >= ? AND r.min_x <= ? AND r.max_y >= ? AND r.min_y <= ?${mask}
-      LIMIT ?)`
-  const row = d.prepare(sql).get(
-    layer, layer, rect.x1, rect.x2, rect.y1, rect.y2, ...maskParams, cap) as { n: number }
-  return row?.n ?? 0
 }
 
 /** プローブが実際に走査する cap。maxRows が巨大でも PROBE_CAP で頭打ち。 */
