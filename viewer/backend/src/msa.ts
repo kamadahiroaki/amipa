@@ -158,6 +158,8 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
       for (let pi_ = 0; pi_ < plist.length; pi_++) { const al_ = plist[pi_]
         while (pos_[pi_] < al_.length) { const a = al_[pos_[pi_]]; pos_[pi_]++; if (chosen.has(a)) continue; const sn = snOf.get(a)!; if ((got.get(sn) ?? 0) >= maxr) continue
           chosen.add(a); got.set(sn, (got.get(sn) ?? 0) + 1); pick0.push([sn, a]); more = true; break } } }
+    // 11-17: 検索で選んだリード（include の整列 id）は、サンプルの上限や標本に関わらず必ず入れる
+    for (const a of (Array.isArray(rq.include) ? rq.include : []).map(Number).filter(Number.isFinite)) { if (chosen.has(a)) continue; const sn = RS.sampleOf(a); if (sn < 0) continue; chosen.add(a); pick0.unshift([sn, a]) }
     const info = RS.alnInfo(pick0.map(p => p[1])); const pick: [number, number, number, string][] = []
     for (const [sn, a] of pick0) { const v = info.get(a); if (v) pick.push([sn, a, v[1], v[2]]) }
     const labs = RS.labeled ? RS.labelOf(pick.map(p => p[1])) : null
@@ -170,7 +172,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
       const cl: number[][] = [[inw[0]]]; for (const i_ of inw.slice(1)) { const last = cl[cl.length - 1]; if (i_ - last[last.length - 1] > 50) cl.push([i_]); else last.push(i_) }
       const JOINR = 2000; const mg: number[][] = [[...cl[0]]]; for (const c_ of cl.slice(1)) { const last = mg[mg.length - 1]; if (c_[0] - last[last.length - 1] <= JOINR) last.push(...c_); else mg.push([...c_]) }
       let best_ = mg[0]; for (const m of mg) if (m.length > best_.length) best_ = m
-      read_meta.push({ sn, sample: RS.sampleName.get(sn) ?? String(sn), group: RS.labeled?.has(sn) ? (labs!.get(aid) ?? 'no label') : undefined, name: d.read_name, mapq: d.mapq, toks, i0: best_[0], i1: best_[best_.length - 1], d })
+      read_meta.push({ sn, aln: aid, sample: RS.sampleName.get(sn) ?? String(sn), group: RS.labeled?.has(sn) ? (labs!.get(aid) ?? 'no label') : undefined, name: d.read_name, mapq: d.mapq, toks, i0: best_[0], i1: best_[best_.length - 1], d })
     })
     if (read_meta.length) {
       const dmap = new Map<number, number>(); for (const rm of read_meta) for (const [gid] of rm.toks) if (!dmap.has(gid)) { const dd = C.denseOf(gid); if (dd >= 1) dmap.set(gid, dd) }
@@ -261,7 +263,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     const brk_ = (r.brk || []).filter(([i]: number[]) => 0 < i && i < nodes.length).map(([i, n_]: number[]) => [nodes[i - 1], nodes[i], Math.trunc(n_)])
     let hseq_ = nodes.map((n_, i) => (ors[i] ? (seqleaf.get(n_) ?? 'N') : rc(seqleaf.get(n_) ?? 'N'))).join('')
     if (rdo) hseq_ = rdo.map((st_, i) => (ors[i] ? st_ : rc(st_))).join('').replace(/-/g, '').replace(/\./g, '')
-    raw.push({ rdinfo: r.rd ? { sample: r.rd.sample, ...(r.rd.group != null ? { group: r.rd.group } : {}), name: r.rd.name, mapq: r.rd.mapq, nins: r.nins ?? 0 } : null, rins: rins_, occ, occ_inv, occ_st, seqn: rev ? [...nodes].reverse() : nodes, hseq: hseq_, samp: r.samp, label: r.label, path: r.path,
+    raw.push({ rdinfo: r.rd ? { aln: r.rd.aln, sample: r.rd.sample, ...(r.rd.group != null ? { group: r.rd.group } : {}), name: r.rd.name, mapq: r.rd.mapq, nins: r.nins ?? 0 } : null, rins: rins_, occ, occ_inv, occ_st, seqn: rev ? [...nodes].reverse() : nodes, hseq: hseq_, samp: r.samp, label: r.label, path: r.path,
       strand: rev ? '-' : '+', cells, inv, ends: rev ? [ce[1], ce[0]] : [ce[0], ce[1]], nodes: new Set(nodes), seq: rev ? [...nodes].reverse() : nodes, isref: r.isref, brk: brk_, cflip: !!cflip })
   }
   const normRow = (r: any) => { const seqn: string[] = r.seq, oi: boolean[] = r.occ_inv, ost: string[] = r.occ_st; const occ: string[] = r.occ = [...r.occ0]

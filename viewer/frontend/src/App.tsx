@@ -438,6 +438,47 @@ export default function App() {
     setReadResults(res)
     setSelectedReadAln(res.length >= 1 ? res[0] : null)   // 1件なら即選択、複数なら先頭を選択しつつ候補も表示
   }
+  // 上部バーの Find → Read（11-17）: 当たったリードを右パネルに出し、グラフを経路に寄せて強調し、Linear をその場所の塩基段で開いて行を枠で囲む
+  const [readHi, setReadHi] = useState<Set<string> | null>(null)   // グラフで強調するノード（リードの経路の葉＋描いている層の祖先）
+  const readHiLeaf = useRef<string[] | null>(null)
+  async function handleReadFind(q: string) {
+    if (!selectedDb || !q.trim()) return
+    setSearchStatus('searching'); const res = await searchReads(selectedDb, q).catch(() => [] as ReadAlignment[]); setReadResults(res)
+    if (!res.length) { setSearchStatus('notfound'); return }
+    setSearchStatus('idle'); void focusRead(res[0])
+  }
+  async function focusRead(r: ReadAlignment) {
+    if (!selectedDb) return
+    const s0 = r.segments[0] as any   // 検索結果の上位の項目に無い向き・長さ・節の数を節から補う
+    r = { ...r, strand: r.strand ?? s0?.strand ?? null, query_len: r.query_len ?? s0?.query_len ?? null, n_segments: r.n_segments ?? r.segments.length }
+    setSelectedReadAln(r); setSelectedNode(null); openRight()
+    const names = [...new Set(r.segments.map(sg => sg.node_name).filter((n): n is string => !!n && /^n\d+$/.test(n)))]
+    readHiLeaf.current = names; setReadHi(new Set(names))
+    if (!names.length) return
+    const step = Math.max(1, Math.floor(names.length / 200)); const smp = names.filter((_, i) => i % step === 0 || i === names.length - 1)
+    void fetchBlockAncestors(selectedDb, mapLayer, smp).then(up => { if (readHiLeaf.current === names) setReadHi(new Set([...names, ...up])) })
+    fetchNodesByName(selectedDb, smp).then(ns => { if (!ns.length) return
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const n of ns) { x0 = Math.min(x0, n.xCoord); x1 = Math.max(x1, n.xCoord); y0 = Math.min(y0, n.yCoord); y1 = Math.max(y1, n.yCoord) }
+      const m = Math.max(x1 - x0, y1 - y0) * 0.15 + 1; graphRef.current?.fitBounds(x0 - m, y0 - m, x1 + m, y1 + m) }).catch(() => { /* 位置が引けなければ寄せない */ })
+    if (!naTrav) {   // Linear: 閉じていれば開き、準備ができてから渡す
+      if (trvH === 0) setTrvH(360)
+      const arg = { aln: r.aln_id, name: r.read_name ?? String(r.aln_id), nodes: names }
+      for (let i = 0; i < 80 && !travApiRef.current; i++) await new Promise(ok => setTimeout(ok, 250))
+      if (readHiLeaf.current === names) void travApiRef.current?.focusRead(arg)
+    }
+  }
+  function clearReadFocus(fromLinear = false) {
+    if (!readHiLeaf.current && !selectedReadAln) return
+    readHiLeaf.current = null; setReadHi(null); setSelectedReadAln(null)
+    if (!fromLinear) void travApiRef.current?.focusRead(null)
+  }
+  useEffect(() => {   // グラフの層が変わったら祖先を引き直す
+    const names = readHiLeaf.current; if (!names || !names.length || !selectedDb) return
+    const step = Math.max(1, Math.floor(names.length / 200)); const smp = names.filter((_, i) => i % step === 0 || i === names.length - 1)
+    void fetchBlockAncestors(selectedDb, mapLayer, smp).then(up => { if (readHiLeaf.current === names) setReadHi(new Set([...names, ...up])) })
+  }, [mapLayer, selectedDb])   // eslint-disable-line react-hooks/exhaustive-deps
+  function openRight() { setRightW(w => w > 80 ? w : RIGHT_W0) }
+  useEffect(() => { if (selectedNode) openRight() }, [selectedNode])   // eslint-disable-line react-hooks/exhaustive-deps
   // ボードでのクリック由来。aln_id から詳細を引いて選択（null=解除）。
   async function selectAln(alnId: number | null) {
     if (alnId == null) { setSelectedReadAln(null); return }
@@ -484,7 +525,7 @@ export default function App() {
   const [searchStatus, setSearchStatus] = useState<'idle' | 'searching' | 'notfound'>('idle')
   const searchWrapRef = useRef<HTMLDivElement>(null)
   // 統合 Find: 検索対象を Node（ノード名）/ Position（chr:bp）/ Gene（遺伝子名）で切替。入力は searchQuery を共用。
-  const [findScope, setFindScope] = useState<'node' | 'pos' | 'gene'>('node')
+  const [findScope, setFindScope] = useState<'node' | 'pos' | 'gene' | 'read'>('node')
   // Labels ポップオーバー（ノード名/塩基/参照bp/深度数値/CNV をまとめる）の開閉。
   const [showLabelsMenu, setShowLabelsMenu] = useState(false)
   const labelsMenuRef = useRef<HTMLDivElement>(null)
@@ -977,7 +1018,8 @@ export default function App() {
   // Surrounding panel sizes (px). Start collapsed so graph fills most of the area.
   const [topH,    setTopH]    = useState(0)
   const [bottomH, setBottomH] = useState(0)
-  const [rightW,  setRightW]  = useState(Math.max(120, Math.round(window.innerWidth * 0.09)))   // 11-11: 初期幅を半分に（0.18 → 0.09）
+  const RIGHT_W0 = Math.max(120, Math.round(window.innerWidth * 0.09))
+  const [rightW,  setRightW]  = useState(0)   // 11-17: 既定で閉じる。ノードのクリック・リードの検索で開く（openRight）   // 11-11: 初期幅を半分に（0.18 → 0.09）
   const [trvH, setTrvH] = useState(() => (new URLSearchParams(window.location.search).get('trav') ? 360 : 0))   // 通過（Traversals）パネルの高さ(0=閉)。?trav=1 で開いて始める
   const pendingHapRef = useRef<string | null>(null)                          // パス群の一覧が届いてから切り替える行
   // 行ラベルのクリック → そのハプロタイプのパス群（リボン）を選択／解除。パスパネルが「なし」なら haplotype 粒度で開く
@@ -1408,6 +1450,7 @@ export default function App() {
   function submitFind() {
     if (findScope === 'node') handleSearch()
     else if (findScope === 'pos') handleGoto(searchQuery)
+    else if (findScope === 'read') void handleReadFind(searchQuery)
     else handleGeneGoto(searchQuery)
   }
 
@@ -1488,19 +1531,20 @@ export default function App() {
         <div ref={searchWrapRef} className="ui-search">
           <label htmlFor="find-scope" className="ui-sr">検索の種類</label>
           <select id="find-scope" value={findScope}
-            onChange={e => { setFindScope(e.target.value as 'node' | 'pos' | 'gene'); setShowSearchDropdown(false); setSearchStatus('idle') }}>
+            onChange={e => { setFindScope(e.target.value as 'node' | 'pos' | 'gene' | 'read'); setShowSearchDropdown(false); setSearchStatus('idle') }}>
             <option value="node">Node</option>
             {refposAvail && <option value="pos">Locus</option>}
             {geneAvail && <option value="gene">Gene</option>}
+            {!naReads && <option value="read">Read</option>}
           </select>
           <label htmlFor="find-q" className="ui-sr">検索語</label>
           <input id="find-q" type="text"
             list={findScope === 'gene' ? 'geneGotoList' : undefined}
-            placeholder={findScope === 'node' ? 'Node ID' : findScope === 'pos' ? 'chrY:12,300,000' : 'Gene (e.g. UTY)'}
+            placeholder={findScope === 'node' ? 'Node ID' : findScope === 'pos' ? 'chrY:12,300,000' : findScope === 'read' ? (devMode ? 'Read name or aln_id' : 'Read name') : 'Gene (e.g. UTY)'}
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && submitFind()}
-            style={{ fontFamily: findScope === 'pos' ? 'var(--ui-mono)' : undefined }} />
+            style={{ fontFamily: findScope === 'pos' || findScope === 'read' ? 'var(--ui-mono)' : undefined }} />
           <button onClick={submitFind} disabled={searchStatus === 'searching'} data-short="Go">{searchStatus === 'searching' ? '…' : 'Search'}</button>
           {/* 補完候補は入力で絞ってから上位 GENE_MENU_MAX 件だけ描く（全件を対象にしつつ DOM は軽い） */}
           {geneAvail && findScope === 'gene' && (
@@ -2042,6 +2086,7 @@ export default function App() {
                   floodSeedComp={floodSeedComp}
                   floodMaxHop={floodHops}
                   msaHoverNodes={trvHoverSet}
+                  msaHighlight={readHi}
                   msaHoverColor={trvHovColor}
                   blockColors={trvColors}
                   nodeColors={trvNodeColors.size ? new Map([...activeNodeColors, ...trvNodeColors]) : activeNodeColors}
@@ -2064,6 +2109,7 @@ export default function App() {
                       } else { setFloodResult(null); setFloodSeedComp(null) }
                     }
                     if (node) setSelectedReadAln(null)   // ノード選択でリード詳細を閉じる（直近選択優先）
+                    if (!node) clearReadFocus()   // 何も無い所のクリックでリードの強調を外す（11-17）
                     if (!node || activeAlignRowId === null) return
                     // ★アラインメントは**葉ノード**にしか付かない（リード索引の鍵が GFA の
                     //   セグメント id で、クラスタには対応する実体が無い）。以前はクラスタでも
@@ -2386,24 +2432,15 @@ export default function App() {
         <div style={{ width: rightW, flexShrink: 0, overflowY: 'auto', background: 'var(--ui-panel)', borderLeft: '1px solid var(--ui-border)' }}>
           {rightW > 80 && (
             <>
-            {/* リード/アラインメント検索（read_name または aln_id） */}
-            <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--ui-border)' }}>
-              <label htmlFor="read-q" style={{ display: 'block', fontSize: 'var(--ui-fs-xs)', fontWeight: 600, color: 'var(--ui-muted)', letterSpacing: '0.04em', marginBottom: 6 }}>Find read</label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <input id="read-q" className="ui-input ui-select-sm" value={readQuery} onChange={e => setReadQuery(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') runReadSearch(readQuery) }}
-                  placeholder={naReads ? 'No reads in this DB' : devMode ? 'Read name or aln_id' : 'Read name'} disabled={!selectedDb || !!naReads}
-                  style={{ flex: 1, minWidth: 0, fontFamily: 'var(--ui-mono)', fontSize: 'var(--ui-fs-sm)' }} />
-                <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(readQuery)} disabled={!selectedDb || !readQuery.trim() || !!naReads}>Search</button>
-              </div>
-              {naReads && <div className="ui-na-note">{naReads.why}</div>}
-              {readSearching && <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-muted)', marginTop: 4 }}>Searching…</div>}
-              {readResults && !readSearching && readResults.length === 0 &&
-                <div style={{ fontSize: 'var(--ui-fs-xs)', color: 'var(--ui-warn)', marginTop: 4 }}>No match</div>}
+            {/* 11-17: リードの検索は上部バーの Find → Read へ移した。ここは閉じるボタンと、複数当たったときの候補だけ */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 6px 0' }}>
+              <button className="ui-btn ui-btn-sm" onClick={() => setRightW(0)} title="右パネルを閉じる（ノードのクリック・リードの検索でまた開く）" aria-label="右パネルを閉じる">×</button>
+            </div>
+            <div style={{ padding: readResults && readResults.length > 1 ? '0 14px 8px' : 0, borderBottom: readResults && readResults.length > 1 ? '1px solid var(--ui-border)' : 'none' }}>
               {readResults && readResults.length > 1 && (
                 <div style={{ marginTop: 4, maxHeight: 90, overflowY: 'auto' }}>
                   {readResults.map(r => (
-                    <div key={r.aln_id} onClick={() => setSelectedReadAln(r)} title={`aln_id ${r.aln_id}`}
+                    <div key={r.aln_id} onClick={() => void focusRead(r)} title={`aln_id ${r.aln_id}`}
                       style={{ fontSize: 10, fontFamily: 'monospace', padding: '2px 4px', cursor: 'pointer', borderRadius: 2,
                         background: selectedReadAln?.aln_id === r.aln_id ? '#fff3bf' : 'transparent' }}>
                       aln {r.aln_id} · {r.n_segments}節 · {r.sample_id ?? '?'}
@@ -2420,7 +2457,7 @@ export default function App() {
                   <div style={{ fontWeight: 700, fontSize: 12, color: 'var(--ui-text)', wordBreak: 'break-all', flex: 1 }}>
                     {selectedReadAln.read_name ?? `aln_id ${selectedReadAln.aln_id}`}
                   </div>
-                  <button onClick={() => { setSelectedReadAln(null); setReadResults(null) }} title="選択解除"
+                  <button onClick={() => { clearReadFocus(); setReadResults(null) }} title="選択と強調を解除"
                     style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#adb5bd',
                       fontSize: 15, lineHeight: 1, padding: '0 2px' }}>×</button>
                 </div>
@@ -2441,9 +2478,9 @@ export default function App() {
                   </tbody>
                 </table>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                  <button className="ui-btn ui-btn-sm is-on" onClick={addPathToView} title="このリードが通るノードを Alignment の view にまとめて足す（既にある view へ残りを足す／無ければ新しい view）">
+                  {bottomH > 0 && <button className="ui-btn ui-btn-sm is-on" onClick={addPathToView} title="このリードが通るノードを Alignment の view にまとめて足す（既にある view へ残りを足す／無ければ新しい view）">
                     Add to Alignment
-                  </button>
+                  </button>}
                   {selectedReadAln.read_name && (
                     <button className="ui-btn ui-btn-sm" onClick={() => runReadSearch(selectedReadAln.read_name!)}>
                       Other alignments
@@ -2775,6 +2812,7 @@ export default function App() {
             getVisibleLocs={() => graphRef.current?.getVisibleLocs?.() ?? []}
             getGraphViewport={() => mapViewportRef.current}
             onPeakHover={onTravPeakHover}
+            onReadFocusClear={() => clearReadFocus(true)}
             onPeakPicked={q => {   // 山を選んだら、グラフをその山のノードの塊（2–98 パーセンタイル）に寄せる（11-05: 塊が画面の半分以上だと寄せない、にしていたら、全体表示で chrX を選んでも動かなかった）
               const [a, b, c, d] = q.full; const bw = Math.max(c - a, 1e-9), bh = Math.max(d - b, 1e-9); const px = bw * 0.15, py = bh * 0.15
               graphRef.current?.fitBounds(a - px, b - py, c + px, d + py)
