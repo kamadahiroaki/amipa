@@ -173,7 +173,7 @@ const FOLD_W = 28                          // 変異の無い群を畳んだと�
 type BGroup = { g: number; from: number; to: number; nodes: string[]; rb?: number | null; hasEll: boolean; n: number; bp: number; variant: boolean; foldable: boolean; x0: number; x1: number }
 type BItem = { kind: 'col'; ci: number; g: number } | { kind: 'blk'; ci0: number; ci1: number; n: number; g: number; w: number }
 type BaseAnn = { refPos: Int32Array; rep: Int32Array; reps: { s: number; e: number; strand: string; name: string; cls: string; fam: string; div: number }[]; samples: string[]; varAt: Map<string, Map<number, { pos: number; ref: string; alt: string; gt: string; first: boolean }>>; inBench: Map<string, Uint8Array>; contig: string }
-type BaseState = { mode?: 'node' | 'base'; nw?: number | null; req?: { ranges: number[][]; label: string }; ann?: BaseAnn; M: BubbleMsaResp; cols: MsaCol[]; rows: MsaRow[]; groups: BGroup[]; label: string; z: number | null; sx: number; rowsOf: Map<number, number[]>; lines: { pin?: boolean; hid: number; mi: number; pack?: number[]; cov?: string; sm?: string }[]; readMode?: string; covCache?: Map<string, { dep: Uint16Array; mis: Uint16Array; del: Uint16Array; top: string[]; n: number }>
+type BaseState = { mode?: 'node' | 'base'; nw?: number | null; req?: { ranges: number[][]; label: string }; ann?: BaseAnn; M: BubbleMsaResp; cols: MsaCol[]; rows: MsaRow[]; groups: BGroup[]; label: string; z: number | null; sx: number; rowsOf: Map<number, number[]>; lines: { pin?: boolean; rep?: number; hid: number; mi: number; pack?: number[]; cov?: string; sm?: string }[]; readMode?: string; covCache?: Map<string, { dep: Uint16Array; mis: Uint16Array; del: Uint16Array; top: string[]; n: number }>
   norm: string[]; brk: { ci: number; n: number }[][]; inv: Set<number>[]; refRow: number | null; major?: string[]; blk: Map<number, { per: number[]; n: number; counts: number[] }>; items: BItem[]; xs: Float64Array; colItem: Int32Array; cw: number; zEff: number; fullW: number; vOnly: boolean; autoVar: boolean; hoverCi: number | null; sortCi: number[]
   byNode: Map<string, number[]>; genes: BGene[]; genesByHid: Map<number, BGene[]>; eff?: EffResult | null }   // 塩基の段の遺伝子（列に写したもの）、変異の効果
 type BGene = { g: Gene; c0: number; c1: number; cols: Uint8Array; kindOf: Uint8Array; mi: number }   // cols = この遺伝子が持つ列、kindOf = 列ごとの種類（1 CDS, 2 エキソン, 3 その他の遺伝子内）、mi = その株の行
@@ -421,7 +421,7 @@ async function loadRange() {
   if (restoreRung === 'node' || restoreRung === 'base') { const r = restoreRung; restoreRung = null; if (!base && !($('base') as HTMLButtonElement).disabled) { setTimeout(() => { pendingMode = r as 'node' | 'base'; $('base').click() }, 0); return } }   // 戻る: ノード段・塩基段だった所へ
   if ((PARAMS.get('go') || PARAMS.get('list')) && !goAuto) { goAuto = true; const gq = PARAMS.get('go'), lq = PARAMS.get('list'); setTimeout(() => { if (lq) wlLoad(lq.split(';').join('\n'), 'URL'); else if (gq) void goTarget(gq) }, 0) }   // URL で地点へ（11-16）
   if (PARAMS.get('base') === '1' && !baseAuto && !($('base') as HTMLButtonElement).disabled) { baseAuto = true; setTimeout(() => $('base').click(), 0) }   // URL で塩基 MSA まで開く（撮影・再現用）
-  else if (!base && !navNoAuto && cols && wantCols() && cols.nleaf != null && cols.nleaf <= NODE_AUTO && cols.rows.some(r2 => r2.tw0 >= 0) && !($('base') as HTMLButtonElement).disabled) { pendingMode = 'node'; setTimeout(() => { if (!base && my === loading) $('base').click() }, 0) }   // 葉が軽ければノード段へ自動で（10-30）
+  // 11-17: 葉が軽ければノード段へ自動で降りるのはやめた（錨の列の段で見ていても範囲を読むたびに勝手に切り替わった）。段は操作したときだけ変わる
 }
 
 // 塗り分け: 主画面に見えているノード（≤5,000）の座標を引き（葉＝錨の x、錨でない葉＝直前の錨の x、スーパーノード＝子孫の bp 多数派）、表示範囲の中をブロックの色、外を薄灰に。
@@ -864,7 +864,12 @@ function readItemSpan(B: BaseState, mi: number, k0: number, k1: number): [number
 // 描画（塩基の段）: 上段＝ノードの箱と基準の配列、行＝通過（木の順、同じ株の ·2 は続けて）、セル＝塩基（基準と同じなら ·）、区画＝アレル色
 function drawBaseCore() {
   const B = base!; setHdr(B); const W = cv.parentElement!.clientWidth; const gOn = B.genes.length > 0 && showGenes(); const AH = annH(B); TOP = (gOn ? BH_TOP + OGH + 2 : BH_TOP) + AH; ROW = gOn ? 17 : 13
-  B.lines = []; for (const hid of hapOrder) for (const mi of (B.rowsOf.get(hid) || [])) B.lines.push({ hid, mi })
+  // 11-17: 同じ株の 2 回目以降の通過（縦列反復の写し、·k の行）は株の直下に置かず、本体の行（範囲を最も埋める行）を系統樹の順に並べた後に、
+  //   写しを同じ系統樹の順でまとめて置く（直下に置くと、ほとんど空の行が株ごとに挟まり、通り方の似た株どうしが離れた。ecoli50 5.29 Mb の反復で 197 行）
+  { const fill = (mi: number) => { const sq = B.norm[mi] || B.rows[mi].seq; let n = 0; for (let i = 0; i < sq.length; i++) { const c = sq[i]; if (c !== '-' && c !== '~' && c !== ' ') n++ } return n }
+    const ordOf = new Map<number, number[]>(); let maxK = 0
+    for (const hid of hapOrder) { const ms = (B.rowsOf.get(hid) || []).slice(); if (ms.length > 1) { let best = ms[0], bf = -1; for (const m of ms) { const f = fill(m); if (f > bf) { bf = f; best = m } } ms.splice(ms.indexOf(best), 1); ms.unshift(best) } ordOf.set(hid, ms); if (ms.length > maxK) maxK = ms.length }
+    B.lines = []; for (let r = 0; r < maxK; r++) for (const hid of hapOrder) { const ms = ordOf.get(hid)!; if (ms[r] != null) B.lines.push(r ? { hid, mi: ms[r], rep: r } : { hid, mi: ms[r] }) } }
   { const rr = B.rows.map((r, mi) => ({ r, mi })).filter(e => (e.r as any).read); const first = (sq: string) => { for (let i = 0; i < sq.length; i++) if (sq[i] !== '.' && sq[i] !== '-') return i; return 1e9 }
     rr.sort((a, b) => ((a.r as any).read.sample < (b.r as any).read.sample ? -1 : (a.r as any).read.sample > (b.r as any).read.sample ? 1 : 0) || first(a.r.seq) - first(b.r.seq))
     if (($('breads') as HTMLInputElement | null)?.checked !== false && rr.length) B.lines.push(...readLines(B, rr.map(e => e.mi))) }   // リード（10-28）: 株の行の下に、サンプル・開始位置の順。10-29: 展開・詰める・要約
@@ -877,7 +882,7 @@ function drawBaseCore() {
   // 行の高さ（11-11）: 株の行は ROW、リードの行は余白なし（セルの高さだけ。文字が読める倍率なら 11 px、それ以外は 7 px）。要約の行は ROW
   const Wb = W - LAB - 4; baseLayout(Wb)
   const RRH = B.cw >= 5 ? 11 : 7; const isRead = (ln: BaseState['lines'][number]) => !ln.cov && (ln.hid < 0 || !!(B.rows[ln.mi] as any).read)
-  rowTop = []; rowHgt = []; pinSec = null; grpHdrs = []; { let yy = TOP; let prevH = -1; B.lines.forEach((ln, k) => { if (!ln.pin && !isRead(ln) && ln.hid >= 0) { const lb = grpLabelAt(prevH, ln.hid); if (lb) { grpHdrs.push({ y: yy, label: lb }); yy += GH } prevH = ln.hid } const h = isRead(ln) ? RRH : ROW; rowTop.push(yy); rowHgt.push(h); yy += h; if (k === nPinRows - 1) { yy += PIN_SEP; pinSec = { y: TOP, h: yy - TOP } } }) }
+  rowTop = []; rowHgt = []; pinSec = null; grpHdrs = []; { let yy = TOP; let prevH = -1, repHdr = false; B.lines.forEach((ln, k) => { if (ln.rep) { if (!repHdr) { repHdr = true; grpHdrs.push({ y: yy, label: '同じ株の 2 回目以降の通過（縦列反復の写しなど、·k の行）' }); yy += GH } } else if (!ln.pin && !isRead(ln) && ln.hid >= 0) { const lb = grpLabelAt(prevH, ln.hid); if (lb) { grpHdrs.push({ y: yy, label: lb }); yy += GH } prevH = ln.hid } const h = isRead(ln) ? RRH : ROW; rowTop.push(yy); rowHgt.push(h); yy += h; if (k === nPinRows - 1) { yy += PIN_SEP; pinSec = { y: TOP, h: yy - TOP } } }) }
   { const AHx = AH; hdrStrips = []; const add = (id: string, a: number, b: number) => { if (b > a) hdrStrips.push({ id, y: a, h: b - a }) }
     add('node', 0, BH_REF >= 0 ? BH_REF : BH_MARK); if (BH_REF >= 0) add('ref', BH_REF, BH_MARK); add('mark', BH_MARK, BH_A)
     if (AHx && B.ann) { add('rep', BH_A, BH_A + ANN_REP_H); B.ann.samples.forEach((sm, si) => add('giab:' + sm, BH_A + ANN_REP_H + si * ANN_VAR_H, si === B.ann!.samples.length - 1 ? BH_A + AHx : BH_A + ANN_REP_H + (si + 1) * ANN_VAR_H)) }
