@@ -17,7 +17,10 @@
     元の名前は seg_names.txt(1 行 1 名、内部 id の順)に残し、--emit-dense-gfa には内部 id の GFA を必ず書く(分解器用)。
     閲覧側は <db>.segnames(segnames_build.py)で内部名と元の名前を相互に引く。
 
-入力: GFA(S/L/P/W; 整数 node id)。W 行は MC 用(chr22 は P のみ)。
+入力: GFA(S/L/P/W)。.gz/.zst はそのまま読む(11-17)。W 行は MC 用(chr22 は P のみ)。
+  ★重なりのある L 行(CIGAR が 0M でない。de Bruijn グラフの k-1 など)は対象外で、1 本でもあれば止まる(11-17)。
+    黙って通すと、パスの塩基列が継ぎ目ごとに重なりの分だけ重複する。
+  H 行の RS:Z(minigraph-cactus の参照 sample)を meta.json の ref_samples に残す(参照の選び方は pathnames.py)。
 出力: <out>/ ディレクトリに以下(各段が必要分だけ mmap ロード):
   s_id.npy   [N] int32   S 行(file order)の dense node id
   s_bp.npy   [N] int32   S 行(file order)の bp 長 = len(seq.strip())  (④の max(1,·) は消費側)
@@ -45,6 +48,9 @@ import sys
 import time
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from textio import open_text, is_compressed
 
 t0 = time.time()
 
@@ -110,7 +116,8 @@ def main():
     p_iswalk = []         # W なら 1
     p_start = []          # コンティグ上の開始（W は SeqStart、P は名前の [a-b] の a、無ければ 0）（11-04）
     n_p = n_w = 0
-    import re
+    n_ovl = 0; ovl_ex = None   # 重なりのある L 行の数と最初の 1 行
+    ref_samples = []           # H 行の RS:Z
     W_RE = re.compile(r"[<>](\d+)")
 
     # --emit-seq: 葉配列を S 行パス中に s_seq.bin へ streaming 書き(RAM 非蓄積)。offset は file order の CSR。
@@ -120,13 +127,13 @@ def main():
 
     # 名前モードかどうか: S 行の id がすべて整数なら従来どおり。整数でない id があれば S 行を先に読んで名前 → 内部 id の表を作る
     name2id = None
-    with open(args.gfa) as f:
+    with open_text(args.gfa) as f:
         for ln in f:
             if ln[0] == "S":
                 try: int(ln.split("\t", 2)[1])
                 except ValueError: name2id = {}; break
     if name2id is not None:
-        with open(args.gfa) as f:
+        with open_text(args.gfa) as f:
             for ln in f:
                 if ln[0] == "S":
                     nm = ln.split("\t", 2)[1]
@@ -136,7 +143,7 @@ def main():
     sid = (lambda x: name2id[x]) if named else int
     WN_RE = re.compile(r"([<>])([^<>\s]+)")
 
-    with open(args.gfa) as f:
+    with open_text(args.gfa) as f:
         for ln in f:
             c = ln[0]
             if c == "S":
@@ -152,6 +159,14 @@ def main():
                 p = ln.split("\t")
                 la_o.append(sid(p[1])); loa.append(1 if p[2] == "+" else 0)
                 lb_o.append(sid(p[3])); lob.append(1 if p[4] == "+" else 0)
+                if len(p) > 5:
+                    cig = p[5].strip()
+                    if cig not in ("0M", "*", "") and sum(int(x) for x in re.findall(r"(\d+)[MIDNSHPX=]", cig)) > 0:
+                        n_ovl += 1
+                        if ovl_ex is None: ovl_ex = ln.rstrip("\n")
+            elif c == "H":
+                m_rs = re.search(r"\tRS:Z:([^\t\n]*)", ln)
+                if m_rs: ref_samples.extend(x for x in m_rs.group(1).split() if x)
             elif c == "P":
                 parts = ln.rstrip("\n").split("\t")
                 if len(parts) < 3:
@@ -173,6 +188,11 @@ def main():
 
     if seqf is not None:
         seqf.close()
+    if n_ovl:
+        sys.exit(f"[distill] 重なりのある L 行が {n_ovl:,} 本ある（例: {ovl_ex}）。\n"
+                 f"  AMIPA は重なりのない（blunt な）GFA だけを扱う。重なりを無視するとパスの塩基列が継ぎ目ごとに重複する。\n"
+                 f"  de Bruijn グラフ（Bifrost・Cuttlefish・BCALM など）は重なりを除いた GFA に変換してから渡す"
+                 f"（例: `vg view -Fv x.gfa | vg mod -n - | vg view -` や GetBlunted）。")
     N = len(s_id_o); E = len(la_o); P = len(p_names)
     s_id_o = np.asarray(s_id_o, np.int64)
     s_bp = np.asarray(s_bp, np.int64)
@@ -224,7 +244,7 @@ def main():
     pos = 0
     _FLUSH_EVERY = 512_000_000          # token 数。dirty ページ RSS を有界化(定期 msync で書き戻し)
     _next_flush = _FLUSH_EVERY
-    with open(args.gfa) as f:
+    with open_text(args.gfa) as f:
         for ln in f:
             c = ln[0]
             if c == "P":
@@ -277,7 +297,8 @@ def main():
             fh.write("\n")
     meta = dict(N=N, M=int(M), E=E, P=P, n_p=n_p, n_w=n_w, T=T,
                 has_w=bool(n_w), has_ori=True, has_seq=bool(args.emit_seq),
-                dense_identity=identity, named=named, gfa=os.path.abspath(args.gfa))
+                dense_identity=identity, named=named, gfa=os.path.abspath(args.gfa),
+                ref_samples=ref_samples)
     if named:   # 内部 id の順の元の名前（1 行 1 名。内部 id k の名前は k 行目）
         names = [None] * len(name2id)
         for nm, k in name2id.items(): names[k - 1] = nm
@@ -296,7 +317,15 @@ def main():
     elif args.emit_dense_gfa and not identity:
         log(f"emit dense GFA for ① (bubble decomposition): {args.emit_dense_gfa}")
         _rewrite_dense_gfa(args.gfa, args.emit_dense_gfa, uniq)
+    elif args.emit_dense_gfa and is_compressed(args.gfa):
+        # 分解器（BubbleFinder・Billi）は圧縮 GFA を読めないので、identity でも伸長した GFA を書く（11-17）
+        log(f"圧縮された GFA → ① 用に伸長した GFA を書く: {args.emit_dense_gfa}")
+        with open_text(args.gfa) as f, open(args.emit_dense_gfa, "w") as o:
+            for ln in f:
+                if ln[0] in "SL" or ln[0] == "H":
+                    o.write(ln)
     elif args.emit_dense_gfa:
+        if os.path.exists(args.emit_dense_gfa): os.remove(args.emit_dense_gfa)   # 前回の（圧縮入力の）残りを ① が拾わないように
         log("dense=identity → 元 GFA をそのまま ① に使えるので dense GFA は書かない")
 
     log(f"DONE -> {args.out}/  (meta: {meta})")
@@ -305,7 +334,7 @@ def main():
 def _rewrite_named_gfa(src, dst, name2id):
     """名前モード: S/L/P/W/J のセグメント名を内部 id（S 行の出現順 1..N）に置換して書き出す。"""
     WN = re.compile(r"([<>])([^<>\s]+)")
-    with open(src) as f, open(dst, "w") as o:
+    with open_text(src) as f, open(dst, "w") as o:
         for ln in f:
             c = ln[0]
             if c == "S":
@@ -334,7 +363,7 @@ def _rewrite_dense_gfa(src, dst, uniq):
     def d(x):
         return int(np.searchsorted(uniq, int(x)) + 1)
 
-    with open(src) as f, open(dst, "w") as o:
+    with open_text(src) as f, open(dst, "w") as o:
         for ln in f:
             c = ln[0]
             if c == "S":
