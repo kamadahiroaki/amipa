@@ -382,7 +382,9 @@ async function loadRange() {
   try {
     const r = await getJson(`/api/trav/range?db=${encodeURIComponent(db)}&x0=${Math.floor(view[0])}&x1=${Math.ceil(view[1])}&minanch=${numOf('minanch', 50)}${($('showdup') as HTMLInputElement).checked ? '&dups=1' : ''}`)
     if (my !== loading) return
-    const j = await r.json(); rows = j.trav; copies = j.copies; reps = j.reps || []; dups = j.dups || []; perHap = j.perHap; sel = null; $('info').style.color = ''; void loadTReads()
+    const j = await r.json()
+    if (!j || j.error || !Array.isArray(j.trav)) { $('info').textContent = `範囲を読めない: ${j?.error ?? '応答が空'}`; $('info').style.color = '#c0392b'; $('busy').style.display = 'none'; return }   // 11-17: エラーの応答で落ちていた（地点の一覧の範囲外の地点など）
+    rows = j.trav; copies = j.copies; reps = j.reps || []; dups = j.dups || []; perHap = j.perHap; sel = null; $('info').style.color = ''; void loadTReads()
     // 反復でない重なり（backend の trim）: 錨を持たない側の通過からその区間を除く。残る側が 2 つに割れたら広い方（ε で吸われた端の数錨は捨てる）
     for (const t of rows as Trav[]) { if (!t.trim) continue; const [a, b] = t.trim; t.ox0 = t.x0; t.ox1 = t.x1; const lo = a - t.x0, hi = t.x1 - b; if (lo >= hi) t.x1 = Math.max(t.x0, a - 1); else t.x0 = Math.min(t.x1, b + 1) }
     blocks = makeBlocks()

@@ -56,6 +56,9 @@ L=$(( ML > 4 ? 4 : ML ))
 echo "  stats: maxlayer=$ML world=[$X1,$Y1]..[$X2,$Y2] → 層 L=$L / 矩形=中央 1/4"
 
 # 以降のリクエストに使う値を DB 自身から取る
+# パスの無いグラフ（P・W 行なし）では、パスの一覧と参照コンティグが空なのが正常（11-17）
+NOPATH=$(get "path_groups?db=$DB" | "$PY" -c 'import json,sys; d=json.load(sys.stdin); print("allow-empty" if not (d.get("groups") if isinstance(d, dict) else d) else "")' 2>/dev/null || true)
+[ -n "$NOPATH" ] && echo "  （パスの無いグラフ: /path_groups と /ref_contigs は空を許す）"
 GID=$(get "path_groups?db=$DB" | "$PY" pick.py gid)          # 1 サンプル分の gid 範囲 "lo-hi"
 GCSV=$(get "path_groups?db=$DB" | "$PY" pick.py gidcsv)      # /ribbon 用の gid CSV
 NAME=$(get "nodes?db=$DB&layer=$L&$R&nx=fast" | "$PY" pick.py node)
@@ -81,7 +84,7 @@ hit "/nodes_grid"          "nodes_grid?db=$DB&layer=$L&$R"
 hit "/node_count"          "node_count?db=$DB&layer=$L&$R"
 
 echo "-- リボン / hap 絞り込み / 深さ・多重度"
-hit "/path_groups"         "path_groups?db=$DB"
+hit "/path_groups"         "path_groups?db=$DB" $NOPATH
 [ -n "$GCSV" ] && hit "/ribbon"            "ribbon?db=$DB&layer=$L&$R&groups=$GCSV"
 if [ -n "$GID" ]; then
   hit "/nodes hap 絞り込み" "nodes?db=$DB&layer=$L&$R&nx=fast&sel=$GID"
@@ -95,7 +98,7 @@ hit "/max_mult"            "max_mult?db=$DB"
 hit "/leaf_bases"          "leaf_bases?db=$DB&layer=$L&$R" allow-empty
 
 echo "-- 参照座標 / 検索 / 配列 / MSA"
-hit "/ref_contigs"         "ref_contigs?db=$DB"
+hit "/ref_contigs"         "ref_contigs?db=$DB" $NOPATH
 [ -n "$RC" ] && hit "/goto 参照座標"   "goto?db=$DB&contig=$RC&bp=1000000"
 if [ -n "$NAME" ]; then
   hit "/node_info"         "node_info?db=$DB&name=$NAME"

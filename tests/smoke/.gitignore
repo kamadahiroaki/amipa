@@ -1,3 +1,4 @@
-node_modules/
+node_modules
 bundle.mjs
 smoke_dom.html
+.last_*.log
