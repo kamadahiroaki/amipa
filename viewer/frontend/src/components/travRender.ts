@@ -1136,7 +1136,7 @@ function treadsHover(e: MouseEvent): boolean {
 }
 function drawCore() {
   if (base && root) { drawBaseCore(); return }
-  const useCols = !!cols && wantCols(); const ogOn = (ogroups.length > 0 || !!gdens) && showGenes(); TOP = (useCols ? 62 : 44) + (ogOn ? OGH + 2 : 0)   // 11-10: 合意列（ブロックの帯）は行の高さの約 2 倍（最大 18 px）に
+  const useCols = !!cols && wantCols(); const ogOn = (ogroups.length > 0 || !!gdens) && showGenes(); TOP = (useCols ? 54 : 36) + (ogOn ? OGH + 2 : 0)   // 11-10: 合意列（ブロックの帯）は最大 18 px → 11-17: 4〜10 px に細く（ユーザ要望）
   const W = cv.parentElement!.clientWidth; const mode = ($('mode') as HTMLSelectElement).value; ROW = mode === 'rows' ? 22 : 15
   // 行の高さ: 遺伝子レーンのある行だけ段数ぶん高く（3 + 10 × 段）
   // 繰り返し通過（同じ場所を k 回）: 錨の列の段では k 段の小行に分けて各回のセルを出す（塩基の段の ·2 の行に対応）。ブロックの段は 1 片 ×k のまま
@@ -1156,10 +1156,10 @@ function drawCore() {
   const rcp = (mode === 'rows' && rowColPx && rowColPx.length === blocks.length + 1) ? rowColPx : null   // 各行の並び: 上段のブロックを行の列の位置に描く（行と上段の幅を揃える）
   let blkLabEnd = -1e9
   const RT = root; blocks.forEach((b, bi) => {
-    const px0 = rcp ? rcp[bi] : Math.max(LAB, X(b.x0)), px1 = rcp ? Math.max(rcp[bi] + 1, rcp[bi + 1]) : Math.min(W, X(b.x1 + 1)); const h = 8 + 10 * Math.min(1, b.nhap / RT.H)
+    const px0 = rcp ? rcp[bi] : Math.max(LAB, X(b.x0)), px1 = rcp ? Math.max(rcp[bi] + 1, rcp[bi + 1]) : Math.min(W, X(b.x1 + 1)); const h = 4 + 6 * Math.min(1, b.nhap / RT.H)
     g.fillStyle = `hsla(${hue(b.id)}, 70%, 50%, .85)`; g.fillRect(px0, BB - h, Math.max(1, px1 - px0), h); g.strokeStyle = 'rgba(0,0,0,.5)'; g.lineWidth = 1; g.strokeRect(px0 + .5, BB - h + .5, Math.max(1, px1 - px0) - 1, h - 1)
     if (b.nhap2 > 0) { g.fillStyle = 'rgba(192,57,43,.9)'; g.fillRect(px0, BB, Math.max(1, px1 - px0), 3) }
-    if (b.tangled) { g.fillStyle = 'rgba(120,120,120,.45)'; g.fillRect(px0, BB - h, Math.max(1, px1 - px0), h); if (px1 - px0 > 10) { g.fillStyle = '#fff'; g.font = 'bold 11px system-ui'; g.fillText('?', (px0 + px1) / 2 - 3, BB - h / 2 + 4) } }
+    if (b.tangled) { g.fillStyle = 'rgba(120,120,120,.45)'; g.fillRect(px0, BB - h, Math.max(1, px1 - px0), h); if (px1 - px0 > 10 && h >= 8) { g.fillStyle = '#fff'; g.font = 'bold 9px system-ui'; g.fillText('?', (px0 + px1) / 2 - 3, BB - h / 2 + 4) } }
     if (px1 - px0 > 44) { g.font = '10px system-ui'; const lt = `${fmtbp(b.bp)} ${b.nhap}/${RT.H}${b.nhap2 ? ` ×${b.nhap2}` : ''}`; const lw = g.measureText(lt).width; if (px0 + 2 >= blkLabEnd) { g.fillStyle = '#333'; g.fillText(lt, px0 + 2, BB - 2 - h); blkLabEnd = px0 + 2 + lw + 6 } }   // 11-11: 前の札と重なる札は出さない（札はブロックより広いことがある）
   })
   { // 全体図の枠（開いている範囲）の両端から合意列の両端へ黒線（11-10）。全体図はこのキャンバスの真上にあるので、上端 y=0 から引く
