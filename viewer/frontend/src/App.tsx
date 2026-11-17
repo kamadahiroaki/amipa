@@ -569,7 +569,7 @@ export default function App() {
   const [ribbonSel, setRibbonSel] = useState<Map<string, { gids: number[]; color: number }>>(new Map())
   // hap 絞り込み描画: 選択したリボン群(サンプル/ハプロタイプ/コンティグ)を通るノード・エッジだけ取得する。
   // 密領域(gvar 等)では取得件数が桁で落ち、同じ予算でより深い層＝葉レベルまで降りられる。
-  // サイドカー `<db>.hapidx` (prep/amipa_prep/hap_index.py 産)がある DB でのみ有効。
+  // <db>.tiled にハプロタイプのマスク列（hm0..）がある DB でのみ有効（パスの無いグラフでは無い）。
   const [hapIdx, setHapIdx] = useState<NonNullable<StatsResult['hapidx']> | null>(null)
   const [hapFilter, setHapFilter] = useState(false)
   // LOD 安全弁: 1 リクエストで受け取る行数の上限（= 描いても読めない枚数）。**UX 値なので client が決める**。

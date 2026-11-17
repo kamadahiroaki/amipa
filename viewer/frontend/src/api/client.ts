@@ -66,7 +66,7 @@ export interface Rect {
 // camera zoom と表示 layer を分離した予算駆動の層自動選択に使う。旧 DB では未定義になりうる。
 export interface StatsResult {
   // 現行 LOD-A 仕様の適合レベル。ok=layer_zoom あり / legacy=旧仕様(pow フォールバックで動作) /
-  // incompatible=stats・3D R-tree 無しで表示不可（maxLayer は無い）。
+  // incompatible=stats が無い・使える空間索引（<db>.tiled v4）が無いなどで表示不可（maxLayer は無い。理由は reason）。
   spec?: 'ok' | 'legacy' | 'incompatible'
   reason?: string          // incompatible の理由（通知表示用）
   maxLayer: number
@@ -96,7 +96,7 @@ export interface StatsResult {
   bandAvail?: boolean   // アノテ: node_attr.band_id あり（color-by バンド）
   regionAvail?: boolean // アノテ: node_attr.region_class あり（color-by 領域）
   geneAvail?: boolean   // アノテ: node_attr.gene_count あり（遺伝子密度）
-  // hap 絞り込み取得（サイドカー `<db>.hapidx` あり）。有→「選択群だけ描画」トグルを出せる。
+  // hap 絞り込み取得（<db>.tiled にマスク列あり。名前は旧サイドカー .hapidx の名残）。有→「選択群だけ描画」トグルを出せる。
   // mode='bucket' は H が大きくマスクが上位集合＝backend が blob で厳密判定を足す（効きは鈍る）。
   hapidx?: { nHap: number; words: number; mode: 'exact' | 'bucket'; edges: boolean } | null
 }
@@ -190,9 +190,6 @@ export interface VersionInfo {
   version?: string
   commit?: string | null
   db?: { name: string; built_at: string | null; emitter_rev: string | null; mtime: string | null
-    // rtree_built_at: R-Tree(高速経路が読む実体)を作った時刻。built_at(=④ emit の時刻)とは別。
-    // rad=false は radius を矩形から導出する古い R-Tree（深層で相対 174% 過大＝表示がずれる）。
-    rtree_built_at?: string | null; rad?: boolean
          features: { seq: boolean; inv: boolean; mult: boolean; contigcov: boolean }
          // 付属データの有無と使えない理由（無い backend では undefined＝従来どおり使える扱い）
          avail?: import('../avail').AvailMap }
@@ -304,7 +301,7 @@ export async function fetchPickLayer(
 }
 
 // sel: hap 絞り込み。選択群の contig_id レンジ列（"0-23,24-33"）。空なら絞り込みなし。
-// backend は `<db>.hapidx` サイドカーがあればマスクで絞り、無ければ無視する（graceful）。
+// backend は <db>.tiled のマスク列で絞る。マスクの無い DB（パスの無いグラフ）では無視する。
 // signal: パンで用済みになった取得を中断する（GraphCanvas が AbortController を持つ）。
 // ⚠ 編集の DB 反映(saveEdits)や session 保存には**絶対に付けない**。中断されては困る。
 export async function fetchNodes(layer: number, bbox: Rect, dbFile: string, mapq = 0, nx = '',
@@ -328,7 +325,7 @@ export async function fetchNodes(layer: number, bbox: Rect, dbFile: string, mapq
   return res.json()
 }
 
-// ミニマップ用のグリッド集約。nodes 表を触らず nodes_rtree だけを読み、要求矩形を gw×gh の
+// ミニマップ用のグリッド集約。nodes 表を触らず空間索引（.tiled）だけを読み、要求矩形を gw×gh の
 // セルに畳んだ占有情報を返す（backend /nodes_grid）。層は呼び出し側が指定したものが必ず使われる
 // ＝ maxRows のような層フォールバックは起きない。詳細は backend 側のコメント。
 export interface GridCell {
@@ -337,8 +334,8 @@ export interface GridCell {
   x: number; y: number     // セル内ノードの重心（world 座標。セル中心より見た目が正確）
   w: number                // セル内ノードの平均幅（world）。1 画素超のノードを大きく描く用
 }
-// 1 画素より大きく描かれるノード。angle は rtree の bbox に無いので backend が nodes を引いて
-// 返す（件数が少ないので安い）。セルの上に向き付きロッドとして重ねて描く。
+// 1 画素より大きく描かれるノード。角度付きで個別に返る（件数が少ないので安い）。
+// セルの上に向き付きロッドとして重ねて描く。
 export interface GridBigNode { x: number; y: number; r: number; a: number }
 export interface NodeGrid {
   gw: number; gh: number
