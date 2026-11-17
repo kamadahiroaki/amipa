@@ -56,6 +56,28 @@ graph.amipa/
 
 `meta.format` が 2 以上なら `feature` 以下がある。1 のサイドカーでも遺伝子単位の表示は動く。
 
+写しには `gene_qc(gid, unanch)` が付く（CDS の端を参照に揃えられなかった数。1 以上なら機能喪失の目安は判定しない）。
+
+### 遺伝子レーンの索引（graph.db.genex）と機能喪失の目安
+
+`g_b` の 1 行が遺伝子（写しを含む）1 つ。`lof_st` は機能喪失の目安で、値は `meta.lof_states` の並び
+（`ok,fs,trunc,nostart,nocds,partial,refdiff`。後ろの 2 つは後から足したので、古い索引には 0〜4 しか無い）。
+
+| 値 | 名前 | 意味 |
+|---|---|---|
+| 0 | `ok` | 変わらない |
+| 1 | `fs` | CDS の長さの差が 3 の倍数でない（フレームシフト） |
+| 2 | `trunc` | 最初の終止までが元の 9 割未満 |
+| 3 | `nostart` | 元にある開始コドンが無い |
+| 4 | `nocds` | CDS が無い・組み立てられない |
+| 5 | `partial` | 判定しない。写しが部分的（CDS の片が元より少ない）、CDS の端を元に揃えられない、元の注釈が擬似遺伝子。元の注釈の遺伝子は擬似・部分（`partial=true`・`cds_start_NF` など）なら |
+| 6 | `refdiff` | 元と違う（1〜3 のどれか）が、判定できる写しの 9 割以上（5 本以上）が同じ違いを持つ。元（参照）の側が外れ値の見込み |
+
+写しは、写した元の遺伝子の同じ転写産物と比べる。転写産物は `MANE_Select` ＞ `Ensembl_canonical` ＞ CDS の長さの順で選び、
+`protein_coding_LoF`・`nonsense_mediated_decay`・`cds_start_NF`／`cds_end_NF` の転写産物は（他にあれば）使わない。
+`transl_except` に Sec があるか `stop_codon_redefined_as_selenocysteine` の行がある転写産物は TGA を終止としない。
+`transl_table=11` の遺伝子は CTG・ATT・ATC・ATA も開始コドンとみなす。
+
 ## 通過サイドカー（graph.db.trav）
 
 Traversals パネル（ブロック・錨の列・ノード・塩基の段）の材料。distill（パスのウォーク）から作る。
