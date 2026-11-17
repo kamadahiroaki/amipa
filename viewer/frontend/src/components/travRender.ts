@@ -202,6 +202,15 @@ let hdrStrips: PinStrip[] = []; let pinSec: { y: number; h: number } | null = nu
 let pinMap: { y: number; h: number; at: number }[] = []
 const PIN_SEP = 5
 const pinnedHaps = new Set<string>()
+// 固定した株は DB ごとにブラウザに覚える（11-17）。覚えたものが無い DB（初回）は参照の株を固定する。利用者が外せば（空でも）それを覚える
+const pinKey = () => 'amipa.trav.pins.' + db
+const savePins = () => { try { localStorage.setItem(pinKey(), JSON.stringify([...pinnedHaps])) } catch { /* 保存できない環境 */ } }
+function loadPins(refHid: number | undefined) {
+  pinnedHaps.clear(); if (!root) return; const names = new Set(root.haps.map(h => h.hap)); let v: string | null = null
+  try { v = localStorage.getItem(pinKey()) } catch { /* */ }
+  if (v != null) { try { for (const h of JSON.parse(v)) if (typeof h === 'string' && names.has(h)) pinnedHaps.add(h) } catch { /* 壊れていれば既定 */ } return }
+  for (const h of root.haps) if ((refHid != null && refHid >= 0 && h.hid === refHid) || /^(GRCh38|CHM13)([#.]|$)/.test(h.hap)) pinnedHaps.add(h.hap)   // 既定: 参照（種）の株と GRCh38・CHM13
+}
 const pinnedStrips: Set<string> = (() => { try { const v = localStorage.getItem('amipa.trav.pinstrips'); if (v) return new Set<string>(JSON.parse(v)) } catch { /* 保存できない環境 */ } return new Set(['cons', 'coord', 'node', 'ref', 'mark']) })()
 const savePinStrips = () => { try { localStorage.setItem('amipa.trav.pinstrips', JSON.stringify([...pinnedStrips])) } catch { /* */ } }
 const pinnedHids = (): number[] => root && pinnedHaps.size ? hapOrder.filter(h => pinnedHaps.has(root!.haps[h].hap)) : []
@@ -317,6 +326,7 @@ async function loadRoot() {
   const refHid = (root as any).refHid as number | undefined   // 参照（種）の株を先頭に（11-05: 以前は GRCh38/CHM13 などの名前で決め打ち）
   const refLike = (hid: number) => (refHid != null && refHid >= 0 ? hid === refHid : /^(GRCh38|CHM13|GCF_000148365)/.test(root!.haps[hid].hap)) ? 0 : 1
   baseOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(a) - refLike(b) || root!.haps[a].hap.localeCompare(root!.haps[b].hap)); hapOrder = baseOrder.slice()
+  loadPins(refHid)
   bands = []; locCache.clear(); lastPeaks = []; lastPts = []; ovw.setMarker(null); ovw.setPoints([], [], '')
   try { const rb = await getJson(`/api/trav/chroms?db=${encodeURIComponent(db)}`); if (rb.ok) bands = (await rb.json()).bands || [] } catch { /* 区切りは無くてもよい */ }
   ovw.setBands(bands)
@@ -1702,7 +1712,7 @@ function togglePinAt(y: number) {
   if (!root) return
   if (y < TOP) { const st = hdrStrips.find(t => y >= t.y && y < t.y + t.h); if (!st) return; if (pinnedStrips.has(st.id)) pinnedStrips.delete(st.id); else pinnedStrips.add(st.id); savePinStrips(); draw(); return }
   const k = rowAt(y); if (k < 0) return; const hid = base ? base.lines[k]?.hid ?? -1 : rowHids[k] ?? -1; if (hid < 0) return
-  const hap = root.haps[hid].hap; if (pinnedHaps.has(hap)) pinnedHaps.delete(hap); else pinnedHaps.add(hap); if (grpSpec() === 'pin') reorder(); draw()
+  const hap = root.haps[hid].hap; if (pinnedHaps.has(hap)) pinnedHaps.delete(hap); else pinnedHaps.add(hap); savePins(); if (grpSpec() === 'pin') reorder(); draw()
 }
 cv.addEventListener('contextmenu', e => { if (e.offsetX >= LAB || !root) return; e.preventDefault(); togglePinAt(oy(e)) })
 { // 固定域の上の操作: 固定域の y を本体の y に直して、同じ座標の合成イベントを本体へ送る（ホバー・クリック・ドラッグ・右クリック・ホイールがそのまま効く）
@@ -1767,7 +1777,7 @@ $('hfind').addEventListener('input', () => { hapQuery = ($('hfind') as HTMLInput
 $('hfind').addEventListener('keydown', e => { if ((e as KeyboardEvent).key !== 'Enter') return; e.preventDefault(); const ks = hfindRows(); if (!ks.length) return; hfindPos = (hfindPos + 1) % ks.length
   const wrap = $('wrap'); let pinH = 0; for (const st of hdrStrips) if (pinnedStrips.has(st.id)) pinH += st.h; if (pinSec) pinH += pinSec.h
   wrap.scrollTop = Math.max(0, rowTop[ks[hfindPos]] - pinH - 24); $('hfindn').textContent = `${hfindPos + 1}/${ks.length}` })
-$('hfindpin').addEventListener('click', e => { e.stopPropagation(); if (!root) return; for (const h of root.haps) if (hapMatch(h.hid)) pinnedHaps.add(h.hap); if (grpSpec() === 'pin') reorder(); draw() })
+$('hfindpin').addEventListener('click', e => { e.stopPropagation(); if (!root) return; for (const h of root.haps) if (hapMatch(h.hid)) pinnedHaps.add(h.hap); savePins(); if (grpSpec() === 'pin') reorder(); draw() })
 cv.addEventListener('wheel', e => {
   if (base && e.offsetX >= LAB) {   // 塩基の段: Ctrl＋ホイール＝拡大縮小、横向きのホイール（横スワイプ・Shift＋ホイール）＝横に動かす、縦のホイール＝ページの縦スクロール（10-30: 他の段と同じに）
     if (e.ctrlKey || e.metaKey) { e.preventDefault(); baseZoomStep(e.deltaY < 0 ? 1 : -1, e.offsetX - LAB); return }
@@ -2102,7 +2112,7 @@ async function goTarget(tt: Target | string, opt: { pad?: number; label?: string
   return r
 }
 function hapsMatching(names: string[]): number[] { if (!root) return []; const st = new Set(names); return root.haps.filter(h => st.has(h.hap) || matchHapToKey(h.hap, st) != null).map(h => h.hid) }
-function apiPin(names: string | string[], on = true): number { if (!root) return 0; const ids = hapsMatching(Array.isArray(names) ? names : [names]); for (const h of ids) { const hp = root.haps[h].hap; if (on) pinnedHaps.add(hp); else pinnedHaps.delete(hp) } if (grpSpec() === 'pin') reorder(); draw(); return ids.length }
+function apiPin(names: string | string[], on = true): number { if (!root) return 0; const ids = hapsMatching(Array.isArray(names) ? names : [names]); for (const h of ids) { const hp = root.haps[h].hap; if (on) pinnedHaps.add(hp); else pinnedHaps.delete(hp) } savePins(); if (grpSpec() === 'pin') reorder(); draw(); return ids.length }
 function apiOrder(spec: { group?: string; order?: 'tree' | 'name' }): boolean {
   if (spec.order) { ($('order') as HTMLSelectElement).value = spec.order }
   if (spec.group != null) { let v = spec.group === 'none' ? '' : spec.group; if (v.startsWith('attr:') && attrs && !/^attr:\d+$/.test(v)) { const i = attrs.cols.indexOf(v.slice(5)); v = i > 0 ? 'attr:' + i : '?' }
@@ -2276,7 +2286,7 @@ function getState(): any { const st: any = { db, view: [Math.floor(view[0]), Mat
   for (const k of TRAV_SEL) { const el = document.getElementById('tv_' + k) as HTMLInputElement | null; if (el) st.sel[k] = el.value }
   for (const k of TRAV_CHK) { const el = document.getElementById('tv_' + k) as HTMLInputElement | null; if (el) st.chk[k] = el.checked } return st }
 function setState(st: any, tries = 0) { if (!st) return; if (!root || (st.db && st.db !== db)) { if (tries < 40) setTimeout(() => setState(st, tries + 1), 500); return }   // パネルが DB を読み終えるまで待つ
-  if (Array.isArray(st.pins)) { pinnedHaps.clear(); for (const h of st.pins) if (typeof h === 'string') pinnedHaps.add(h) }
+  if (Array.isArray(st.pins) && st.pins.length) { pinnedHaps.clear();   /* 空の pins は上書きしない（11-17: 固定は DB ごとに覚えるので、以前の版の状態の空で既定の参照の固定を消さない） */ for (const h of st.pins) if (typeof h === 'string') pinnedHaps.add(h); savePins() }
   for (const [k, v] of Object.entries(st.sel || {})) { const el = document.getElementById('tv_' + k) as HTMLInputElement | null; if (el) el.value = String(v) }
   for (const [k, v] of Object.entries(st.chk || {})) { const el = document.getElementById('tv_' + k) as HTMLInputElement | null; if (el) el.checked = !!v }
   if (($('cut') as HTMLInputElement).value) $('cut').dispatchEvent(new Event('input'))
