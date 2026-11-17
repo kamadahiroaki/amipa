@@ -738,7 +738,7 @@ export function travGenes(t: Trav, x0: number, x1: number, minAnchors = 50, with
 
 // 11-12: 索引 <db>.genex とタイル <db>.xtiles から（.genes・distill・全ゲノムの配列を読まない）。遺伝子の座標は前計算（gene_x: 両端 1,500 トークンの錨）、
 //   オルソログ群の材料（遺伝子の錨）・子の座標・ノード名は窓のタイルのトークンから。窓の外のトークンは無いので、子の座標はそこだけ比例で補う
-const LOF_ST = ['ok', 'fs', 'trunc', 'nostart', 'nocds']
+const LOF_ST = ['ok', 'fs', 'trunc', 'nostart', 'nocds', 'partial', 'refdiff']   // genex_build.py と同じ並び（11-17 に partial・refdiff を後ろへ足した）
 function travGenesX(t: Trav, G: ReturnType<typeof openGeneX> & object, x0: number, x1: number, minAnchors: number, withNodes: boolean): any {
   x0 = Math.max(0, Math.floor(x0)); x1 = Math.min(t.R - 1, Math.floor(x1))
   const est = genexCount(G, x0, x1, GENES_MAX); if (est > GENES_MAX) return { tooMany: true, n: est, max: GENES_MAX, genes: [] }   // 通過を読む前に断る
@@ -1115,17 +1115,55 @@ const COMP: Record<string, string> = { A: 'T', C: 'G', G: 'C', T: 'A', N: 'N', a
 const rcSeq = (s: string) => { let o = ''; for (let i = s.length - 1; i >= 0; i--) o += COMP[s[i]] ?? s[i]; return o }
 const CODON: Record<string, string> = (() => { const b = 'TCAG', aas = 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG'; const m: Record<string, string> = {}
   for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) for (let k = 0; k < 4; k++) m[b[i] + b[j] + b[k]] = aas[16 * i + 4 * j + k]; return m })()
+// 11-17: 転写産物の選び方・判定しない注釈・セレノシステイン・代替開始は prep/amipa_prep/cds_rules.py と同じ規則。状態は genex_build.py と同じ:
+//   partial（写しの CDS の片が元より少ない・端を決められない gene_qc.unanch・元の注釈が pseudo。元の注釈の遺伝子は pseudo・partial／cds_*_NF。元が partial の写しは nostart だけ判定しない）、
+//   refdiff（元と違うが、判定できる写しの 9 割以上（5 本以上）が同じ違い＝参照の側が外れ値の見込み）
+const kvAttr = (at: string, key: string) => { const m = new RegExp(`(?:^|;)${key}=([^;]*)`).exec(at || ''); return m ? m[1] : '' }
+function txRank(at: string): [boolean, number] {
+  const tt = kvAttr(at, 'transcript_type'); const tags = at ? kvAttr(at, 'tag').split(',') : []
+  const excl = tt === 'protein_coding_LoF' || tt === 'nonsense_mediated_decay' || tags.includes('cds_start_NF') || tags.includes('cds_end_NF')
+  return [excl, tags.includes('MANE_Select') ? 2 : tags.includes('Ensembl_canonical') ? 1 : 0]
+}
+function pickParent(order: string[], cdsBp: Map<string, number>, attrsOf: (p: string) => string): string | null {
+  if (!order.length) return null
+  const rk = new Map(order.map(p => [p, txRank(attrsOf(p))] as const)); let cand = order.filter(p => !rk.get(p)![0]); if (!cand.length) cand = order
+  let best: string | null = null; let bk: [number, number] | null = null
+  for (const p of cand) { const k: [number, number] = [rk.get(p)![1], cdsBp.get(p) ?? 0]; if (!bk || k[0] > bk[0] || (k[0] === bk[0] && k[1] > bk[1])) { best = p; bk = k } }
+  return best
+}
+function annFlags(at: string, genePseudo: boolean): [number, boolean, boolean] {   // qc のビット 1 pseudo・4 partial、Sec か、transl_table 11 か
+  const tags = at ? kvAttr(at, 'tag').split(',') : []
+  const pseudo = genePseudo || kvAttr(at, 'pseudo') === 'true'
+  const partial = kvAttr(at, 'partial') === 'true' || !!kvAttr(at, 'start_range') || !!kvAttr(at, 'end_range') || tags.includes('cds_start_NF') || tags.includes('cds_end_NF')
+  return [(pseudo ? 1 : 0) | (partial ? 4 : 0), kvAttr(at, 'transl_except').includes('Sec') || tags.includes('selenocysteine'), kvAttr(at, 'transl_table') === '11']
+}
+const STARTS = ['ATG', 'GTG', 'TTG'], STARTS11 = ['ATG', 'GTG', 'TTG', 'CTG', 'ATT', 'ATC', 'ATA']
+const projCopies = new WeakMap<object, Map<number, number[]>>()   // .genes ごと: 元の遺伝子 → 写しの gid（refdiff の分母）
 export function travGeneLof(t: Trav, gids: number[]): any {
   const gdb = genesDbOf(t); if (!gdb) return { error: 'この DB には .genes サイドカーが無い' }
   if (!ensureCols(t)) return { error: 'distill か x_of_dense が無い' }
   const dist = t.dist!; const idf = idOf(t); const mdb = getDb(t.dbFile)
   const hasProj = (gdb.prepare('PRAGMA table_info(gene)').all() as { name: string }[]).some(c => c.name === 'proj')
-  const qParts = gdb.prepare("SELECT f.parent, f.pid, t.s0, t.e0, t.so, t.eo, f.start, f.end FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds')")
+  const hasQc = !!gdb.prepare("SELECT 1 FROM sqlite_master WHERE name = 'gene_qc'").get()
+  const qParts = gdb.prepare("SELECT f.parent, f.pid, t.s0, t.e0, t.so, t.eo, f.start, f.end FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.gid = ? AND f.type IN ('CDS','cds') ORDER BY f.fid")
+  const qAttrs = gdb.prepare("SELECT parent, attrs FROM feature WHERE gid = ? AND type IN ('CDS','cds') ORDER BY fid")
+  const qSec = gdb.prepare("SELECT 1 FROM feature WHERE gid = ? AND coalesce(parent, -1) = ? AND type = 'stop_codon_redefined_as_selenocysteine' LIMIT 1")
+  const qGene = gdb.prepare(`SELECT gid, strand, pseudo${hasProj ? ', proj' : ', NULL AS proj'} FROM gene WHERE gid = ?`)
+  const qQc = hasQc ? gdb.prepare('SELECT unanch FROM gene_qc WHERE gid = ?') : null
   const piOf = (pid: number) => (dist.names[pid] === t.paths[pid]?.path ? pid : dist.pidx.get(t.paths[pid]?.path ?? ''))
-  const assemble = (gid: number, strand: string): string | null => {
+  const ginfo = new Map<number, { strand: string; pseudo: boolean; proj: number | null }>()
+  const gi = (gid: number) => { let v = ginfo.get(gid); if (!v) { const r = qGene.get(gid) as any; if (!r) return null; v = { strand: r.strand, pseudo: !!r.pseudo, proj: r.proj ?? null }; ginfo.set(gid, v) } return v }
+  const attrCache = new Map<number, Map<string, string>>()
+  const attrsOf = (gid: number) => { let m = attrCache.get(gid); if (!m) { m = new Map(); for (const r of qAttrs.all(gid) as any[]) { const k = String(r.parent); if (!m.has(k)) m.set(k, r.attrs || '') } attrCache.set(gid, m) } return m }
+  const flagsOf = (src: number, par: string): [number, boolean, boolean] => { const f = annFlags(attrsOf(src).get(par) ?? '', !!gi(src)?.pseudo); return [f[0], f[1] || !!qSec.get(src, par === 'null' ? -1 : Number(par)), f[2]] }
+  // CDS を組み立てる（parent を指定しなければ規則で選ぶ）
+  const assemble = (gid: number, strand: string, wantPar: string | null): { cds: string; npiece: number; par: string } | null => {
     const rows = qParts.all(gid) as any[]; if (!rows.length) return null
-    const by = new Map<string, any[]>(); for (const r of rows) { const k = String(r.parent); const a = by.get(k); if (a) a.push(r); else by.set(k, [r]) }
-    let best: any[] = []; let bestLen = -1; for (const v of by.values()) { const L = v.reduce((s, x) => s + x.end - x.start + 1, 0); if (L > bestLen) { bestLen = L; best = v } }   // 同点は先に出た親（python の max と同じ）
+    const by = new Map<string, any[]>(); const order: string[] = []; const bp = new Map<string, number>()
+    for (const r of rows) { const k = String(r.parent); const a = by.get(k); if (a) a.push(r); else { by.set(k, [r]); order.push(k) } bp.set(k, (bp.get(k) ?? 0) + r.end - r.start + 1) }
+    const src = gi(gid)?.proj ?? gid
+    const par = wantPar != null && by.has(wantPar) ? wantPar : pickParent(order, bp, p => attrsOf(src).get(p) ?? ''); if (par == null) return null
+    const best = by.get(par)!
     const pi = piOf(best[0].pid); if (pi == null) return null
     const segs = best.map(r => ({ s0: r.s0 as number, tk: dist.read(pi, r.s0, r.e0), oo: dist.readOri(pi, r.s0, r.e0), so: r.so as number, eo: r.eo as number }))
     const need = new Set<number>(); for (const s of segs) for (let i = 0; i < s.tk.length; i++) need.add(idf(s.tk[i]))
@@ -1144,27 +1182,56 @@ export function travGeneLof(t: Trav, gids: number[]): any {
       if (!ss.length) continue
       ss[ss.length - 1] = ss[ss.length - 1].slice(0, Math.max(0, eo) + 1)
       ss[0] = ss.length > 1 ? ss[0].slice(Math.max(0, so || 0)) : ss[0].slice(Math.max(0, so || 0), Math.max(0, eo) + 1)
-      out.push(ss.join(''))
+      const piece = ss.join(''); if (piece.length) out.push(piece)
     }
-    const cds = out.join('').toUpperCase(); return strand === '-' ? rcSeq(cds) : cds
+    if (!out.length) return null
+    const cds = out.join('').toUpperCase(); return { cds: strand === '-' ? rcSeq(cds) : cds, npiece: out.length, par }
   }
-  const translate = (cds: string) => { let aa = ''; for (let i = 0; i + 2 < cds.length; i += 3) { const x = CODON[cds.slice(i, i + 3)] ?? 'X'; aa += x; if (x === '*') break } return aa }
-  const cache = new Map<number, { L: number; aa: number; stop: boolean; start: boolean } | null>()
-  const summary = (gid: number, strand: string) => { if (cache.has(gid)) return cache.get(gid)!; let cds: string | null = null; try { cds = assemble(gid, strand) } catch { cds = null }
-    if (!cds) { cache.set(gid, null); return null } const p = translate(cds); const stop = p.endsWith('*'); const r = { L: cds.length, aa: p.length - (stop ? 1 : 0), stop, start: ['ATG', 'GTG', 'TTG'].includes(cds.slice(0, 3)) }; cache.set(gid, r); return r }
-  const list = gids.slice(0, 5000); const info = new Map<number, [string, number | null]>()
-  for (let i = 0; i < list.length; i += 900) { const ch = list.slice(i, i + 900); for (const r of gdb.prepare(`SELECT gid, strand${hasProj ? ', proj' : ', NULL AS proj'} FROM gene WHERE gid IN (${ch.map(() => '?').join(',')})`).all(...ch) as any[]) info.set(r.gid, [r.strand, r.proj]) }
-  const qStrand = gdb.prepare('SELECT strand FROM gene WHERE gid = ?')
-  const res: Record<number, any> = {}
+  type Summ = { L: number; aa: number; stop: boolean; start: boolean; npiece: number; qc: number; par: string }
+  const cache = new Map<string, Summ | null>()
+  const summary = (gid: number, wantPar: string | null): Summ | null => {
+    const key = gid + ':' + (wantPar ?? ''); if (cache.has(key)) return cache.get(key)!
+    const inf = gi(gid); let r: Summ | null = null
+    if (inf) {
+      let a: ReturnType<typeof assemble> = null; try { a = assemble(gid, inf.strand, wantPar) } catch { a = null }
+      if (a) {
+        const src = inf.proj ?? gid; const [skip, sec, t11] = flagsOf(src, a.par)
+        let aa = 0, stop = false; for (let i = 0; i + 2 < a.cds.length; i += 3) { const cd = a.cds.slice(i, i + 3); const x = sec && cd === 'TGA' ? 'U' : (CODON[cd] ?? 'X'); if (x === '*') { stop = true; break } aa++ }
+        const un = qQc ? ((qQc.get(gid) as any)?.unanch ?? 0) : 0
+        r = { L: a.cds.length, aa, stop, start: (t11 ? STARTS11 : STARTS).includes(a.cds.slice(0, 3)), npiece: a.npiece, qc: skip | (un > 0 ? 2 : 0), par: a.par }
+      }
+    }
+    cache.set(key, r); return r
+  }
+  // 状態と、refdiff を決めるための違いの印
+  const raw = (gid: number): { st: string; aa?: number; ref: number | null; src: number | null; sig: string | null } => {
+    const inf = gi(gid); if (!inf) return { st: 'nocds', ref: null, src: null, sig: null }
+    const s = summary(gid, null); const src = inf.proj
+    if (!s) return { st: 'nocds', ref: null, src, sig: null }
+    const ref = src != null ? (summary(src, s.par) ?? summary(src, null)) : null
+    if (ref) {
+      if ((s.qc & 2) || (ref.qc & 1) || s.npiece < ref.npiece) return { st: 'partial', aa: s.aa, ref: ref.aa, src, sig: null }
+      if ((((s.L - ref.L) % 3) + 3) % 3 !== 0) return { st: 'fs', aa: s.aa, ref: ref.aa, src, sig: 'fs:' + (s.L - ref.L) }
+      if (s.aa < 0.9 * ref.aa) return { st: 'trunc', aa: s.aa, ref: ref.aa, src, sig: 'trunc:' + s.aa }
+      if (ref.start && !s.start && !(ref.qc & 4)) return { st: 'nostart', aa: s.aa, ref: ref.aa, src, sig: 'nostart:' + (s.L - ref.L) }
+      return { st: 'ok', aa: s.aa, ref: ref.aa, src, sig: null }
+    }
+    if (s.qc & 5) return { st: 'partial', aa: s.aa, ref: null, src, sig: null }
+    const exp = Math.floor(s.L / 3) - 1
+    return { st: !s.start ? 'nostart' : s.aa < 0.9 * exp ? 'trunc' : 'ok', aa: s.aa, ref: null, src, sig: null }
+  }
+  let pc = projCopies.get(gdb)
+  const list = gids.slice(0, 5000); const res: Record<number, any> = {}
   for (const gid of list) {
-    const inf = info.get(gid); if (!inf) continue; const [strand, src] = inf
-    const s = summary(gid, strand); if (!s) { res[gid] = { st: 'nocds', src }; continue }
-    let ref: ReturnType<typeof summary> = null
-    if (src != null) { const rs = qStrand.get(src) as { strand: string } | undefined; ref = rs ? summary(src, rs.strand) : null }
-    let st = 'ok'
-    if (ref) { if ((((s.L - ref.L) % 3) + 3) % 3 !== 0) st = 'fs'; else if (s.aa < 0.9 * ref.aa) st = 'trunc'; else if (ref.start && !s.start) st = 'nostart' }
-    else { const exp = Math.floor(s.L / 3) - 1; if (!s.start) st = 'nostart'; else if (s.aa < 0.9 * exp) st = 'trunc' }
-    res[gid] = { st, aa: s.aa, ref: ref ? ref.aa : null, src }
+    const r = raw(gid); if (!gi(gid)) continue
+    if (r.sig && r.src != null) {
+      // refdiff: 同じ元の遺伝子の写し全部（判定できるもの）のうち 9 割以上が同じ違いなら、参照の側が外れ値
+      if (!pc) { pc = new Map(); if (hasProj) for (const x of gdb.prepare('SELECT gid, proj FROM gene WHERE proj IS NOT NULL').iterate() as Iterable<any>) { const a = pc.get(x.proj); if (a) a.push(x.gid); else pc.set(x.proj, [x.gid]) } projCopies.set(gdb, pc) }
+      const cs = pc.get(r.src) ?? []; let nj = 0, same = 0
+      if (cs.length <= 2000) for (const c of cs) { const q = c === gid ? r : raw(c); if (q.st === 'ok' || q.st === 'fs' || q.st === 'trunc' || q.st === 'nostart') { nj++; if (q.sig === r.sig) same++ } }
+      if (nj >= 5 && same >= 0.9 * nj) r.st = 'refdiff'
+    }
+    res[gid] = r.st === 'nocds' ? { st: 'nocds', src: r.src } : { st: r.st, aa: r.aa, ref: r.ref, src: r.src }
   }
   return { genes: res, n: Object.keys(res).length }
 }
