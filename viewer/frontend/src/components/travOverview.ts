@@ -52,7 +52,7 @@ export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => 
 export interface OverviewHandle { flash(ms?: number): void; setForce(on: boolean): void; setHidden(on: boolean): void; viewClient(): [number, number] | null; draw(): void; setBands(b: OvBand[]): void; setPoints(pts: OvPoint[], peaks: OvPeak[], note: string): void; setMarker(x: number | null, label?: string): void; setHoverLetter(l: string | null): void; peaks(): OvPeak[]; centerWeighted(): boolean; destroy(): void }
 export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps, onCenterToggle: () => void): OverviewHandle {
   // 11-17: 自動的に畳む（上部バーの「バーを自動的に隠す」と同じボタン・同じ意味。既定はオン）。畳んでいる間は 7 px の細い線（染色体の切れ目・開いている範囲）で、
-  //   マウスを乗せる・大きく動いた直後の 3 秒（flash）・ブロックの段（setForce）は、下の表示の上に重ねて広げる（下をずらさない）
+  //   マウスを乗せる・大きく動いた直後の 3 秒（flash）は、下の表示の上に重ねて広げる（下をずらさない）。段では変えない（ボタンで選んだ状態を優先）
   host.innerHTML = `<div class="ovwrap" style="position:relative;border-bottom:1px solid #ddd;background:#fff"><div class="ovin" style="display:flex;align-items:stretch;background:#fff;left:0;right:0;top:0;z-index:6">
     <div style="width:${LAB}px;height:32px;flex-shrink:0;padding:1px 6px;box-sizing:border-box;font:10px/13px system-ui;color:#555;overflow:hidden">
       <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:4px"><button class="ovauto" type="button" style="border:none;background:none;padding:0;margin:0;cursor:pointer;color:#555;display:inline-flex;line-height:0"><svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16" /><path class="ovarr" d="" /></svg></button><b style="color:#333">Overview</b> <span class="ovn"></span> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
@@ -76,7 +76,7 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
     inner.style.position = autoHide ? 'absolute' : 'relative'; inner.style.height = H + 'px'; inner.style.overflow = 'hidden'
     inner.style.boxShadow = autoHide && ex ? '0 2px 6px rgba(0,0,0,.18)' : 'none'
     ;(inner.firstElementChild as HTMLElement).style.visibility = ex ? '' : 'hidden'   // 畳んだときは左の札（Overview とボタン）を隠す（文字の上端だけが覗いた）
-    autoBtn.title = autoHide ? '全体図を自動的に畳む: オン（マウスを乗せる・大きく動いた直後・ブロックの段で広げる）。クリックで常に表示' : '全体図を自動的に畳む（細い線にして、マウスを乗せたときなどだけ広げる）'
+    autoBtn.title = autoHide ? '全体図を自動的に畳む: オン（マウスを乗せる・大きく動いた直後に広げる）。クリックで常に表示' : '全体図を自動的に畳む（細い線にして、マウスを乗せたときなどだけ広げる）'
     autoBtn.style.color = autoHide ? '#1d4ed8' : '#555'; arr.setAttribute('d', autoHide ? 'M12 9v11M7 15l5 5 5-5' : 'M12 20V9M7 14l5-5 5 5')
   }
   autoBtn.addEventListener('click', e => { e.stopPropagation(); autoHide = !autoHide; try { localStorage.setItem('amipa.trav.ovwAuto', autoHide ? '1' : '0') } catch { /* */ } layout(); draw() })

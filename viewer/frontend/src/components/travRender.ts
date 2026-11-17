@@ -1092,7 +1092,7 @@ function fracOf(p: Piece, x: number): number { x = Math.max(p.c0, Math.min(p.c1 
 let rowColPx: Float64Array | null = null   // 各行の並びの列の画面位置（上段の描画用）
 let lastPieces = new Map<number, Piece[]>(); let mrowsByHap = new Map<number, Trav[]>()   // 表示用（繰り返し通過をまとめた通過）
 let ogHits: { o: OGroup; pa: number; pb: number }[] = []   // 見出しの遺伝子トラックの当たり
-function draw() { try { grpSync(); paintAll(); paintPins(); hfindCount() } catch (e) { showErr('draw', e) } try { updateNav(); updateSelInfo(); uiSync() } catch { /* */ } try { ovw.setHidden(walkMode); ovw.setForce(!walkMode && !!root && curRung() === 'blocks'); ovw.draw() } catch { /* */ } }
+function draw() { try { grpSync(); paintAll(); paintPins(); hfindCount() } catch (e) { showErr('draw', e) } try { updateNav(); updateSelInfo(); uiSync() } catch { /* */ } try { ovw.setHidden(walkMode); ovw.draw() } catch   /* 11-17: ブロックの段で強制的に広げるのはやめた（ボタンで選んだ状態が効かず、重ねた帯がブロックを隠した） */ { /* */ } }
 // リードの区画の配置: サンプルごとに 見出し＋深さ（12 px）＋詰めたリード（1 段 3 px、同じ段のリードの間は 6 px 以上空ける）。段は 64 まで（超えた分は出さず見出しに書く）。
 // 片が無い（リードが多すぎる・範囲が広すぎる）ときは深さだけ（10-30: 以前は 64 段を超えると深さだけにしていて、深さ 100 前後の ecoli では錨の列の段でリードが出なかった）
 const TR_DEP = 12, TR_LANE = 3, TR_MAXLANE = 64
