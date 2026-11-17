@@ -14,6 +14,7 @@ import { execFileSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { AMIPA_PYTHON, amipaScript } from './pyenv'
+import { TILED_SCHEMAS, TILED_REBUILD_HINT } from './tiled'
 
 const DB_DIR = process.env.DB_DIR || path.resolve(__dirname, '../../../data/db')
 let failed = false
@@ -26,9 +27,9 @@ const gb = (b: number) => `${(b / 1e9).toFixed(2)} GB`
 function checkRuntime(): void {
   console.log('runtime')
   console.log(`  node ${process.version}`)
-  // SQLite の機能: R-Tree(ビューポート検索) と FTS5(ノード名 trigram 検索) が無いと viewer は成立しない。
+  // SQLite の機能: FTS5(ノード名 trigram 検索) が無いと viewer は成立しない（空間索引は .tiled の普通の表）。
   const probe = new Database(':memory:')
-  for (const opt of ['ENABLE_RTREE', 'ENABLE_FTS5']) {
+  for (const opt of ['ENABLE_FTS5']) {
     const used = probe.prepare('SELECT sqlite_compileoption_used(?) AS u').get(opt) as { u: number }
     used.u ? ok(`sqlite ${opt}`) : bad(`sqlite ${opt} が無い（この better-sqlite3 では viewer は動かない）`)
   }
@@ -103,7 +104,7 @@ function checkDb(dbPath: string): void {
   catch (e) { bad(`SQLite として開けない: ${(e as Error).message}`); return }
 
   try {
-    const need = ['nodes', 'edges', 'stats', 'db_meta']   // 空間索引は .tiled か nodes_rtree のどちらか（下で判定）
+    const need = ['nodes', 'edges', 'stats', 'db_meta']   // 空間索引はサイドカー .tiled（下で判定）
     const have = new Set((db.prepare("SELECT name FROM sqlite_master WHERE type IN ('table')").all() as { name: string }[]).map(r => r.name))
     const miss = need.filter(t => !have.has(t))
     miss.length ? bad(`必須テーブルが無い: ${miss.join(', ')}`) : ok(`必須テーブル (${need.length})`)
@@ -115,35 +116,35 @@ function checkDb(dbPath: string): void {
     console.log(`  feat  ${feats.join(' ') || '(none)'}`)
     const maxlayer = (db.prepare('SELECT maxlayer FROM stats LIMIT 1').get() as { maxlayer: number } | undefined)?.maxlayer
     maxlayer == null ? bad('stats が空（層情報が無い）') : ok(`layers 0..${maxlayer}`)
-    // 空間索引: サイドカー .tiled（新しい DB はこれだけ）か、本体の nodes_rtree（旧 DB）
+    // 空間索引: サイドカー .tiled（v4）が唯一の空間索引。無い・古い・空なら viewer は開かない（/api/stats が incompatible）。
+    //   11-17: 本体の nodes_rtree（旧 DB）は読まなくなった。残っていても使われない。
     const realForTiled = fs.realpathSync(dbPath)
     const tiledPath = [dbPath + '.tiled', realForTiled + '.tiled'].find(p => fs.existsSync(p)) || null
-    if (have.has('nodes_rtree')) {
-      db.prepare('SELECT rowid FROM nodes_rtree LIMIT 1').get()   // R-Tree が引けるか（全走査しない）
-      ok('空間索引: R-Tree（本体）' + (tiledPath ? '＋ .tiled' : ''))
-    } else if (tiledPath) {
-      ok('空間索引: .tiled サイドカーのみ（R-Tree 無し＝現行の既定）')
+    if (!tiledPath) {
+      bad(`空間索引（.tiled サイドカー）が無い → viewer で開けない。${TILED_REBUILD_HINT}`)
     } else {
-      bad('空間索引が無い（.tiled も nodes_rtree も無い。amipa prep add-tiled で作れる）')
+      let schema: string | null = null
+      try {
+        const t = new Database(tiledPath, { readonly: true, fileMustExist: true })
+        try { schema = (t.prepare("SELECT value FROM meta WHERE key='schema'").get() as { value: string } | undefined)?.value ?? null }
+        finally { t.close() }
+      } catch { schema = null }
+      if (!schema) bad(`.tiled が空か壊れている（meta が読めない: ${tiledPath}）→ viewer で開けない。${TILED_REBUILD_HINT}`)
+      else if (!TILED_SCHEMAS.includes(schema)) bad(`.tiled の形式が古い（${schema}。読めるのは ${TILED_SCHEMAS.join(', ')}）→ viewer で開けない。${TILED_REBUILD_HINT}`)
+      else ok(`空間索引: .tiled ${schema} (${gb(fs.statSync(tiledPath).size)})` + (have.has('nodes_rtree') ? '（本体の旧 nodes_rtree は使わない）' : ''))
     }
 
     // 索引の在り処は「DB 本体に内蔵」か「サイドカーを ATTACH」の 2 通り（db.ts と同じ判定）。
     // features に書いてあるのにどちらも無い＝機能が**黙って**落ちる状態なので、それを検出する。
     const real = fs.realpathSync(dbPath)
     const side = (suffix: string) => [dbPath + suffix, real + suffix].find(p => fs.existsSync(p)) || null
-    const rtreeCols = new Set(have.has('nodes_rtree')
-      ? (db.prepare('PRAGMA table_info(nodes_rtree)').all() as { name: string }[]).map(r => r.name) : [])
     const inMain: Record<string, boolean> = {
-      hapidx: have.has('hapidx_meta') && rtreeCols.has('hm0'),
       nametri: have.has('nmfts') || have.has('nmfts_data'),
       annot: have.has('node_annot'),
-      tiled: false,     // タイル索引はサイドカーにしか置かない
     }
     for (const [suffix, feat, what] of [
-      ['.hapidx', 'hapidx', 'ハプロタイプ絞り込み'],
       ['.nametri', 'nametri', 'ノード名の部分一致検索'],
       ['.annot', 'annot', 'アノテーション'],
-      ['.tiled', 'tiled', '描画用タイル索引（表示範囲の取得が速くなる。無ければ本体の空間索引で動く）'],
     ] as [string, string, string][]) {
       const p = side(suffix)
       if (p) ok(`${feat}: サイドカー${suffix} (${gb(fs.statSync(p).size)}) — ${what}`)
