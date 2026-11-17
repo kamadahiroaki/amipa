@@ -554,7 +554,8 @@ function pushHist() {   // 範囲を変える前に、今の範囲と段を履�
 }
 function updateNav() {
   const el = document.getElementById('tv_crumb'); if (!el) return; const cur = curRung()
-  el.innerHTML = RUNG_ORDER.map(r => { const why = r === cur ? null : rungWhy(r); const st = r === cur ? 'background:#dbeafe;color:#1e3a8a;font-weight:600' : why ? 'color:#aaa' : 'color:#1d4ed8;cursor:pointer;text-decoration:underline dotted'
+  el.innerHTML = RUNG_ORDER.filter(r => !walkMode || r === 'node' || r === 'base').map(r => {   // 歩みの段（パスの無いグラフ）は範囲の段が無い
+ const why = r === cur ? null : rungWhy(r); const st = r === cur ? 'background:#dbeafe;color:#1e3a8a;font-weight:600' : why ? 'color:#aaa' : 'color:#1d4ed8;cursor:pointer;text-decoration:underline dotted'
     const tip = r === cur ? '今の段' : why ? `使えない: ${why}` : `${RUNG_NAME[r]}の段へ`; return `<span data-r="${r}" style="padding:1px 5px;border-radius:3px;${st}" title="${tip}" data-short="${RUNG_SHORT[r] || RUNG_NAME[r]}">${RUNG_NAME[r]}</span>` }).join('<span style="color:#999"> › </span>')
   const i = RUNG_ORDER.indexOf(cur); const up = $('up') as HTMLButtonElement, dn = $('down') as HTMLButtonElement
   up.disabled = i <= 0; up.title = i > 0 ? `${RUNG_NAME[RUNG_ORDER[i - 1]]}の段へ（浅く）` : 'いちばん浅い段'
@@ -812,7 +813,8 @@ let baseVisKey = ''
 function baseEmitVisible(W: number) {
   if (!(cb.onVisible || cb.onRange) || !base || !($('sync') as HTMLInputElement).checked) return
   const [k0, k1] = baseVisible(W); if (k1 < k0) return; const set = new Set<string>(); for (let k = k0; k <= k1; k++) { const it = base.items[k]; const c = base.cols[it.kind === 'col' ? it.ci : it.ci0]; for (const n of (c.nodes || [])) set.add(n) }
-  let names = [...set]; if (names.length > 600) { const step = names.length / 600; names = Array.from({ length: 600 }, (_, i) => names[Math.floor(i * step)]) }
+  // 11-17: 以前は 600 個に等間隔で間引いていて、ノードの段（1 画面に 1,000 ノード超）でグラフの塗りが飛び飛びになった。グラフ側は層の名前に直して塗るだけなので 2 万まで送る
+  let names = [...set]; if (names.length > 20000) { const step = names.length / 20000; names = Array.from({ length: 20000 }, (_, i) => names[Math.floor(i * step)]) }
   const key = `${k0}:${k1}:${names.length}`; if (key === baseVisKey) return; baseVisKey = key; if (cb.onRange) cb.onRange({ names, colors: null, fit: false, hide: false }); else cb.onVisible?.({ names, sync: true })
 }
 // 要約の 1 行: 灰の棒＝深さ（塩基を持つリード。サンプルの最大で正規化）、色＝基準と違う塩基の割合（最も多い違う文字の色。2 割未満は薄く）、

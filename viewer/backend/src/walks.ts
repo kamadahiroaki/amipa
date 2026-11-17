@@ -114,6 +114,9 @@ export function buildWalks(C: Ctx, seed: number, radius = 10000, maxReads = 800)
   return { walks, seedRead: seedReads[bestK].name, stats: { reads: kept.length, otherLocus: other, fixedInSeed: fixed, alleles: major.length, consensusNodes: cons.length, consensusBp: consBp } }
 }
 
+/** 試験用: DB 名から（ctx を作って）歩みを返す */
+export function buildWalksFor(db: string, seed: number, radius = 10000): any { const C = ctxFor(db); if (typeof C === 'string') return { error: C }; const W: any = buildWalks(C, seed, radius); W.kept = (W as any).kept; return W }
+
 /** 歩みを仮のパスにして、塩基段（bubbleMsaRanges）と同じ形の整列を返す */
 export function walksMsa(db: string, seedName: string, opt: { radius?: number; reads?: { max: number; samples?: string[] } | null } = {}): any {
   const C = ctxFor(db); if (typeof C === 'string') return { error: C }
