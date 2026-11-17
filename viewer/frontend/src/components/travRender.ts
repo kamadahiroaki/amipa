@@ -106,7 +106,7 @@ type TRBlock = { s: number; y: number; h: number; depH: number; laneY: number; l
 let treadsLay: { y0: number; y1: number; blocks: TRBlock[]; max: number } | null = null
 let lof = new Map<number, { st: string; aa: number; ref: number | null; src: number | null }>()   // 機能喪失の目安（5）: gid → 状態
 let ogroups: OGroup[] = []; let srcPres: { name: string; type: string; x0: number; x1: number; pres: Pres }[] | null = null   // 参照を写した注釈のとき: 元の遺伝子ごとの有無                  // 見出しの遺伝子トラック
-const OGH = 16                              // 見出しの遺伝子トラックの高さ
+const OGH = 11                              // 見出しの遺伝子トラックの高さ（11-17: 16 → 11。太すぎた）
 let treeCut: number | null = null          // 系統樹のまとめ: 併合の高さがこれ（根の高さに対する割合）以下の枝を代表 1 株に（null＝まとめない）
 let groupOf = new Map<number, number[]>()  // 代表 hid → まとめた枝の hid 一覧
 let located: number[] = []                 // グラフから来た座標（縦線の印）
@@ -928,7 +928,7 @@ function drawBaseCore() {
       g.fillStyle = col; g.globalAlpha = .45; g.fillRect(sp[0], y0 + 3, sp[1] - sp[0], OGH - 6); g.globalAlpha = 1
       for (let ci = bg.c0; ci <= bg.c1; ci++) { if (bg.kindOf[ci] !== 1 && bg.kindOf[ci] !== 2) continue; const r = xOfCol(ci); if (!r) continue; g.fillStyle = col; g.globalAlpha = bg.kindOf[ci] === 1 ? 1 : .7; g.fillRect(r[0], y0 + (bg.kindOf[ci] === 1 ? 1 : 4), Math.max(1, r[1] - r[0]), bg.kindOf[ci] === 1 ? OGH - 2 : OGH - 8); g.globalAlpha = 1 }
       const w = sp[1] - sp[0]; if (w >= 10) { g.fillStyle = '#fff'; g.beginPath(); if (right) { g.moveTo(sp[1] - 5, y0 + 2); g.lineTo(sp[1] - 1, y0 + OGH / 2); g.lineTo(sp[1] - 5, y0 + OGH - 2) } else { g.moveTo(sp[0] + 5, y0 + 2); g.lineTo(sp[0] + 1, y0 + OGH / 2); g.lineTo(sp[0] + 5, y0 + OGH - 2) } g.fill() }
-      const nm = bg.g.name || bg.g.locus || ''; g.font = '9px system-ui'; const tw = g.measureText(nm).width; if (nm && w >= tw + 12) { g.fillStyle = '#111'; g.fillText(nm, sp[0] + (right ? 3 : 7), y0 + OGH - 4) } }
+      const nm = bg.g.name || bg.g.locus || ''; g.font = '8px system-ui'; const tw = g.measureText(nm).width; if (nm && w >= tw + 12) { g.fillStyle = '#111'; g.fillText(nm, sp[0] + (right ? 3 : 7), y0 + OGH - 3) } }
     B.lines.forEach((ln, k) => { if (rowTop[k] + rowHgt[k] < curOff - 40 || rowTop[k] > curY1 + 40) return; const gs = B.genesByHid.get(ln.hid); if (!gs || isRead(ln)) return; const y = rowTop[k] + ROW - 4
       // 1 つの区画（畳んだ群・俯瞰の群）に複数の列が入るので、区画ごとに 1 回だけ、区画の中で最も強い種類（CDS > エキソン > イントロン）で描く
       // （10-28: 列ごとに同じ区画を重ね塗りしていたので、変異の無い群＝区画だけ濃く（以前は太く）見えた）
@@ -953,7 +953,7 @@ function drawBaseCore() {
   if (AH && B.ann) { g.font = '9px system-ui'; g.fillStyle = '#495057'; g.textAlign = 'right'; g.fillText('反復（RepeatMasker）', LAB - 4, BH_A + ANN_REP_H - 2)
     B.ann.samples.forEach((sm, si) => g.fillText(`GIAB ${sm}`, LAB - 4, BH_A + ANN_REP_H + si * ANN_VAR_H + ANN_VAR_H - 1)); g.textAlign = 'left' }
   // 行ラベル・木
-  B.lines.forEach((ln, k) => { if (rowTop[k] + rowHgt[k] < curOff - 40 || rowTop[k] > curY1 + 40) return; const y = rowTop[k], small = rowHgt[k] < ROW; const row = B.rows[ln.mi]; const grp = ln.hid >= 0 ? groupOf.get(ln.hid) : undefined; const mk = ln.hid >= 0 ? markOf(root!.haps[ln.hid].hap) : undefined; const rdi = (row as any).read; if (mk) { g.fillStyle = mk; g.beginPath(); g.arc(TREEW + 7, y + 7, 3.5, 0, Math.PI * 2); g.fill() } g.fillStyle = rdi ? '#1c6e8c' : row.isref ? '#7a4b00' : '#333'; g.font = small ? `${Math.max(6, rowHgt[k] - 1)}px system-ui` : rdi ? '10px system-ui' : '11px system-ui'; g.fillText(ln.cov ? `▸${ln.cov === '*' ? '全サンプル' : ln.cov} 要約（${readCov(B, ln.cov).n} 本）` : ln.pack && ln.pack.length > 1 ? `▸${ln.sm === '*' ? '全サンプル' : rdi.sample} 詰め ${ln.pack.length} 本` : rdi ? `${row.label}  q${rdi.mapq ?? '?'}${rdi.nins ? ` +${rdi.nins}ins` : ''}  ${row.strand}` : `${row.label}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}  ${row.strand}`, TREEW + (mk ? 13 : 4), small ? y + rowHgt[k] - 1 : y + 10) })
+  B.lines.forEach((ln, k) => { if (rowTop[k] + rowHgt[k] < curOff - 40 || rowTop[k] > curY1 + 40) return; const y = rowTop[k], small = rowHgt[k] < ROW; const row = B.rows[ln.mi]; const grp = ln.hid >= 0 ? groupOf.get(ln.hid) : undefined; const mk = ln.hid >= 0 ? markOf(root!.haps[ln.hid].hap) : undefined; const rdi = (row as any).read; if (mk) { g.fillStyle = mk; g.beginPath(); g.arc(TREEW + 7, y + 7, 3.5, 0, Math.PI * 2); g.fill() } g.fillStyle = rdi ? '#1c6e8c' : row.isref ? '#7a4b00' : '#333'; g.font = small ? `${Math.max(6, rowHgt[k] - 1)}px system-ui` : rdi ? '10px system-ui' : '11px system-ui'; g.save(); g.beginPath(); g.rect(TREEW, y - 1, LAB - TREEW - 3, rowHgt[k] + 2); g.clip(); g.fillText(ln.cov ? `▸${ln.cov === '*' ? '全サンプル' : ln.cov} 要約（${readCov(B, ln.cov).n} 本）` : ln.pack && ln.pack.length > 1 ? `▸${ln.sm === '*' ? '全サンプル' : rdi.sample} 詰め ${ln.pack.length} 本` : rdi ? `${row.label}  q${rdi.mapq ?? '?'}${rdi.nins ? ` +${rdi.nins}ins` : ''}  ${row.strand}` : `${row.label}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}  ${row.strand}`, TREEW + (mk ? 13 : 4), small ? y + rowHgt[k] - 1 : y + 10); g.restore()   /* 11-17: 長いリード名が整列に被った → ラベル欄で切る */ })
   const rowOf = new Map<number, number>(); B.lines.forEach((ln, k) => { if (!ln.pin && !rowOf.has(ln.hid)) rowOf.set(ln.hid, k) })
   drawTree(rowOf)
   baseScrollSync(Wb)
@@ -1175,7 +1175,7 @@ function drawCore() {
     g.fillStyle = '#666'; g.font = '10px system-ui'; const lbl = '錨の列: アレルの種類数'; g.fillText(lbl, LAB - g.measureText(lbl).width - 4, SY0 + SH - 1)
   }
   if (ogOn) {   // 見出しの遺伝子トラック: 群＝1 本の矢印（濃い青緑＝core 90% 以上、薄い＝accessory、灰＝擬似が多数、紫＝RNA）。向きは群の多数
-    const y0 = TOP - 12 - OGH; g.fillStyle = '#f3f6f7'; g.fillRect(LAB, y0, W - LAB, OGH); g.fillStyle = '#666'; g.font = '10px system-ui'; const lbl = '遺伝子群'; g.fillText(lbl, LAB - g.measureText(lbl).width - 4, y0 + OGH - 4)
+    const y0 = TOP - 12 - OGH; g.fillStyle = '#f3f6f7'; g.fillRect(LAB, y0, W - LAB, OGH); g.fillStyle = '#666'; g.font = '10px system-ui'; const lbl = '遺伝子群'; g.fillText(lbl, LAB - g.measureText(lbl).width - 4, y0 + OGH - 2)
     ogHits = []
     if (!ogroups.length && gdens && gdens.n.length) {   // 全景: 遺伝子の密度（棒の高さ＝1 株あたりの遺伝子数、赤＝株で有無・コピー数が違う遺伝子）
       const D = gdens; const mx = Math.max(1, ...D.n); const Wd = D.x1 - D.x0 + 1
@@ -1187,7 +1187,7 @@ function drawCore() {
     for (const o of ogroups) { if (o.x1 < v0 || o.x0 > v1) continue; const pa = Math.max(LAB, X(o.x0)), pb = Math.min(W, X(o.x1 + 1)); const w = Math.max(2, pb - pa); const core = o.nhap >= 0.9 * root.H
       g.fillStyle = o.npseudo * 2 > o.n ? '#9a9a9a' : o.kind === 'rna' ? (core ? '#6c5ce7' : '#b89be0') : (core ? '#0d7c86' : '#8cc3c8'); const right = o.fwd * 2 >= o.n
       g.beginPath(); if (w >= 8) { if (right) { g.moveTo(pa, y0 + 2); g.lineTo(pb - 5, y0 + 2); g.lineTo(pb, y0 + OGH / 2); g.lineTo(pb - 5, y0 + OGH - 2); g.lineTo(pa, y0 + OGH - 2) } else { g.moveTo(pb, y0 + 2); g.lineTo(pa + 5, y0 + 2); g.lineTo(pa, y0 + OGH / 2); g.lineTo(pa + 5, y0 + OGH - 2); g.lineTo(pb, y0 + OGH - 2) } g.closePath(); g.fill() } else g.fillRect(pa, y0 + 2, w, OGH - 4)
-      if (o.name) { g.font = '9px system-ui'; const tw = g.measureText(o.name).width; if (w >= tw + 12) { g.fillStyle = '#fff'; g.fillText(o.name, pa + (right ? 3 : 7), y0 + OGH - 5) } }
+      if (o.name) { g.font = '8px system-ui'; const tw = g.measureText(o.name).width; if (w >= tw + 12) { g.fillStyle = '#fff'; g.fillText(o.name, pa + (right ? 3 : 7), y0 + OGH - 3) } }
       if (o.para && w >= 4) { g.save(); g.setLineDash([2, 2]); g.strokeStyle = '#111'; g.lineWidth = 1; g.strokeRect(pa + .5, y0 + 1.5, w - 1, OGH - 3); g.restore() }   // 旁系を含む群＝黒の点線枠
       // 有無・コピー数の印（10-27）: 矢印の下に、欠ける株（赤）・2 コピー以上の株（青）・一部だけの株（橙）の割合を細い帯で。どの株も同じなら印なし
       if (o.pres && o.pres.cover) { const P = o.pres; let xx = pa; const seg = (n: number, col: string) => { if (!n) return; const ww = Math.max(2, w * n / P.cover); g.fillStyle = col; g.fillRect(xx, y0 + OGH - 2, ww, 3); xx += ww }
