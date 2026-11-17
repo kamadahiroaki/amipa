@@ -393,7 +393,7 @@ def _reloc_once(X_, minB=RELOC_MIN):
     if os.environ.get('RELOC_DEBUG') and minB < RELOC_MIN:
         for r_ in recs:
             if 140000 <= r_[0] <= 150000: log(f'   rec {r_}')
-    if not recs: return None, nseg
+    if not recs: return [], nseg   # 候補なし（11-17: None を返していて、2 段目の内包表記が TypeError で落ちた。小さいグラフでは普通に起きる）
     recs.sort(); cl = []
     for r_ in recs:
         if cl and min(cl[-1][1], r_[1]) - max(cl[-1][0], r_[0]) >= 0.5 * min(cl[-1][1] - cl[-1][0], r_[1] - r_[0]): cl[-1][0] = min(cl[-1][0], r_[0]); cl[-1][1] = max(cl[-1][1], r_[1]); cl[-1][2].append(r_)
