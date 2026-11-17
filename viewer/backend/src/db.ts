@@ -28,12 +28,12 @@ const cache = new Map<string, Database.Database>()
 // ⚠ 初回 cold の実 I/O は減らない(データは一度 Lustre から読む)。負値=KB(上限、触った分だけ確保)。
 // 巨大 DB(WG 等 >HUGE_DB_BYTES)は厚め、それ以外は控えめ。env AMIPA_CACHE_MB で上書き可。
 function cacheKbFor(filename: string): number {
-  const env = Number((process.env.AMIPA_CACHE_MB ?? process.env.GGB_CACHE_MB))
+  const env = Number(process.env.AMIPA_CACHE_MB)
   if (Number.isFinite(env) && env > 0) return Math.round(env * 1024)
   return dbBytes(filename) >= HUGE_DB_BYTES ? 512 * 1024 : 64 * 1024
 }
 // mmap は Lustre で効かない/制限される場合があるため既定 off。AMIPA_MMAP_BYTES=<bytes> で有効化し実測して採否。
-const MMAP_BYTES = Number((process.env.AMIPA_MMAP_BYTES ?? process.env.GGB_MMAP_BYTES)) || 0
+const MMAP_BYTES = Number(process.env.AMIPA_MMAP_BYTES) || 0
 
 export function getDb(filename: string): Database.Database {
   const cached = cache.get(filename)

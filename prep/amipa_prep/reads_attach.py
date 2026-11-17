@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-reads_attach.py — リード整列（オンデマンド取得）をアトラスに足す。
+reads_attach.py — リード整列（オンデマンド取得）を DB に足す。
 
-per-read 行はアトラス本体に入れない。実体は **seekable zstd の GAF**（`zstd_seek.py`。行単位で
+per-read 行は DB 本体に入れない。実体は **seekable zstd の GAF**（`zstd_seek.py`。行単位で
 ランダム取得できる）に持ち、DB 側は「索引＋サマリ」だけを **サイドカー `<db>.reads`** に入れる。
 **base の多層 DB は一切改変しない**（annot と同じ ATTACH 方式）。base からは葉サイズと
 maxlayer を読むだけ（読取専用）。
@@ -34,7 +34,7 @@ maxlayer を読むだけ（読取専用）。
   すると、同じ内容が BGZF の **1/8** に収まる（HPRC の HiFi GAF 256MiB で実測: BGZF 51MB →
   タグ選別 + zstd-9 で 6MB）。元の GAF は入力として手元に残るので、捨てるのは複製の側だけ。
 
-★照合は「アトラスの葉の名前空間」で行う（v2）。葉 n{id} の id 集合を昇順配列に持ち、
+★照合は「DB の葉の名前空間」で行う（v2）。葉 n{id} の id 集合を昇順配列に持ち、
   GAF path のトークンは二分探索（連番なら差分の直アクセス）で葉序数に解決する。
   v1 の「最大 id + 1 の密配列」をやめたので、id が疎（部分グラフ・非連番）でもメモリは葉数比例。
   構築前に先頭 1 万行で一致率を検査し、低ければ**その場で失敗する**（黙って捨てない）。
@@ -104,14 +104,14 @@ def load_leaves(con):
                 continue
             ids.append(int(m.group(1))); szs.append(int(size) if size else 0)
     if len(ids) == 0:
-        raise SystemExit("FATAL: 葉 n{id} が無い（対象 DB が多層アトラスか確認）")
+        raise SystemExit("FATAL: 葉 n{id} が無い（対象 DB が多層 DB か確認）")
     if bad:
         # is_bubble=0 には葉 n<整数> のほかに少数の S/G クラスタ行（kind=2 の連鎖・単独クラスタ）が
         # 混ざる。少数なら照合対象から除外するだけでよい（旧実装の GLOB も同じ挙動）。
         # **大半が n<整数> でない**ときは前提（leaf_key='orig-int'）が崩れているので黙って進めない。
         if bad > len(ids):
             raise SystemExit(f"FATAL: is_bubble=0 の行の大半（{bad:,}/{bad + len(ids):,}）が n<整数> でない。"
-                             "このアトラスの葉の名前空間には未対応（reads-node-id-space 計画を参照）")
+                             "この DB の葉の名前空間には未対応（reads-node-id-space 計画を参照）")
         print(f"  葉走査: n<整数> でない is_bubble=0 行 {bad:,} 個（S/G クラスタ）を照合対象から除外",
               file=sys.stderr)
     ids = np.frombuffer(ids, dtype=np.int64); szs = np.frombuffer(szs, dtype=np.int64)
@@ -171,9 +171,9 @@ def precheck_match(gaf, lmap, sample_id, max_lines=10_000, min_match=0.5, force=
     print(f"  [precheck] {sample_id}: 先頭 {lines:,} 整列行 一致 {hit:,}/{tot:,} ({rate*100:.1f}%)", file=sys.stderr)
     if rate < min_match and not force:
         raise SystemExit(
-            f"FATAL: GAF のノード名がアトラスの葉と一致しない（一致率 {rate*100:.1f}% < {min_match*100:.0f}%）。\n"
+            f"FATAL: GAF のノード名が DB の葉と一致しない（一致率 {rate*100:.1f}% < {min_match*100:.0f}%）。\n"
             f"  ・`vg giraffe --named-coordinates` で整列したか\n"
-            f"  ・整列に使った GFA がこのアトラスの元と同じか（dense 再番号 GFA ではないか）\n"
+            f"  ・整列に使った GFA がこの DB の元と同じか（dense 再番号 GFA ではないか）\n"
             f"  を確認する。承知の上で続けるなら --force-mismatch。")
 
 

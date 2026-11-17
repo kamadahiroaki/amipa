@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-title: "AMIPA — Annotated Multi-resolution Interactive Pangenome Atlas"
+title: "AMIPA — Annotated Multi-resolution Interactive Pangenome Architecture"
 message: "このソフトウェアを使った場合は以下を引用してください。"
 type: software
 authors:
@@ -10,7 +10,7 @@ authors:
 license: GPL-3.0-or-later
 repository-code: "https://github.com/kamadahiroaki/amipa"
 abstract: >-
-  パンゲノムグラフ（GFA）を多解像度のアトラスに前処理し、
+  パンゲノムグラフ（GFA）を多解像度の DB に前処理し、
   ハプロタイプ・アノテーション・リード整列を重ねて対話的に閲覧するためのツール。
 keywords:
   - pangenome

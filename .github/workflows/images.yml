@@ -31,10 +31,10 @@ jobs:
         include:
           - image: viewer
             license: MIT
-            desc: AMIPA viewer - serves a prebuilt multi-resolution pangenome atlas
+            desc: AMIPA viewer - serves a prebuilt multi-resolution pangenome database
           - image: prep
             license: GPL-3.0-or-later
-            desc: AMIPA preprocessing - turns a GFA into a multi-resolution pangenome atlas
+            desc: AMIPA preprocessing - turns a GFA into a multi-resolution pangenome database
     steps:
       - uses: actions/checkout@v4
 

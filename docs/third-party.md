@@ -7,10 +7,10 @@ AMIPA は以下を利用している。それぞれのライセンスは各プ�
 | BubbleFinder | バブル（入れ子の分岐構造）の分解（既定） | https://github.com/algbio/BubbleFinder |
 | Billi | バブルの分解（選択肢。配布イメージには含まない） | https://github.com/at-cg/billi |
 | Infomap | コミュニティ検出（解像度階層の構築） | https://www.mapequation.org/ |
-| SQLite（R*Tree / FTS5 を含む） | アトラスの格納と空間・文字列索引 | https://sqlite.org/ |
+| SQLite（R*Tree / FTS5 を含む） | DB の格納と空間・文字列索引 | https://sqlite.org/ |
 | NumPy / SciPy / numba | 数値計算とレイアウト | — |
 | zstd（python-zstandard / zstd クレート経由） | リード実体の圧縮容器 | https://facebook.github.io/zstd/ |
-| Biopython | 旧アトラスの BGZF 読み出しと配列の取り扱い | https://biopython.org/ |
+| Biopython | 旧 DB の BGZF 読み出しと配列の取り扱い | https://biopython.org/ |
 | PixiJS / React | 描画と画面 | — |
 | better-sqlite3 / Express | 閲覧側のサーバ | — |
 

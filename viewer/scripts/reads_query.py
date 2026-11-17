@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 reads_query.py — オンデマンドのリード照会ヘルパ。backend(Node/TS)から起動され、
-索引(node_reads/read_aln/read_src)＋**seekable zstd の GAF**（旧アトラスは BGZF）から
+索引(node_reads/read_aln/read_src)＋**seekable zstd の GAF**（旧 DB は BGZF）から
 必要な行だけ取り出して parse し、JSON を返す。
 
 cs スライス等のロジックは前処理側と共有(二重実装回避)。1リクエスト=1プロセス(常駐しない)。
@@ -155,7 +155,7 @@ def resolve_read_file(db_path, recorded):
 def read_sources(con):
     """read_src を (sample_no → (path, container, sample_id)) で返す。
 
-    現行は `path` + `container`（'zstd'）。**旧アトラスは `bgzf_path` 列で容器は BGZF** なので、
+    現行は `path` + `container`（'zstd'）。**旧 DB は `bgzf_path` 列で容器は BGZF** なので、
     列の有無で見分けて両方読めるようにしておく（付け替えずに開ける）。
     """
     cols = {r[1] for r in con.execute("PRAGMA rd.table_info(read_src)")}
@@ -177,7 +177,7 @@ def open_readers(con, db_path=None):
             if db_path:
                 path = resolve_read_file(db_path, path)
             if container == "bgzf":
-                from Bio import bgzf                       # 旧アトラス互換
+                from Bio import bgzf                       # 旧 DB 互換
                 h = bgzf.BgzfReader(path, "rb")
 
                 def _bgzf(vo, h=h):

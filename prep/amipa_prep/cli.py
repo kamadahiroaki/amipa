@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""amipa prep — GFA を渡すだけで AMIPA アトラス（多層 SQLite DB ＋ サイドカー）を作る。
+"""amipa prep — GFA を渡すだけで AMIPA DB （多層 SQLite DB ＋ サイドカー）を作る。
 
     # 一気通貫（⓪distill → ①バブル分解 → ②LOD → ③layout → ④emit → bundle）
     amipa prep run --gfa graph.gfa --out mygraph.amipa --threads 16
@@ -255,7 +255,7 @@ class Bundle:
         self.logs = self.work / "log"
         self.name = name or self._infer_name(gfa)
         # ★本体は `<name>.db`。以前は `<name>.layered.db` だった（多層なのは中身の話で、
-        #   ファイル名に出す意味が無い）。既存アトラスは旧名のまま読める。
+        #   ファイル名に出す意味が無い）。既存 DB は旧名のまま読める。
         self.db = self.root / f"{self.name}.db"
         self.distill = Path(str(self.db) + ".distill")
         self.annot = Path(str(self.db) + ".annot")
@@ -292,7 +292,7 @@ class Bundle:
 
     def _infer_name(self, gfa: Path | None) -> str:
         # 既存バンドルなら中の本体、次に state.json、無ければ GFA のファイル名から決める。
-        # ★旧名 `*.layered.db` も拾う（先に見る＝既存アトラスを開いたときに名前が変わらない）。
+        # ★旧名 `*.layered.db` も拾う（先に見る＝既存 DB を開いたときに名前が変わらない）。
         if self.root.is_dir():
             for suf in (".layered.db", ".db"):
                 found = sorted(q for q in self.root.glob(f"*{suf}")
@@ -1016,7 +1016,7 @@ def add_common(p, need_gfa=False):
     p.add_argument("--gfa", type=Path, required=need_gfa, help="入力 GFA")
     p.add_argument("--name", help="DB のベース名（既定: GFA 名 or 既存 DB 名）")
     p.add_argument("--collapse", action="store_true",
-                   help="自明バブルの連鎖を 1 ノードに畳んでからアトラスを作る（可逆）。"
+                   help="自明バブルの連鎖を 1 ノードに畳んでから DB を作る（可逆）。"
                         "ノードが 4〜6 倍減り、SNP が画素を食わなくなる。"
                         "アレルの差分と元ノードとの対応は <db>.collapse に入る")
     p.add_argument("--gff-dir", default=None,
@@ -1035,11 +1035,11 @@ def add_common(p, need_gfa=False):
                    help="リボン/多重度の disk streaming(spill)の置き場（既定 = --tmp と同じ）。"
                         "**順次書きなので共有FSでも実害が小さく、必要量は DB より桁違いに大きいことがある**"
                         "（MC v2 実測で最大 2.3TB）。ノードローカルに入らない規模ではここだけ共有FSへ逃がす")
-    p.add_argument("--tmp", default=os.environ.get("AMIPA_TMP") or os.environ.get("GGB_TMP"),
+    p.add_argument("--tmp", default=os.environ.get("AMIPA_TMP"),
                    help="④のビルド用一時領域（既定: $TMPDIR → /tmp → <out>/work/tmp のうち"
                         "空きが足りる最初のもの）。**ノードローカルの速いディスク**が望ましい")
     p.add_argument("--mem-gib", type=float, default=None, help="③の pivot メモリ予算（既定 MemAvailable の 60%%）")
-    p.add_argument("--template", type=Path, default=Path(os.environ.get("GGB_TEMPLATE_DB", DEFAULT_TEMPLATE)),
+    p.add_argument("--template", type=Path, default=Path(os.environ.get("AMIPA_TEMPLATE_DB", DEFAULT_TEMPLATE)),
                    help="④のスキーマ供給用 DB（既定は同梱の空テンプレ）")
     p.add_argument("--decomposer", choices=DECOMPOSERS, default=DEFAULT_DECOMPOSER,
                    help="①のバブル分解器。bubblefinder（既定。最も速く軽いが、内部に閉路を含むバブルは出さない）／"

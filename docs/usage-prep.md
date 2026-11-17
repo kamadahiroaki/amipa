@@ -1,4 +1,4 @@
-# GFA からアトラスを作る（`amipa prep`）
+# GFA から DB を作る（`amipa prep`）
 
 ```bash
 docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" -e HOME=/tmp \
@@ -23,7 +23,7 @@ amipa prep run --gfa graph.gfa --out graph.amipa --threads 16 \
     --reads  HG002=HG002.gaf --reads HG003=HG003.gaf
 ```
 
-あとから足すこともできる。アトラスは作り直さない。
+あとから足すこともできる。DB は作り直さない。
 
 ```bash
 amipa prep add-annot --out graph.amipa --gene gencode.gtf.gz
@@ -34,7 +34,7 @@ amipa prep add-tiled --out graph.amipa            # タイル索引を作り直�
 アノテーションは生のファイルをそのまま渡してよい。事前に別のツールでグラフへ射影しておく
 必要はなく、射影は AMIPA が参照座標とパスをたどって行う。
 
-リードの GAF は、path のノード ID がアトラスの葉ノードと一致している必要がある
+リードの GAF は、path のノード ID が DB の葉ノードと一致している必要がある
 （`vg giraffe --named-coordinates` の出力など）。取り込みの最初に先頭 1 万行で一致率を
 検査し、低ければ**その場で失敗する**（原因と対処を表示する。黙って捨てて完走することはない）。
 
@@ -112,7 +112,7 @@ amipa prep run --out graph.amipa --force       # 全部やり直す
 | `--decomposer` | バブル分解器。`bubblefinder` / `billi`（違いは[各段の説明](pipeline.md)） | 環境変数 `AMIPA_DECOMPOSER`、無ければ `bubblefinder` |
 | `--billi` | Billi の実行ファイル | 環境変数 `AMIPA_BILLI`、無ければ PATH 上の `billi` |
 | `--bubblefinder` | BubbleFinder の実行ファイル | 環境変数 `AMIPA_BUBBLEFINDER`、無ければ PATH 上の `BubbleFinder` |
-| `--flood` | 階層を組む段でバブルの内部を割り当てる方法。`legacy` は以前の動作（内側のバブルより先にある外側のバブルの内部を割り当て損ね、その部分がバブルの外として扱われる）で、以前のアトラスを再現するときだけ使う | `through` |
+| `--flood` | 階層を組む段でバブルの内部を割り当てる方法。`legacy` は以前の動作（内側のバブルより先にある外側のバブルの内部を割り当て損ね、その部分がバブルの外として扱われる）で、以前の DB を再現するときだけ使う | `through` |
 
 分解器を変えると、バブル分解の段とそれ以降がやり直しになる。どの分解器で作ったかは出力一式の
 `manifest.json` の `lod` に記録される。
@@ -122,8 +122,8 @@ amipa prep run --out graph.amipa --force       # 全部やり直す
 | オプション | 意味 | 既定 |
 |---|---|---|
 | `--threads` | 並列度。バブル分解（BubbleFinder）とレイアウトに効く（階層を組む段は再現性のため常に 1 スレッド） | 見えている CPU 数 |
-| `--tmp` | アトラス本体を組む場所。ランダム書き込みなのでローカルの速いディスクが要る。必要量はおよそ完成アトラスのサイズ | `$TMPDIR` → `/tmp` → `<out>/work/tmp` の順で、空きが足りる最初のもの |
-| `--spill` | 途中の一時ファイル。順次書きなので共有ファイルシステムでも実害は小さいが、必要量がアトラスより桁違いに大きいことがある | `--tmp` と同じ |
+| `--tmp` | DB 本体を組む場所。ランダム書き込みなのでローカルの速いディスクが要る。必要量はおよそ完成 DB のサイズ | `$TMPDIR` → `/tmp` → `<out>/work/tmp` の順で、空きが足りる最初のもの |
+| `--spill` | 途中の一時ファイル。順次書きなので共有ファイルシステムでも実害は小さいが、必要量が DB より桁違いに大きいことがある | `--tmp` と同じ |
 | `--mem-gib` | レイアウトのメモリ予算 | 使用可能量（cgroup 上限やジョブの上限も見る）の 60% |
 | `--ribbon-disk` | ハプロタイプ帯の計算をディスクストリーミングで行う（大きいグラフでメモリを抑える） | off |
 

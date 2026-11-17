@@ -4263,8 +4263,8 @@ def main():
             con.commit(); con.close()
             try:
                 import subprocess
-                # GGB_HAPIDX_BIN で差し替え可（失敗時フォールバックの検証用。既定は同ディレクトリ）
-                _hx = (os.environ.get("AMIPA_HAPIDX_BIN") or os.environ.get("GGB_HAPIDX_BIN")
+                # AMIPA_HAPIDX_BIN で差し替え可（失敗時フォールバックの検証用。既定は同ディレクトリ）
+                _hx = (os.environ.get("AMIPA_HAPIDX_BIN")
                        or os.path.join(os.path.dirname(os.path.abspath(__file__)), "hap_index.py"))
                 # --no-integrity-check: quick_check は **DB 全ページ読み**。この DB は今この
                 # プロセスが書いたので検査は無意味な重複で、共有FS 直書き(--build-tmp 無し)だと
@@ -4470,8 +4470,7 @@ def main():
     # ★コンテナ内には .git が無い（git も無い）ので、イメージのビルド時に埋めた
     #   AMIPA_EMITTER_REV を優先する。これが無いと db_meta.emitter_rev が "unknown" になり、
     #   どの版で作った DB か後から辿れなくなる（図版の版刻印にも出る）。
-    _rev = (os.environ.get("AMIPA_EMITTER_REV", "")
-            or os.environ.get("GGB_EMITTER_REV", "")).strip()
+    _rev = os.environ.get("AMIPA_EMITTER_REV", "").strip()
     if not _rev:
         try:
             _rev = subprocess.run(["git", "-C", os.path.dirname(os.path.abspath(__file__)),

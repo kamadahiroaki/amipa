@@ -9,7 +9,7 @@
 
 ```bash
 docker pull ghcr.io/kamadahiroaki/amipa-viewer     # 閲覧だけならこれで足りる
-docker pull ghcr.io/kamadahiroaki/amipa-prep       # 自分の GFA からアトラスを作るなら
+docker pull ghcr.io/kamadahiroaki/amipa-prep       # 自分の GFA から DB を作るなら
 ```
 
 ## Apptainer / Singularity（HPC など docker が使えない環境）
@@ -24,7 +24,7 @@ apptainer pull amipa-prep.sif   docker://ghcr.io/kamadahiroaki/amipa-prep
 Python を壊すことがある。
 
 ```bash
-apptainer exec --cleanenv -B /path/to/atlas:/data amipa-viewer.sif amipa check
+apptainer exec --cleanenv -B /path/to/graph.amipa:/data amipa-viewer.sif amipa check
 ```
 
 ## ソースからビルドする
@@ -40,7 +40,7 @@ docker build -f docker/Dockerfile.prep   -t amipa-prep \
     --build-arg AMIPA_REV=$(git rev-parse --short HEAD) .    # 10-20 分（Rust のコンパイル）
 ```
 
-`AMIPA_REV` は版の刻印（`amipa version` と、アトラスの `db_meta.emitter_rev` に入る）。
+`AMIPA_REV` は版の刻印（`amipa version` と、DB の `db_meta.emitter_rev` に入る）。
 `.git` は context から外してあるので、渡さないと `unknown` になる。
 
 どちらのイメージも最終段で自己テストする（BubbleFinder が起動するか、ネイティブモジュールが
@@ -72,8 +72,8 @@ runtime 段に何を入れるかを変えたら両方で焼き直して確かめ
 ## 動作確認
 
 ```bash
-docker run --rm -v /path/to/atlas:/data:ro ghcr.io/kamadahiroaki/amipa-viewer check
+docker run --rm -v /path/to/graph.amipa:/data:ro ghcr.io/kamadahiroaki/amipa-viewer check
 ```
 
-`RESULT: OK` なら、そのアトラスは開ける状態にある。この点検は巨大なアトラスでも数秒で終わる
+`RESULT: OK` なら、その DB は開ける状態にある。この点検は巨大な DB でも数秒で終わる
 （全走査を一切しない）。

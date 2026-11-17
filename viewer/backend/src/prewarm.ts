@@ -39,20 +39,20 @@ let current: { db: string; child: ChildProcess } | null = null
 const queue: string[] = []
 
 // これより小さい DB は放っておいても自然に温まるので対象外（既定 4GiB）
-const MIN_BYTES = Number((process.env.AMIPA_PREWARM_MIN_BYTES ?? process.env.GGB_PREWARM_MIN_BYTES)) || 4 * 1024 ** 3
+const MIN_BYTES = Number(process.env.AMIPA_PREWARM_MIN_BYTES) || 4 * 1024 ** 3
 // DB を開いた時に自動でプリウォームを始めるか。
 // ★既定 OFF。理由: 利用者が「今」見たくて DB を開いた瞬間に 250GB の順読みを始めると、
 //   最初の表示が順読みと競合して逆に遅くなる（実際にそうなった）。起動時プリウォーム
 //   （AMIPA_PREWARM）は利用者がいないので安全だが、開いた時のそれは体感を悪くする。
 //   明示的に有効化したい場合のみ AMIPA_PREWARM_ON_OPEN=1。
-export const PREWARM_ON_OPEN = (process.env.AMIPA_PREWARM_ON_OPEN ?? process.env.GGB_PREWARM_ON_OPEN) === '1'
+export const PREWARM_ON_OPEN = process.env.AMIPA_PREWARM_ON_OPEN === '1'
 
 // 速度が出ない時に見切る閾値（MB/s）。0 で無効。
 // ★このFSは stripe_count=1 ＝ **1 ファイルが 1 OST に固定**される。OST が劣化/混雑していると
 //   同じノード・同じ時刻でも 90MB/s(OST34) 対 1.1GB/s(OST30) と 12 倍違う（2026-08-09 実測）。
 //   遅い側を掴んだまま走ると 252GB に 47 分かかり、その間ずっと利用者の取得を邪魔する。
 //   「速く読めるなら読み切る、遅いなら諦める」が正しい。
-const MIN_RATE = (Number((process.env.AMIPA_PREWARM_MIN_MBPS ?? process.env.GGB_PREWARM_MIN_MBPS)) || 300) * 1e6
+const MIN_RATE = (Number(process.env.AMIPA_PREWARM_MIN_MBPS) || 300) * 1e6
 const RATE_CHECK_MS = 20_000        // 助走のあとこの時点で判定する
 
 export function prewarmState(db: string): PrewarmState | null {
@@ -203,7 +203,7 @@ export function startPrewarm(db: string): PrewarmState | null {
  * 小さい DB（既定 4GiB 未満）は放っておいても温まるので対象外。速度が出ない時は自動で見切る。
  */
 export function prewarmAtStartup() {
-  const raw = (process.env.AMIPA_PREWARM ?? process.env.GGB_PREWARM ?? '').trim()
+  const raw = (process.env.AMIPA_PREWARM ?? '').trim()
   if (raw === 'off' || raw === '0' || raw === 'false') {
     console.log('[prewarm] 無効（AMIPA_PREWARM=off）')
     return
@@ -218,9 +218,9 @@ export function prewarmAtStartup() {
   }
   let list = (raw === 'auto' ? '' : raw).split(',').map(s => s.trim()).filter(Boolean)
   if (!list.length) {
-    // 既定: DB_DIR にあるアトラス本体を全部。ここに来るのは配信を始めた直後だけ。
+    // 既定: DB_DIR にある DB 本体を全部。ここに来るのは配信を始めた直後だけ。
     try {
-      // 本体は `<name>.db`（旧アトラスは `<name>.layered.db`。どちらも .db で終わる）。
+      // 本体は `<name>.db`（旧 DB は `<name>.layered.db`。どちらも .db で終わる）。
       // サイドカーは .reads/.annot/… なのでここには混ざらない。
       list = fs.readdirSync(getDbDir()).filter(f => f.endsWith('.db')).sort()
     } catch { list = [] }

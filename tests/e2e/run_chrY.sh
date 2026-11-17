@@ -1,5 +1,5 @@
 #!/bin/bash
-# 一気通貫の回帰試験: GFA → アトラス → `amipa check` が全部 ok になるか。
+# 一気通貫の回帰試験: GFA → DB → `amipa check` が全部 ok になるか。
 # 段の連結・サイドカーの生成・再開の判定が壊れていないかを、実際に走らせて確かめる。
 #
 #   ./run_chrY.sh --gfa /path/chrY.gfa [--out DIR] [--reads S=GAF] [--band F] [--gene F]

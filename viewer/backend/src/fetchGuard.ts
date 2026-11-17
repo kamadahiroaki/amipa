@@ -40,7 +40,7 @@ import type { Response } from 'express'
  * env AMIPA_FETCH_MS で上書き。
  */
 export const FETCH_MS = (() => {
-  const v = Number((process.env.AMIPA_FETCH_MS ?? process.env.GGB_FETCH_MS))
+  const v = Number(process.env.AMIPA_FETCH_MS)
   return Number.isFinite(v) && v > 0 ? v : 300_000
 })()
 
@@ -54,7 +54,7 @@ export const FETCH_MS = (() => {
  * env AMIPA_MAX_ROWS で上書き。
  */
 export const HARD_ROW_CAP = (() => {
-  const v = Number((process.env.AMIPA_MAX_ROWS ?? process.env.GGB_MAX_ROWS))
+  const v = Number(process.env.AMIPA_MAX_ROWS)
   return Number.isFinite(v) && v > 0 ? v : 1_000_000
 })()
 
@@ -65,7 +65,7 @@ export function effectiveMaxRows(clientMaxRows: number): number {
 }
 /** プローブ（打ち切りカウント）が走査する上限行数。maxRows が巨大でもここで頭打ちにする。 */
 export const PROBE_CAP = (() => {
-  const v = Number((process.env.AMIPA_PROBE_CAP ?? process.env.GGB_PROBE_CAP))
+  const v = Number(process.env.AMIPA_PROBE_CAP)
   return Number.isFinite(v) && v > 0 ? v : 100_000
 })()
 /**
@@ -80,7 +80,7 @@ export const PROBE_CAP = (() => {
  * （実測）なので 16 行ごとで **2.7ns/行** ＝ iterate 自体の ~1us/行 に対し 0.27%。無視できる。
  */
 const TIME_CHECK_EVERY = (() => {
-  const v = Number((process.env.AMIPA_TIME_CHECK_EVERY ?? process.env.GGB_TIME_CHECK_EVERY))
+  const v = Number(process.env.AMIPA_TIME_CHECK_EVERY)
   return Number.isFinite(v) && v > 0 && (v & (v - 1)) === 0 ? v : 16
 })()
 

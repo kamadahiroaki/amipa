@@ -1,4 +1,4 @@
-# AMIPA — Annotated Multi-resolution Interactive Pangenome Atlas
+# AMIPA — Annotated Multi-resolution Interactive Pangenome Architecture
 
 パンゲノムグラフをインタラクティブに閲覧するためのツール。
 
@@ -17,11 +17,11 @@ AMIPA はグラフを前処理してDB形式に変換し、全ゲノムの俯瞰
 ## 試す
 
 ```bash
-# 閲覧だけ（手元にあるアトラスを開く）
-docker run --rm -p 3001:3001 -v /path/to/atlas:/data:ro ghcr.io/kamadahiroaki/amipa-viewer serve
+# 閲覧だけ（手元にある DB を開く）
+docker run --rm -p 3001:3001 -v /path/to/graph.amipa:/data:ro ghcr.io/kamadahiroaki/amipa-viewer serve
 # → http://localhost:3001
 
-# 自分の GFA からアトラスを作る
+# 自分の GFA から DB を作る
 docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" \
   ghcr.io/kamadahiroaki/amipa-prep prep run --gfa /work/graph.gfa --out /work/graph.amipa --threads 8
 ```
@@ -33,9 +33,9 @@ docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" \
 | | |
 |---|---|
 | [docs/install.md](docs/install.md) | 導入（Docker / Apptainer / ソースからビルド） |
-| [docs/usage-prep.md](docs/usage-prep.md) | アトラスの作り方 |
+| [docs/usage-prep.md](docs/usage-prep.md) | DB の作り方 |
 | [docs/usage-viewer.md](docs/usage-viewer.md) | 画面の使い方 |
-| [docs/atlas-format.md](docs/atlas-format.md) | アトラスの中身（自分で読み書きしたいとき） |
+| [docs/db-format.md](docs/db-format.md) | DB の中身（自分で読み書きしたいとき） |
 | [docs/pipeline.md](docs/pipeline.md) | 前処理が何をしているか |
 | [docs/deploy.md](docs/deploy.md) | 公開サーバとして配信するとき |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | うまくいかないとき |

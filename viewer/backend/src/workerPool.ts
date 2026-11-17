@@ -26,7 +26,7 @@ import type { QueryJob } from './dbJobs'
 // worker 数。DB 接続がワーカーごとに増える（cache_size も worker ごと）ので控えめが既定。
 // 読み取りは並列化しても Lustre の I/O 律速なので、数を増やすより「メインを空ける」ことが本質。
 const N_WORKERS = (() => {
-  const v = Number((process.env.AMIPA_DB_WORKERS ?? process.env.GGB_DB_WORKERS))
+  const v = Number(process.env.AMIPA_DB_WORKERS)
   return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 2
 })()
 
@@ -74,7 +74,7 @@ interface Slot {
 // 代償はその worker の SQLite ページキャッシュを失うこと（cold に戻る）なので短すぎない値に。
 // env AMIPA_TERMINATE_GRACE_MS で上書き。
 const TERMINATE_GRACE_MS = (() => {
-  const v = Number((process.env.AMIPA_TERMINATE_GRACE_MS ?? process.env.GGB_TERMINATE_GRACE_MS))
+  const v = Number(process.env.AMIPA_TERMINATE_GRACE_MS)
   return Number.isFinite(v) && v > 0 ? v : 10_000
 })()
 

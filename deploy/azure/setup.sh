@@ -31,7 +31,7 @@ systemctl enable --now docker
 usermod -aG docker "$ADMIN" || echo "警告: ユーザー $ADMIN が居ない。ADMIN=<名前> を指定して再実行するか、後で手で追加する"
 
 echo "===== 3/4 データディスクを /data へ ====="
-# ★既にファイルシステムがあれば絶対に mkfs しない（アトラスを消さないため）。
+# ★既にファイルシステムがあれば絶対に mkfs しない（DB を消さないため）。
 for _ in {1..30}; do [[ -e $DEV ]] && break; sleep 2; done
 if [[ ! -e $DEV ]]; then
   echo "FATAL: データディスクが見つからない: $DEV" >&2
@@ -80,6 +80,6 @@ docker compose version
 echo
 echo "次にやること:"
 echo "  1. /opt/amipa に compose.yml / Caddyfile / .env を置く"
-echo "  2. /data/bundles にアトラスを転送する"
+echo "  2. /data/bundles に DB を転送する"
 echo "  3. sudo systemctl enable --now amipa    ← これを忘れると再起動で上がってこない"
 echo "  4. 一度ログインし直す（docker グループの反映に要る）"

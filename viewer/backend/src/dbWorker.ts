@@ -48,7 +48,7 @@ export interface JobReply {
 // 24.78MB の deflate(level 1 で 130ms) もメインには持ち込まない。level は server.ts と同じ既定 1。
 // 小さい本文はヘッダ分の損になるので threshold 未満は素通し（compression の既定と同じ 1KB）。
 const GZIP_LEVEL = (() => {
-  const v = Number((process.env.AMIPA_GZIP_LEVEL ?? process.env.GGB_GZIP_LEVEL))
+  const v = Number(process.env.AMIPA_GZIP_LEVEL)
   return Number.isFinite(v) && v >= 0 && v <= 9 ? Math.floor(v) : 1
 })()
 const GZIP_MIN_BYTES = 1024

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""annotate: 構築済みのアトラス本体に外部アノテーショントラックを後付けする (Part B)。
+"""annotate: 構築済みの DB 本体に外部アノテーショントラックを後付けする (Part B)。
 
 設計: ANNOTATION_IMPL_PLAN.md / ANNOTATE_HOWTO.md。本体 DB の nodes/edges/*_rtree は不変。
 アノテは **per-node の相乗り表 `node_annot`（node_rowid キー）** に保存する。これは coverage 系
@@ -1170,7 +1170,7 @@ def annotate_region(con, bed_path, ref_key, distill_dir, source, acc,
 
 def main():
     ap = argparse.ArgumentParser(
-        description="annotate: 構築済みのアトラス本体への後付けアノテーション (Part B, per-node blob)")
+        description="annotate: 構築済みの DB 本体への後付けアノテーション (Part B, per-node blob)")
     ap.add_argument("db")
     ap.add_argument("--band", metavar="cytoBand.txt[.gz]")
     ap.add_argument("--band-ref", default="GRCh38")

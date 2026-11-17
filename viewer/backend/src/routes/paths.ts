@@ -330,7 +330,7 @@ export function ribbonHandler(req: { query: any }, res: any): void {
       // AMIPA_RIBBON_NO_MASK=1 で旧経路（blob を読む）に固定できる。同一リクエストで
       // マスク経路と blob 経路の応答が完全一致することを確かめるための逃げ道。
       const TP: [string, number][] = []; let tp = Date.now(); const lap = (k: string) => { const n = Date.now(); TP.push([k, n - tp]); tp = n }   // 11-12: 段ごとの時間（遅いときログ）
-      const rsel = (theta === 0 && (process.env.AMIPA_RIBBON_NO_MASK ?? process.env.GGB_RIBBON_NO_MASK) !== '1') ? (() => {
+      const rsel = (theta === 0 && process.env.AMIPA_RIBBON_NO_MASK !== '1') ? (() => {
         try { return buildSelection(d, `${lo}-${hi}`) } catch { return null }
       })() : null
       const useMask = !!rsel && !rsel.exact

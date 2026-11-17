@@ -60,7 +60,7 @@ export function readsSourceFor(dbPath: string): ReadsSource | null {
   const sampleName = new Map([...src].map(([sn, v]) => [sn, v[2]] as [number, string]))
   const readers = new Map<number, SeekableZstd>()
   const resolve = (recorded: string) => { const b = path.basename(recorded), d = path.dirname(path.resolve(dbPath)); for (const c of [recorded, path.join(d, 'reads', b), path.join(d, b)]) if (fs.existsSync(c)) return c; return recorded }   // 11-11: 記録の絶対パスを先に（DB_DIR/reads に同じ名前の古い GAF があるとオフセットがずれ、リードの行が全部消えた）
-  const reader = (sn: number) => { let r = readers.get(sn); if (!r) { const s = src.get(sn)!; if (s[1] !== 'zstd') throw new Error('BGZF のリード実体は TS 版では読めない（旧アトラス）'); r = new SeekableZstd(resolve(s[0])); readers.set(sn, r) } return r }
+  const reader = (sn: number) => { let r = readers.get(sn); if (!r) { const s = src.get(sn)!; if (s[1] !== 'zstd') throw new Error('BGZF のリード実体は TS 版では読めない（旧 DB）'); r = new SeekableZstd(resolve(s[0])); readers.set(sn, r) } return r }
   const decode = (blob: Buffer, prev: number) => { const out: number[] = []; let shift = 0, cur = 0; for (const b of blob) { cur += (b & 0x7f) * 2 ** shift; if (b & 0x80) { shift += 7 } else { prev += cur; out.push(prev); cur = 0; shift = 0 } } return out }
   const qRange = hasChunk ? db.prepare('SELECT gfa_id, chunk_no, postings FROM node_reads WHERE gfa_id BETWEEN ? AND ?') : db.prepare('SELECT gfa_id, NULL AS chunk_no, postings FROM node_reads WHERE gfa_id BETWEEN ? AND ?')
   const chunks = hasChunk ? (db.prepare('SELECT base_aln_id AS b, n_aln AS n, sample_no AS s FROM read_chunk ORDER BY base_aln_id').all() as { b: number; n: number; s: number }[]) : []

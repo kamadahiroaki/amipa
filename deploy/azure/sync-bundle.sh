@@ -1,7 +1,7 @@
 #!/bin/bash
-# アトラスを配信先のマシンへ転送する（再開可能）。
+# DB を配信先のマシンへ転送する（再開可能）。
 #
-#   使い方:  sync-bundle.sh <アトラスのディレクトリ or DB> <user@host> [置き場]
+#   使い方:  sync-bundle.sh <DB のディレクトリ or DB> <user@host> [置き場]
 #   例:      sync-bundle.sh ~/atlases/mc-grch38-wg.amipa azureuser@<公開ホスト名>
 #
 # ・全ゲノムは 250-350GB ある。**ジョブスケジューラ経由で流す**。
@@ -11,12 +11,12 @@
 # ・work/ は送らない（中間生成物。配信には要らず、数 GB ある）。
 # ・転送後は必ず配信先で `amipa check` を通すこと。
 #
-# 圧縮について: アトラスは zstd -3 でおよそ 2.2 倍に縮む。rsync 3.1 系の -z は zlib で
+# 圧縮について: DB は zstd -3 でおよそ 2.2 倍に縮む。rsync 3.1 系の -z は zlib で
 #   1 コア 50-100MB/s 程度しか出ないため、速い回線では -z が足を引っ張る。
 #   実効 50MB/s を下回るときだけ RSYNC_Z=1 を付ける（下記）。
 set -euo pipefail
 
-SRC="${1:?転送元（アトラスのディレクトリ、または *.db）}"
+SRC="${1:?転送元（DB のディレクトリ、または *.db）}"
 DEST_HOST="${2:?転送先 user@host}"
 DEST_DIR="${3:-/data/bundles}"
 
@@ -39,7 +39,7 @@ echo "[sync] $SRC"
 du -shL --apparent-size --exclude=work "$SRC" 2>/dev/null | sed 's/^/[sync] 送る量 /' || true
 
 if [[ -d "$SRC" ]]; then
-  # アトラスのディレクトリごと。work/ は配信に不要なので落とす。
+  # DB のディレクトリごと。work/ は配信に不要なので落とす。
   echo "[sync] ディレクトリごと転送（work/ は除外）"
   rsync "${COMMON[@]}" --exclude 'work/' "$SRC" "$DEST_HOST:$DEST_DIR/"
 else

@@ -1,8 +1,8 @@
 # amipa-viewer — Apptainer(SIF)。閲覧側だけで完結する。
 #   ビルド: cd <amipa ルート>
 #          env -u APPTAINER_BINDPATH apptainer build --fakeroot amipa-viewer.sif docker/amipa-viewer.def
-#   実行  : apptainer exec --cleanenv -B <atlas>:/data amipa-viewer.sif amipa check
-#          apptainer exec --cleanenv -B <atlas>:/data --env PORT=3999 amipa-viewer.sif amipa serve
+#   実行  : apptainer exec --cleanenv -B <graph.amipa>:/data amipa-viewer.sif amipa check
+#          apptainer exec --cleanenv -B <graph.amipa>:/data --env PORT=3999 amipa-viewer.sif amipa serve
 Bootstrap: docker
 From: node:20-bookworm
 
@@ -49,4 +49,4 @@ From: node:20-bookworm
 
 %labels
     Name amipa-viewer
-    Description AMIPA viewer (serves a prebuilt atlas)
+    Description AMIPA viewer (serves a prebuilt pangenome database)

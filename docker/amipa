@@ -26,6 +26,6 @@ case "$cmd" in
      printf '%s\n\n' "AMIPA 本体のライセンス全文（$APP/LICENSE）"
      cat "$APP/LICENSE" 2>/dev/null || { echo "LICENSE がイメージ内に見つかりません" >&2; exit 1; } ;;
   help|--help|-h)
-     echo "amipa prep  ...   前処理（GFA → アトラス）"; echo "amipa serve       ビューアを起動"; echo "amipa check [db]  データの点検"; echo "amipa licenses    同梱物のライセンス表示"; echo "amipa version     版の刻印"; exit 0 ;;
+     echo "amipa prep  ...   前処理（GFA → DB）"; echo "amipa serve       ビューアを起動"; echo "amipa check [db]  データの点検"; echo "amipa licenses    同梱物のライセンス表示"; echo "amipa version     版の刻印"; exit 0 ;;
   *) echo "unknown subcommand: $cmd (amipa help)" >&2; exit 2 ;;
 esac

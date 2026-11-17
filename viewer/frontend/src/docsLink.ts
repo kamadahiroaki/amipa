@@ -11,7 +11,7 @@ const REPO = 'https://github.com/kamadahiroaki/amipa'
 export const DOC = {
   viewer: 'docs/usage-viewer.md',
   prep: 'docs/usage-prep.md',
-  atlas: 'docs/atlas-format.md',
+  format: 'docs/db-format.md',
   trouble: 'docs/troubleshooting.md',
 } as const
 

@@ -15,7 +15,7 @@ import path from 'path'
 
 /** ヘルパ実行に使う python。AMIPA_PYTHON > 旧 MSA_PYTHON/AMIPA_PY > PATH の python3。 */
 export const AMIPA_PYTHON =
-  (process.env.AMIPA_PYTHON ?? process.env.GGB_PYTHON) || (process.env.AMIPA_MSA_PYTHON ?? process.env.MSA_PYTHON) || (process.env.AMIPA_PY ?? process.env.GGB_PY) || 'python3'
+  process.env.AMIPA_PYTHON || (process.env.AMIPA_MSA_PYTHON ?? process.env.MSA_PYTHON) || process.env.AMIPA_PY || 'python3'
 
 /**
  * 同梱 Python ヘルパの絶対パス。src 実行(ts-node-dev)でも dist 実行でも

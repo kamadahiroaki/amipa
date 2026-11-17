@@ -1159,7 +1159,7 @@ export default function App() {
           if (snap && typeof snap.db === 'string' && dbs.includes(snap.db)) { applySnapshot(snap); return }
         }
         const urlDb = new URLSearchParams(window.location.search).get('db')
-        let lastDb: string | null = null; try { lastDb = localStorage.getItem('amipa_last_db') } catch { /* ignore */ }   // URL に db が無ければ前回のアトラス（一覧の先頭は巨大な DB のことがある）
+        let lastDb: string | null = null; try { lastDb = localStorage.getItem('amipa_last_db') } catch { /* ignore */ }   // URL に db が無ければ前回の DB （一覧の先頭は巨大な DB のことがある）
         const initial = (urlDb && dbs.includes(urlDb)) ? urlDb : (lastDb && dbs.includes(lastDb)) ? lastDb : (dbs[0] ?? null)
         setSelectedDb(initial)
       })

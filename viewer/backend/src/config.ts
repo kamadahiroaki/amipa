@@ -6,5 +6,5 @@
 //   ★遮断はサーバ側で行い、画面側は /api/version の `readonly` を見て Save を無効表示にする
 //     （押してから 403 で断られるのではなく、押せないことが先に分かるように）。
 export const READONLY =
-  (process.env.AMIPA_READONLY ?? process.env.GGB_READONLY) === '1' ||
-  (process.env.AMIPA_READONLY ?? process.env.GGB_READONLY) === 'true'
+  process.env.AMIPA_READONLY === '1' ||
+  process.env.AMIPA_READONLY === 'true'

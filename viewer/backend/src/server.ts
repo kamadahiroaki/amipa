@@ -40,7 +40,7 @@ app.use(cors())
 //   ('already encoded' 判定)。重い本文の deflate をメインのイベントループに持ち込まないため。
 //   → dbWorker.ts / workerPool.ts の gzip 参照。
 const GZIP_LEVEL = (() => {
-  const v = Number((process.env.AMIPA_GZIP_LEVEL ?? process.env.GGB_GZIP_LEVEL))
+  const v = Number(process.env.AMIPA_GZIP_LEVEL)
   return Number.isFinite(v) && v >= 0 && v <= 9 ? Math.floor(v) : 1
 })()
 if (GZIP_LEVEL > 0) app.use(compression({ level: GZIP_LEVEL, threshold: 1024 }))
@@ -89,7 +89,7 @@ if (SLOWLOG_MS > 0) app.use('/api', (req, res, next) => {
 //   イベントループの順序が timers → poll なので、キュー待ちリクエストを読む poll フェーズより
 //   先に interval が発火して lag が 0 に戻ってしまい、後続が素通りする。
 //   代わりに **next() の同期実行時間を直接測る**（better-sqlite3 は同期なのでこれがブロック時間そのもの）。
-const ABORT_DEBUG = !!(process.env.AMIPA_ABORT_DEBUG ?? process.env.GGB_ABORT_DEBUG)   // 判定の内訳を出す（切り分け用）
+const ABORT_DEBUG = !!process.env.AMIPA_ABORT_DEBUG   // 判定の内訳を出す（切り分け用）
 const BLOCKED_MS = 200      // この時間以上ブロックしたら「積み上がりが起きうる」とみなす
 const DEFER_GRACE_MS = 1000 // 一度検知したらこの間は遅延チェックを続ける（同じ波の後続を拾う）
 let deferUntil = 0

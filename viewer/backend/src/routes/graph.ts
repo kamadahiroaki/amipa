@@ -67,14 +67,14 @@ function raHasNodeId(d: any): boolean {
 }
 
 // オンデマンド: リード転置索引(node_reads, サイドカー rd or 本体)があるか。有→ per-read 行は DB に無く、
-// zstd GAF(旧アトラスは BGZF)から Python ヘルパ(reads_query.py)で該当行だけ取り出して parse する。
+// zstd GAF(旧 DB は BGZF)から Python ヘルパ(reads_query.py)で該当行だけ取り出して parse する。
 // cs スライスは前処理側と共有(TS 再実装しない)。
 function readNodeAvail(d: any): boolean {
   try { return readsSchema(d) != null } catch { return false }
 }
 // 実行体とスクリプトの解決は pyenv.ts に集約（絶対パスを埋めるとコンテナで動かない）。
 const AMIPA_PY = AMIPA_PYTHON
-const AMIPA_READS_QUERY = (process.env.AMIPA_READS_QUERY ?? process.env.GGB_READS_QUERY) || amipaScript('reads_query.py')
+const AMIPA_READS_QUERY = process.env.AMIPA_READS_QUERY || amipaScript('reads_query.py')
 function readsHelper(dbFile: string, args: string[]): Promise<any> {
   const dbPath = path.join(getDbDir(), path.basename(dbFile))
   return new Promise((resolve, reject) => {
@@ -945,7 +945,7 @@ graphRouter.get('/expand_node', (req, res) => {
     if (!seed) { res.json({ total: 0, added: [], columns: [] }); return }
 
     // seed のリード(seedAligns)を ranked → その aln_id が通る全ノード(getRows)で列レイアウト。
-    // レイアウトは共通。データ源だけ「DB に行がある旧アトラス」と「helper cohort」で差し替える。
+    // レイアウトは共通。データ源だけ「DB に行がある旧 DB」と「helper cohort」で差し替える。
     const runLayout = (seedAligns: any[], getRows: (alnIds: number[]) => any[]) => {
       const ranked = seedAligns
         .map(a => ({ ...a, edge: (a.node_start <= EDGE || a.node_end >= seed.size - EDGE) ? 1 : 0 }))
@@ -1046,7 +1046,7 @@ graphRouter.get('/expand_node', (req, res) => {
       return
     }
 
-    // 旧アトラス(行を DB に持つ形): seed aligns と aln_id→全ノードを DB から。node_id は node_name に解決。
+    // 旧 DB(行を DB に持つ形): seed aligns と aln_id→全ノードを DB から。node_id は node_name に解決。
     const seedAligns = d.prepare(
       useId
         ? `SELECT aln_id, node_start, node_end, query_start, strand, mapq

@@ -6,7 +6,7 @@
   ・`zstd -d` で普通に伸長できる（末尾のシークテーブルが読み飛ばされる）
   ・フレームを跨ぐ長い行、先頭・末尾、フレーム境界ちょうど
   ・キャッシュを溢れさせても結果が変わらない
-  ・旧アトラス（BGZF 実体 + read_src.bgzf_path）の読み出し経路
+  ・旧 DB （BGZF 実体 + read_src.bgzf_path）の読み出し経路
 
 `amipa/tests/run.sh format` から呼ばれる。単体で `python3 test_zstd_seek.py` も可。
 """
@@ -114,7 +114,7 @@ def test_empty_and_errors(tmp):
 
 
 def test_legacy_bgzf(tmp):
-    """旧アトラス（read_src.bgzf_path + BGZF 実体）を今のコードで読めるか。"""
+    """旧 DB （read_src.bgzf_path + BGZF 実体）を今のコードで読めるか。"""
     try:
         from Bio import bgzf
     except ImportError:

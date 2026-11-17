@@ -1,10 +1,10 @@
-# amipa-viewer — 出来上がったアトラスを配信する閲覧側だけのイメージ。
+# amipa-viewer — 出来上がった DB を配信する閲覧側だけのイメージ。
 #   ビルド: docker build -f docker/Dockerfile.viewer -t amipa-viewer .      # context = リポジトリのルート
-#   実行  : docker run --rm -v /path/to/atlas:/data:ro amipa-viewer check
-#           docker run --rm -p 3001:3001 -v /path/to/atlas:/data amipa-viewer serve
+#   実行  : docker run --rm -v /path/to/graph.amipa:/data:ro amipa-viewer check
+#           docker run --rm -p 3001:3001 -v /path/to/graph.amipa:/data amipa-viewer serve
 #
 # ★ビルド手順の実体は docker/build-viewer.sh の 1 本だけで、**Apptainer def と共用**している。
-# ★アトラスはイメージに焼き込まない。`/data` に mount する（DB_DIR で変えられる）。
+# ★DB はイメージに焼き込まない。`/data` に mount する（DB_DIR で変えられる）。
 #   ビューアにはノードを編集する機能があるので、それを使うなら :ro を外す。
 
 # ───────── builder: tsc / vite / ネイティブモジュール ─────────
@@ -27,7 +27,7 @@ RUN chmod 0755 /usr/local/bin/build-viewer.sh \
 FROM node:20-bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 # 閲覧側が使う python（bubble MSA パネルとリード照会のヘルパ）。
-# zstandard = リード実体の容器、biopython = 旧アトラスの BGZF 読み出し。
+# zstandard = リード実体の容器、biopython = 旧 DB の BGZF 読み出し。
 RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-numpy python3-biopython python3-zstandard ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -64,6 +64,6 @@ CMD ["serve"]
 # AMIPA のコードは MIT（共有している cs_ops.py / zstd_seek.py も MIT）。
 # Debian のシステムパッケージなど同梱物のライセンスは NOTICE を参照。
 LABEL org.opencontainers.image.title="amipa-viewer" \
-      org.opencontainers.image.description="AMIPA viewer (serves a prebuilt atlas)" \
+      org.opencontainers.image.description="AMIPA viewer (serves a prebuilt pangenome database)" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="https://github.com/kamadahiroaki/amipa"

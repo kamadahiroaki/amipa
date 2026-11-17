@@ -9,7 +9,7 @@ STAGE="${1:?段名（distill/decompose/lod/layout/emit/annot/reads/bundle）}"
 
 SIF=${AMIPA_SIF:?AMIPA_SIF にイメージのパスを設定してください}
 GFA=${GFA:?入力 GFA}
-OUT=${OUT:?出力アトラス}
+OUT=${OUT:?出力 DB}
 
 module use /usr/local/package/modulefiles 2>/dev/null || true
 module load apptainer 2>/dev/null || true

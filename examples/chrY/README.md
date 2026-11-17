@@ -1,13 +1,13 @@
 # 例: ヒト chrY で一通り試す
 
 まずこれを通す。全ゲノムは 11 時間かかるが、chrY なら数分で ①GFA →
-②アトラス → ③ブラウザで表示 まで行ける。導入が正しくできているかの確認にも使う。
+②DB → ③ブラウザで表示 まで行ける。導入が正しくできているかの確認にも使う。
 
 | | |
 |---|---|
 | 入力 GFA | 83 MB（HPRC MC-GRCh38 v1.0 の chrY 部分） |
 | 所要 | 2〜4 分（8 スレッド。コンテナ内で 2.6 分の実測） |
-| 出力 | 約 250 MB のアトラス |
+| 出力 | 約 250 MB の DB |
 | メモリ | 8 GB あれば足りる |
 
 ## 1. 入力を用意する
@@ -26,7 +26,7 @@ wget -q https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database/cytoBand.txt.gz
 ls HG002.gaf.gz
 ```
 
-## 2. アトラスを作る
+## 2. DB を作る
 
 ```bash
 docker run --rm -u "$(id -u):$(id -g)" -v "$PWD:/work" -w /work amipa-prep \

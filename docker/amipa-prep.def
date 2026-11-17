@@ -65,4 +65,4 @@ From: python:3.9-slim-bookworm
 
 %labels
     Name amipa-prep
-    Description AMIPA preprocessing (GFA -> multi-resolution atlas)
+    Description AMIPA preprocessing (GFA -> multi-resolution pangenome database)

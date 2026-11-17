@@ -68,7 +68,7 @@ function checkReads(sidecar: string, dbPath: string): void {
       const base = path.basename(r.p)
       const found = [r.p, path.join(dir, 'reads', base), path.join(dir, base)].find(q => fs.existsSync(q))
       if (!found) { bad(`reads: ${r.sample_id} の実体が無い（${base}）→ リード表示が空になる`); continue }
-      // 末尾 9 バイトの seekable zstd マジック（旧アトラスは BGZF なので判定しない）
+      // 末尾 9 バイトの seekable zstd マジック（旧 DB は BGZF なので判定しない）
       let kind = 'bgzf'
       if (base.endsWith('.zst')) {
         const fd = fs.openSync(found, 'r')

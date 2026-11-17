@@ -1,7 +1,7 @@
 #!/bin/bash
-# 塩基 MSA の列の順と並列アレルの検算（ヒト chr20-22 アトラス）。使い方: AMIPA_HOSTPORT=hc025:33001 AMIPA_ATLAS_DIR=<serve dir> tests/msa/order_chr202122.sh
+# 塩基 MSA の列の順と並列アレルの検算（ヒト chr20-22 DB）。使い方: AMIPA_HOSTPORT=hc025:33001 AMIPA_SERVE_DIR=<serve dir> tests/msa/order_chr202122.sh
 # 期待: 全行 OK、HG01978#2 に - が無い（2026-10-18 の不具合: 573/574 が直列、843/847 が別列、582 が 578 の後ろ、HG01978#2 の偽の欠失）
-S=${AMIPA_ATLAS_DIR:?serve dir}; export OPENBLAS_NUM_THREADS=1
+S=${AMIPA_SERVE_DIR:?serve dir}; export OPENBLAS_NUM_THREADS=1
 for rg in "1794950 1795010" "1794500 1795500" "1792978 1795977" "1794000 1796999" "1793900 1796899" "1832500 1834499"; do set -- $rg; curl -s -m 300 "http://${AMIPA_HOSTPORT:?host:port}/api/blocks/tokranges?db=chr202122.db&c0=$1&c1=$2" | python3 -c "import sys,json; t=json.load(sys.stdin); print(json.dumps({'ranges':[x for x in t['ranges'] if x[2]>x[1]],'label':'x'}))" > /tmp/claude-14779/req.json; python3 ~/pangenome/amipa/viewer/scripts/bubble_msa.py --db $S/chr202122.db --distill $S/chr202122.db.distill --ranges-stdin --flank 0 --cap 0 --max-leaves 12000 --synteny $S/chr202122.db.synteny < /tmp/claude-14779/req.json > /tmp/claude-14779/m.json 2>/tmp/claude-14779/e.txt; python3 - $1 $2 <<'EOF'
 import json, sys, collections
 M = json.load(open('/tmp/claude-14779/m.json'))

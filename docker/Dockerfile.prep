@@ -1,4 +1,4 @@
-# amipa-prep — 前処理（GFA → アトラス）を丸ごと入れたイメージ。
+# amipa-prep — 前処理（GFA → DB）を丸ごと入れたイメージ。
 #   ビルド: docker build -f docker/Dockerfile.prep -t amipa-prep .          # context = リポジトリのルート
 #           docker build -f docker/Dockerfile.prep -t amipa-prep \
 #                        --build-arg AMIPA_REV=$(git rev-parse --short HEAD) .
@@ -74,6 +74,6 @@ ENTRYPOINT ["amipa"]
 CMD ["help"]
 
 LABEL org.opencontainers.image.title="amipa-prep" \
-      org.opencontainers.image.description="AMIPA preprocessing (GFA -> multi-resolution atlas)" \
+      org.opencontainers.image.description="AMIPA preprocessing (GFA -> multi-resolution pangenome database)" \
       org.opencontainers.image.licenses="GPL-3.0-or-later" \
       org.opencontainers.image.source="https://github.com/kamadahiroaki/amipa"

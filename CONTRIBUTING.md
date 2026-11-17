@@ -11,8 +11,8 @@
 
 # 回帰試験。直した範囲に応じて（詳細 tests/README.md）
 tests/run.sh format                          # 数秒。外部データ不要
-tests/run.sh db --fast <db ファイル>          # 出来たアトラスの中身の点検
-tests/run.sh e2e --gfa /path/chrY.gfa        # 2-4 分。GFA → アトラス → amipa check
+tests/run.sh db --fast <db ファイル>          # 出来た DB の中身の点検
+tests/run.sh e2e --gfa /path/chrY.gfa        # 2-4 分。GFA → DB → amipa check
 tests/run.sh api  <db ファイル名> <host:port> # 起動中の backend に問い合わせ
 ```
 
@@ -53,8 +53,8 @@ git push origin v0.1.0
 
 イメージに付くタグは `0.1.0` / `0.1` / `latest` の 3 つ（git のタグは `v` 付き、
 コンテナのタグは慣例どおり `v` 無し）。`main` への push では `main` タグだけが動き、
-`latest` は触らない。アトラスの形式を変えたときは MINOR を上げ、
-`docs/atlas-format.md` に何が変わったかを書く。
+`latest` は触らない。DB の形式を変えたときは MINOR を上げ、
+`docs/db-format.md` に何が変わったかを書く。
 
 出す前に確かめること。
 

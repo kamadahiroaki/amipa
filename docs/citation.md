@@ -35,7 +35,7 @@ AMIPA はグラフ（GFA）と整列（GAF）を入力として受け取るだ�
 
 ## 記載例
 
-> パンゲノムグラフは AMIPA v0.1 (commit abc1234) で多解像度アトラスに変換し、可視化した。
+> パンゲノムグラフは AMIPA v0.1 (commit abc1234) で多解像度 DB に変換し、可視化した。
 > バブル分解には BubbleFinder (Harviainen et al. 2026)、解像度階層の構築には Infomap (Rosvall & Bergstrom 2008) を用いた。
 
 どの分解器を使ったかは出力一式の `manifest.json` の `lod.decomposer` で確かめられる。
