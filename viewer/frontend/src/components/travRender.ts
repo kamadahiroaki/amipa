@@ -102,7 +102,14 @@ type TReads = { depAll?: Uint16Array; key: string; x0: number; x1: number; ncol:
 let treads: TReads | null = null, treadsKey = ''
 let readSel: string[] = []   // 出すリードのサンプル（空＝全部。10-30）
 const READ_COMBINE = 8   // 全部のとき、サンプルがこれを超えたら合計 1 行にまとめる
-const readSelQ = () => readSel.length ? `&samples=${encodeURIComponent(readSel.join(','))}` : ''
+// 出すリードのサンプル（11-17）: 株を絞っている（属性表の「表にある株だけ」・「選択した株だけ」）ときは、見えている株のサンプル（属性表なら表の行のサンプルも）に限る。
+//   Samples で選んでいればその中で。限った結果が空なら「どれも出さない」（存在しないサンプル名を渡す）
+const READ_NONE = '\u0000none'
+function readAllow(): Set<string> | null { if (!root || !(onlyAttr() || onlySel())) return null; const s = new Set<string>(); for (const h of orderBase()) s.add(root.haps[h].hap.split('#')[0]); if (onlyAttr() && attrs) for (const k of attrs.rows.keys()) s.add(k.split('#')[0]); return s }
+function effReadSel(): string[] { const al = readAllow(); if (!al) return readSel; const all: string[] = ((root as any)?.readSamples || []) as string[]; const out = (readSel.length ? readSel : all).filter(x => al.has(x)); return out.length ? out : [READ_NONE] }
+let lastReadSig: string | null = null
+function readFilterCheck() { if (!root) return; const sig = effReadSel().join(','); if (sig === lastReadSig) return; lastReadSig = sig; applyReadSel() }   // 株の絞り込みが変わってリードのサンプルが変わったら取り直す
+const readSelQ = () => { const e = effReadSel(); return e.length ? `&samples=${encodeURIComponent(e.join(','))}` : '' }
 type TRBlock = { s: number; y: number; h: number; depH: number; laneY: number; lanes: number[][]; detail: boolean; nlane: number }
 let treadsLay: { y0: number; y1: number; blocks: TRBlock[]; max: number } | null = null
 let lof = new Map<number, { st: string; aa: number; ref: number | null; src: number | null }>()   // 機能喪失の目安（5）: gid → 状態
@@ -127,7 +134,7 @@ function orderBase(): number[] { if (!root) return []; let r = baseOrder.slice()
   if (onlyAttr()) { const t = r.filter(inAttrs); if (t.length) r = t }
   if (onlySel()) { const t = r.filter(h => markOf(root!.haps[h].hap)); if (t.length) r = t }
   return r }
-function reorder() { hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : nameOrder() }
+function reorder() { hapOrder = ($('order') as HTMLSelectElement).value === 'tree' ? treeOrder() : nameOrder(); readFilterCheck() }
 // 並べ方の二段（11-13）: 「群（Group by）」× 群の中の並び（Order）。群の鍵: 選択した株／固定した株を先頭、属性表の列、遺伝子（オルソログ群）の状態
 let attrs: { file: string; cols: string[]; rows: Map<string, string[]> } | null = null
 let listGroups: Record<string, string[]> | null = null   // 地点の一覧の今の地点の群（VCF の保有株など）。Group by の「List」
@@ -333,7 +340,7 @@ async function loadRoot() {
   const refHid = (root as any).refHid as number | undefined   // 参照（種）の株を先頭に（11-05: 以前は GRCh38/CHM13 などの名前で決め打ち）
   const refLike = (hid: number) => (refHid != null && refHid >= 0 ? hid === refHid : /^(GRCh38|CHM13|GCF_000148365)/.test(root!.haps[hid].hap)) ? 0 : 1
   baseOrder = root!.haps.map(h => h.hid).sort((a, b) => refLike(a) - refLike(b) || root!.haps[a].hap.localeCompare(root!.haps[b].hap)); hapOrder = baseOrder.slice()
-  loadPins(refHid)
+  loadPins(refHid); lastReadSig = effReadSel().join(',')   // リードのサンプルの絞り込みの基準（この後の変化で取り直す）
   bands = []; locCache.clear(); lastPeaks = []; lastPts = []; ovw.setMarker(null); ovw.setPoints([], [], '')
   try { const rb = await getJson(`/api/trav/chroms?db=${encodeURIComponent(db)}`); if (rb.ok) bands = (await rb.json()).bands || [] } catch { /* 区切りは無くてもよい */ }
   ovw.setBands(bands)
@@ -354,7 +361,7 @@ function scheduleRange(ms = 120) { if (rangeTimer) clearTimeout(rangeTimer); $('
 async function loadTReads() {
   const on = !!(root as any)?.hasReads && (($('treads') as HTMLInputElement | null)?.checked !== false)
   if (!on) { if (treads) { treads = null; treadsKey = ''; draw() } return }
-  const x0 = Math.floor(view[0]), x1 = Math.ceil(view[1]); const ncol = Math.max(20, Math.min(800, Math.floor(bodyPx() / 2))); const key = `${db}|${x0}|${x1}|${ncol}|${readSel.join(',')}`
+  const x0 = Math.floor(view[0]), x1 = Math.ceil(view[1]); const ncol = Math.max(20, Math.min(800, Math.floor(bodyPx() / 2))); const key = `${db}|${x0}|${x1}|${ncol}|${effReadSel().join(',')}`
   if (key === treadsKey) return; treadsKey = key
   try { const r = await getJson(`/api/trav/reads?db=${encodeURIComponent(db)}&x0=${x0}&x1=${x1}&ncol=${ncol}${readSelQ()}`); const j = await r.json(); if (key !== treadsKey || j.error) return
     const u16 = (b: string) => { const bin = atob(b); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return new Uint16Array(a.buffer) }
@@ -619,7 +626,7 @@ async function openBase(ranges: number[][], label: string, mode: 'node' | 'base'
   const my = ++loading; $('busy').style.display = 'inline'
   const wantReads = !!(root as any)?.hasReads && (($('breads') as HTMLInputElement | null)?.checked !== false)
   // xwin＝今の範囲（11-12）: サーバは通過のトークンをこの範囲のタイルから読む（範囲の外のトークンは distill を読むので、ずれていても結果は同じ）
-  const d = await fetchBubbleMsaRanges(db, ranges, label, 0, 0, 3000, wantReads ? { max: numOf('breadmax', 40), ...(readSel.length ? { samples: readSel } : {}), ...(focusRead ? { include: [focusRead.aln] } : {}) } : undefined, [Math.floor(view[0]), Math.ceil(view[1])])   // cap 0＝畳まない（画面側で畳む）、葉の上限 3,000
+  const d = await fetchBubbleMsaRanges(db, ranges, label, 0, 0, 3000, wantReads ? { max: numOf('breadmax', 40), ...(effReadSel().length ? { samples: effReadSel() } : {}), ...(focusRead ? { include: [focusRead.aln] } : {}) } : undefined, [Math.floor(view[0]), Math.ceil(view[1])])   // cap 0＝畳まない（画面側で畳む）、葉の上限 3,000
   if (my !== loading) return
   $('busy').style.display = 'none'
   applyBase(d, ranges, label, mode, centerCi)
@@ -858,7 +865,7 @@ function readSpan(B: BaseState, mi: number): [number, number] { const sq = B.row
 // リードのまとまりの鍵（11-17）: サンプル、ラベル（<db>.rlabel。例: 父由来・母由来）があれば「サンプル · ラベル」
 const rkey = (rd: any): string => rd.group != null ? `${rd.sample} · ${rd.group}` : rd.sample
 function readLines(B: BaseState, mis: number[]): BaseState['lines'] {
-  const nsamp = new Set(mis.map(mi => rkey((B.rows[mi] as any).read))).size; const comb = !readSel.length && nsamp > READ_COMBINE   // 全部・サンプルが多い: '*'＝全サンプルを 1 まとまりに
+  const nsamp = new Set(mis.map(mi => rkey((B.rows[mi] as any).read))).size; const comb = !effReadSel().length && nsamp > READ_COMBINE   // 全部・サンプルが多い: '*'＝全サンプルを 1 まとまりに
   const bySamp = new Map<string, number[]>(); for (const mi of mis) { const sm = comb ? '*' : rkey((B.rows[mi] as any).read); if (!bySamp.has(sm)) bySamp.set(sm, []); bySamp.get(sm)!.push(mi) }
   const packOf = (lst: number[]) => { const lanes: { end: number; mis: number[] }[] = []; for (const mi of lst) { const [a, b] = readSpan(B, mi); const ln = lanes.find(l => l.end + 4 < a); if (ln) { ln.mis.push(mi); ln.end = b } else lanes.push({ end: b, mis: [mi] }) } return lanes.map(l => l.mis) }
   const packed = [...bySamp.values()].map(packOf); const nPack = packed.reduce((t, l) => t + l.length, 0)
@@ -1156,7 +1163,7 @@ function layoutTReads(y0: number, W: number, mode: string): number {
   treadsLay = null; const T = treads; if (!T || mode !== 'coord' || (($('treads') as HTMLInputElement | null)?.checked === false)) return 0
   let max = 1; for (const d of T.dep) for (let i = 0; i < d.length; i++) if (d[i] > max) max = d[i]
   const blocks: TRBlock[] = []; let y = y0 + 14
-  const comb = !readSel.length && T.samples.length > READ_COMBINE   // 全部・サンプルが多い: 合計 1 行（s = -1）
+  const comb = !effReadSel().length && T.samples.length > READ_COMBINE   // 全部・サンプルが多い: 合計 1 行（s = -1）
   if (comb && !T.depAll) { T.depAll = new Uint16Array(T.ncol); for (const d of T.dep) for (let i = 0; i < d.length; i++) T.depAll[i] = Math.min(65535, T.depAll[i] + d[i]) }
   if (comb) { max = 1; for (let i = 0; i < T.ncol; i++) if (T.depAll![i] > max) max = T.depAll![i] }
   const sIdx = comb ? [-1] : T.samples.map((_, s) => s)
@@ -1946,7 +1953,7 @@ $('selclear').addEventListener('click', () => cb.onSelectHaps?.([], false))
 $('rung').addEventListener('change', () => { if (rungSel() !== 'blocks' && !cols) loadRange(); else draw() })
 $('treads').addEventListener('change', () => { treadsKey = ''; void loadTReads(); draw() })
 // リードのサンプルの選択（10-30）: 名前で絞り込めるチェックの一覧。空＝全部。変えたらブロック・錨の列は取り直し、塩基の段は同じ段・位置で取り直す
-function readSelLabel() { $('rsamp').textContent = `${!readSel.length ? 'All samples' : readSel.length === 1 ? readSel[0] : `${readSel.length} samples`} ▾` }
+function readSelLabel() { const al = readAllow(); const e = effReadSel(); $('rsamp').textContent = `${!readSel.length ? 'All samples' : readSel.length === 1 ? readSel[0] : `${readSel.length} samples`}${al ? ` · ${e[0] === READ_NONE ? 0 : e.length} shown` : ''} ▾`; $('rsamp').title = al ? '株を絞っている（表にある株だけ・選択した株だけ）ので、見えている株のサンプルのリードだけを出している' : '' }
 function applyReadSel() { readSelLabel(); treadsKey = ''; void loadTReads(); if (base && (root as any)?.hasReads && ($('breads') as HTMLInputElement).checked) reopenBase(); else draw() }
 function renderReadSel() {
   const box = $('rsbox'); const all: string[] = ((root as any)?.readSamples || []) as string[]; const q = ((box.querySelector('input[type=search]') as HTMLInputElement | null)?.value || '').toLowerCase()
@@ -2323,7 +2330,7 @@ async function apiFocusRead(r: { aln: number; name: string; nodes: string[] } | 
   focusNav = Date.now()   // 終わってから少しの間も、グラフの寄せの後追いを無視する（下の graphMoved）
   if (focusRead) $('info').textContent = `リード ${r.name} を強調（橙の枠）` + (frac < 1 ? `・リードが長いので真ん中の約 ${Math.round(frac * 100)}% の範囲` : '') + '。Esc か、行の無い所のクリックで解除' + (res && !res.ok ? `　${res.reason ?? ''}` : '')
 }
-return { focusRead: apiFocusRead, getState, setState, setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { if (walkMode) { if (names[0]) void openWalks(names[0]); return } if (!root) { walkPending = names[0] ?? null; return } void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked || grpSpec() === 'sel') reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; locAC.abort(); locAC = new AbortController(); const sg = locAC.signal; void refreshOverview(sg); if (rangeMode === 'none' || base || Date.now() - focusNav < 3000) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading, undefined, sg) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, setFilter(on: boolean) { const el = $('gfilter') as HTMLInputElement; if (el.checked !== on) { el.checked = on; loadRange() } }, setNBlocks(n: number) { const el = $('nblk') as HTMLInputElement; if (el.value !== String(n)) { el.value = String(n); el.dispatchEvent(new Event('change')) } }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { unfit.forEach(f => f()); wrapRO.disconnect(); loading++; document.removeEventListener('mousedown', onPopDoc); document.removeEventListener('keydown', onCopyKey); ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
+return { focusRead: apiFocusRead, getState, setState, setDb(d: string) { db = d; located = []; lastReadSig = null; loadRoot() }, locateNodes(names: string[]) { if (walkMode) { if (names[0]) void openWalks(names[0]); return } if (!root) { walkPending = names[0] ?? null; return } void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked || grpSpec() === 'sel') reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; locAC.abort(); locAC = new AbortController(); const sg = locAC.signal; void refreshOverview(sg); if (rangeMode === 'none' || base || Date.now() - focusNav < 3000) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading, undefined, sg) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, setFilter(on: boolean) { const el = $('gfilter') as HTMLInputElement; if (el.checked !== on) { el.checked = on; loadRange() } }, setNBlocks(n: number) { const el = $('nblk') as HTMLInputElement; if (el.value !== String(n)) { el.value = String(n); el.dispatchEvent(new Event('change')) } }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { unfit.forEach(f => f()); wrapRO.disconnect(); loading++; document.removeEventListener('mousedown', onPopDoc); document.removeEventListener('keydown', onCopyKey); ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
 
 }
 
