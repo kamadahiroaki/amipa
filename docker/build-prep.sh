@@ -13,7 +13,7 @@ set -euo pipefail
 
 SRC=${1:-/src}
 APP=${2:-/opt/amipa}
-BUBBLEFINDER_VERSION=${BUBBLEFINDER_VERSION:-1.0.5}   # bioconda。検証に使っている版に固定（GPL-3.0）
+BUBBLEFINDER_VERSION=${BUBBLEFINDER_VERSION:-1.1.0}   # bioconda。検証に使っている版に固定（GPL-3.0）。11-17: 1.0.5 → 1.1.0（chrY・ecoli50 で分解の出力がバイト一致）
 MICROMAMBA_VERSION=${MICROMAMBA_VERSION:-2.0.5-0}
 AMIPA_WITH_BILLI=${AMIPA_WITH_BILLI:-0}
 BILLI_REPO=${BILLI_REPO:-https://github.com/at-cg/billi.git}
