@@ -12,6 +12,8 @@
 """
 import sys, os, shutil, sqlite3, argparse, time
 import numpy as np
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from cds_rules import pick_parent
 
 ap = argparse.ArgumentParser()
 ap.add_argument("genes"); ap.add_argument("distill"); ap.add_argument("out")
@@ -39,7 +41,12 @@ log(f"注釈のあるパス {ref_pids}")
 
 genes = cur.execute("SELECT g.gid, g.pid, g.start, g.end, g.strand, g.type, g.name, g.locus, g.product, g.pseudo, k.s0, k.e0, k.so, k.eo FROM gene g JOIN gene_tok k ON k.gid = g.gid").fetchall()
 # 子: 遺伝子ごとに最長の転写産物（CDS があれば CDS の bp、無ければエキソンの bp が最大の親）
-feats = cur.execute("SELECT f.fid, f.gid, f.type, f.parent, f.phase, f.strand, f.start, f.end, t.s0, t.e0, t.so, t.eo FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.type IN ('CDS','exon','five_prime_UTR','three_prime_UTR')").fetchall()
+feats = cur.execute("SELECT f.fid, f.gid, f.type, f.parent, f.phase, f.strand, f.start, f.end, t.s0, t.e0, t.so, t.eo FROM feature f JOIN feature_tok t ON t.fid = f.fid WHERE f.type IN ('CDS','exon','five_prime_UTR','three_prime_UTR') ORDER BY f.fid").fetchall()
+# 11-17: CDS のある遺伝子は cds_rules.pick_parent（MANE_Select ＞ Ensembl_canonical ＞ CDS の bp、LoF・NMD・_NF の転写産物を除く）で選ぶ。
+#   genelof_build.py・trav.ts の travGeneLof と同じ規則（写しと元の遺伝子で同じ転写産物を比べる）
+cds_attrs = {}
+for gid_, par_, at_ in cur.execute("SELECT gid, parent, attrs FROM feature WHERE type IN ('CDS','cds') ORDER BY fid"):
+    cds_attrs.setdefault((gid_, par_), at_ or "")
 byg = {}
 for f in feats: byg.setdefault(f[1], []).append(f)
 kids = {}
@@ -47,13 +54,20 @@ for gid, fs in byg.items():
     score = {}
     for f in fs:
         k = f[3]; s = score.get(k, [0, 0]); (s.__setitem__(0, s[0] + f[7] - f[6] + 1) if f[2] == 'CDS' else s.__setitem__(1, s[1] + f[7] - f[6] + 1)); score[k] = s
-    best = max(score, key=lambda k: (score[k][0], score[k][1]))
+    if any(v[0] > 0 for v in score.values()):
+        order = []
+        for f in fs:
+            if f[2] == 'CDS' and f[3] not in order: order.append(f[3])
+        best = pick_parent(order, {k: v[0] for k, v in score.items()}, {k: cds_attrs.get((gid, k), "") for k in order})
+    else:
+        best = max(score, key=lambda k: (score[k][0], score[k][1]))
     kids[gid] = [f for f in fs if f[3] == best]
 log(f"遺伝子 {len(genes):,}、子（最長の転写産物）{sum(len(v) for v in kids.values()):,}")
 
 next_gid = cur.execute("SELECT max(gid) FROM gene").fetchone()[0] + 1
 next_fid = cur.execute("SELECT max(fid) FROM feature").fetchone()[0] + 1
 out_g, out_gt, out_f, out_ft = [], [], [], []
+unanch = {}   # 写しの gid → 端を決められなかった CDS の端の数
 nproj = 0; ncopy2 = 0; next_ext = [0, 0]   # 端を参照に無いノードまで広げた数（遺伝子, 子）
 # 各パスが共有する参照パスを先に 1 回の走査で調べ、参照ごとの内側のループをそのパスだけにする（11-02）。以前は参照ごとに全パスのトークンを読み、
 # 計算量が 参照パス数 × 全トークン数（全ゲノムは参照 24 本以上・トークン 44 億）。ノードと、それを含む参照パスの組を全部持つ（参照どうしの共有も落とさない）
@@ -106,6 +120,20 @@ for k_ref, rp in enumerate(ref_pids):
         for gi in np.flatnonzero(hi > lo):
             g = gs[gi]; idx = np.sort(m_s[lo[gi]:hi[gi]]); glen = g[11] - g[10]; gap = max(200, int(a.gap * glen))
             brk = np.flatnonzero(np.diff(idx) > gap); starts = np.concatenate(([0], brk + 1)); ends = np.concatenate((brk + 1, [idx.size]))
+            # 11-17: 隙間で割れた連なりのうち、参照の位置が重ならず同じ向きに続くもの（遺伝子の中の大きな挿入）は 1 つの写しにつなぐ
+            #   （以前は遺伝子が 2 つの部分的な写しに割れ、どちらも CDS の片が欠けて fs・trunc に見えていた）
+            if len(starts) > 1:
+                ms, me = [int(starts[0])], [int(ends[0])]; gdir = 0
+                for s_, e_ in zip(starts[1:], ends[1:]):
+                    pa_ = r[idx[ms[-1]:me[-1]]]; nb_ = r[idx[s_:e_]]
+                    step = 1 if pa_.max() < nb_.min() else -1 if pa_.min() > nb_.max() else 0
+                    sg_ = int(np.sign(np.sign(np.diff(nb_)).sum())) if nb_.size >= 2 else 0
+                    sa_ = int(np.sign(np.sign(np.diff(pa_)).sum())) if pa_.size >= 2 else 0
+                    if step != 0 and (gdir in (0, step)) and sg_ in (0, step) and sa_ in (0, step):
+                        me[-1] = int(e_); gdir = step
+                    else:
+                        ms.append(int(s_)); me.append(int(e_)); gdir = 0
+                starts, ends = np.array(ms), np.array(me)
             copies = []
             for s_, e_ in zip(starts, ends):
                 ii = idx[s_:e_]; fr = float(bp_of[t[ii]].sum()) / max(1, gbp[gi])
@@ -147,6 +175,35 @@ for k_ref, rp in enumerate(ref_pids):
                 x_ = ext(e0 - 1, False, g[10], g[11], g[12], g[13])
                 if x_: e0, eo = x_[0] + 1, x_[1]; next_ext[0] += 1
                 out_gt.append((ngid, s0, e0, so, eo))
+                # 11-17: 子の端の一般化。端の塩基のノードが写しに無いとき、端の内側で最初に共有するノード（内の錨）と、外側で最初に共有するノード（外の錨）の
+                #   間の区間が参照と写しで同じ bp なら（置換だけ）、内の錨から参照の塩基数だけ外へ延ばした位置を端とする。違えば（端の近くの indel）・外の錨が
+                #   無ければ（コンティグの端）端は決められない＝unanch に数える（genelof_build.py が partial にする）。以前の ext は 1 ノードの置換だけだった
+                def anchor(k, start, rs0, re0, rso, reo):
+                    d = -1 if start else 1; dr = d if same else -d
+                    rb, rof = (rs0, rso) if (start == same) else (re0 - 1, reo)
+                    if rof is None: return None
+                    rk = int(r[k])
+                    if rk < 0 or (rk - rb) * (-dr) <= 0: return None
+                    ko = k + d; nstep = 0
+                    while 0 <= ko < nt and r[ko] < 0 and nstep < 5000: ko += d; nstep += 1
+                    if not (0 <= ko < nt) or r[ko] < 0: return None
+                    ro = int(r[ko])
+                    if (ro - rb) * dr <= 0: return None
+                    lo_c, hi_c = (ko + 1, k) if d < 0 else (k + 1, ko)
+                    lo_r, hi_r = (min(ro, rk) + 1, max(ro, rk))
+                    cbp = int(bp_of[t[lo_c:hi_c]].sum()); rbp = int(bp_of[rtok[lo_r:hi_r]].sum())
+                    if cbp != rbp: return None
+                    js = np.arange(rk + dr, rb, dr) if rk + dr != rb else np.zeros(0, np.int64)
+                    D = int(bp_of[rtok[js]].sum()) if js.size else 0
+                    Lb = int(bp_of[rtok[rb]]); w = rof if rori[rb] else Lb - 1 - rof
+                    D += w if dr > 0 else Lb - 1 - w
+                    kk = k + d
+                    while True:
+                        Lk = int(bp_of[t[kk]])
+                        if D < Lk: break
+                        D -= Lk; kk += d
+                    wc = D if d > 0 else Lk - 1 - D
+                    return kk, (wc if oo[kk] else Lk - 1 - wc)
                 # 子: 参照の範囲 [cs0, ce0) に引き直されるトークン（この写しの中）の最小〜最大
                 for f in kids.get(g[0], []):
                     sel = ii[(rseq >= f[8]) & (rseq < f[9])]
@@ -155,10 +212,15 @@ for k_ref, rp in enumerate(ref_pids):
                     out_f.append((nfid, pi, f[2], f[3], f[4], strand, f[6], f[7], ngid))
                     k0_, k1_ = int(sel.min()), int(sel.max())
                     fo0 = bnd(k0_, rtok[f[8]], f[10], rtok[f[9] - 1], f[11], full0); fo1 = bnd(k1_, rtok[f[9] - 1], f[11], rtok[f[8]], f[10], full1)
-                    x_ = ext(k0_, True, f[8], f[9], f[10], f[11])
-                    if x_: k0_, fo0 = x_[0], x_[1]; next_ext[1] += 1
-                    x_ = ext(k1_, False, f[8], f[9], f[10], f[11])
-                    if x_: k1_, fo1 = x_[0], x_[1]; next_ext[1] += 1
+                    ex0 = t[k0_] == (rtok[f[8]] if same else rtok[f[9] - 1]); ex1 = t[k1_] == (rtok[f[9] - 1] if same else rtok[f[8]])
+                    if not ex0:
+                        x_ = anchor(k0_, True, f[8], f[9], f[10], f[11])
+                        if x_: k0_, fo0 = x_[0], x_[1]; next_ext[1] += 1
+                        elif f[2] == 'CDS': unanch[ngid] = unanch.get(ngid, 0) + 1
+                    if not ex1:
+                        x_ = anchor(k1_, False, f[8], f[9], f[10], f[11])
+                        if x_: k1_, fo1 = x_[0], x_[1]; next_ext[1] += 1
+                        elif f[2] == 'CDS': unanch[ngid] = unanch.get(ngid, 0) + 1
                     out_ft.append((nfid, k0_, k1_ + 1, fo0, fo1))
     log(f"参照 {p_names[rp]}: 写し {nproj:,}（累計）")
 
@@ -166,6 +228,9 @@ cur.executemany("INSERT INTO gene(gid, pid, start, end, strand, type, name, locu
 cur.executemany("INSERT INTO gene_tok VALUES (?,?,?,?,?)", out_gt)
 cur.executemany("INSERT INTO feature(fid, pid, type, parent, phase, strand, start, end, gid) VALUES (?,?,?,?,?,?,?,?,?)", out_f)
 cur.executemany("INSERT INTO feature_tok VALUES (?,?,?,?,?)", out_ft)
+# 11-17: 写しの点検（genelof_build.py・trav.ts が読む）。unanch … 端を決められなかった CDS の端の数（> 0 なら機能喪失の目安は partial）
+cur.execute("DROP TABLE IF EXISTS gene_qc"); cur.execute("CREATE TABLE gene_qc(gid INTEGER PRIMARY KEY, unanch INT)")
+cur.executemany("INSERT INTO gene_qc VALUES (?,?)", sorted(unanch.items()))
 cur.execute("INSERT OR REPLACE INTO meta VALUES ('projected', ?)", (f"{nproj} genes from pids {ref_pids}, min_frac {a.min_frac}, {time.strftime('%Y-%m-%d %H:%M')}",))
 con.commit(); con.execute("VACUUM"); con.close()
 log(f"端を参照に無いノードまで広げた: 遺伝子の端 {next_ext[0]:,}、子の端 {next_ext[1]:,}")
