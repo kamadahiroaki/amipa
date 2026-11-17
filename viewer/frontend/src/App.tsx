@@ -576,9 +576,9 @@ export default function App() {
   // ⚠ この状態では L_safe が働かず、残る防波堤は backend の時間ガード(FETCH_MS=15s)だけ。
   //   しかもその時間チェックは 1024 行ごとなので、1 行あたりが病的に遅い環境（WG cold の実測で
   //   最初の 1024 行に 280 秒）では発火が遅れる。常用の既定に戻すなら 20000。
-  // 10-28: 予算（表示グリフの上限）を有効にし、既定 20,000。選択はブラウザに保存してセッションを越えて保つ（閲覧者ごと）。
+  // 10-28: 予算（表示グリフの上限）を有効にし、既定 5,000（11-17 に 20,000 から下げた）。選択はブラウザに保存してセッションを越えて保つ（閲覧者ごと）。
   //   超える範囲は backend の /pick_layer が粗い層を選ぶ（欠けずに簡略化）。絞りモードは部分グラフを上限で取り、打ち切られたら 1 段粗い層
-  const [maxRows, setMaxRowsRaw] = useState<number>(() => { try { const v = localStorage.getItem('amipa.maxRows'); if (v != null && Number.isFinite(Number(v))) return Number(v) } catch { /* 保存できない環境 */ } return 20000 })
+  const [maxRows, setMaxRowsRaw] = useState<number>(() => { try { const v = localStorage.getItem('amipa.maxRows'); if (v != null && Number.isFinite(Number(v))) return Number(v) } catch { /* 保存できない環境 */ } return 5000 })   // 11-17: 既定 20,000 → 5,000（低メモリのノート PC から開かれるデモを想定）
   const setMaxRows = useCallback((v: number) => { setMaxRowsRaw(v); try { localStorage.setItem('amipa.maxRows', String(v)) } catch { /* 保存できない環境 */ } }, [])
   // 10-28: 層の閾値は「画面に約 V 個（較正の目標、既定 2,000）」で較正されている。表示予算 B が有効なら、画面に B 個まで出してよいので
   //   閾値を √(V/B) 倍に下げて（グリフ数は拡大率の 2 乗に反比例）早く深い層に降りる。それでも予算を超える所は /pick_layer と絞りモードの予算判定が粗い層に戻す。
