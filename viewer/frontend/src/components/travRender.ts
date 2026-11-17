@@ -173,7 +173,7 @@ const FOLD_W = 28                          // 変異の無い群を畳んだと�
 type BGroup = { g: number; from: number; to: number; nodes: string[]; rb?: number | null; hasEll: boolean; n: number; bp: number; variant: boolean; foldable: boolean; x0: number; x1: number }
 type BItem = { kind: 'col'; ci: number; g: number } | { kind: 'blk'; ci0: number; ci1: number; n: number; g: number; w: number }
 type BaseAnn = { refPos: Int32Array; rep: Int32Array; reps: { s: number; e: number; strand: string; name: string; cls: string; fam: string; div: number }[]; samples: string[]; varAt: Map<string, Map<number, { pos: number; ref: string; alt: string; gt: string; first: boolean }>>; inBench: Map<string, Uint8Array>; contig: string }
-type BaseState = { mode?: 'node' | 'base'; nw?: number | null; req?: { ranges: number[][]; label: string }; ann?: BaseAnn; M: BubbleMsaResp; cols: MsaCol[]; rows: MsaRow[]; groups: BGroup[]; label: string; z: number | null; sx: number; rowsOf: Map<number, number[]>; lines: { pin?: boolean; rep?: number; hid: number; mi: number; pack?: number[]; cov?: string; sm?: string }[]; readMode?: string; covCache?: Map<string, { dep: Uint16Array; mis: Uint16Array; del: Uint16Array; top: string[]; n: number }>
+type BaseState = { mode?: 'node' | 'base'; nw?: number | null; req?: { ranges: number[][]; label: string }; ann?: BaseAnn; M: BubbleMsaResp; cols: MsaCol[]; rows: MsaRow[]; groups: BGroup[]; label: string; z: number | null; sx: number; rowsOf: Map<number, number[]>; hidOfRow: Map<number, number>; rowTree: { key: string; root: Clade; order: number[] } | null; lines: { pin?: boolean; hid: number; mi: number; pack?: number[]; cov?: string; sm?: string }[]; readMode?: string; covCache?: Map<string, { dep: Uint16Array; mis: Uint16Array; del: Uint16Array; top: string[]; n: number }>
   norm: string[]; brk: { ci: number; n: number }[][]; inv: Set<number>[]; refRow: number | null; major?: string[]; blk: Map<number, { per: number[]; n: number; counts: number[] }>; items: BItem[]; xs: Float64Array; colItem: Int32Array; cw: number; zEff: number; fullW: number; vOnly: boolean; autoVar: boolean; hoverCi: number | null; sortCi: number[]
   byNode: Map<string, number[]>; genes: BGene[]; genesByHid: Map<number, BGene[]>; eff?: EffResult | null }   // 塩基の段の遺伝子（列に写したもの）、変異の効果
 type BGene = { g: Gene; c0: number; c1: number; cols: Uint8Array; kindOf: Uint8Array; mi: number }   // cols = この遺伝子が持つ列、kindOf = 列ごとの種類（1 CDS, 2 エキソン, 3 その他の遺伝子内）、mi = その株の行
@@ -625,7 +625,8 @@ function applyBase(d: BubbleMsaResp, ranges: number[][], label: string, mode: 'n
   // 継ぎ目: 同じコンティグの離れた範囲を 1 行に繋いだ所（間のトークンは窓の外）。右側のノードの最初の列の左端に印
   const brk = d.rows.map(r => { const out: { ci: number; n: number }[] = []; for (const b of (r.brk || [])) { const ca = byNode.get(b[0]), cb = byNode.get(b[1]); if (!ca || !cb) continue; const right = ca[0] < cb[0] ? cb : ca; out.push({ ci: right[0], n: b[2] }) } return out })
   const ri = d.rows.findIndex(r => r.isref)
-  base = { M: d, cols: d.cols, rows: d.rows, groups: baseGroups(d.cols, d.rows), label, z: null, sx: 0, rowsOf, lines: [], norm, brk, inv, refRow: ri >= 0 ? ri : (d.rows.length ? 0 : null), blk: new Map(), items: [], xs: new Float64Array(0), colItem: new Int32Array(0), cw: 0, zEff: 0, fullW: 0, vOnly: false, autoVar: false, hoverCi: null, sortCi: [], byNode, genes: [], genesByHid: new Map() }
+  const hidOfRow = new Map<number, number>(); for (const [h, ms] of rowsOf) for (const m of ms) hidOfRow.set(m, h)
+  base = { M: d, cols: d.cols, rows: d.rows, groups: baseGroups(d.cols, d.rows), label, z: null, sx: 0, rowsOf, hidOfRow, rowTree: null, lines: [], norm, brk, inv, refRow: ri >= 0 ? ri : (d.rows.length ? 0 : null), blk: new Map(), items: [], xs: new Float64Array(0), colItem: new Int32Array(0), cw: 0, zEff: 0, fullW: 0, vOnly: false, autoVar: false, hoverCi: null, sortCi: [], byNode, genes: [], genesByHid: new Map() }
   if (showGenes()) void loadBaseGenes(base)
   if ((root as any)?.hasAnn && annOn()) void loadBaseAnn(base)
   if (($('order') as HTMLSelectElement).value === 'tree') hapOrder = treeOrder()   // 木を塩基の違いで作り直す
@@ -864,12 +865,11 @@ function readItemSpan(B: BaseState, mi: number, k0: number, k1: number): [number
 // 描画（塩基の段）: 上段＝ノードの箱と基準の配列、行＝通過（木の順、同じ株の ·2 は続けて）、セル＝塩基（基準と同じなら ·）、区画＝アレル色
 function drawBaseCore() {
   const B = base!; setHdr(B); const W = cv.parentElement!.clientWidth; const gOn = B.genes.length > 0 && showGenes(); const AH = annH(B); TOP = (gOn ? BH_TOP + OGH + 2 : BH_TOP) + AH; ROW = gOn ? 17 : 13
-  // 11-17: 同じ株の 2 回目以降の通過（縦列反復の写し、·k の行）は株の直下に置かず、本体の行（範囲を最も埋める行）を系統樹の順に並べた後に、
-  //   写しを同じ系統樹の順でまとめて置く（直下に置くと、ほとんど空の行が株ごとに挟まり、通り方の似た株どうしが離れた。ecoli50 5.29 Mb の反復で 197 行）
-  { const fill = (mi: number) => { const sq = B.norm[mi] || B.rows[mi].seq; let n = 0; for (let i = 0; i < sq.length; i++) { const c = sq[i]; if (c !== '-' && c !== '~' && c !== ' ') n++ } return n }
-    const ordOf = new Map<number, number[]>(); let maxK = 0
-    for (const hid of hapOrder) { const ms = (B.rowsOf.get(hid) || []).slice(); if (ms.length > 1) { let best = ms[0], bf = -1; for (const m of ms) { const f = fill(m); if (f > bf) { bf = f; best = m } } ms.splice(ms.indexOf(best), 1); ms.unshift(best) } ordOf.set(hid, ms); if (ms.length > maxK) maxK = ms.length }
-    B.lines = []; for (let r = 0; r < maxK; r++) for (const hid of hapOrder) { const ms = ordOf.get(hid)!; if (ms[r] != null) B.lines.push(r ? { hid, mi: ms[r], rep: r } : { hid, mi: ms[r] }) } }
+  // 11-17: 系統樹の順では、木の葉を株でなく通過の行（·k の写しも 1 本ずつ）にする（baseRowTree）。何回目の通過かを問わず合意に近い行が上、
+  //   ほとんど欠けた行（縦列反復の端の写しなど）は下にまとまる。名前の順では従来どおり株の下に続けて
+  B.lines = []; const rt = ($('order') as HTMLSelectElement).value === 'tree' ? baseRowTree(B) : null
+  if (rt) for (const mi of rt.order) B.lines.push({ hid: B.hidOfRow.get(mi)!, mi })
+  else for (const hid of hapOrder) for (const mi of (B.rowsOf.get(hid) || [])) B.lines.push({ hid, mi })
   { const rr = B.rows.map((r, mi) => ({ r, mi })).filter(e => (e.r as any).read); const first = (sq: string) => { for (let i = 0; i < sq.length; i++) if (sq[i] !== '.' && sq[i] !== '-') return i; return 1e9 }
     rr.sort((a, b) => ((a.r as any).read.sample < (b.r as any).read.sample ? -1 : (a.r as any).read.sample > (b.r as any).read.sample ? 1 : 0) || first(a.r.seq) - first(b.r.seq))
     if (($('breads') as HTMLInputElement | null)?.checked !== false && rr.length) B.lines.push(...readLines(B, rr.map(e => e.mi))) }   // リード（10-28）: 株の行の下に、サンプル・開始位置の順。10-29: 展開・詰める・要約
@@ -882,7 +882,7 @@ function drawBaseCore() {
   // 行の高さ（11-11）: 株の行は ROW、リードの行は余白なし（セルの高さだけ。文字が読める倍率なら 11 px、それ以外は 7 px）。要約の行は ROW
   const Wb = W - LAB - 4; baseLayout(Wb)
   const RRH = B.cw >= 5 ? 11 : 7; const isRead = (ln: BaseState['lines'][number]) => !ln.cov && (ln.hid < 0 || !!(B.rows[ln.mi] as any).read)
-  rowTop = []; rowHgt = []; pinSec = null; grpHdrs = []; { let yy = TOP; let prevH = -1, repHdr = false; B.lines.forEach((ln, k) => { if (ln.rep) { if (!repHdr) { repHdr = true; grpHdrs.push({ y: yy, label: '同じ株の 2 回目以降の通過（縦列反復の写しなど、·k の行）' }); yy += GH } } else if (!ln.pin && !isRead(ln) && ln.hid >= 0) { const lb = grpLabelAt(prevH, ln.hid); if (lb) { grpHdrs.push({ y: yy, label: lb }); yy += GH } prevH = ln.hid } const h = isRead(ln) ? RRH : ROW; rowTop.push(yy); rowHgt.push(h); yy += h; if (k === nPinRows - 1) { yy += PIN_SEP; pinSec = { y: TOP, h: yy - TOP } } }) }
+  rowTop = []; rowHgt = []; pinSec = null; grpHdrs = []; { let yy = TOP; let prevH = -1; B.lines.forEach((ln, k) => { if (!ln.pin && !isRead(ln) && ln.hid >= 0) { const lb = grpLabelAt(prevH, ln.hid); if (lb) { grpHdrs.push({ y: yy, label: lb }); yy += GH } prevH = ln.hid } const h = isRead(ln) ? RRH : ROW; rowTop.push(yy); rowHgt.push(h); yy += h; if (k === nPinRows - 1) { yy += PIN_SEP; pinSec = { y: TOP, h: yy - TOP } } }) }
   { const AHx = AH; hdrStrips = []; const add = (id: string, a: number, b: number) => { if (b > a) hdrStrips.push({ id, y: a, h: b - a }) }
     add('node', 0, BH_REF >= 0 ? BH_REF : BH_MARK); if (BH_REF >= 0) add('ref', BH_REF, BH_MARK); add('mark', BH_MARK, BH_A)
     if (AHx && B.ann) { add('rep', BH_A, BH_A + ANN_REP_H); B.ann.samples.forEach((sm, si) => add('giab:' + sm, BH_A + ANN_REP_H + si * ANN_VAR_H, si === B.ann!.samples.length - 1 ? BH_A + AHx : BH_A + ANN_REP_H + (si + 1) * ANN_VAR_H)) }
@@ -966,8 +966,8 @@ function drawBaseCore() {
     B.ann.samples.forEach((sm, si) => g.fillText(`GIAB ${sm}`, LAB - 4, BH_A + ANN_REP_H + si * ANN_VAR_H + ANN_VAR_H - 1)); g.textAlign = 'left' }
   // 行ラベル・木
   B.lines.forEach((ln, k) => { if (rowTop[k] + rowHgt[k] < curOff - 40 || rowTop[k] > curY1 + 40) return; const y = rowTop[k], small = rowHgt[k] < ROW; const row = B.rows[ln.mi]; const grp = ln.hid >= 0 ? groupOf.get(ln.hid) : undefined; const mk = ln.hid >= 0 ? markOf(root!.haps[ln.hid].hap) : undefined; const rdi = (row as any).read; if (mk) { g.fillStyle = mk; g.beginPath(); g.arc(TREEW + 7, y + 7, 3.5, 0, Math.PI * 2); g.fill() } g.fillStyle = rdi ? '#1c6e8c' : row.isref ? '#7a4b00' : '#333'; g.font = small ? `${Math.max(6, rowHgt[k] - 1)}px system-ui` : rdi ? '10px system-ui' : '11px system-ui'; g.save(); g.beginPath(); g.rect(TREEW, y - 1, LAB - TREEW - 3, rowHgt[k] + 2); g.clip(); g.fillText(ln.cov ? `▸${ln.cov === '*' ? '全サンプル' : ln.cov} 要約（${readCov(B, ln.cov).n} 本）` : ln.pack && ln.pack.length > 1 ? `▸${ln.sm === '*' ? '全サンプル' : rdi.sample} 詰め ${ln.pack.length} 本` : rdi ? `${row.label}  q${rdi.mapq ?? '?'}${rdi.nins ? ` +${rdi.nins}ins` : ''}  ${row.strand}` : `${row.label}${grp && grp.length > 1 ? ` +${grp.length - 1}` : ''}  ${row.strand}`, TREEW + (mk ? 13 : 4), small ? y + rowHgt[k] - 1 : y + 10); g.restore()   /* 11-17: 長いリード名が整列に被った → ラベル欄で切る */ })
-  const rowOf = new Map<number, number>(); B.lines.forEach((ln, k) => { if (!ln.pin && !rowOf.has(ln.hid)) rowOf.set(ln.hid, k) })
-  drawTree(rowOf)
+  if (rt) { const rowOf = new Map<number, number>(); B.lines.forEach((ln, k) => { if (!ln.pin && ln.hid >= 0 && !rowOf.has(ln.mi)) rowOf.set(ln.mi, k) }); drawTree(rowOf, rt.root, mi => B.hidOfRow.get(mi)!) }
+  else { const rowOf = new Map<number, number>(); B.lines.forEach((ln, k) => { if (!ln.pin && !rowOf.has(ln.hid)) rowOf.set(ln.hid, k) }); drawTree(rowOf) }
   baseScrollSync(Wb)
   baseEmitVisible(Wb)
 }
@@ -979,6 +979,35 @@ function baseScrollSync(Wb: number) {
 $('bscroll').addEventListener('scroll', () => { const el = $('bscroll'); if (base && Math.abs(el.scrollLeft - base.sx) > 0.5) { base.sx = Math.max(0, Math.min(el.scrollLeft, Math.max(0, base.fullW - bodyPx() + 4))); draw() } })
 const fmtBpShort = (n: number) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'k' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n)
 // ---- 表示範囲の木（UPGMA）: 段ごとの距離 dist(i, j) を作り、travTree.ts の buildTree で木にする（株が多いと二段＝n√n） ----
+const isBaseCh = (c: string | undefined) => !!c && c !== '-' && c !== '.' && c !== '~' && c !== ' '
+function rowFill(B: BaseState, mi: number): number { const sq = B.norm[mi] || B.rows[mi].seq; let n = 0; for (let i = 0; i < sq.length; i++) if (isBaseCh(sq[i])) n++; return n }
+/** 塩基の段の通過ごとの木（11-17）: 葉＝行（株の ·k の写しも別の葉）。距離＝行どうしで違う列（どちらかが塩基を持つ列のうち、塩基の違い・片方だけ欠け・向きの違い）の割合。
+ *  子の並びは塩基を多く持つ（合意に近い）方を上に。属性などの群があれば群ごとに木を作って群の順に並べる。対象は hapOrder の株（まとめた枝は代表だけ）の行 */
+function baseRowTree(B: BaseState): { root: Clade; order: number[] } | null {
+  const key = hapOrder.join(',') + '|' + [...grpKeyOf.entries()].join(';')
+  if (B.rowTree && B.rowTree.key === key) return B.rowTree
+  const mis: number[] = []; for (const hid of hapOrder) for (const mi of (B.rowsOf.get(hid) || [])) mis.push(mi)
+  if (!mis.length) return null
+  const seqs = mis.map(mi => B.norm[mi] || B.rows[mi].seq), invs = mis.map(mi => B.inv[mi])
+  // 対象の列: 行で文字（欠けを含む）が揃っていない列。多ければ等間隔に 4,000 列まで
+  let vc: number[] = []; for (let c = 0; c < B.cols.length; c++) { const c0 = seqs[0][c]; const b0 = isBaseCh(c0); let v = false
+    for (let i = 0; i < seqs.length && !v; i++) { const x = seqs[i][c]; if (isBaseCh(x) !== b0 || (b0 && x !== c0) || invs[i].has(c) !== invs[0].has(c)) v = true } if (v) vc.push(c) }
+  if (vc.length > 4000) { const st = vc.length / 4000; vc = Array.from({ length: 4000 }, (_, k) => vc[Math.floor(k * st)]) }
+  const dist = (i: number, j: number) => { const a = seqs[i], b = seqs[j]; let diff = 0, any = 0
+    for (const c of vc) { const x = a[c], y = b[c]; const bx = isBaseCh(x), by = isBaseCh(y); if (!bx && !by) continue; any++; if (bx !== by || x !== y || invs[i].has(c) !== invs[j].has(c)) diff++ } return any ? diff / any : 0 }
+  const fill = mis.map(mi => rowFill(B, mi))
+  const orient = (c: Clade): number => { if (!c.kids.length) return fill[c.leaves[0]]; const fs = c.kids.map(orient); const ord = c.kids.map((k, i) => ({ k, f: fs[i] })).sort((p, q) => q.f - p.f); c.kids = ord.map(e => e.k); c.leaves = c.kids.flatMap(k => k.leaves); void fs; return c.leaves.reduce((t, l) => t + fill[l], 0) / c.leaves.length }
+  // 群（属性・選択など）: hapOrder の群の順に、群ごとの木
+  const gKeys: string[] = []; const byG = new Map<string, number[]>(); mis.forEach((mi, i) => { const k = grpKeyOf.get(B.hidOfRow.get(mi)!) ?? ''; if (!byG.has(k)) { byG.set(k, []); gKeys.push(k) } byG.get(k)!.push(i) })
+  const kids: Clade[] = []
+  for (const k of gKeys) { const sub = byG.get(k)!; const T = buildTree(sub.length, (a, b) => dist(sub[a], sub[b])); const mapL = (c: Clade) => { c.leaves = c.leaves.map(i => sub[i]); c.kids.forEach(mapL) }; mapL(T.root); orient(T.root); kids.push(T.root) }
+  const mapMi = (c: Clade) => { c.leaves = c.leaves.map(i => mis[i]); c.kids.forEach(mapMi) }
+  let rootC: Clade
+  if (kids.length === 1) rootC = kids[0]
+  else rootC = { leaves: kids.flatMap(c => c.leaves), size: mis.length, h: Math.max(1e-9, ...kids.map(c => c.h)), kids, virt: true } as Clade
+  mapMi(rootC)
+  B.rowTree = { key, root: rootC, order: rootC.leaves.slice() }; return B.rowTree
+}
 let treeDist: ((i: number, j: number) => number) | null = null, treeIds: number[] = []   // 検証用（__amipaTreeCmp）
 function treeOrder(): number[] {
   treeRoot = null
@@ -990,7 +1019,7 @@ function treeOrder(): number[] {
     // 向き（10-27）: 逆向きに通った列（inv）も「塩基が違う」と同じく 1 列として数える（逆位の株どうしがまとまるように）。対象の列＝変異のある列 ∪ どれかの行が逆向きの列
     const B = base; const anyInv = new Uint8Array(B.cols.length); for (const st of B.inv) for (const c of st) anyInv[c] = 1
     const vcols: number[] = []; for (let c = 0; c < B.cols.length; c++) if (B.cols[c].variant || anyInv[c]) vcols.push(c)
-    const miOf = (hid: number): number => { const ms = B.rowsOf.get(hid); return ms && ms.length ? ms[0] : -1 }
+    const miOf = (hid: number): number => { const ms = B.rowsOf.get(hid); if (!ms || !ms.length) return -1; let best = ms[0], bf = -1; for (const m of ms) { const f = rowFill(B, m); if (f > bf) { bf = f; best = m } } return best }   // 株の代表は範囲を最も埋める通過（11-17）
     const mis = ids.map(miOf)
     dist = (i, j) => { const mi = mis[i], mj = mis[j]; if (mi < 0 || mj < 0) return 1
       const a = B.norm[mi] || B.rows[mi].seq, b = B.norm[mj] || B.rows[mj].seq, ia = B.inv[mi], ib = B.inv[mj]; let diff = 0, both = 0
@@ -1380,11 +1409,11 @@ function drawCore() {
 }
 // 系統樹: 根が左、葉が右。枝の長さは不一致率。rowOf = hid → 行番号（塩基の段では同じ株の最初の行）
 let treeHits: { x: number; y0: number; y1: number; c: Clade }[] = []   // 木の枝（縦線）の位置（クリックでその下の株を選ぶ）
-function drawTree(rowOf: Map<number, number>) {
+function drawTree(rowOf: Map<number, number>, tRoot: Clade | null = treeRoot, leafHid: ((leaf: number) => number) | null = null) {
   treeHits = []
   if (!root) return
-  if (treeRoot && ($('order') as HTMLSelectElement).value === 'tree') {
-    const hmax = Math.max(1e-9, treeRoot.h); g.strokeStyle = '#444'; g.lineWidth = 1
+  if (tRoot && ($('order') as HTMLSelectElement).value === 'tree') {
+    const hmax = Math.max(1e-9, tRoot.h); g.strokeStyle = '#444'; g.lineWidth = 1
     const xOfH = (h: number) => 4 + (1 - Math.sqrt(Math.max(0, h) / hmax)) * (TREEW - 8)   // 近い株の併合が 0 付近に集まるので平方根で広げる
     const walk = (c: Clade): number => {   // 返り値はこのクレードの中心 y（子の中心の平均）。葉（まとめた枝も）は行の中心
       if ((c as any).virt) { c.kids.forEach(walk); return -1 }   // 群ごとの木をまとめた根（描かない）
@@ -1396,11 +1425,11 @@ function drawTree(rowOf: Map<number, number>) {
         return y
       }
       const ys0 = c.kids.map(walk); const ys = ys0.filter(v => v >= 0); if (!ys.length) return -1   // 塩基の段で行の無い株（範囲に無い）は飛ばす
-      g.beginPath(); g.moveTo(x, Math.min(...ys)); g.lineTo(x, Math.max(...ys)); g.stroke(); treeHits.push({ x, y0: Math.min(...ys), y1: Math.max(...ys), c })
+      g.beginPath(); g.moveTo(x, Math.min(...ys)); g.lineTo(x, Math.max(...ys)); g.stroke(); treeHits.push({ x, y0: Math.min(...ys), y1: Math.max(...ys), c: leafHid ? { ...c, leaves: [...new Set(c.leaves.map(leafHid))] } : c })
       c.kids.forEach((k, i) => { if (ys0[i] < 0) return; const xk = xOfH(k.h); g.beginPath(); g.moveTo(x, ys0[i]); g.lineTo(xk, ys0[i]); g.stroke() })
       return ys.reduce((t, v) => t + v, 0) / ys.length
     }
-    walk(treeRoot)
+    walk(tRoot)
     if (treeCut != null) { const xc = xOfH(treeCut * hmax); g.strokeStyle = 'rgba(192,57,43,.6)'; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(xc, TOP); g.lineTo(xc, rowsBottom()); g.stroke(); g.setLineDash([]) }   // まとめの閾値
     $('cuttxt').textContent = `${hapOrder.length}/${root.H} rows`
   } else $('cuttxt').textContent = ''
