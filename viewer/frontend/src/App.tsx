@@ -1687,8 +1687,12 @@ export default function App() {
             title={naTrav ? 'Alignment（旧版）: ノードを列に並べてリードを見る。このグラフは Linear が使えない（パスが無い）ので、リードはこちらで' : 'Alignment（旧版）を閉じる。リードは Linear の塩基段（Reads）で見るのが現行'}
             onClick={toggleAlign} data-short="Align" data-tiny="A">Alignment{naTrav ? '' : ' (legacy)'}</button>
           )}
-          {naTrav && trvH === 0 ? (
+          {naTrav && naReads && trvH === 0 ? (
             <button className="ui-btn is-na" aria-disabled="true" title={naTrav.why} data-tiny="Ln">Linear</button>
+          ) : naTrav ? (
+          <button className={'ui-btn' + (trvH > 0 ? ' is-on' : '')} aria-pressed={trvH > 0}
+            title="Linear（パスの無いグラフ）: グラフでノードを選ぶと、そのノードを通るリードから局所的な歩みを作り、塩基の段でリードを見る"
+            onClick={() => setTrvH(h => { if (h > 0) return 0; if (selectedNode && /^n\d+$/.test(selectedNode.node_name)) setTimeout(() => travApiRef.current?.locateNodes([selectedNode.node_name]), 0); return 360 })} data-tiny="Ln">Linear</button>
           ) : (
           <button className={'ui-btn' + (trvH > 0 ? ' is-on' : '')} aria-pressed={trvH > 0}
             title="Linear パネル: 全株を共通の座標（合意座標）に並べて比べる"

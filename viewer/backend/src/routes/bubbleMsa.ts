@@ -6,6 +6,7 @@ import { amipaScript } from '../pyenv'
 import { runScript } from '../pyRunner'
 import { sendTrav } from '../travClient'
 
+import { walksMsa } from '../walks'
 export const bubbleMsaRouter = Router()
 
 // bubble(S ノード)の MSA は distill(順序付きウォーク p_tok/p_ori)を要る。backend は distill を持たない
@@ -46,6 +47,14 @@ export function distillFor(dbPath: string): string | null {
 // Traversals の塩基の段（ノード段・塩基段）: 各行（パス）のトークン範囲を stdin の JSON で渡し、その範囲の塩基レベル MSA を返す（11-02 にノード集合で選ぶ GET /bubble_msa と Blocks パネルを外した）。
 //   POST /api/bubble_msa/ranges  body {db, ranges:[[path, s0, e0, dir?], …], label, flank}   dir（任意）＝コンティグの主な向き ±1（行の表示の向き）
 //   S（列）は範囲内のトークンの葉集合、行は与えたパスの範囲だけ。葉の上限は maxLeaves（既定 400、ここで 12,000 まで。画面は 1 遺伝子分〜を一度に出す）。
+// 11-17: パスの無いグラフの塩基段。選んだノードを通るリードから局所的な歩み（代わりのパス）を作り、/bubble_msa/ranges と同じ形で返す（walks.ts）
+//   POST /api/walks/msa  body {db, node: 'n123' か 123, radius?: bp（既定 10,000、上限 30,000）, reads?: {max, samples?}}
+bubbleMsaRouter.post('/walks/msa', (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>
+  if (!b.db || b.node == null) { res.status(400).json({ error: 'Missing db or node' }); return }
+  try { res.json(walksMsa(String(b.db), String(b.node), { radius: Math.max(1000, Math.min(30000, Number(b.radius) || 10000)), reads: b.reads && typeof b.reads === 'object' ? b.reads as any : { max: 200 } })) }
+  catch (e) { res.status(500).json({ error: String((e as Error)?.stack || e) }) }
+})
 bubbleMsaRouter.post('/bubble_msa/ranges', (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>
   const db = typeof b.db === 'string' ? b.db : ''

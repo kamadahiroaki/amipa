@@ -304,7 +304,10 @@ host.addEventListener('click', e => { const na = (e.target as HTMLElement).close
 async function loadRoot() {
   $('busy').style.display = 'inline'; $('busy').textContent = 'Loading…'   // 11-11: 開いた直後から出す（骨組み・区切り・原子を取る間、何も出ていなかった）
   const r = await getJson(`/api/trav/root?db=${encodeURIComponent(db)}`)
-  if (!r.ok) { root = null; $('info').textContent = `${db}: .trav が無い（${r.status}）`; draw(); return }
+  if (!r.ok) { root = null; walkMode = r.status === 404; walkNode = null; base = null
+    $('info').textContent = walkMode ? 'パスの無いグラフ: グラフでノードを選ぶと、そのノードを通るリードから局所的な歩み（代わりのパス）を作り、塩基の段でリードを見せる' : `${db}: .trav が無い（${r.status}）`
+    $('busy').style.display = 'none'; draw(); if (walkMode && walkPending) { const nm = walkPending; walkPending = null; void openWalks(nm) } return }
+  walkMode = false; walkPending = null
   root = await r.json(); view = [0, root!.R - 1]; hist = []; applyNA()
   const vq = PARAMS.get('view'); if (vq) { const [a, b] = vq.split('-').map(Number); if (Number.isFinite(a) && Number.isFinite(b)) view = [Math.max(0, a), Math.min(root!.R - 1, b)]; userMoved = true }   /* URL の範囲は寄せる（10-28: 全景のまま絞られて真っ白） */
   atomCum = []; let c = 0; for (const a of root!.atoms) { atomCum.push(c); c += a.bp }
@@ -339,6 +342,7 @@ async function loadTReads() {
     treads = { key, x0: j.x0, x1: j.x1, ncol: j.ncol, samples: j.samples, dep: j.dep.map(u16), zf: j.zf ? j.zf.map(u8) : undefined, src: j.src, level: j.level, reads: j.reads, overflow: j.overflow }; draw() } catch { /* 出さない */ }
 }
 async function loadRange() {
+  if (walkMode) return   // 11-17: パスの無いグラフ（歩みの段）は範囲の読み込みが無い
   navAC.abort(); navAC = new AbortController()   // 前の範囲の要求を取り消す
   if (!root) return
   if (navKey && navKey !== viewKey()) { navKey = ''; navNoAuto = false; ($('rung') as HTMLSelectElement).value = 'auto' }   // 範囲が変わった: 段の選択を自動に戻す
@@ -568,7 +572,7 @@ function goRung(t: Rung) {
   pendingMode = t; if (cols) { ($('base') as HTMLButtonElement).disabled = false; $('base').click() } else loadRange()
 }
 // 塩基の段を同じ範囲・同じ段・同じ位置で取り直す（リードの有無・本数を変えたとき）
-function reopenBase() { const B = base; if (!B || !B.req) return; const ci = baseCenterCi(); void openBase(B.req.ranges, B.req.label, B.mode || 'node', ci) }
+function reopenBase() { if (walkMode && walkNode) { void openWalks(walkNode); return } const B = base; if (!B || !B.req) return; const ci = baseCenterCi(); void openBase(B.req.ranges, B.req.label, B.mode || 'node', ci) }
 // ---- 塩基へ: 錨の列の各行（通過）の窓の中のトークン範囲を塩基レベル MSA に渡す。葉（ノード）の見積もり＝範囲の bp ÷ ノードあたりの bp ----
 const bpPerNode = () => (root && root.meta && root.meta.N) ? Math.max(1, root.total_bp / Number(root.meta.N)) : 10
 function updateBase() {
@@ -593,6 +597,11 @@ async function openBase(ranges: number[][], label: string, mode: 'node' | 'base'
   const d = await fetchBubbleMsaRanges(db, ranges, label, 0, 0, 3000, wantReads ? { max: numOf('breadmax', 40), ...(readSel.length ? { samples: readSel } : {}) } : undefined, [Math.floor(view[0]), Math.ceil(view[1])])   // cap 0＝畳まない（画面側で畳む）、葉の上限 3,000
   if (my !== loading) return
   $('busy').style.display = 'none'
+  applyBase(d, ranges, label, mode, centerCi)
+}
+/** 塩基段の応答を画面に反映（11-17: パスの無いグラフの歩みの段からも使う） */
+function applyBase(d: BubbleMsaResp, ranges: number[][], label: string, mode: 'node' | 'base' = 'node', centerCi: number | null = null) {
+  if (!root) return
   if (d.error || !d.cols || !d.rows || !d.cols.length) { $('info').textContent = `塩基の段: ${d.error || '列が無い'}`; $('info').style.color = '#c0392b'; return }
   const hidOf = new Map(root.haps.map(h => [h.hap, h.hid])); const rowsOf = new Map<number, number[]>()
   const bySample = new Map<string, number[]>(); for (const h of root.haps) { const sm = h.hap.split('#')[0]; if (!bySample.has(sm)) bySample.set(sm, []); bySample.get(sm)!.push(h.hid) }
@@ -2134,6 +2143,7 @@ $('wllater').addEventListener('click', () => wlMark('later')); $('wlskip').addEv
 $('wlend2').addEventListener('click', () => { if (wl && wl.pos >= 0) void wlGo(wl.pos, 1) })
 $('wlnote').addEventListener('change', () => { if (!wl || wl.pos < 0) return; wl.recs[wl.pos].note = ($('wlnote') as HTMLInputElement).value; wlSave(); wlUi() })
 ;(window as any).amipaLinear = {
+  walks: (n: string) => openWalks(n),   // 11-17: パスの無いグラフの歩みの段（コンソール・試験用）
   go: goTarget, resolve: (t: Target | string) => { const q = typeof t === 'string' ? parseTarget(t) : t; return q ? resolveTarget(q) : Promise.resolve({ ok: false, reason: '読めない地点' }) }, parse: parseTarget,
   pin: apiPin, order: apiOrder, select: apiSelect,
   list: { load: wlLoad, next: () => wlStep(1), prev: () => wlStep(-1), goto: (i: number) => wlGo(i), mark: (st: Status) => wlMark(st), get: () => wl, convert: parseWorklist },
@@ -2205,6 +2215,24 @@ for (const b of host.querySelectorAll<HTMLButtonElement>('[data-exp]')) b.addEve
   else if (k === 'aln') { if (!base) { $('info').textContent = '整列は塩基段（Bases／Nodes）を開いてから'; return } baseExport('aln', (document.getElementById('tv_bexpw') as HTMLSelectElement | null)?.value || '') } })
 ;(window as any).amipaLinear && Object.assign((window as any).amipaLinear, { exportFigure, exportNewick, exportRows, exportBed, exportPav })
 
+// ---- パスの無いグラフの歩みの段（11-17）: 選んだノードを通るリードから局所的な歩みを作り（/api/walks/msa、サーバの walks.ts）、塩基段に出す ----
+//   歩み（合意＋別の道）を株に見立てた仮の root を作り、塩基段の描画（applyBase 以降）をそのまま使う。範囲の段（ブロック・錨の列）は無い
+let walkMode = false, walkNode: string | null = null, walkPending: string | null = null   // walkPending: 読み込みの前に届いたノード
+async function openWalks(name: string) {
+  const my = ++loading; walkNode = name; $('busy').style.display = 'inline'; $('busy').textContent = 'Reads…'; $('info').style.color = ''; $('info').textContent = `${name}: そこを通るリードから局所的な歩みを作っている…`
+  let d: any
+  try { d = await (await fetch('/api/walks/msa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ db, node: name, radius: 10000, reads: { max: numOf('breadmax', 200), ...(readSel.length ? { samples: readSel } : {}) } }) })).json() } catch (e) { d = { error: String(e) } }
+  if (my !== loading) return; $('busy').style.display = 'none'
+  if (d.error || !d.rows) { $('info').textContent = `${name}: ${d.error || '歩みを作れない'}`; $('info').style.color = '#c0392b'; return }
+  const wr = (d.rows as any[]).filter(r => !r.read)
+  root = { meta: {}, H: wr.length, R: Math.max(1, d.cols.length), total_bp: d.walks?.consensusBp ?? 0, haps: wr.map((r, i) => ({ hid: i, hap: String(r.label).replace(/ ·\d+$/, ''), ncontig: 1, nexcl: 0, bp: 0 })), atoms: [], bounds: [] }
+  ;(root as any).hasReads = true
+  baseOrder = root.haps.map(h => h.hid); hapOrder = baseOrder.slice(); view = [0, root.R - 1]; cols = null; rows = []
+  applyBase(d, [], `walks ${name}`, base?.mode === 'node' ? 'node' : 'base')
+  const w = d.walks || {}
+  $('info').textContent = `パスの無いグラフ: ${name} を通るリード ${fmt(w.reads ?? 0)} 本から局所的な歩み ${w.nwalks ?? '?'} 本（合意 ${fmtbp(w.consensusBp ?? 0)}・別の道 ${w.alleles ?? 0}・別の場所として除いたリード ${w.otherLocus ?? 0}）· ${fmt(w.msTotal ?? 0)} ms`
+}
+
 function getState(): any { const st: any = { db, view: [Math.floor(view[0]), Math.ceil(view[1])], base: !!base, bmode2: base?.mode || null, rsamp: readSel, sel: {}, chk: {} }; st.pins = [...pinnedHaps]
   for (const k of TRAV_SEL) { const el = document.getElementById('tv_' + k) as HTMLInputElement | null; if (el) st.sel[k] = el.value }
   for (const k of TRAV_CHK) { const el = document.getElementById('tv_' + k) as HTMLInputElement | null; if (el) st.chk[k] = el.checked } return st }
@@ -2217,7 +2245,7 @@ function setState(st: any, tries = 0) { if (!st) return; if (!root || (st.db && 
   if (Array.isArray(st.rsamp)) { readSel = st.rsamp.map(String); readSelLabel() }
   if (st.base) { baseAutoState = true; pendingMode = st.bmode2 === 'base' ? 'base' : 'node' } blocks = makeBlocks(); void loadRange() }
 let baseAutoState = false
-return { getState, setState, setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked || grpSpec() === 'sel') reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; locAC.abort(); locAC = new AbortController(); const sg = locAC.signal; void refreshOverview(sg); if (rangeMode === 'none' || base) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading, undefined, sg) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, setFilter(on: boolean) { const el = $('gfilter') as HTMLInputElement; if (el.checked !== on) { el.checked = on; loadRange() } }, setNBlocks(n: number) { const el = $('nblk') as HTMLInputElement; if (el.value !== String(n)) { el.value = String(n); el.dispatchEvent(new Event('change')) } }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { unfit.forEach(f => f()); wrapRO.disconnect(); loading++; document.removeEventListener('mousedown', onPopDoc); document.removeEventListener('keydown', onCopyKey); ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
+return { getState, setState, setDb(d: string) { db = d; located = []; loadRoot() }, locateNodes(names: string[]) { if (walkMode) { if (names[0]) void openWalks(names[0]); return } if (!root) { walkPending = names[0] ?? null; return } void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked || grpSpec() === 'sel') reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; locAC.abort(); locAC = new AbortController(); const sg = locAC.signal; void refreshOverview(sg); if (rangeMode === 'none' || base) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading, undefined, sg) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, setFilter(on: boolean) { const el = $('gfilter') as HTMLInputElement; if (el.checked !== on) { el.checked = on; loadRange() } }, setNBlocks(n: number) { const el = $('nblk') as HTMLInputElement; if (el.value !== String(n)) { el.value = String(n); el.dispatchEvent(new Event('change')) } }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { unfit.forEach(f => f()); wrapRO.disconnect(); loading++; document.removeEventListener('mousedown', onPopDoc); document.removeEventListener('keydown', onCopyKey); ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
 
 }
 
