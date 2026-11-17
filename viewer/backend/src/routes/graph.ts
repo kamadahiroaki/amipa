@@ -3,6 +3,7 @@ import zlib from 'zlib'
 import path from 'path'
 import { execFile } from 'child_process'
 import { getDb, getDbDir, dbBytes, HUGE_DB_BYTES, nameTriSchema, readsSchema } from '../db'
+import { segNamesFor } from '../segNames'
 import { AMIPA_PYTHON, amipaScript } from '../pyenv'
 import { poolAvailable, runOnWorker, AbandonedError, progressFor, type WorkerReply } from '../workerPool'
 import { runQueryJob, plainCtx, type QueryJob } from '../dbJobs'
@@ -153,13 +154,39 @@ function runNodeSearch(d: any, where: string, params: any[]): any[] {
   }
 }
 
+// セグメント名（11-17）: GET /api/segnames?db=&names=n1,n2 → { named, map: { n1: '元の名前', … } }（names 無しなら named だけ）。上限 5,000 個
+graphRouter.get('/segnames', (req, res) => {
+  const { db, names } = req.query as Record<string, string>
+  if (!db) { res.status(400).json({ error: 'Missing db' }); return }
+  try { const SN = segNamesFor(db); const ns = (names || '').split(',').filter(Boolean).slice(0, 5000)
+    res.json({ named: SN.named, map: Object.fromEntries(SN.toDisplay(ns)) })
+  } catch (e) { res.status(500).json({ error: String(e) }) }
+})
+
+// 元の名前 → 内部名（11-17）: GET /api/segids?db=&names=a,b → { map: { a: 'n12', … } }（見つからない名前は入れない）。上限 5,000 個
+graphRouter.get('/segids', (req, res) => {
+  const { db, names } = req.query as Record<string, string>
+  if (!db) { res.status(400).json({ error: 'Missing db' }); return }
+  try { const SN = segNamesFor(db); const m: Record<string, string> = {}
+    for (const q of (names || '').split(',').filter(Boolean).slice(0, 5000)) { const v = SN.toInternal(q); if (v) m[q] = v }
+    res.json({ named: SN.named, map: m })
+  } catch (e) { res.status(500).json({ error: String(e) }) }
+})
+
 graphRouter.get('/search', (req, res) => {
   const { db, name } = req.query as Record<string, string>
   if (!db || !name) { res.status(400).json({ error: 'Missing query parameters' }); return }
   try {
     const d = getDb(db)
-    // ① 完全一致
-    let rows = runNodeSearch(d, 'n.node_name = ?', [name])
+    const SN = segNamesFor(db)
+    // ⓪ 元のセグメント名（11-17）: 利用者が見ている名前（整数グラフは数字、名前モードは元の名前）→ 内部名 n<整数>
+    const internal = SN.toInternal(name)
+    let rows = internal ? runNodeSearch(d, 'n.node_name = ?', [internal]) : []
+    if (rows.length === 0 && SN.named) { const ids = SN.prefix(name, NODE_SEARCH_LIMIT); if (ids.length) rows = runNodeSearch(d, `n.node_name IN (${ids.map(() => '?').join(',')})`, ids) }
+    // ① 完全一致（内部名そのもの。クラスタの名前など）
+    if (rows.length === 0) rows = runNodeSearch(d, 'n.node_name = ?', [name])
+    // ①' 整数グラフで数字だけを打ったときの前方一致（n を補う）
+    if (rows.length === 0 && !SN.named && /^\d+$/.test(name.trim())) rows = runNodeSearch(d, 'n.node_name GLOB ?', [`n${name.trim()}*`])
     // ② 前方一致（GLOB のメタ文字を含む入力はエスケープできないので素通しせずスキップ）
     if (rows.length === 0 && !/[*?[\]]/.test(name)) {
       rows = runNodeSearch(d, 'n.node_name GLOB ?', [`${name}*`])
@@ -177,7 +204,8 @@ graphRouter.get('/search', (req, res) => {
           ? []
           : runNodeSearch(d, "n.node_name LIKE ? ESCAPE '\\'", [pat])
     }
-    res.json(rows)
+    const disp = SN.toDisplay(rows.map((r: any) => r.node_name))
+    res.json(rows.map((r: any) => ({ ...r, label: disp.get(r.node_name) ?? r.node_name })))
   } catch (e) {
     console.error('search failed:', e)
     res.status(500).json({ error: String(e) })

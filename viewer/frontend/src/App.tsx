@@ -7,6 +7,7 @@ import { naReason, naTag, AvailMap } from './avail'
 import TravPanel from './components/TravPanel'
 import type { TravHandle } from './components/travRender'
 import { matchHapToKey } from './components/hapKey'
+import { segName, segSetDb, onSegNames } from './segNames'
 import { API_LEVEL_REQUIRED, fetchBlockBbox, fetchStats, fetchMaxHb, fetchCnv, fetchNodeInfo, NodeInfo, fetchLeafSeq, fetchLeafBases, fetchVersion, searchNodes, fetchExpandNode, saveSession, loadSession, searchReads, fetchNodesByName, fetchPathGroups, fetchRibbon, fetchRoute, RouteResp, fetchRefContigs, fetchGoto, saveEdits, fetchFlood, fetchAnnotDicts, fetchNodeFeatures, fetchGeneFeatures, fetchGeneExons, fetchBlockAncestors, Rect, NodeData, LeafSeq, VersionInfo, ReadAlignment, PathGroup, RibbonLevel, RefContig, BandDictEntry, RegionDictEntry, NodeFeature, GeneFeature, GeneExon, EditGesture, StatsResult, fetchPrewarm, PrewarmInfo } from './api/client'
 import { docsUrl } from './docsLink'
 import { fitBar } from './fitBar'
@@ -237,6 +238,9 @@ function applyGesturesToRibbons(ribs: RibbonData[], gestures: EditGesture[]): Ri
 export default function App() {
   const [databases, setDatabases] = useState<string[]>([])
   const [selectedDb, setSelectedDb] = useState<string | null>(null)
+  segSetDb(selectedDb ?? '')   // 11-17: 元のセグメント名の表示（DB が変わったときだけ引き直す。何度呼んでもよい）
+  const [, setSegTick] = useState(0)
+  useEffect(() => onSegNames(() => setSegTick(t => t + 1)), [])   // 名前が届いたら描き直す
   // プリウォーム進捗（DB を開くと backend が順読みを始める）。走っている間だけポーリングする。
   const [prewarm, setPrewarm] = useState<PrewarmInfo | null>(null)
   useEffect(() => {
@@ -1270,7 +1274,7 @@ export default function App() {
 
   function handleSearchSelect(node: NodeData) {
     graphRef.current?.navigateTo(node.xCoord, node.yCoord, node.id, node.layer)
-    setSearchQuery(node.node_name)
+    setSearchQuery((node as any).label ?? segName(node.node_name))
     setShowSearchDropdown(false)
     setSelectedNode(node)
   }
@@ -1406,7 +1410,7 @@ export default function App() {
     graphRef.current?.navigateTo(node.xCoord, node.yCoord, node.id, node.layer)
     setSelectedNode(node)
     const cn = refContigs.get(Number(node.ref_contig_id))?.name ?? `#${node.ref_contig_id}`
-    showHint(`${cn}:${bp.toLocaleString()} 付近 → ${node.node_name}`)
+    showHint(`${cn}:${bp.toLocaleString()} 付近 → ${segName(node.node_name)}`)
   }
 
   async function handleSearch() {
@@ -1425,14 +1429,15 @@ export default function App() {
     if (results.length === 0) { setSearchStatus('notfound'); return }
 
     // 名前長の短い順 → 同長はアルファベット順
+    const lab = (r: NodeData) => (r as any).label ?? segName(r.node_name)   // 11-17: 元のセグメント名で比べる・見せる
     results.sort((a, b) =>
-      a.node_name.length - b.node_name.length || a.node_name.localeCompare(b.node_name)
+      lab(a).length - lab(b).length || lab(a).localeCompare(lab(b))
     )
 
     setSearchStatus('idle')
     // 11-16: 完全一致が 1 つ、または候補が 1 つだけなら Enter でそのまま移る（遺伝子の検索と同じ。以前は候補をクリックする必要があった）
-    const exact = results.filter(r => r.node_name === q)
-    const exactCi = exact.length ? exact : results.filter(r => r.node_name.toLowerCase() === q.toLowerCase())
+    const exact = results.filter(r => lab(r) === q || r.node_name === q)
+    const exactCi = exact.length ? exact : results.filter(r => lab(r).toLowerCase() === q.toLowerCase())
     if (exactCi.length === 1 || results.length === 1) { setSearchResults(results); handleSearchSelect(exactCi.length === 1 ? exactCi[0] : results[0]); return }
     setSearchResults(results)
     setShowSearchDropdown(true)
@@ -1557,7 +1562,7 @@ export default function App() {
             <div className="ui-menu ui-menu-left" style={{ minWidth: 260, maxHeight: 260 }}>
               {searchResults.map(n => (
                 <button key={n.id} className="ui-menu-item" onMouseDown={() => handleSearchSelect(n)}>
-                  <span style={{ flex: 1, wordBreak: 'break-all' }}>{n.node_name}</span>
+                  <span style={{ flex: 1, wordBreak: 'break-all' }}>{(n as any).label ?? segName(n.node_name)}</span>
                   {devMode && n.layer !== undefined && <span style={{ fontSize: 11, color: 'var(--ui-faint)' }}>L{n.layer}</span>}
                 </button>
               ))}
@@ -2115,7 +2120,7 @@ export default function App() {
                     //   セグメント id で、クラスタには対応する実体が無い）。以前はクラスタでも
                     //   そのまま列に足していたので、空のまま列幅が潰れ、塩基表示で落ちていた。
                     if (!/^n\d+$/.test(node.node_name)) {
-                      showHint(`${node.node_name} はクラスタなので、リードの整列はありません。`
+                      showHint(`${segName(node.node_name)} はクラスタなので、リードの整列はありません。`
                         + 'ズームして葉ノード（n…）を選んでください。')
                       return
                     }
@@ -2494,7 +2499,7 @@ export default function App() {
                   </div>
                   {selectedReadAln.segments.map((s, i) => (
                     <div key={i} style={{ fontSize: 10, fontFamily: 'monospace', marginBottom: 6, lineHeight: 1.35 }}>
-                      <div style={{ color: 'var(--ui-text)', wordBreak: 'break-all' }}>{s.node_name ?? '?'}</div>
+                      <div style={{ color: 'var(--ui-text)', wordBreak: 'break-all' }}>{s.node_name ? segName(s.node_name) : '?'}</div>
                       <div style={{ color: 'var(--ui-muted)' }}>
                         node {s.node_start.toLocaleString()}–{s.node_end.toLocaleString()} ({s.strand}) · q {s.query_start.toLocaleString()}–{s.query_end.toLocaleString()} · mq{s.mapq ?? '?'}
                       </div>
@@ -2514,7 +2519,7 @@ export default function App() {
                             userSelect: 'text', WebkitUserSelect: 'text', cursor: 'text' }}>
                 <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--ui-text)', marginBottom: 10,
                   wordBreak: 'break-all', borderBottom: '1px solid var(--ui-border)', paddingBottom: 8 }}>
-                  {selectedNode.node_name}
+                  {segName(selectedNode.node_name)}
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <tbody>

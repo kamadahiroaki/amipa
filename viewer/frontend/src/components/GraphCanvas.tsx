@@ -1,4 +1,5 @@
 import type { GuardSink } from '../api/client'
+import { segName, onSegNames } from '../segNames'
 import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import * as PIXI from 'pixi.js'
 import { fetchNodes, fetchEdges, fetchPickLayer, fetchCtgPath, fetchProgress, newPid, NodeData, EdgeData, Rect, CtgPathNode, CtgPathStep, RefContig, EditGesture, fetchBlockNodemap, fetchBlockSubgraph, fetchBlockNames, fetchBlockBbox, blockSelKey, type BlockSubgraph, type BlockSel } from '../api/client'
@@ -380,6 +381,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
   }, [floodMode, floodResult, floodSeedComp, floodMaxHop])
 
   useEffect(() => { msaHiRef.current = msaHighlight ?? null; renderRef.current?.() }, [msaHighlight])
+  useEffect(() => onSegNames(() => renderRef.current?.()), [])   // 11-17: 元のセグメント名が届いたら名札を描き直す
   const msaHoverColorRef = useRef<number | null>(null)
   useEffect(() => { msaHoverRef.current = msaHoverNodes ?? null; msaHoverColorRef.current = msaHoverColor ?? null; renderRef.current?.() }, [msaHoverNodes, msaHoverColor])
 
@@ -1771,7 +1773,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
             // bp 行は unit=true: 数字(大)＋"bp"(小)の2サイズで描く。行高はスケール後フォント基準。
             const lines: { text: string; fs: number; unit?: boolean }[] = []
             if (showNames && screenW >= 26)
-              lines.push({ text: n.node_name, fs: Math.min(13, Math.max(8, screenW * 0.16)) })
+              lines.push({ text: segName(n.node_name), fs: Math.min(13, Math.max(8, screenW * 0.16)) })
             if (showBp && screenW >= 24 && n.size != null)
               lines.push({ text: fmtBp(n.size), fs: Math.min(13, Math.max(8, screenW * 0.16)), unit: true })
             if (showCov && screenW >= 20)

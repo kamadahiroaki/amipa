@@ -153,6 +153,10 @@ function checkDb(dbPath: string): void {
     const dis = side('.distill')
     if (dis && fs.existsSync(path.join(dis, 'p_tok.npy'))) ok(`sidecar .distill — bubble MSA`)
     else if (feats.includes('distill_msa')) warn('.distill が無い/不完全 → bubble MSA パネルが使えない')
+    // セグメント名（11-17）: distill が名前モード（整数でない id）なら <db>.segnames が要る。無いと画面とノード検索が内部名 n<整数> になる
+    if (dis) { try { const m = JSON.parse(fs.readFileSync(path.join(dis, 'meta.json'), 'utf8')); const sn = side('.segnames')
+      if (m.named) sn ? ok(`segnames: サイドカー.segnames (${gb(fs.statSync(sn).size)}) — 元のセグメント名`) : bad('segnames が無い（整数でない id のグラフ）→ 画面とノード検索が内部名になる。amipa prep run --only distill で作り直す')
+    } catch { /* meta.json が無い古い distill */ } }
 
     // リード整列: 索引はサイドカー .reads、実体は reads/<サンプル>.gaf.zst。
     // 索引だけあって実体が無い（＝別マシンへ半分だけ運んだ）状態を検出する。

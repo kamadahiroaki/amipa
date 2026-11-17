@@ -2,6 +2,7 @@ import { Router } from 'express'
 import path from 'path'
 import fs from 'fs'
 import { getDb, getDbDir } from '../db'
+import { segNamesFor } from '../segNames'
 import { tableCols } from '../nodeQuery'
 import { spatialSource } from '../spatial'
 
@@ -83,11 +84,14 @@ exportRouter.get('/export/gfa', (req, res) => {
     }
 
     const out: string[] = ['H\tVN:Z:1.0']
-    for (const nm of names) out.push(`S\t${nm}\t${seqOf.get(nm) ?? '*'}`)
+    // 11-17: 葉は元のグラフのセグメント名で書く（整数 id のグラフは数字、名前モードは元の名前）。葉でない層（クラスタ）は内部名のまま
+    const disp = segNamesFor(q.db).toDisplay([...names])
+    const nmOut = (nm: string) => disp.get(nm) ?? nm
+    for (const nm of names) out.push(`S\t${nmOut(nm)}\t${seqOf.get(nm) ?? '*'}`)
     for (const e of edges) {
       const so = Number(e.ss) < 0 ? '-' : '+'    // src_sign/tgt_sign(1/-1) → GFA 向き(+/-)。0(pathless)は +
       const to = Number(e.ts) < 0 ? '-' : '+'
-      out.push(`L\t${e.source}\t${so}\t${e.target}\t${to}\t0M`)
+      out.push(`L\t${nmOut(e.source)}\t${so}\t${nmOut(e.target)}\t${to}\t0M`)
     }
     res.setHeader('Content-Type', 'text/plain; charset=utf-8')
     res.setHeader('Content-Disposition', `attachment; filename="${fnBase(q.db)}_L${b.L}.gfa"`)
@@ -118,6 +122,7 @@ exportRouter.get('/export/bed', (req, res) => {
     ).all(...sp.params, BED_MAX_ROWS + 1) as any[]
     const truncated = rows.length > BED_MAX_ROWS
     const use = truncated ? rows.slice(0, BED_MAX_ROWS) : rows
+    const dmap = segNamesFor(q.db).toDisplay(use.map(r => String(r.nm))); const dispOf = (nm: string) => dmap.get(nm) ?? nm   // 11-17: 元のセグメント名
 
     const cn = new Map<number, string>()
     for (const c of d.prepare('SELECT contig_id, name FROM ref_contigs').all() as any[]) cn.set(c.contig_id, c.name)
@@ -133,7 +138,7 @@ exportRouter.get('/export/bed', (req, res) => {
       if (!(end > start)) end = start + 1
       const strand = r.rs == null ? '.' : (Number(r.rs) === 0 ? '-' : '+')
       const score = r.rm ? 0 : 1000                              // ref_multi(多値=概算) は score 0 で目印
-      lines.push([chromOf(Number(r.rci)), start, end, r.nm, score, strand].join('\t'))
+      lines.push([chromOf(Number(r.rci)), start, end, dispOf(r.nm), score, strand].join('\t'))
     }
     lines.sort((a, z) => {
       const A = a.split('\t'), B = z.split('\t')

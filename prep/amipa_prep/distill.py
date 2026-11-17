@@ -12,6 +12,10 @@
   - chr22 PGGB は S 行 id が既に 1..N の連番 → dense=identity(id_map=arange)。この場合 remap は恒等で
     既存 db と bit-identical。minigraph の文字列 id は上流の sed で整数化済み前提(distill は int id を仮定)。
   - id_map[dense-1] = original id。④ は最終 node_name 発行時に id_map で元 id に復元(identity なら無変換)。
+  - ★名前モード(11-17): S 行の id に 1 つでも整数でないもの(minigraph の s1、hifiasm の utg000001l など)があれば、
+    S 行の出現順に 1..N を振り、それを「元 id」として扱う(id_map=arange、下流は今までどおり n<整数>)。
+    元の名前は seg_names.txt(1 行 1 名、内部 id の順)に残し、--emit-dense-gfa には内部 id の GFA を必ず書く(分解器用)。
+    閲覧側は <db>.segnames(segnames_build.py)で内部名と元の名前を相互に引く。
 
 入力: GFA(S/L/P/W; 整数 node id)。W 行は MC 用(chr22 は P のみ)。
 出力: <out>/ ディレクトリに以下(各段が必要分だけ mmap ロード):
@@ -114,12 +118,30 @@ def main():
     s_seq_off = [0] if args.emit_seq else None      # byte offsets(file order), N+1 entries
     _spos = 0
 
+    # 名前モードかどうか: S 行の id がすべて整数なら従来どおり。整数でない id があれば S 行を先に読んで名前 → 内部 id の表を作る
+    name2id = None
+    with open(args.gfa) as f:
+        for ln in f:
+            if ln[0] == "S":
+                try: int(ln.split("\t", 2)[1])
+                except ValueError: name2id = {}; break
+    if name2id is not None:
+        with open(args.gfa) as f:
+            for ln in f:
+                if ln[0] == "S":
+                    nm = ln.split("\t", 2)[1]
+                    if nm not in name2id: name2id[nm] = len(name2id) + 1
+        log(f"名前モード: S 行の id に整数でないものがある → 出現順に 1..{len(name2id):,} を振る（元の名前は seg_names.txt）")
+    named = name2id is not None
+    sid = (lambda x: name2id[x]) if named else int
+    WN_RE = re.compile(r"([<>])([^<>\s]+)")
+
     with open(args.gfa) as f:
         for ln in f:
             c = ln[0]
             if c == "S":
                 p = ln.split("\t", 3)
-                s_id_o.append(int(p[1]))
+                s_id_o.append(sid(p[1]))
                 seq = p[2].strip()
                 s_bp.append(len(seq))
                 if seqf is not None:
@@ -128,8 +150,8 @@ def main():
                     s_seq_off.append(_spos)
             elif c == "L":
                 p = ln.split("\t")
-                la_o.append(int(p[1])); loa.append(1 if p[2] == "+" else 0)
-                lb_o.append(int(p[3])); lob.append(1 if p[4] == "+" else 0)
+                la_o.append(sid(p[1])); loa.append(1 if p[2] == "+" else 0)
+                lb_o.append(sid(p[3])); lob.append(1 if p[4] == "+" else 0)
             elif c == "P":
                 parts = ln.rstrip("\n").split("\t")
                 if len(parts) < 3:
@@ -137,7 +159,7 @@ def main():
                 p_names.append(parts[1])
                 _m = re.search(r"\[(\d+)[-:]\d+\]$", parts[1]); p_start.append(int(_m.group(1)) if _m else 0)
                 # token 数 = '+'/'-' バイト個数(各 token に符号 1 個 → parse_p_ids/parse_p_ori の長さと厳密一致)
-                p_len.append(parts[2].count("+") + parts[2].count("-"))
+                p_len.append(len([t for t in parts[2].split(",") if t]) if named else parts[2].count("+") + parts[2].count("-"))
                 p_iswalk.append(0); n_p += 1
             elif c == "W":
                 parts = ln.rstrip("\n").split("\t")
@@ -146,7 +168,7 @@ def main():
                 p_names.append(f"{parts[1]}#{parts[2]}#{parts[3]}")
                 p_start.append(int(parts[4]) if parts[4] != "*" else 0)   # 同じコンティグが SeqStart の違う W 行に分かれる（minigraph-cactus の断片）
                 # token 数 = '>'/'<' バイト個数(各 token に向き記号 1 個 → W_RE.findall の個数と厳密一致)
-                p_len.append(parts[6].count(">") + parts[6].count("<"))
+                p_len.append(len(WN_RE.findall(parts[6])) if named else parts[6].count(">") + parts[6].count("<"))
                 p_iswalk.append(1); n_w += 1
 
     if seqf is not None:
@@ -209,19 +231,27 @@ def main():
                 parts = ln.rstrip("\n").split("\t")
                 if len(parts) < 3:
                     continue
-                tok = parse_p_ids(parts[2])
+                if named:
+                    tt = [t for t in parts[2].split(",") if t]
+                    tok = np.asarray([name2id[t[:-1]] for t in tt], np.int64); ori = np.asarray([t[-1] == "+" for t in tt], np.uint8)
+                else:
+                    tok = parse_p_ids(parts[2]); ori = parse_p_ori(parts[2])
                 n = tok.size
                 w[pos:pos + n] = tok if identity else (np.searchsorted(uniq, tok) + 1)
-                wo[pos:pos + n] = parse_p_ori(parts[2])
+                wo[pos:pos + n] = ori
                 pos += n
             elif c == "W":
                 parts = ln.rstrip("\n").split("\t")
                 if len(parts) < 7:
                     continue
-                tok = np.asarray([int(x) for x in W_RE.findall(parts[6])], np.int64)
+                if named:
+                    tt = WN_RE.findall(parts[6])
+                    tok = np.asarray([name2id[x] for _, x in tt], np.int64); ori = np.asarray([o == ">" for o, _ in tt], np.uint8)
+                else:
+                    tok = np.asarray([int(x) for x in W_RE.findall(parts[6])], np.int64); ori = parse_w_ori(parts[6])
                 n = tok.size
                 w[pos:pos + n] = tok if identity else (np.searchsorted(uniq, tok) + 1)
-                wo[pos:pos + n] = parse_w_ori(parts[6])
+                wo[pos:pos + n] = ori
                 pos += n
             else:
                 continue
@@ -247,18 +277,53 @@ def main():
             fh.write("\n")
     meta = dict(N=N, M=int(M), E=E, P=P, n_p=n_p, n_w=n_w, T=T,
                 has_w=bool(n_w), has_ori=True, has_seq=bool(args.emit_seq),
-                dense_identity=identity, gfa=os.path.abspath(args.gfa))
+                dense_identity=identity, named=named, gfa=os.path.abspath(args.gfa))
+    if named:   # 内部 id の順の元の名前（1 行 1 名。内部 id k の名前は k 行目）
+        names = [None] * len(name2id)
+        for nm, k in name2id.items(): names[k - 1] = nm
+        with open(os.path.join(args.out, "seg_names.txt"), "w") as fh:
+            fh.write("\n".join(names) + "\n")
+    else:
+        try: os.remove(os.path.join(args.out, "seg_names.txt"))   # 作り直しで名前モードでなくなったとき
+        except FileNotFoundError: pass
     with open(os.path.join(args.out, "meta.json"), "w") as fh:
         json.dump(meta, fh, indent=1)
 
     # ---- dense GFA(① 用): identity でなければ書く ----
-    if args.emit_dense_gfa and not identity:
+    if args.emit_dense_gfa and named:
+        log(f"名前モード: 内部 id の GFA を書く（分解器用）: {args.emit_dense_gfa}")
+        _rewrite_named_gfa(args.gfa, args.emit_dense_gfa, name2id)
+    elif args.emit_dense_gfa and not identity:
         log(f"emit dense GFA for ① (bubble decomposition): {args.emit_dense_gfa}")
         _rewrite_dense_gfa(args.gfa, args.emit_dense_gfa, uniq)
     elif args.emit_dense_gfa:
         log("dense=identity → 元 GFA をそのまま ① に使えるので dense GFA は書かない")
 
     log(f"DONE -> {args.out}/  (meta: {meta})")
+
+
+def _rewrite_named_gfa(src, dst, name2id):
+    """名前モード: S/L/P/W/J のセグメント名を内部 id（S 行の出現順 1..N）に置換して書き出す。"""
+    WN = re.compile(r"([<>])([^<>\s]+)")
+    with open(src) as f, open(dst, "w") as o:
+        for ln in f:
+            c = ln[0]
+            if c == "S":
+                p = ln.split("\t"); p[1] = str(name2id[p[1]]); o.write("\t".join(p))
+            elif c in "LJ":
+                p = ln.split("\t"); p[1] = str(name2id[p[1]]); p[3] = str(name2id[p[3]]); o.write("\t".join(p))
+            elif c == "P":
+                parts = ln.rstrip("\n").split("\t")
+                if len(parts) >= 3:
+                    parts[2] = ",".join(f"{name2id[t[:-1]]}{t[-1]}" for t in parts[2].split(",") if t)
+                o.write("\t".join(parts) + "\n")
+            elif c == "W":
+                parts = ln.rstrip("\n").split("\t")
+                if len(parts) >= 7:
+                    parts[6] = WN.sub(lambda m: f"{m.group(1)}{name2id[m.group(2)]}", parts[6])
+                o.write("\t".join(parts) + "\n")
+            else:
+                o.write(ln)
 
 
 def _rewrite_dense_gfa(src, dst, uniq):

@@ -267,6 +267,7 @@ class Bundle:
         self.refx = Path(str(self.db) + ".refx")       # パスの座標 → 合意座標の索引（trav_refx.py、11-16。Linear の地点の一覧の go）
         self.anc = Path(str(self.db) + ".anc")         # 葉 → 各層の祖先（anc_build.py、11-12）
         self.xdepth = Path(str(self.db) + ".xdepth")   # 座標ごとのリードの深さ（reads_xdepth.py）
+        self.segnames = Path(str(self.db) + ".segnames")   # 内部名 n<整数> ↔ 元のセグメント名（segnames_build.py。整数でない id のグラフだけ）
         self.rlabel = Path(str(self.db) + ".rlabel")   # リードのラベル（reads_labels.py。例: 父由来・母由来）
         self.genes = Path(str(self.db) + ".genes")     # 株ごとの遺伝子（genes_build.py → genes_project.py）
         self.gsearch = Path(str(self.db) + ".gsearch") # 遺伝子検索の索引（gsearch_build.py、11-12）
@@ -426,7 +427,7 @@ def build_stages(b: Bundle, a) -> dict:
             cmd0 += ["--emit-dense-gfa", str(b.dense_gfa)]
         st["distill"] = Stage(
             "distill",
-            [cmd0],
+            [cmd0, [py, str(PKG / "segnames_build.py"), str(d0), str(b.segnames)]],
             inputs=[a.gfa],
             outputs=[d0 / "meta.json", d0 / "p_tok.npy"],
             env=thread_env(1),
@@ -794,7 +795,7 @@ def write_manifest(b: Bundle, hash_limit_gb: float, a=None) -> None:
     con.close()
 
     files = []
-    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.rlabel, b.genes, b.ann] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
+    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.rlabel, b.segnames, b.genes, b.ann] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
             + sorted(b.root.glob(f"{b.db.name}.nametri")) \
             + sorted(b.root.glob(f"{b.db.name}.reads")):
         if not p.exists():

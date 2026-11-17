@@ -23,6 +23,7 @@ const CLS_COL = ['#c9ced2', '#e67e22', '#2980b9', '#27ae60', '#8e44ad', '#c0392b
 function hslToInt(h: number, sPct: number, lPct: number): number { const sat = sPct / 100, l = lPct / 100; const c = (1 - Math.abs(2 * l - 1)) * sat; const hp = (h % 360) / 60; const x = c * (1 - Math.abs(hp % 2 - 1)); let r = 0, g2 = 0, b = 0; if (hp < 1) { r = c; g2 = x } else if (hp < 2) { r = x; g2 = c } else if (hp < 3) { g2 = c; b = x } else if (hp < 4) { g2 = x; b = c } else if (hp < 5) { r = x; b = c } else { r = c; b = x } const m = l - c / 2; const R = Math.round((r + m) * 255), G = Math.round((g2 + m) * 255), B = Math.round((b + m) * 255); return (R << 16) | (G << 8) | B }
 const u8 = (b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)); const u16 = (b: string) => { const a = u8(b); return new Uint16Array(a.buffer, a.byteOffset, a.byteLength >> 1) }; const u32 = (b: string) => { const a = u8(b); return new Uint32Array(a.buffer, a.byteOffset, a.byteLength >> 2) }
 
+import { segName, segSetDb, onSegNames, segIds } from '../segNames'
 import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/client'
 import { matchHapToKey } from './hapKey'
 import { SvgContext } from './svgCtx'
@@ -214,6 +215,7 @@ const pinnedHaps = new Set<string>()
 const pinKey = () => 'amipa.trav.pins.' + db
 // 強調するリード（11-17、上部バーの Find → Read）: 塩基の段でそのリードを必ず取り寄せ（include）、リードの先頭に置いて枠で囲む。Esc・何も無い所のクリックで解除
 let focusRead: { aln: number; name: string } | null = null
+onSegNames(() => { if (root) draw() })   // 11-17: 元のセグメント名が届いたらツールチップ・見出しを描き直す
 let focusNav = 0   // リードへ移動している間（時刻）。グラフの寄せから来る graphMoved で Linear を動かさない
 let lastStageNote = ''   // 直前の goTarget で段を開けなかった理由（focusRead がリードを絞るかを決める）
 const isFocusRead = (mi: number) => !!focusRead && (base?.rows[mi] as any)?.read?.aln === focusRead.aln
@@ -328,6 +330,7 @@ function applyNA() {
 host.addEventListener('click', e => { const na = (e.target as HTMLElement).closest?.('.is-na') as HTMLElement | null; if (na && na.title) $('info').textContent = na.title })
 
 async function loadRoot() {
+  segSetDb(db)
   $('busy').style.display = 'inline'; $('busy').textContent = 'Loading…'   // 11-11: 開いた直後から出す（骨組み・区切り・原子を取る間、何も出ていなかった）
   const r = await getJson(`/api/trav/root?db=${encodeURIComponent(db)}`)
   if (!r.ok) { root = null; walkMode = r.status === 404; walkNode = null; base = null
@@ -1917,7 +1920,7 @@ function baseHover(e: MouseEvent) {
   const px = e.offsetX - LAB + B.sx; const k = baseItemAt(px); if (k == null) { tip.style.display = 'none'; sendHover(null); if (B.hoverCi != null) { B.hoverCi = null; draw() } return }
   const it = B.items[k]; const ci = it.kind === 'col' ? it.ci : it.ci0; const gr = B.groups.find(gr => gr.g === it.g); const lines: string[] = []
   sendHover(gr ? gr.nodes.filter(n => /^n\d+$/.test(n)) : null)
-  if (gr) lines.push(`ノード ${gr.nodes.join(' / ')}  ${fmt(gr.bp)} bp  列 ${fmt(gr.from)}–${fmt(gr.to)}${gr.rb ? `  参照 bp ${fmt(gr.rb)}` : ''}${gr.variant ? '  行間で違う' : ''}`)
+  if (gr) lines.push(`ノード ${gr.nodes.map(segName).join(' / ')}  ${fmt(gr.bp)} bp  列 ${fmt(gr.from)}–${fmt(gr.to)}${gr.rb ? `  参照 bp ${fmt(gr.rb)}` : ''}${gr.variant ? '  行間で違う' : ''}`)
   setHdr(B)
   if (oy(e) >= BH_BOX && oy(e) < BH_BOX + BH_BOXH) lines.push('［ノードの行］区画＝ノード（濃い＝株によって違うノードを 1 列に重ねた群、薄い橙 ↻＝写しの列: 列の順と違う位置か 2 回目の通過、灰みの青＝畳んだ変異の無い群）')
   else if (BH_REF >= 0 && oy(e) >= BH_REF && oy(e) < BH_REF + BH_REFH) lines.push('［基準の行］比較の基準（多数派か参照）の塩基。各行の · はこの塩基と同じ')
@@ -2114,7 +2117,8 @@ async function resolveTarget(t: Target): Promise<GoResult> {
       const pl = pick.places && pick.places.length > 1 ? pick.places.reduce((a, b) => (b[2] > a[2] ? b : a)) : null
       return { ok: true, target: t, resolved: { x0: pl ? pl[0] : pick.x0, x1: pl ? pl[1] : pick.x1 }, note: pl ? `ほかに ${pick.places!.length - 1} か所（株の多い所を開いた）` : '', hits: pl ? pick.places!.map(p => ({ x0: p[0], x1: p[1], nhap: p[2] })) : undefined }
     }
-    if (t.kind === 'node') { const r = await locateMany(t.names); const xs = (r?.nodes || []).filter(n => n.x >= 0).map(n => n.x); if (!xs.length) return { ok: false, target: t, reason: 'ノードに座標が無い' }; return { ok: true, target: t, resolved: { x0: Math.min(...xs), x1: Math.max(...xs) }, note: `${xs.length}/${t.names.length} ノード` } }
+    if (t.kind === 'node') { const ids = (await segIds(t.names)).filter((x): x is string => !!x); if (!ids.length) return { ok: false, target: t, reason: 'そのノード名はこのグラフに無い' }; const r = await locateMany(ids);   // 11-17: 元のセグメント名 → 内部名
+      const xs = (r?.nodes || []).filter(n => n.x >= 0).map(n => n.x); if (!xs.length) return { ok: false, target: t, reason: 'ノードに座標が無い' }; return { ok: true, target: t, resolved: { x0: Math.min(...xs), x1: Math.max(...xs) }, note: `${xs.length}/${t.names.length} ノード` } }
   } catch (e) { return { ok: false, target: t, reason: String((e as Error).message || e) } }
   return { ok: false, target: t, reason: '不明な種類' }
 }
@@ -2332,7 +2336,7 @@ async function apiFocusRead(r: { aln: number; name: string; nodes: string[] } | 
   focusNav = Date.now()   // 終わってから少しの間も、グラフの寄せの後追いを無視する（下の graphMoved）
   if (focusRead) $('info').textContent = `リード ${r.name} を強調（橙の枠）` + (frac < 1 ? `・リードが長いので真ん中の約 ${Math.round(frac * 100)}% の範囲` : '') + '。Esc か、行の無い所のクリックで解除' + (res && !res.ok ? `　${res.reason ?? ''}` : '')
 }
-return { focusRead: apiFocusRead, getState, setState, setDb(d: string) { db = d; located = []; lastReadSig = null; loadRoot() }, locateNodes(names: string[]) { if (walkMode) { if (names[0]) void openWalks(names[0]); return } if (!root) { walkPending = names[0] ?? null; return } void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked || grpSpec() === 'sel') reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; locAC.abort(); locAC = new AbortController(); const sg = locAC.signal; void refreshOverview(sg); if (rangeMode === 'none' || base || Date.now() - focusNav < 3000) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading, undefined, sg) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, setFilter(on: boolean) { const el = $('gfilter') as HTMLInputElement; if (el.checked !== on) { el.checked = on; loadRange() } }, setNBlocks(n: number) { const el = $('nblk') as HTMLInputElement; if (el.value !== String(n)) { el.value = String(n); el.dispatchEvent(new Event('change')) } }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { unfit.forEach(f => f()); wrapRO.disconnect(); loading++; document.removeEventListener('mousedown', onPopDoc); document.removeEventListener('keydown', onCopyKey); ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
+return { focusRead: apiFocusRead, getState, setState, setDb(d: string) { db = d; segSetDb(d); located = []; lastReadSig = null; loadRoot() }, locateNodes(names: string[]) { if (walkMode) { if (names[0]) void openWalks(names[0]); return } if (!root) { walkPending = names[0] ?? null; return } void locate(names, true) }, openNames(names: string[]) { void locate(names, false) }, setHapMarks(m: Map<string, string>) { hapMarks = m; updateSelInfo(); if (onlySel() || (document.getElementById('tv_onlysel') as HTMLInputElement | null)?.checked || grpSpec() === 'sel') reorder(); draw() }, graphMoved() { if (graphMovedTimer) clearTimeout(graphMovedTimer); graphMovedTimer = setTimeout(() => { graphMovedTimer = null; locAC.abort(); locAC = new AbortController(); const sg = locAC.signal; void refreshOverview(sg); if (rangeMode === 'none' || base || Date.now() - focusNav < 3000) return; if (($('sync') as HTMLInputElement).checked) void rangeByLocate(loading, undefined, sg) }, 500) }, hoverPeak(l: string | null) { ovw.setHoverLetter(l) }, setFilter(on: boolean) { const el = $('gfilter') as HTMLInputElement; if (el.checked !== on) { el.checked = on; loadRange() } }, setNBlocks(n: number) { const el = $('nblk') as HTMLInputElement; if (el.value !== String(n)) { el.value = String(n); el.dispatchEvent(new Event('change')) } }, goPeak(l: string) { const q = lastPeaks.find(p => p.letter === l); if (q) goPeakQ(q) }, resetLinks() { ($('sync') as HTMLInputElement).checked = false; ($('gfilter') as HTMLInputElement).checked = false; cb.onRange?.(null); cb.onFilter?.(null); cb.onVisible?.(null) }, destroy() { unfit.forEach(f => f()); wrapRO.disconnect(); loading++; document.removeEventListener('mousedown', onPopDoc); document.removeEventListener('keydown', onCopyKey); ovw.destroy(); cb.onPeaks?.(null); window.removeEventListener('mouseup', onWinUp); window.removeEventListener('resize', draw); if (opts.page) { window.removeEventListener('error', onWinErr); window.removeEventListener('unhandledrejection', onWinRej) } host.innerHTML = '' } }
 
 }
 

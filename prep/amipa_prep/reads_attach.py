@@ -230,6 +230,33 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
     sidecar = args.sidecar or (args.db + ".reads")
 
+    # 名前モードのグラフ（11-17）: <db>.segnames があれば、GAF の経路の元のセグメント名を内部 id に書き換えた GAF を作って、それを取り込む
+    #   （以降の照合・保存・閲覧はすべて内部 id。閲覧側が表示のときに元の名前へ戻す）
+    segp = args.db + ".segnames"
+    if os.path.exists(segp):
+        sdb = sqlite3.connect(f"file:{os.path.abspath(segp)}?mode=ro", uri=True)
+        n2i = {nm: i for i, nm in sdb.execute("SELECT id, name FROM segs")}; sdb.close()
+        tok_re = re.compile(r"([<>])([^<>\s]+)")
+        conv = []
+        for s_, g in samples:
+            out = os.path.join(args.out_dir, f".{s_}.internal.gaf"); miss = 0; nl = 0
+            with _open_text(g) as fi, open(out, "w") as fo:
+                for ln in fi:
+                    if not ln.strip() or ln.startswith("#"): continue
+                    p = ln.split("\t", 6)
+                    if len(p) > 5:
+                        def sub(m):
+                            nonlocal miss
+                            k = n2i.get(m.group(2))
+                            if k is None: miss += 1; return m.group(0)
+                            return f"{m.group(1)}{k}"
+                        p[5] = tok_re.sub(sub, p[5])
+                    fo.write("\t".join(p)); nl += 1
+            print(f"  名前モード: {s_} の GAF {nl:,} 行の経路を内部 id に（表に無い名前 {miss:,}）→ {out}", file=sys.stderr)
+            conv.append((s_, out))
+        samples = conv
+        import atexit; atexit.register(lambda: [os.remove(x) for _, x in conv if os.path.exists(x)])   # 書き換えた GAF は取り込んだら要らない（実体は reads/<sample>.gaf.zst に入る）
+
     # --- base DB(読取専用)から葉 id/size + maxlayer ---
     # ★この走査は全ゲノム(230GB, 共有FS)で **30-40 分の固定費**。base は静的なので npz に
     #   キャッシュし、base より新しいキャッシュがあれば即ロードする。
