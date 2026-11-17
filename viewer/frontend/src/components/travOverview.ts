@@ -49,18 +49,39 @@ export function computePeaks(pts: OvPoint[], R: number, labelOf: (x: number) => 
   return peaks
 }
 
-export interface OverviewHandle { viewClient(): [number, number] | null; draw(): void; setBands(b: OvBand[]): void; setPoints(pts: OvPoint[], peaks: OvPeak[], note: string): void; setMarker(x: number | null, label?: string): void; setHoverLetter(l: string | null): void; peaks(): OvPeak[]; centerWeighted(): boolean; destroy(): void }
+export interface OverviewHandle { flash(ms?: number): void; setForce(on: boolean): void; setHidden(on: boolean): void; viewClient(): [number, number] | null; draw(): void; setBands(b: OvBand[]): void; setPoints(pts: OvPoint[], peaks: OvPeak[], note: string): void; setMarker(x: number | null, label?: string): void; setHoverLetter(l: string | null): void; peaks(): OvPeak[]; centerWeighted(): boolean; destroy(): void }
 export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps, onCenterToggle: () => void): OverviewHandle {
-  host.innerHTML = `<div style="display:flex;align-items:stretch;border-bottom:1px solid #ddd;background:#fff">
+  // 11-17: 自動的に畳む（上部バーの「バーを自動的に隠す」と同じボタン・同じ意味。既定はオン）。畳んでいる間は 7 px の細い線（染色体の切れ目・開いている範囲）で、
+  //   マウスを乗せる・大きく動いた直後の 3 秒（flash）・ブロックの段（setForce）は、下の表示の上に重ねて広げる（下をずらさない）
+  host.innerHTML = `<div class="ovwrap" style="position:relative;border-bottom:1px solid #ddd;background:#fff"><div class="ovin" style="display:flex;align-items:stretch;background:#fff;left:0;right:0;top:0;z-index:6">
     <div style="width:${LAB}px;height:32px;flex-shrink:0;padding:1px 6px;box-sizing:border-box;font:10px/13px system-ui;color:#555;overflow:hidden">
-      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><b style="color:#333">Overview</b> <span class="ovn"></span> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
+      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:4px"><button class="ovauto" type="button" style="border:none;background:none;padding:0;margin:0;cursor:pointer;color:#555;display:inline-flex;line-height:0"><svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16" /><path class="ovarr" d="" /></svg></button><b style="color:#333">Overview</b> <span class="ovn"></span> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
       <div class="ovh" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#222"></div>
     </div>
-    <div style="position:relative;flex:1;min-width:0"><canvas class="ovcv" style="display:block;cursor:pointer"></canvas></div></div>`
+    <div style="position:relative;flex:1;min-width:0"><canvas class="ovcv" style="display:block;cursor:pointer"></canvas></div></div></div>`
   const cv = host.querySelector('.ovcv') as HTMLCanvasElement; const g = cv.getContext('2d')!
   const chk = host.querySelector('.ovc') as HTMLInputElement; const noteEl = host.querySelector('.ovn') as HTMLElement; const hovEl = host.querySelector('.ovh') as HTMLElement
   chk.addEventListener('change', onCenterToggle)
-  const H = 32, BAND = 13, HIST0 = 14, HIST1 = 27, STR0 = 28, STR1 = 32   // 11-10: 58 → 29 px、11-11: 染色体名を読める大きさに（帯 9 → 13 px）
+  const HF = 32, BAND = 13, HIST0 = 14, HIST1 = 27, STR0 = 28, STR1 = 32   // 11-10: 58 → 29 px、11-11: 染色体名を読める大きさに（帯 9 → 13 px）
+  const HT = 7   // 畳んだときの高さ
+  const wrap = host.querySelector('.ovwrap') as HTMLElement, inner = host.querySelector('.ovin') as HTMLElement, autoBtn = host.querySelector('.ovauto') as HTMLButtonElement, arr = host.querySelector('.ovarr') as SVGPathElement
+  let autoHide = true; try { autoHide = localStorage.getItem('amipa.trav.ovwAuto') !== '0' } catch { /* */ }
+  let hover = false, force = false, hidden = false, flashUntil = 0, flashTimer: ReturnType<typeof setTimeout> | null = null, leaveTimer: ReturnType<typeof setTimeout> | null = null
+  const expanded = () => !autoHide || hover || force || Date.now() < flashUntil
+  let H = HF
+  function layout() {
+    wrap.style.display = hidden ? 'none' : ''
+    const ex = expanded(); H = ex ? HF : HT
+    wrap.style.height = (autoHide ? HT : HF) + 'px'
+    inner.style.position = autoHide ? 'absolute' : 'relative'; inner.style.height = H + 'px'; inner.style.overflow = 'hidden'
+    inner.style.boxShadow = autoHide && ex ? '0 2px 6px rgba(0,0,0,.18)' : 'none'
+    ;(inner.firstElementChild as HTMLElement).style.visibility = ex ? '' : 'hidden'   // 畳んだときは左の札（Overview とボタン）を隠す（文字の上端だけが覗いた）
+    autoBtn.title = autoHide ? '全体図を自動的に畳む: オン（マウスを乗せる・大きく動いた直後・ブロックの段で広げる）。クリックで常に表示' : '全体図を自動的に畳む（細い線にして、マウスを乗せたときなどだけ広げる）'
+    autoBtn.style.color = autoHide ? '#1d4ed8' : '#555'; arr.setAttribute('d', autoHide ? 'M12 9v11M7 15l5 5 5-5' : 'M12 20V9M7 14l5-5 5 5')
+  }
+  autoBtn.addEventListener('click', e => { e.stopPropagation(); autoHide = !autoHide; try { localStorage.setItem('amipa.trav.ovwAuto', autoHide ? '1' : '0') } catch { /* */ } layout(); draw() })
+  inner.addEventListener('mouseenter', () => { if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null } if (!hover) { hover = true; layout(); draw() } })
+  inner.addEventListener('mouseleave', () => { if (leaveTimer) clearTimeout(leaveTimer); leaveTimer = setTimeout(() => { leaveTimer = null; hover = false; layout(); draw() }, 250) })
   let bands: OvBand[] = [], pts: OvPoint[] = [], pks: OvPeak[] = [], marker: { x: number; label: string } | null = null, hovL: string | null = null, drag: [number, number] | null = null
   const W = () => Math.max(50, cv.parentElement!.clientWidth)
   const total = () => Math.max(1, deps.totalBp())
@@ -72,6 +93,14 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
     const w = W(), dpr = devicePixelRatio || 1
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(H * dpr); cv.style.width = w + 'px'; cv.style.height = H + 'px' }
     g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, H); g.fillStyle = '#fff'; g.fillRect(0, 0, w, H)
+    if (H < HF) {   // 畳んだとき: 染色体の切れ目（灰の交互）と、開いている範囲（ブロックの色の帯と黒の枠。狭ければ黒の縦線）
+      let k2 = 0; for (const b of bands) { const a = px(b.x0), c = px(b.x1 + 1); g.fillStyle = k2++ % 2 ? '#d5d9de' : '#eceef1'; g.fillRect(a, 0, Math.max(1, c - a), H) }
+      if (!bands.length) { g.fillStyle = '#eceef1'; g.fillRect(4, 0, w - 8, H) }
+      const [v0, v1] = deps.view(); const a = px(v0), c = px(v1 + 1)
+      for (const s2 of deps.stripe()) { const sa = px(s2.x0), sc = px(s2.x1 + 1); g.fillStyle = s2.color; g.fillRect(sa, 2, Math.max(1, sc - sa), H - 4) }
+      g.strokeStyle = '#111'; g.lineWidth = 1.5; if (c - a >= 4) g.strokeRect(a, .75, c - a, H - 1.5); else { g.fillStyle = '#111'; g.fillRect((a + c) / 2 - 1, 0, 2, H) }
+      if (marker) { const x = px(marker.x); g.fillStyle = '#111'; g.beginPath(); g.moveTo(x - 4, 0); g.lineTo(x + 4, 0); g.lineTo(x, 5); g.fill() }
+      return }
     // 染色体（灰の交互。名前は入る幅があれば）
     g.font = '600 11px system-ui'; g.textBaseline = 'middle'; let k = 0
     for (const b of bands) { const a = px(b.x0), c = px(b.x1 + 1); g.fillStyle = k++ % 2 ? '#d5d9de' : '#eceef1'; g.fillRect(a, 0, Math.max(1, c - a), BAND)
@@ -125,8 +154,11 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
   }
   window.addEventListener('mouseup', onUp)
   const ro = new ResizeObserver(() => draw()); ro.observe(cv.parentElement!)
-  draw()
+  layout(); draw()
   return {
+    flash(ms = 3000) { if (!autoHide || hidden) return; flashUntil = Date.now() + ms; layout(); draw(); if (flashTimer) clearTimeout(flashTimer); flashTimer = setTimeout(() => { flashTimer = null; layout(); draw() }, ms + 30) },
+    setForce(on) { if (on === force) return; force = on; layout(); draw() },
+    setHidden(on) { if (on === hidden) return; hidden = on; layout() },
     viewClient: () => { const r = cv.getBoundingClientRect(); if (!r.width) return null; const [v0, v1] = deps.view(); return [r.left + px(v0), r.left + px(v1 + 1)] },   // 開いている範囲の枠の左右（画面の座標）。合意列から線で結ぶ
     draw,
     setBands(b) { bands = b; draw() },

@@ -111,6 +111,9 @@ let treeCut: number | null = null          // 系統樹のまとめ: 併合の�
 let groupOf = new Map<number, number[]>()  // 代表 hid → まとめた枝の hid 一覧
 let located: number[] = []                 // グラフから来た座標（縦線の印）
 let goAuto = false
+let lastOvwView: [number, number] | null = null   // 全体図を広げる「大きな移動」の判定用
+let walkRadius = 1000   // 種の前後の bp（11-17: 10 kb だとノードが細かい ecoli では整列を見るには広すぎた）
+let walkMode = false, walkNode: string | null = null, walkPending: string | null = null   // walkPending: 読み込みの前に届いたノード
 let stageWant: 'node' | 'base' | null = null, stageNote = ''   // go で開く段（地点の一覧の Open）
 let baseAuto = false                       // ?base=1 で一度だけ塩基へを押す
 let hapMarks = new Map<string, string>()   // 主画面で選択中のパス群（ハプロタイプ名 → 色）。行ラベルの前に丸
@@ -343,6 +346,10 @@ async function loadTReads() {
 }
 async function loadRange() {
   if (walkMode) return   // 11-17: パスの無いグラフ（歩みの段）は範囲の読み込みが無い
+  { // 11-17: 大きく動いたら全体図を数秒広げる（今の範囲と重ならない所へ飛んだ、または広さが 4 倍以上変わった）
+    const pv = lastOvwView, w0 = pv ? pv[1] - pv[0] + 1 : 0, w1 = view[1] - view[0] + 1
+    if (pv && (view[1] < pv[0] || view[0] > pv[1] || w1 > 4 * w0 || w0 > 4 * w1)) ovw.flash()
+    lastOvwView = [view[0], view[1]] }
   navAC.abort(); navAC = new AbortController()   // 前の範囲の要求を取り消す
   if (!root) return
   if (navKey && navKey !== viewKey()) { navKey = ''; navNoAuto = false; ($('rung') as HTMLSelectElement).value = 'auto' }   // 範囲が変わった: 段の選択を自動に戻す
@@ -1085,7 +1092,7 @@ function fracOf(p: Piece, x: number): number { x = Math.max(p.c0, Math.min(p.c1 
 let rowColPx: Float64Array | null = null   // 各行の並びの列の画面位置（上段の描画用）
 let lastPieces = new Map<number, Piece[]>(); let mrowsByHap = new Map<number, Trav[]>()   // 表示用（繰り返し通過をまとめた通過）
 let ogHits: { o: OGroup; pa: number; pb: number }[] = []   // 見出しの遺伝子トラックの当たり
-function draw() { try { grpSync(); paintAll(); paintPins(); hfindCount() } catch (e) { showErr('draw', e) } try { updateNav(); updateSelInfo(); uiSync() } catch { /* */ } try { ovw.draw() } catch { /* */ } }
+function draw() { try { grpSync(); paintAll(); paintPins(); hfindCount() } catch (e) { showErr('draw', e) } try { updateNav(); updateSelInfo(); uiSync() } catch { /* */ } try { ovw.setHidden(walkMode); ovw.setForce(!walkMode && !!root && curRung() === 'blocks'); ovw.draw() } catch { /* */ } }
 // リードの区画の配置: サンプルごとに 見出し＋深さ（12 px）＋詰めたリード（1 段 3 px、同じ段のリードの間は 6 px 以上空ける）。段は 64 まで（超えた分は出さず見出しに書く）。
 // 片が無い（リードが多すぎる・範囲が広すぎる）ときは深さだけ（10-30: 以前は 64 段を超えると深さだけにしていて、深さ 100 前後の ecoli では錨の列の段でリードが出なかった）
 const TR_DEP = 12, TR_LANE = 3, TR_MAXLANE = 64
@@ -2219,8 +2226,6 @@ for (const b of host.querySelectorAll<HTMLButtonElement>('[data-exp]')) b.addEve
 
 // ---- パスの無いグラフの歩みの段（11-17）: 選んだノードを通るリードから局所的な歩みを作り（/api/walks/msa、サーバの walks.ts）、塩基段に出す ----
 //   歩み（合意＋別の道）を株に見立てた仮の root を作り、塩基段の描画（applyBase 以降）をそのまま使う。範囲の段（ブロック・錨の列）は無い
-let walkRadius = 1000   // 種の前後の bp（11-17: 10 kb だとノードが細かい ecoli では整列を見るには広すぎた）
-let walkMode = false, walkNode: string | null = null, walkPending: string | null = null   // walkPending: 読み込みの前に届いたノード
 async function openWalks(name: string) {
   const my = ++loading; walkNode = name; $('busy').style.display = 'inline'; $('busy').textContent = 'Reads…'; $('info').style.color = ''; $('info').textContent = `${name}: そこを通るリードから局所的な歩みを作っている…`
   let d: any
