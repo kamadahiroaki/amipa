@@ -175,9 +175,10 @@ for k_ref, rp in enumerate(ref_pids):
                 x_ = ext(e0 - 1, False, g[10], g[11], g[12], g[13])
                 if x_: e0, eo = x_[0] + 1, x_[1]; next_ext[0] += 1
                 out_gt.append((ngid, s0, e0, so, eo))
-                # 11-17: 子の端の一般化。端の塩基のノードが写しに無いとき、端の内側で最初に共有するノード（内の錨）と、外側で最初に共有するノード（外の錨）の
-                #   間の区間が参照と写しで同じ bp なら（置換だけ）、内の錨から参照の塩基数だけ外へ延ばした位置を端とする。違えば（端の近くの indel）・外の錨が
-                #   無ければ（コンティグの端）端は決められない＝unanch に数える（genelof_build.py が partial にする）。以前の ext は 1 ノードの置換だけだった
+                # 11-17: 子の端の一般化。端の塩基のノードが写しに無いとき、端の内側で最初に共有するノード（内の錨）から、参照の塩基数だけ外へ延ばした
+                #   位置を端とする（内の錨と端の間に indel は無いとみなす。間の差は端の外＝イントロン・UTR 側に置く）。外側で最初に共有するノード（外の錨）
+                #   か、パスの端までに、延ばすだけの塩基が写しに無いとき（端の欠失・コンティグの端）だけ端は決められない＝unanch に数える
+                #   （genelof_build.py が partial にする）。以前の ext は 1 ノードの置換だけ、11-17 の初版は内外の錨の間が同じ bp のときだけだった
                 def anchor(k, start, rs0, re0, rso, reo):
                     d = -1 if start else 1; dr = d if same else -d
                     rb, rof = (rs0, rso) if (start == same) else (re0 - 1, reo)
@@ -186,17 +187,14 @@ for k_ref, rp in enumerate(ref_pids):
                     if rk < 0 or (rk - rb) * (-dr) <= 0: return None
                     ko = k + d; nstep = 0
                     while 0 <= ko < nt and r[ko] < 0 and nstep < 5000: ko += d; nstep += 1
-                    if not (0 <= ko < nt) or r[ko] < 0: return None
-                    ro = int(r[ko])
-                    if (ro - rb) * dr <= 0: return None
-                    lo_c, hi_c = (ko + 1, k) if d < 0 else (k + 1, ko)
-                    lo_r, hi_r = (min(ro, rk) + 1, max(ro, rk))
-                    cbp = int(bp_of[t[lo_c:hi_c]].sum()); rbp = int(bp_of[rtok[lo_r:hi_r]].sum())
-                    if cbp != rbp: return None
+                    if 0 <= ko < nt and r[ko] >= 0 and (int(r[ko]) - rb) * dr <= 0: return None   # 外の錨が端より内側（並びが崩れている）
+                    lo_c, hi_c = (max(ko, -1) + 1, k) if d < 0 else (k + 1, min(ko, nt))
+                    cbp = int(bp_of[t[lo_c:hi_c]].sum())   # 内の錨の外側で、写しが持つ共有しない塩基（外の錨かパスの端まで）
                     js = np.arange(rk + dr, rb, dr) if rk + dr != rb else np.zeros(0, np.int64)
                     D = int(bp_of[rtok[js]].sum()) if js.size else 0
                     Lb = int(bp_of[rtok[rb]]); w = rof if rori[rb] else Lb - 1 - rof
                     D += w if dr > 0 else Lb - 1 - w
+                    if D >= cbp: return None
                     kk = k + d
                     while True:
                         Lk = int(bp_of[t[kk]])
