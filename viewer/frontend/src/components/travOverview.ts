@@ -58,7 +58,7 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
       <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:4px"><button class="ovauto" type="button" style="border:none;background:none;padding:0;margin:0;cursor:pointer;color:#555;display:inline-flex;line-height:0"><svg width="13" height="13" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16" /><path class="ovarr" d="" /></svg></button><b style="color:#333">Overview</b> <span class="ovn"></span> <label class="ovcl" title="グラフの画面の中央に近いノードほど重く数える（画面の端に入った別の場所の山を小さくする）"${new URLSearchParams(location.search).has("dev") ? "" : " hidden"}><input type="checkbox" class="ovc"> 中央を重く</label></div>
       <div class="ovh" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#222"></div>
     </div>
-    <div style="position:relative;flex:1;min-width:0"><canvas class="ovcv" style="display:block;cursor:pointer"></canvas></div></div></div>`
+    <div style="position:relative;flex:1;min-width:0"><canvas class="ovcv" style="display:block;cursor:default"></canvas></div></div></div>`
   const cv = host.querySelector('.ovcv') as HTMLCanvasElement; const g = cv.getContext('2d')!
   const chk = host.querySelector('.ovc') as HTMLInputElement; const noteEl = host.querySelector('.ovn') as HTMLElement; const hovEl = host.querySelector('.ovh') as HTMLElement
   chk.addEventListener('change', onCenterToggle)
@@ -138,9 +138,12 @@ export function mountOverview(host: HTMLElement, LAB: number, deps: OverviewDeps
   const desc = (q: OvPeak) => `${q.letter}（${q.label}）　${q.n.toLocaleString('en-US')} ノード（${Math.round(q.share * 100)}%）${q.inView ? '・表示中' : ''}`
   function setHov(q: OvPeak | null) { const l = q ? q.letter : null; if (l === hovL) return; hovL = l; hovEl.textContent = q ? desc(q) : ''; draw(); deps.onHoverPeak(q) }
   let dragY = -1
-  cv.addEventListener('mousedown', e => { drag = [e.offsetX, e.offsetX]; dragY = e.offsetY })
+  // 11-17: 移動の操作は下の部分（ノードの山・範囲の帯、y ≥ BAND+1）だけ。上の染色体名の帯は押しても動かない（上のボタンの行との間に隙間が無く、押し間違えで移動した）
+  const ACT_Y = BAND + 1
+  cv.addEventListener('mousedown', e => { if (H < HF || e.offsetY < ACT_Y) return; drag = [e.offsetX, e.offsetX]; dragY = e.offsetY })
   cv.addEventListener('mousemove', e => {
     if (drag) { drag[1] = e.offsetX; draw(); return }
+    cv.style.cursor = H >= HF && e.offsetY >= ACT_Y ? 'pointer' : 'default'
     const q = peakAt(e.offsetX, e.offsetY); setHov(q)
     if (!q) { const x = xOf(e.offsetX); hovEl.textContent = marker && Math.abs(px(marker.x) - e.offsetX) <= 6 ? `▼ ${marker.label}` : deps.labelOf(Math.max(0, Math.min(deps.R() - 1, x))) }
   })
