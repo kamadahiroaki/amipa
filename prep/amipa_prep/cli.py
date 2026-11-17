@@ -69,7 +69,7 @@ if DEFAULT_DECOMPOSER not in DECOMPOSERS:
 # xdepth（座標ごとのリードの深さ）は reads と trav の両方があるときだけ。genes（株ごとの GFF をパスに写す）は --gff-dir のときだけ。
 # ann（参照座標の反復・変異の注釈、Traversals の塩基の段）は --ann-rmsk / --ann-vcf / --ann-bed のときだけ。
 # tiled は reads の後: 葉層のリード支持(rs)を edges_t に焼き込むため。reads を後から足したら tiled も作り直す
-STAGES = ["distill", "collapse", "decompose", "lod", "layout", "emit", "trav", "genes", "ann", "annot", "reads", "xdepth", "tiled", "bundle"]
+STAGES = ["distill", "collapse", "decompose", "lod", "layout", "emit", "trav", "genes", "ann", "annot", "reads", "rlabel", "xdepth", "tiled", "bundle"]
 
 STATE_VERSION = 1
 
@@ -267,6 +267,7 @@ class Bundle:
         self.refx = Path(str(self.db) + ".refx")       # パスの座標 → 合意座標の索引（trav_refx.py、11-16。Linear の地点の一覧の go）
         self.anc = Path(str(self.db) + ".anc")         # 葉 → 各層の祖先（anc_build.py、11-12）
         self.xdepth = Path(str(self.db) + ".xdepth")   # 座標ごとのリードの深さ（reads_xdepth.py）
+        self.rlabel = Path(str(self.db) + ".rlabel")   # リードのラベル（reads_labels.py。例: 父由来・母由来）
         self.genes = Path(str(self.db) + ".genes")     # 株ごとの遺伝子（genes_build.py → genes_project.py）
         self.gsearch = Path(str(self.db) + ".gsearch") # 遺伝子検索の索引（gsearch_build.py、11-12）
         self.genex = Path(str(self.db) + ".genex")     # 遺伝子レーンの索引（genex_build.py、11-12）
@@ -673,6 +674,16 @@ def build_stages(b: Bundle, a) -> dict:
                  + ("・追記" if getattr(a, "reads_append", False) else "") + "）",
         )
 
+    # リードのラベル（任意、11-17）: リード名 → ラベルの表を、リード索引の整列 id に写す（<db>.rlabel）。.reads は変えない
+    if getattr(a, "read_labels", None):
+        lcmd = [py, str(PKG / "reads_labels.py"), str(b.db)]; lins = [Path(str(b.db) + ".reads")]
+        for spec in a.read_labels:
+            if "=" not in spec:
+                die(f"--read-labels は SAMPLE=TSV の形で指定する: {spec}")
+            lcmd += ["--labels", spec]; lins.append(Path(spec.split("=", 1)[1]))
+        st["rlabel"] = Stage("rlabel", [lcmd], inputs=lins, outputs=[b.rlabel], env=thread_env(1),
+                             note=f"リードのラベル（{len(a.read_labels)} サンプル）")
+
     # 座標ごとのリードの深さ（reads と trav があるとき）: Traversals のブロック・錨の列の段の厚み
     #   リードは今回の --reads か、既にあるリードのサイドカー <db>.reads（前の実行で足したもの）
     reads_side = Path(str(b.db) + ".reads")
@@ -783,7 +794,7 @@ def write_manifest(b: Bundle, hash_limit_gb: float, a=None) -> None:
     con.close()
 
     files = []
-    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.genes, b.ann] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
+    for p in [b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.rlabel, b.genes, b.ann] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
             + sorted(b.root.glob(f"{b.db.name}.nametri")) \
             + sorted(b.root.glob(f"{b.db.name}.reads")):
         if not p.exists():
@@ -957,6 +968,7 @@ def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0, decomposer: str = "
         "genes":     dict(slots=1, total=clamp(0.3 * g + 8, 8, 48), hours=0.1 + g / 100),
         "ann":       dict(slots=1, total=8, hours=0.1),
         "xdepth":    dict(slots=1, total=clamp(0.3 * g + 8, 8, 48), hours=0.1 + g / 50),
+        "rlabel":    dict(slots=1, total=8, hours=0.1),
         "bundle":    dict(slots=1, total=8, hours=0.1),
     }
 
@@ -1090,6 +1102,9 @@ def add_common(p, need_gfa=False):
                         "数十億本のショートリードでは索引だけで数百 GB になるため、その場合に指定する")
     p.add_argument("--reads-force-mismatch", action="store_true",
                    help="構築前検査（GAF ノード名と葉の一致率）が低くても続行する")
+    p.add_argument("--read-labels", action="append", metavar="SAMPLE=TSV",
+                   help="リードのラベル（リード名<TAB>ラベル の表。例: trio binning の父・母・不明）。"
+                        "閲覧側はサンプルの中をラベルごとに分けて並べる。複数指定可")
     p.add_argument("--hash-limit-gb", type=float, default=2.0,
                    help="manifest で sha256 を計算する上限サイズ（既定 2GB。大きい DB は省略）")
     p.add_argument("--force", action="store_true", help="全段やり直す")
@@ -1115,6 +1130,9 @@ def main():
 
     p_rd = sub.add_parser("add-reads", help="既存バンドルにリード整列を足す")
     add_common(p_rd)
+
+    p_lb = sub.add_parser("add-read-labels", help="既存バンドルのリードにラベルを付ける（整列は作り直さない）")
+    add_common(p_lb)
 
     p_tl = sub.add_parser("add-tiled", help="既存バンドルに描画用タイル索引を足す（DB は作り直さない）")
     add_common(p_tl)
@@ -1189,6 +1207,11 @@ def main():
             die("--reads SAMPLE=GAF を指定する")
         # リード支持は edges_t に焼き込んであるので、タイル索引も作り直す（無ければ作る）
         execute(b, a, ["reads", "tiled", "bundle"])
+        return
+    if a.cmd == "add-read-labels":
+        if not getattr(a, "read_labels", None):
+            die("--read-labels SAMPLE=TSV を指定する")
+        execute(b, a, ["rlabel", "bundle"])
         return
     if a.cmd == "add-tiled":
         execute(b, a, ["tiled", "bundle"])

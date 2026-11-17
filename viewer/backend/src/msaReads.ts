@@ -39,6 +39,9 @@ export interface ReadsSource {
   sampleOf(aln: number): number   // 整列 id → サンプル番号（read_chunk の id の範囲から。read_aln を読まない）
   alnInfo(ids: number[]): Map<number, [number, number, string]>   // aln_id → [sample_no, voff, read_name]
   fetchLines(rows: [number, number, number][]): string[]          // [(sample_no, aln_id, voff)] → 行（入力の順）
+  // 11-17: リードのラベル <db>.rlabel（prep/amipa_prep/reads_labels.py。例: 父由来・母由来）。無ければ null。labelOf は aln_id → ラベル（表に無い整列は返さない）
+  labeled: Set<number> | null   // ラベルを持つサンプル番号
+  labelOf(ids: number[]): Map<number, string>
 }
 
 const srcCache = new Map<string, ReadsSource | null>()
@@ -61,8 +64,17 @@ export function readsSourceFor(dbPath: string): ReadsSource | null {
   const decode = (blob: Buffer, prev: number) => { const out: number[] = []; let shift = 0, cur = 0; for (const b of blob) { cur += (b & 0x7f) * 2 ** shift; if (b & 0x80) { shift += 7 } else { prev += cur; out.push(prev); cur = 0; shift = 0 } } return out }
   const qRange = hasChunk ? db.prepare('SELECT gfa_id, chunk_no, postings FROM node_reads WHERE gfa_id BETWEEN ? AND ?') : db.prepare('SELECT gfa_id, NULL AS chunk_no, postings FROM node_reads WHERE gfa_id BETWEEN ? AND ?')
   const chunks = hasChunk ? (db.prepare('SELECT base_aln_id AS b, n_aln AS n, sample_no AS s FROM read_chunk ORDER BY base_aln_id').all() as { b: number; n: number; s: number }[]) : []
+  // リードのラベル（11-17）: <db>.rlabel があれば開く。.reads と大きさが合わなければ（作り直した後の古いラベル）使わない
+  let ldb: InstanceType<typeof Database> | null = null; let labeled: Set<number> | null = null
+  { const lp = [dbPath + '.rlabel', real + '.rlabel'].find(f => { try { return fs.existsSync(f) } catch { return false } })
+    if (lp) { try { const L = new Database(lp, { readonly: true }); const mt = new Map((L.prepare('SELECT key, value FROM meta').all() as any[]).map(r => [r.key, r.value]))
+      const rsz = Number(mt.get('reads_size') || 0); let sz = 0; try { sz = fs.statSync(side).size } catch { /* */ }
+      if (rsz && sz && rsz !== sz) { console.warn(`[reads] ${lp}: .reads と組でない（作ったときの大きさ ${rsz}、今 ${sz}）→ ラベルを使わない`); L.close() }
+      else { ldb = L; labeled = new Set((L.prepare('SELECT DISTINCT sample_no FROM label').all() as any[]).map(r => r.sample_no)) } } catch (e) { console.warn(`[reads] ${lp}: ${(e as Error).message}`) } } }
+  const labelOf = (ids: number[]) => { const m = new Map<number, string>(); if (!ldb) return m
+    for (let i = 0; i < ids.length; i += 900) { const ch = ids.slice(i, i + 900); for (const r of ldb.prepare(`SELECT a.aln_id, l.label FROM aln_label a JOIN label l ON l.lid = a.lid WHERE a.aln_id IN (${ch.map(() => '?').join(',')})`).all(...ch) as any[]) m.set(r.aln_id, r.label) } return m }
   const rs: ReadsSource = {
-    sampleName,
+    sampleName, labeled, labelOf,
     nodeAlnIdsRange: (lo, hi, want) => { const m = new Map<number, number[]>(); for (const r of qRange.all(lo, hi) as any[]) { if (want && !want.has(r.gfa_id)) continue; const v = decode(r.postings, r.chunk_no == null ? 0 : (base.get(r.chunk_no) ?? 0)); const a = m.get(r.gfa_id); if (a) { for (const x of v) a.push(x) } else m.set(r.gfa_id, v) } return m },
     sampleOf: aln => { let lo = 0, hi = chunks.length - 1, k = -1; while (lo <= hi) { const md = (lo + hi) >> 1; if (chunks[md].b <= aln) { k = md; lo = md + 1 } else hi = md - 1 } return k >= 0 && aln < chunks[k].b + chunks[k].n ? chunks[k].s : -1 },
     nodeAlnIds: gid => { const out: number[] = []; for (const r of qNode.all(gid) as any[]) out.push(...decode(r.postings, r.chunk_no == null ? 0 : (base.get(r.chunk_no) ?? 0))); return out },

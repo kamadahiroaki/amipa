@@ -19,6 +19,7 @@ graph.amipa/
   graph.db.anc       任意: .trav と一緒に作る、葉から各層の祖先への対応
   graph.db.refx      任意: .trav と一緒に作る、パスの座標と合意座標の対応点（座標での移動・BED の書き出し）
   graph.db.xdepth    任意: 合意座標ごとのリードの深さ（リードと .trav があるとき）
+  graph.db.rlabel    任意: リードのラベル（リード名 → ラベルの表を整列 id に写したもの。例: 父由来・母由来）
   graph.db.genes     任意: 遺伝子サイドカー。株ごとの GFF を欠けなく持つ（下記）
   graph.db.ann       任意: 参照座標の注釈（RepeatMasker の反復、サンプルの変異とベンチマーク領域）
   reads/                     任意: リードの実体（seekable zstd の GAF）
@@ -72,6 +73,12 @@ Traversals パネル（ブロック・錨の列・ノード・塩基の段）の
 | `arrays` | ノード → 合意座標（`x_of_dense`、錨でないノードは `x_fill`）、合意座標 → ノード（`dense_of_x`）、合意座標ごとの累積 bp（`xbp`）など |
 
 合意座標の向きと順は参照パス（`--ref-key`）を手掛かりに決め、複数の染色体は参照の順に並べる。
+
+## リードのラベル（graph.db.rlabel）
+
+SQLite。`label(lid, sample_no, label)` がサンプルごとのラベルの辞書、`aln_label(aln_id, lid)` が整列 → ラベル。
+`meta` の `reads_size` は作ったときの `graph.db.reads` の大きさで、閲覧側は合わなければ（リード索引を作り直した後）このファイルを使わない。
+表に無い整列はラベル無しで、ラベルを持つサンプルの中では「no label」として並ぶ。
 
 ## 本体（多層 SQLite）に入っているもの
 

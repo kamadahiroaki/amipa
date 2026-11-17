@@ -55,6 +55,19 @@ amipa prep add-reads --out graph.amipa --reads-append --reads HG005=HG005.gaf
 > （葉の鍵が `n<整数>`。整数でない id は前処理の distill 段が受け付けない）。
 > id の空間に依存しない照合へ広げる場合は前処理全体の対応が必要で、未対応。
 
+### リードのラベル（例: トリオの子のリードを父由来・母由来に分ける）
+
+```bash
+amipa prep add-read-labels --out graph.amipa --read-labels HG002=HG002.labels.tsv
+```
+
+表は 1 行 1 リードで「リード名<TAB>ラベル」（3 列目以降と `#` の行は無視）。リード名は GAF の 1 列目と同じ書き方にする。
+ラベルの決め方はこの段の外で、たとえば trio binning（`yak triobin` の出力の 1・2 列目）や
+`whatshap haplotag --output-haplotag-list` の出力を変換して使う。
+結果は `graph.db.rlabel` に入り、整列とタイル索引は作り直さない（ラベルを差し替えるときはこの段だけを流し直す）。
+閲覧側の Linear の塩基の段では、リードがサンプルの中でラベルごとにまとまって並ぶ（「HG002 · pat」「HG002 · mat」など）。
+`run` に `--read-labels` を付けても同じ段が走る。
+
 リードの実体は `graph.amipa/reads/<サンプル>.gaf.zst` に詰め替えて置く。
 1 行ずつ取り出せるように zstd の独立フレームに刻んであり、`zstd -d` で普通に伸長できる。
 このとき、表示に使わないタグは保存しない。既定では塩基クオリティ `bq:Z` を落としており、

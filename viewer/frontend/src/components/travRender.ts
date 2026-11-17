@@ -838,9 +838,11 @@ function drawReadCov(B: BaseState, sm: string, y: number, h: number, k0: number,
 }
 // リードの行（10-29）: 展開＝1 本 1 行、詰める＝サンプルごとに列の範囲が重ならないリードを同じ行へ（貪欲、間は 4 列空ける）、要約＝サンプルごとに 1 行
 function readSpan(B: BaseState, mi: number): [number, number] { const sq = B.rows[mi].seq; let a = 0, b = sq.length - 1; while (a <= b && sq[a] === '.') a++; while (b >= a && sq[b] === '.') b--; return [a, b] }
+// リードのまとまりの鍵（11-17）: サンプル、ラベル（<db>.rlabel。例: 父由来・母由来）があれば「サンプル · ラベル」
+const rkey = (rd: any): string => rd.group != null ? `${rd.sample} · ${rd.group}` : rd.sample
 function readLines(B: BaseState, mis: number[]): BaseState['lines'] {
-  const nsamp = new Set(mis.map(mi => (B.rows[mi] as any).read.sample)).size; const comb = !readSel.length && nsamp > READ_COMBINE   // 全部・サンプルが多い: '*'＝全サンプルを 1 まとまりに
-  const bySamp = new Map<string, number[]>(); for (const mi of mis) { const sm = comb ? '*' : (B.rows[mi] as any).read.sample; if (!bySamp.has(sm)) bySamp.set(sm, []); bySamp.get(sm)!.push(mi) }
+  const nsamp = new Set(mis.map(mi => rkey((B.rows[mi] as any).read))).size; const comb = !readSel.length && nsamp > READ_COMBINE   // 全部・サンプルが多い: '*'＝全サンプルを 1 まとまりに
+  const bySamp = new Map<string, number[]>(); for (const mi of mis) { const sm = comb ? '*' : rkey((B.rows[mi] as any).read); if (!bySamp.has(sm)) bySamp.set(sm, []); bySamp.get(sm)!.push(mi) }
   const packOf = (lst: number[]) => { const lanes: { end: number; mis: number[] }[] = []; for (const mi of lst) { const [a, b] = readSpan(B, mi); const ln = lanes.find(l => l.end + 4 < a); if (ln) { ln.mis.push(mi); ln.end = b } else lanes.push({ end: b, mis: [mi] }) } return lanes.map(l => l.mis) }
   const packed = [...bySamp.values()].map(packOf); const nPack = packed.reduce((t, l) => t + l.length, 0)
   let mode = ($('bmode') as HTMLSelectElement | null)?.value || 'auto'
@@ -856,7 +858,7 @@ function readLines(B: BaseState, mis: number[]): BaseState['lines'] {
 function readCov(B: BaseState, sm: string) {
   const cmp = baseCmpSeq(); const key = sm + '|' + (cmp.row ?? 'major'); if (!B.covCache) B.covCache = new Map(); const hit = B.covCache.get(key); if (hit) return hit
   const n = B.cols.length; const dep = new Uint16Array(n), mis = new Uint16Array(n), del = new Uint16Array(n); const cnt: Map<string, number>[] = new Array(n); let nr = 0
-  B.rows.forEach((r, mi) => { const rd = (r as any).read; if (!rd || (sm !== '*' && rd.sample !== sm)) return; nr++; const sq = B.norm[mi] || r.seq; const [a, b] = readSpan(B, mi)
+  B.rows.forEach((r, mi) => { const rd = (r as any).read; if (!rd || (sm !== '*' && rkey(rd) !== sm)) return; nr++; const sq = B.norm[mi] || r.seq; const [a, b] = readSpan(B, mi)
     for (let i = a; i <= b; i++) { const ch = sq[i]; if (!ch || ch === '.' || ch === '~') continue; if (ch === '-') { del[i]++; continue } dep[i]++; const ref = cmp.seq ? cmp.seq[i] : null; if (ref && ref !== '-' && ch !== ref) { mis[i]++; if (!cnt[i]) cnt[i] = new Map(); cnt[i].set(ch, (cnt[i].get(ch) || 0) + 1) } } })
   const top = Array.from({ length: n }, (_, i) => { const m = cnt[i]; if (!m) return ''; let best = '', bn = 0; for (const [ch, c] of m) if (c > bn) { bn = c; best = ch } return best })
   const res = { dep, mis, del, top, n: nr }; B.covCache.set(key, res); return res
@@ -871,7 +873,7 @@ function drawBaseCore() {
   if (rt) for (const mi of rt.order) B.lines.push({ hid: B.hidOfRow.get(mi)!, mi })
   else for (const hid of hapOrder) for (const mi of (B.rowsOf.get(hid) || [])) B.lines.push({ hid, mi })
   { const rr = B.rows.map((r, mi) => ({ r, mi })).filter(e => (e.r as any).read); const first = (sq: string) => { for (let i = 0; i < sq.length; i++) if (sq[i] !== '.' && sq[i] !== '-') return i; return 1e9 }
-    rr.sort((a, b) => ((a.r as any).read.sample < (b.r as any).read.sample ? -1 : (a.r as any).read.sample > (b.r as any).read.sample ? 1 : 0) || first(a.r.seq) - first(b.r.seq))
+    rr.sort((a, b) => (rkey((a.r as any).read) < rkey((b.r as any).read) ? -1 : rkey((a.r as any).read) > rkey((b.r as any).read) ? 1 : 0) || first(a.r.seq) - first(b.r.seq))
     if (($('breads') as HTMLInputElement | null)?.checked !== false && rr.length) B.lines.push(...readLines(B, rr.map(e => e.mi))) }   // リード（10-28）: 株の行の下に、サンプル・開始位置の順。10-29: 展開・詰める・要約
   if (B.sortCi.length) {   // 選んだサイトの塩基で並べ替え（複数なら先のサイトを優先。塩基の順は A, C, G, T, その他, 欠け。木の順を基準に安定）
     const rank = (ch: string | undefined) => ch === 'A' ? 0 : ch === 'C' ? 1 : ch === 'G' ? 2 : ch === 'T' ? 3 : (!ch || ch === '-' || ch === '.' || ch === '~') ? 5 : 4
@@ -1873,11 +1875,11 @@ function baseInsX(ci: number, side: number): number | null { const B = base!; co
 function hoverLine(B: BaseState, ln: BaseState['lines'][number], it: BItem, lines: string[]): BaseState['lines'][number] | null {
   const i0 = it.kind === 'col' ? it.ci : it.ci0, i1 = it.kind === 'col' ? it.ci : it.ci1
   if (ln.cov) { const C = readCov(B, ln.cov); let d = 0, m = 0; const tally = new Map<string, number>()
-    B.rows.forEach((r, mi) => { const rd = (r as any).read; if (!rd || (ln.cov !== '*' && rd.sample !== ln.cov)) return; const ch = (B.norm[mi] || r.seq)[i0]; if (ch && ch !== '.' && ch !== '~') tally.set(ch, (tally.get(ch) || 0) + 1) })
+    B.rows.forEach((r, mi) => { const rd = (r as any).read; if (!rd || (ln.cov !== '*' && rkey(rd) !== ln.cov)) return; const ch = (B.norm[mi] || r.seq)[i0]; if (ch && ch !== '.' && ch !== '~') tally.set(ch, (tally.get(ch) || 0) + 1) })
     for (let i = i0; i <= i1; i++) { if (C.dep[i] > d) d = C.dep[i]; if (C.mis[i] > m) m = C.mis[i] }
     let dl = 0; for (let i = i0; i <= i1; i++) if (C.del[i] > dl) dl = C.del[i]
     lines.push(`${ln.cov === '*' ? '全サンプル' : ln.cov} 要約（${C.n} 本）  深さ ${d}  欠失 ${dl}  基準と違う ${m}${d ? `（${Math.round(100 * m / d)}%）` : ''}${it.kind === 'col' ? '  内訳 ' + [...tally].sort((a, b) => b[1] - a[1]).map(([ch, c]) => `${ch === '-' ? '欠失' : ch}:${c}`).join(' ') : ''}`); return null }
-  if (ln.pack) { const mi = ln.pack.find(m => { const [a, b] = readSpan(B, m); return i1 >= a && i0 <= b }); if (mi == null) { lines.push(`${(B.rows[ln.mi] as any).read.sample} 詰め ${ln.pack.length} 本（この列に掛かるリードは無い）`); return null } return { ...ln, mi } }
+  if (ln.pack) { const mi = ln.pack.find(m => { const [a, b] = readSpan(B, m); return i1 >= a && i0 <= b }); if (mi == null) { lines.push(`${rkey((B.rows[ln.mi] as any).read)} 詰め ${ln.pack.length} 本（この列に掛かるリードは無い）`); return null } return { ...ln, mi } }
   return ln
 }
 // 塩基の段のホバー: 列（ノード・bp・位置）とその行の塩基・アレル
@@ -2039,7 +2041,7 @@ $('gpres').addEventListener('click', () => { const el = $('gptab'); el.style.dis
 // 書き出し（10-28）: FASTA。整列は列のとおり（- 欠失、. 範囲の外。表示の向き＝参照の向き）。実際の向きの整列は逆位の区間を株の向きの文字で。各株の配列はコンティグの向きの本当の配列（整列なし）
 function baseExport(kind: string, which: string) {
   const B = base; if (!B) return
-  let mis: number[] = which === 'shown' ? B.lines.flatMap(l => l.cov ? B.rows.map((_, i) => i).filter(i => (B.rows[i] as any).read && (l.cov === '*' || (B.rows[i] as any).read.sample === l.cov)) : (l.pack || [l.mi])) : B.rows.map((_, i) => i)
+  let mis: number[] = which === 'shown' ? B.lines.flatMap(l => l.cov ? B.rows.map((_, i) => i).filter(i => (B.rows[i] as any).read && (l.cov === '*' || rkey((B.rows[i] as any).read) === l.cov)) : (l.pack || [l.mi])) : B.rows.map((_, i) => i)
   if (which === 'marked') { mis = B.rows.map((_, i) => i).filter(i => { const ln = B.lines.find(l => l.mi === i); return (ln && ln.hid >= 0) ? !!markOf(root!.haps[ln.hid].hap) : !!markOf(B.rows[i].label.split(' ')[0]) }); if (!mis.length) { alert('主画面でパス（株）を選んでから'); return } }
   const wrap = (t: string) => t.replace(/(.{80})/g, '$1\n').replace(/\n$/, '')
   const out: string[] = []

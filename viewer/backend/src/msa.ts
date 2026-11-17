@@ -160,16 +160,17 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
           chosen.add(a); got.set(sn, (got.get(sn) ?? 0) + 1); pick0.push([sn, a]); more = true; break } } }
     const info = RS.alnInfo(pick0.map(p => p[1])); const pick: [number, number, number, string][] = []
     for (const [sn, a] of pick0) { const v = info.get(a); if (v) pick.push([sn, a, v[1], v[2]]) }
+    const labs = RS.labeled ? RS.labelOf(pick.map(p => p[1])) : null
     prof('リード: 標本と選択'); const lines = RS.fetchLines(pick.map(([sn, a, vo]) => [sn, a, vo] as [number, number, number]))
     prof('リード: GAF の行の取り出し'); const read_meta: any[] = []
-    pick.forEach(([sn], i) => {
+    pick.forEach(([sn, aid], i) => {
       const d = parseGafLine(lines[i]); if (!d || !d.cs) return
       const toks: [number, boolean][] = [...String(d.path).matchAll(/([<>])(\d+)/g)].map(m => [Number(m[2]), m[1] === '>'])
       const inw: number[] = []; toks.forEach(([gid], j) => { if (win_ids.has(gid)) inw.push(j) }); if (!inw.length) return
       const cl: number[][] = [[inw[0]]]; for (const i_ of inw.slice(1)) { const last = cl[cl.length - 1]; if (i_ - last[last.length - 1] > 50) cl.push([i_]); else last.push(i_) }
       const JOINR = 2000; const mg: number[][] = [[...cl[0]]]; for (const c_ of cl.slice(1)) { const last = mg[mg.length - 1]; if (c_[0] - last[last.length - 1] <= JOINR) last.push(...c_); else mg.push([...c_]) }
       let best_ = mg[0]; for (const m of mg) if (m.length > best_.length) best_ = m
-      read_meta.push({ sn, sample: RS.sampleName.get(sn) ?? String(sn), name: d.read_name, mapq: d.mapq, toks, i0: best_[0], i1: best_[best_.length - 1], d })
+      read_meta.push({ sn, sample: RS.sampleName.get(sn) ?? String(sn), group: RS.labeled?.has(sn) ? (labs!.get(aid) ?? 'no label') : undefined, name: d.read_name, mapq: d.mapq, toks, i0: best_[0], i1: best_[best_.length - 1], d })
     })
     if (read_meta.length) {
       const dmap = new Map<number, number>(); for (const rm of read_meta) for (const [gid] of rm.toks) if (!dmap.has(gid)) { const dd = C.denseOf(gid); if (dd >= 1) dmap.set(gid, dd) }
@@ -178,7 +179,8 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
         for (let t_i = rm.i0; t_i <= rm.i1; t_i++) { const [gid, o] = rm.toks[t_i]; const dd = dmap.get(gid); if (dd != null) { ids_.push(dd); ors_.push(o ? 1 : 0); tix_.push(t_i) } }
         if (!ids_.length) continue
         const nm: string = rm.name; const short = (nm.match(/\//g) || []).length >= 2 ? nm.split('/')[1] : nm.slice(-10)
-        runs.push({ label: '▸' + rm.sample + ':' + short, samp: rm.sample, lab: '▸' + rm.sample + ':' + short, ctg: '', path: nm, isref: false, ids: ids_, ors: ors_, pi: null, brk: [], k: 0, cend: [false, false], rd: rm, tix: tix_ })
+        const tagS = rm.sample + (rm.group != null ? '·' + rm.group : '')
+        runs.push({ label: '▸' + tagS + ':' + short, samp: rm.sample, lab: '▸' + tagS + ':' + short, ctg: '', path: nm, isref: false, ids: ids_, ors: ors_, pi: null, brk: [], k: 0, cend: [false, false], rd: rm, tix: tix_ })
       }
     }
   } catch (e) { console.error('[msa] reads: ' + String(e)) } }
@@ -259,7 +261,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     const brk_ = (r.brk || []).filter(([i]: number[]) => 0 < i && i < nodes.length).map(([i, n_]: number[]) => [nodes[i - 1], nodes[i], Math.trunc(n_)])
     let hseq_ = nodes.map((n_, i) => (ors[i] ? (seqleaf.get(n_) ?? 'N') : rc(seqleaf.get(n_) ?? 'N'))).join('')
     if (rdo) hseq_ = rdo.map((st_, i) => (ors[i] ? st_ : rc(st_))).join('').replace(/-/g, '').replace(/\./g, '')
-    raw.push({ rdinfo: r.rd ? { sample: r.rd.sample, name: r.rd.name, mapq: r.rd.mapq, nins: r.nins ?? 0 } : null, rins: rins_, occ, occ_inv, occ_st, seqn: rev ? [...nodes].reverse() : nodes, hseq: hseq_, samp: r.samp, label: r.label, path: r.path,
+    raw.push({ rdinfo: r.rd ? { sample: r.rd.sample, ...(r.rd.group != null ? { group: r.rd.group } : {}), name: r.rd.name, mapq: r.rd.mapq, nins: r.nins ?? 0 } : null, rins: rins_, occ, occ_inv, occ_st, seqn: rev ? [...nodes].reverse() : nodes, hseq: hseq_, samp: r.samp, label: r.label, path: r.path,
       strand: rev ? '-' : '+', cells, inv, ends: rev ? [ce[1], ce[0]] : [ce[0], ce[1]], nodes: new Set(nodes), seq: rev ? [...nodes].reverse() : nodes, isref: r.isref, brk: brk_, cflip: !!cflip })
   }
   const normRow = (r: any) => { const seqn: string[] = r.seq, oi: boolean[] = r.occ_inv, ost: string[] = r.occ_st; const occ: string[] = r.occ = [...r.occ0]
