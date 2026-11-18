@@ -11,6 +11,28 @@ docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" -e HOME=/tmp \
 - `-u $(id -u):$(id -g)` … 出力を自分の所有にする（付けないと root 所有になる）
 - 途中で止めても、同じコマンドをもう一度打てば続きから走る
 
+## 入力の GFA
+
+- GFA 1.0 / 1.1（S・L・P・W 行）。`.gz` と `.zst` は伸長せずにそのまま渡してよい。
+- 重なりのない（blunt な）GFA だけを扱う。L 行の CIGAR が `0M`（または `*`）でない辺が 1 本でもあると、
+  最初の段でその旨を表示して止まる（重なりを無視すると、パスの塩基列が継ぎ目ごとに重複するため）。
+  Bifrost・Cuttlefish・BCALM などの de Bruijn グラフは、重なりを除いた GFA に変換してから渡す。
+- パス（P・W 行）は無くてもよい。その場合は通過・遺伝子・注釈（`--gff-dir`・`--band`・`--gene`・`--region`）の段を
+  飛ばし、グラフの表示だけの DB になる。minigraph の rGFA の `SN`/`SO` タグ（参照座標）は今は使わない。
+- パス名は PanSN（`sample#hap#contig`）を想定する。`sample#contig`、末尾の位相ブロック（`sample#hap#contig#0`）、
+  部分範囲（`…[1000-2000]`）、`#` の無い `sample.contig`（全ゲノム MC の `GRCh38.chr1`）も読める。
+  区切りの無い名前（`CASBIT01` や Cuttlefish の `Reference:1_Sequence:1`）は、名前そのものを 1 つのサンプルとして扱う。
+
+## 参照（`--ref-key`）
+
+参照座標・Linear（通過）の向きと染色体の順・`--band`/`--gene`/`--ann-*` の写し先には、1 本の参照（パスの sample）を使う。
+既定は自動で、次の順に最初に見つかったものを使う（大小は区別しない）。選んだ参照とその理由は各段のログに出る。
+
+1. `--ref-key` で指定した sample
+2. GFA ヘッダの `RS:Z` タグ（minigraph-cactus が参照の sample を書く）
+3. `GRCh38`、次に `CHM13`
+4. 先頭のパスの sample
+
 ## アノテーションとリードも一緒に
 
 同じ 1 コマンドで最後まで通せる。
@@ -30,6 +52,10 @@ amipa prep add-annot --out graph.amipa --gene gencode.gtf.gz
 amipa prep add-reads --out graph.amipa --reads HG002=HG002.gaf
 amipa prep add-tiled --out graph.amipa            # タイル索引を作り直す（通常は run が作る。無いと閲覧できない）
 ```
+
+`--band` は UCSC の cytoBand 形式、`--gene` は GTF（GENCODE など）または GFF3（Ensembl・NCBI・SGD など）。
+どちらも参照（上の規則で選んだもの）の座標で、`.gz`・`.zst` のままでよい。seqid は参照のコンティグ名
+（`GRCh38#chr20` なら `chr20`）と一致している必要がある。
 
 アノテーションは生のファイルをそのまま渡してよい。事前に別のツールでグラフへ射影しておく
 必要はなく、射影は AMIPA が参照座標とパスをたどって行う。
@@ -78,18 +104,23 @@ HiFi の GAF ではこれだけで 7 割が消える。全部残したいとき�
 
 ## Traversals の材料（通過・遺伝子・参照注釈）
 
-通過の索引（`graph.db.trav`）はパスがあれば既定で作る。合意座標の向きと染色体の順は `--ref-key` の参照パス
-（名前がこの文字列で始まるパス。無ければ先頭のパス）を手掛かりに決める。要らなければ `--no-trav`。
+通過の索引（`graph.db.trav`）はパスがあれば既定で作る。合意座標の向きと染色体の順は参照（[上の規則](#参照--ref-key)で選んだもの）の
+パスを手掛かりに決める。要らなければ `--no-trav`（このときは遺伝子の段も作らない）。
 
 ```bash
 amipa prep run --gfa graph.gfa --out graph.amipa --threads 16 --ref-key GRCh38 \
-    --gff-dir gff/                                  `# 株ごとの GFF（<名前>.gff）` \
+    --gff-dir gff/                                  `# 株ごとの GFF（<sample>.gff3.gz など）` \
     --ann-rmsk rmsk.txt.gz                          `# RepeatMasker（参照座標）` \
     --ann-vcf HG002=HG002.vcf.gz --ann-bed HG002=HG002.bed   `# サンプルの変異とベンチマーク領域`
 ```
 
-- `--gff-dir`: GFF の名前はパス名の `#` の前（`GRCh38#chr20` → `GRCh38.gff`、`GCF_000148365.1#1#NC_017631.1` → `GCF_000148365.1.gff`）、
-  seqid はパス名の最後の `#` の後。参照だけに注釈がある場合は、ほかのパスへノードの共有で写す
+- `--gff-dir`: ファイル名はパス名の sample（`#` の前）に拡張子 `.gff`・`.gff3`・`.gtf` を付けたもの。`.gz`・`.zst` で圧縮したままでよい
+  （`GRCh38#chr20` → `GRCh38.gff3.gz`、`GCF_000148365.1#1#NC_017631.1` → `GCF_000148365.1.gff`、`#` の無い `CASBIT01` → `CASBIT01.gff`）。
+  seqid（第 1 列）はパス名のコンティグ（`GRCh38#chr20` なら `chr20`、`HG00438#2#MT#0` なら `MT`）と一致している必要がある。
+  GFF のうちグラフのパスに無い seqid の行は読まないので、全ゲノムの注釈を染色体 1 本のグラフにそのまま渡してよい
+  （残るのはグラフにある seqid の行だけ。メモリもその分だけで済む）。
+  どの sample のファイルも見つからなければ、期待したファイル名を表示して止まる。一部の sample だけに無いときはログに名前を出して続ける。
+  参照だけに注釈がある場合は、ほかのパスへノードの共有で写す
 - リードがあれば、合意座標ごとのリードの深さ（`graph.db.xdepth`）も作る
 - あとから足すときは `--only trav` / `--only genes` / `--only ann` / `--only xdepth` で、その段だけを走らせる
 
@@ -145,6 +176,8 @@ amipa prep run --gfa big.gfa --out big.amipa \
 | 全ゲノム（GFA 48 GB） | 約 11 時間 | 段により 96–320 GB | 約 260 GB |
 
 段ごとに必要な資源は大きく違う。`amipa prep plan` が入力サイズから目安を出す。
+遺伝子の段（`--gff-dir`）のメモリは GFA でなく GFF の大きさで決まる（グラフにある seqid の行だけを載せ、伸長 1 GB 分の行あたり約 9 GB）。
+`plan` に `--gff-dir` も渡すと、その上限を含めた目安が出る。パスの無い GFA では通過・遺伝子・注釈の段は出ない。
 
 ```bash
 amipa prep plan --gfa graph.gfa --out graph.amipa --threads 24

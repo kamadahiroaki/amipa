@@ -69,6 +69,22 @@ Apptainer def は単一ステージという違いだけがある。この差で
 （`libncurses-dev` が残る Apptainer 版では気付けない依存の抜けが Docker 版だけで出た）、
 runtime 段に何を入れるかを変えたら両方で焼き直して確かめること。
 
+## コンテナを使わずに前処理を回す（ホスト実行）
+
+コンテナが使えない環境では、リポジトリの `prep/amipa_prep/cli.py` を直接呼べる（`amipa prep` と同じ引数）。
+イメージの中でやっていることを自分で揃える必要がある（手順の実体は `docker/build-prep.sh`）。
+
+- Python 3.9 以上（`python3` が古い計算機ではそれ以上の版を明示して呼ぶ。3.9 で通している）
+- `pip install -r docker/requirements.txt`（版を固定してある）
+- Rust の拡張 3 つ: `prep/core/{emit_core,reads_core,tiled_core}` を `maturin build --release` して pip で入れる（Rust と maturin 1.14）
+- BubbleFinder（`conda install -c bioconda bubblefinder` など）。場所は `--bubblefinder` か環境変数 `AMIPA_BUBBLEFINDER`
+
+```bash
+python3 prep/amipa_prep/cli.py run --gfa graph.gfa.gz --out graph.amipa --threads 8
+```
+
+閲覧側をホストで動かす手順は `docker/build-viewer.sh` にある（できた `viewer/backend/dist/server.js` を node で起動、点検は `dist/check.js`）。
+
 ## 動作確認
 
 ```bash

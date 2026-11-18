@@ -46,7 +46,7 @@ graph.amipa/
 ## 遺伝子サイドカー（graph.db.genes）
 
 株ごとの GFF3 をそのまま持ち、閲覧器が行ごとに遺伝子・CDS・エキソンを置くための表。
-入力の GFF は 1 行も落とさず、`GET /api/trav/gff?db=&acc=` で入力どおりに書き出せる（`acc` は GFF のファイル名＝パス名の `#` の前）。
+入力の GFF のうちグラフのパスにある seqid の行と `#` の行は 1 行も落とさず、`GET /api/trav/gff?db=&acc=` で入力どおりに書き出せる（`acc` は GFF のファイル名＝パス名の sample）。グラフに無い seqid の行は読まない。
 
 | 表 | 内容 |
 |---|---|
