@@ -117,6 +117,7 @@ amipa prep run --gfa graph.gfa --out graph.amipa --threads 16 --ref-key GRCh38 \
 - `--gff-dir`: ファイル名はパス名の sample（`#` の前）に拡張子 `.gff`・`.gff3`・`.gtf` を付けたもの。`.gz`・`.zst` で圧縮したままでよい
   （`GRCh38#chr20` → `GRCh38.gff3.gz`、`GCF_000148365.1#1#NC_017631.1` → `GCF_000148365.1.gff`、`#` の無い `CASBIT01` → `CASBIT01.gff`）。
   seqid（第 1 列）はパス名のコンティグ（`GRCh38#chr20` なら `chr20`、`HG00438#2#MT#0` なら `MT`）と一致している必要がある。
+  GTF に gene 行が無いもの（UCSC の `ncbiRefSeq.gtf`・`refGene.gtf` など。transcript・exon・CDS だけ）は、同じ gene_id の転写産物の範囲から gene を補う。
   GFF のうちグラフのパスに無い seqid の行は読まないので、全ゲノムの注釈を染色体 1 本のグラフにそのまま渡してよい
   （残るのはグラフにある seqid の行だけ。メモリもその分だけで済む）。
   どの sample のファイルも見つからなければ、期待したファイル名を表示して止まる。一部の sample だけに無いときはログに名前を出して続ける。

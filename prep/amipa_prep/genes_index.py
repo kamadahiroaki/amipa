@@ -28,7 +28,7 @@ hid_of = dict(tr.execute("SELECT pid, hid FROM paths"))
 p_off = np.load(f"{a.distill}/p_off.npy"); p_tok = np.load(f"{a.distill}/p_tok.npy", mmap_mode="r")
 g = sqlite3.connect(a.genes); g.execute("PRAGMA journal_mode=OFF"); g.execute("PRAGMA synchronous=OFF")
 has_proj = any(c[1] == "proj" for c in g.execute("PRAGMA table_info(gene)"))
-rows = np.array(g.execute(f"SELECT g.gid, g.pid, k.s0, k.e0, {'g.proj IS NULL' if has_proj else '1'} FROM gene g JOIN gene_tok k ON k.gid = g.gid ORDER BY g.pid, k.s0").fetchall(), dtype=np.int64)
+rows = np.array(g.execute(f"SELECT g.gid, g.pid, k.s0, k.e0, {'g.proj IS NULL' if has_proj else '1'} FROM gene g JOIN gene_tok k ON k.gid = g.gid ORDER BY g.pid, k.s0").fetchall(), dtype=np.int64).reshape(-1, 5)   # 11-18: 0 件でも 2 次元に
 log(f"遺伝子 {len(rows):,}（参照の注釈 {int(rows[:, 4].sum()):,}）")
 gid, pid, s0, e0, canon = rows.T
 x0 = np.full(len(rows), -1, np.int64); x1 = np.full(len(rows), -1, np.int64); xd = np.full(len(rows), -1, np.int64)

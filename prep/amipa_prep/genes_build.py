@@ -105,6 +105,51 @@ def _attrs(raw):
     if '"' in raw and "=" not in raw.split('"', 1)[0]:
         a = dict(_GTF_ATTR.findall(raw)); return a, True
     return dict(kv.split("=", 1) for kv in raw.split(";") if "=" in kv), False
+def _synth_gtf_genes(recs, feats):
+    """GTF に gene 行が無い gene_id（UCSC の ncbiRefSeq/refGene/ensGene.gtf は transcript・exon・CDS だけ）に gene 行を補う（11-18）。
+    同じ seqid・gene_id・向きの転写産物を重なりでまとめ、まとまりごとに 1 つの gene（2 つ目以降の ID は gene_id#2…）。
+    転写産物の行が無ければ transcript_id ごとの範囲を転写産物とみなす。補った行の lineno はまとまりの最初の行と同じ"""
+    gtf_ids = {r.a.get("gene_id") for r in recs if "gene_id" in r.a and r.type != "gene"}
+    have = {r.a.get("gene_id") for r in recs if r.type == "gene"}
+    lack = gtf_ids - have - {None}
+    if not lack: return 0
+    tx = {}   # (seqid, transcript_id) → [start, end, strand, gene_id, 転写産物の Rec または None, 最初の行]
+    for r in recs:
+        gi = r.a.get("gene_id")
+        if gi not in lack: continue
+        ti = r.a.get("transcript_id") or gi
+        t = tx.get((r.seqid, ti))
+        if t is None: tx[(r.seqid, ti)] = t = [r.start, r.end, r.strand, gi, None, r]
+        else: t[0] = min(t[0], r.start); t[1] = max(t[1], r.end)
+        if r.type in ("transcript", "mRNA"): t[4] = r
+    global fid_next
+    by = collections.defaultdict(list)
+    for (sq, ti), t in tx.items(): by[(sq, t[3], t[2])].append(t)
+    n = 0; used = collections.Counter()
+    for (sq, gi, st_), ts in sorted(by.items(), key=lambda kv: (kv[0][0], min(t[0] for t in kv[1]))):
+        ts.sort(key=lambda t: t[0]); grp = []; cur_ = None
+        for t in ts:
+            if cur_ is not None and t[0] <= cur_[1]: cur_[1] = max(cur_[1], t[1]); cur_[2].append(t)
+            else: cur_ = [t[0], t[1], [t]]; grp.append(cur_)
+        for s_, e_, members in grp:
+            used[gi] += 1; gid_ = gi if used[gi] == 1 else f"{gi}#{used[gi]}"
+            r0 = members[0][5]; g = Rec(); fid_next += 1; g.fid = fid_next; g.lineno = r0.lineno
+            g.seqid, g.source, g.type, g.start, g.end, g.score, g.strand, g.phase = sq, r0.source, "gene", s_, e_, ".", st_, "."
+            g.a = {"gene_id": gi, "ID": gid_}
+            for k in ("gene_name", "gene_type", "gene_biotype"):
+                if k in r0.a: g.a[k] = r0.a[k]
+            if "gene_name" in g.a: g.a["Name"] = g.a["gene_name"]
+            if "gene_type" not in g.a and "gene_biotype" in g.a: g.a["gene_type"] = g.a["gene_biotype"]
+            g.attrs = "; ".join(f'{k} "{v}"' for k, v in g.a.items() if k not in ("ID", "Name")) + ";"
+            g.parent = None; g.gid = None
+            for t in members:
+                if t[4] is not None: t[4].a["Parent"] = gid_
+                else:   # 転写産物の行が無い: 各行の Parent を gene へ
+                    for r in feats[sq]:
+                        if r.a.get("gene_id") == gi and (r.a.get("transcript_id") or gi) == (t[5].a.get("transcript_id") or gi): r.a["Parent"] = gid_
+            recs.append(g); feats[sq].append(g); n += 1
+    for sq in feats: feats[sq].sort(key=lambda r: (r.start, -r.end))
+    return n
 def load_gff(acc):
     global fid_next
     if acc in acc_recs: return acc_recs[acc]
@@ -131,6 +176,8 @@ def load_gff(acc):
                     if "gene_name" in r.a and r.type == "gene": r.a.setdefault("Name", r.a["gene_name"])
                     if "gene_type" not in r.a and "gene_biotype" in r.a: r.a["gene_type"] = r.a["gene_biotype"]
                 recs.append(r); feats[r.seqid].append(r)
+        n_syn = _synth_gtf_genes(recs, feats)
+        if n_syn: print(f"GTF {f}: gene 行が無い gene_id {n_syn:,} 個は、転写産物の範囲から gene を補った", file=sys.stderr)
         id2 = {r.a["ID"]: r for r in recs if "ID" in r.a}
         for r in recs:
             pa = r.a.get("Parent"); q = id2.get(pa.split(",")[0]) if pa else None

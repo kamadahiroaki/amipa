@@ -9,7 +9,8 @@
 
 入力の表: 本体の nodes の (layer_index, 名前の符号, 親の名前の符号)。trav_super.py が work/super_nodes.<大きさ>_<更新時刻>.npy に残したものを使う
   （無ければ本体を走査する）。符号 ＝ 接頭辞（n 0 / G 1 / S 2 / 他 3）× 2^40 ＋ 名前の番号。親は一つ上の層のノード。
-出力: 先頭 4096 バイトが JSON の見出し {format, maxlayer, n, layers: {L: offset}}、続いて層 L = 0..maxlayer−1 ごとに uint32 × (n+1)。
+出力: 先頭 4096 バイトが JSON の見出し {format, maxlayer, lo, n, layers: {L: offset}}、続いて層 L = 0..maxlayer−1 ごとに uint32 × (n−lo+1)（葉の番号 lo..n）。
+  format 2（11-18）: 葉の番号が lo から始まる（全ゲノムから切り出した染色体は番号が 8,000 万台から始まり、0 から持つと chrY で 2.5 GB になった）。format 1 は lo＝0
   値 ＝ 接頭辞 × 2^30 ＋ 番号（接頭辞 0 n・1 G・2 S）、祖先が無ければ 0xFFFFFFFF。添字は葉の番号（n<番号> の番号）。最深層は葉そのもの（配列なし）
 """
 import argparse, json, os, sqlite3, sys, time
@@ -32,17 +33,19 @@ else:
     log(f"本体を走査 {len(A):,} 行")
 lay, code, par = A[:, 0], A[:, 1], A[:, 2]; del A
 ML = int(lay.max())
-leaf = code[(lay == ML) & ((code >> 40) == 0)] & (SH - 1); N = int(leaf.max()) if len(leaf) else 0
+leaf = code[(lay == ML) & ((code >> 40) == 0)] & (SH - 1); N = int(leaf.max()) if len(leaf) else 0; LO = int(leaf.min()) if len(leaf) else 0
+if LO < (1 << 20): LO = 0   # 番号が 0 付近から始まるなら従来どおり 0 から（format 1 と同じ中身。古い閲覧側でも読める）
 num = code & (SH - 1); pre = code >> 40
 assert int(num.max()) < (1 << 30), "名前の番号が 2^30 を超える（uint32 に詰められない）"
 assert int(pre.max()) <= 2, "n/G/S 以外の接頭辞がある"
-log(f"最深層 {ML}、葉 {len(leaf):,}（最大の番号 {N:,}）")
+log(f"最深層 {ML}、葉 {len(leaf):,}（番号 {LO:,}..{N:,}）")
 # 層ごとに 符号 → 親の符号 を引けるよう並べる
 by = {}
 for l in range(1, ML + 1):
     m = lay == l; c = code[m]; p = par[m]; o = np.argsort(c); by[l] = (c[o], p[o])
-cur = np.full(N + 1, -1, np.int64); cur[leaf] = leaf   # 葉の符号（接頭辞 0）
-hdr = {"format": 1, "maxlayer": ML, "n": N, "layers": {}}
+W = N - LO + 1   # 添字 ＝ 葉の番号 − LO
+cur = np.full(W, -1, np.int64); cur[leaf - LO] = leaf   # 葉の符号（接頭辞 0）
+hdr = {"format": 2, "maxlayer": ML, "lo": LO, "n": N, "layers": {}} if LO else {"format": 1, "maxlayer": ML, "n": N, "layers": {}}
 tmp = a.out + ".tmp"
 with open(tmp, "wb") as f:
     f.write(b"\0" * 4096); pos = 4096
@@ -50,8 +53,8 @@ with open(tmp, "wb") as f:
     for l in range(ML - 1, -1, -1):
         cs, ps = by[l + 1]; ok = cur >= 0
         i = np.searchsorted(cs, cur[ok]); i = np.minimum(i, len(cs) - 1); hit = cs[i] == cur[ok]
-        nxt = np.full(N + 1, -1, np.int64); idx = np.flatnonzero(ok); nxt[idx[hit]] = ps[i[hit]]; cur = nxt
-        u = np.full(N + 1, 0xFFFFFFFF, np.uint32); v = cur >= 0; u[v] = ((cur[v] >> 40) << 30 | (cur[v] & (SH - 1))).astype(np.uint32)
+        nxt = np.full(W, -1, np.int64); idx = np.flatnonzero(ok); nxt[idx[hit]] = ps[i[hit]]; cur = nxt
+        u = np.full(W, 0xFFFFFFFF, np.uint32); v = cur >= 0; u[v] = ((cur[v] >> 40) << 30 | (cur[v] & (SH - 1))).astype(np.uint32)
         hdr["layers"][str(l)] = pos; f.seek(pos); f.write(u.tobytes()); pos += u.nbytes
         log(f"  層 {l}: 祖先あり {int(v.sum()):,}")
     h = json.dumps(hdr).encode(); assert len(h) < 4096; f.seek(0); f.write(h)

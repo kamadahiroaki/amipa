@@ -633,7 +633,7 @@ def build_stages(b: Bundle, a) -> dict:
     # 参照座標の注釈（--ann-* のとき）: RepeatMasker（UCSC rmsk.txt）と、サンプルごとの変異（VCF）・ベンチマーク領域（BED）。座標は --ref-key の参照の 0 始まり。
     #   DB に依らない（列の参照位置 rb + オフセットと viewer で突き合わせる）ので入力はファイルだけ
     if getattr(a, "ann_rmsk", None) or getattr(a, "ann_vcf", None) or getattr(a, "ann_bed", None):
-        acmd2 = [py, str(PKG / "ann_build.py"), "--out", str(b.ann) + ".new", "--ref-key", ref]; ins2 = []
+        acmd2 = [py, str(PKG / "ann_build.py"), "--out", str(b.ann) + ".new", "--ref-key", ref, "--distill", str(b.distill)]; ins2 = []   # 11-18: グラフの参照コンティグの行だけ
         if a.ann_rmsk: acmd2 += ["--rmsk", str(a.ann_rmsk)]; ins2.append(Path(a.ann_rmsk))
         for flag, specs in (("--vcf", a.ann_vcf or []), ("--bed", a.ann_bed or [])):
             for spec in specs:
@@ -814,6 +814,19 @@ def run_cmd(cmd, log_path: Path, env_extra: dict, dry: bool) -> dict:
     return use
 
 
+def _other_sidecars(b: Bundle) -> list:
+    """manifest の明示の一覧に無い <db>.* のファイル（.anc・.genex・.gsearch・.refx・.tiledx・.travx(.arr)・.xtiles・.leafsizes.npz など、
+    後から増えた段の出力）。11-18: これらが manifest に載らず、manifest を頼りに配ると閲覧に要るサイドカーが落ちた。途中の一時物は除く"""
+    known = {b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.rlabel, b.segnames, b.genes, b.ann}
+    out = []
+    for p in sorted(b.root.glob(f"{b.db.name}.*")):
+        if p in known or not p.is_file() or p.name.endswith((".reads", ".hapidx", ".nametri")): continue
+        suf = p.name[len(b.db.name):]
+        if ".tmp" in suf or ".new" in suf or "bak" in suf or suf.endswith(("-journal", "-wal", "-shm")): continue
+        out.append(p)
+    return out
+
+
 def write_manifest(b: Bundle, hash_limit_gb: float, a=None) -> None:
     import sqlite3
     con = sqlite3.connect(f"file:{b.db}?mode=ro", uri=True)
@@ -824,7 +837,7 @@ def write_manifest(b: Bundle, hash_limit_gb: float, a=None) -> None:
     files = []
     for p in [b.db, b.annot, b.tiled, b.collapse_sidecar, b.trav, b.xdepth, b.rlabel, b.segnames, b.genes, b.ann] + sorted(b.root.glob(f"{b.db.name}.hapidx")) \
             + sorted(b.root.glob(f"{b.db.name}.nametri")) \
-            + sorted(b.root.glob(f"{b.db.name}.reads")):
+            + sorted(b.root.glob(f"{b.db.name}.reads")) + _other_sidecars(b):
         if not p.exists():
             continue
         e = {"name": p.name, "bytes": p.stat().st_size}
