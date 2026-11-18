@@ -78,8 +78,11 @@ STATE_VERSION = 1
 
 # ───────────────────────────── 小道具 ─────────────────────────────
 
+_LOG_STREAM = None   # None = 標準出力。plan --json のときは標準エラーへ（JSON だけを標準出力に残す）
+
+
 def log(msg: str) -> None:
-    print(f"[amipa {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    print(f"[amipa {time.strftime('%H:%M:%S')}] {msg}", flush=True, file=_LOG_STREAM or sys.stdout)
 
 
 def die(msg: str, code: int = 1):
@@ -1245,6 +1248,10 @@ def main():
         for extra in ("manifest.json",):
             print(f"  {extra}: {'あり' if (b.root / extra).exists() else 'なし'}")
         return
+
+    if a.cmd == "plan" and getattr(a, "json", False):
+        global _LOG_STREAM
+        _LOG_STREAM = sys.stderr
 
     # 入力パスは絶対化する（ジョブスクリプトは投入時とは別の cwd で走りうる）
     for attr in ("gfa", "band", "gene", "region", "template"):
