@@ -973,13 +973,13 @@ def gfa_has_paths(gfa, limit_bytes: float = 4e9) -> bool:
 
 
 def gff_plain_bytes(gff_dir) -> int:
-    """--gff-dir のファイルの伸長後の大きさの目安（圧縮は 10 倍とみなす）"""
+    """--gff-dir のファイルの伸長後の大きさの目安（圧縮は 25 倍とみなす。GENCODE v50 の GFF3 は gz で 29 倍）"""
     tot = 0
     if gff_dir and Path(gff_dir).is_dir():
         for f in Path(gff_dir).iterdir():
             n = f.name
             if any(n.endswith(e + z) for e in (".gff", ".gff3", ".gtf") for z in ("", ".gz", ".zst")):
-                tot += f.stat().st_size * (10 if n.endswith((".gz", ".zst")) else 1)
+                tot += f.stat().st_size * (25 if n.endswith((".gz", ".zst")) else 1)
     return tot
 
 
