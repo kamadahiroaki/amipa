@@ -507,9 +507,13 @@ def parse_group(name):
        返り値: sample=1個目区切りの前, hap=2個目区切りの前(prefix), contig=全体(base)。
        #のみの標準 PanSN(3フィールド)では従来と同一キー(chr22 等 bit 不変)。"""
     base = name.split("[")[0]
+    # 11-18: # があれば区切りは # だけ（pathnames.split_path と同じ規則）。以前は . も区切りにしていたので、
+    #   sample に版番号の付く GCF_000148365.1#1#NC_017631.1 が sample=GCF_000148365 になり、参照の選び方
+    #   （pathnames.resolve_ref → GCF_000148365.1）と食い違って参照座標・逆位が黙って空になった
+    delims = ("#",) if "#" in base else _GROUP_DELIMS
     d1 = d2 = -1
     for i, ch in enumerate(base):
-        if ch in _GROUP_DELIMS:
+        if ch in delims:
             if d1 < 0:
                 d1 = i
             else:
