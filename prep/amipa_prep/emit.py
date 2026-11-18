@@ -53,6 +53,7 @@ from relayer_common import build_typed                          # noqa: E402
 from relayer_budget import relayer_budget                       # noqa: E402
 # 崩壊アレル分離(既定 ON, --no-separate で無効化)。実装は CLI と共有 [[collapsed-allele-separation]]。
 from separate_alleles import separate_collapsed       # noqa: E402
+from pathnames import contig_of, resolve_ref_distill   # noqa: E402
 
 
 def log(*a):
@@ -1901,7 +1902,7 @@ def _scan_contigs(gfa, distill=None):
         sample, hap, contig = parse_group(name)
         rec = info.get(contig)
         if rec is None:
-            short = contig.split("#")[-1] if "#" in contig else contig
+            short = contig_of(contig) if "#" in contig else contig   # 4 項目の PanSN（…#MT#0）は 3 項目目（11-17）。# の無い名前は従来どおり全体
             info[contig] = [sample, hap, short, 1]
         else:
             rec[3] += 1
@@ -3039,7 +3040,7 @@ def compute_ref_pos(gfa, distill, ref_key, sids, ord_ids, bp_row,
             continue
         if contig not in ref_cid:
             ref_cid[contig] = len(ref_cid)
-            ref_short.append(contig.split("#")[-1] if "#" in contig else contig)
+            ref_short.append(contig_of(contig) if "#" in contig else contig)
     C = len(ref_cid)
     # 2. npz row -> tree leaf(row2node)。
     r2n = np.full(nnpz, -1, np.int64)
@@ -3406,9 +3407,10 @@ def main():
                          "均す。深層の自然比<上限は不変=到達ズーム保存。0=無効(従来)")
     ap.add_argument("--zoom-dfloor", type=float, default=2.0,
                     help="飽和/同値層の狭義単調化に使う下限次元(既定2=2D一様の最小成長√(N比)/層)")
-    ap.add_argument("--ref-key", default="GRCh38",
+    ap.add_argument("--ref-key", default=None,
                     help="参照とする PanSN sample 名(大小無視で一致。PGGB 'grch38'/MC 'GRCh38' 両対応)。"
-                         "この経路のコンティグ上の累積 bp を各ノードに付与(既定 GRCh38)")
+                         "この経路のコンティグ上の累積 bp を各ノードに付与。既定は自動（pathnames.resolve_ref: "
+                         "--ref-key → GFA ヘッダの RS:Z → GRCh38 → CHM13 → 先頭のパス）")
     ap.add_argument("--emit-inversion", dest="emit_inversion", action="store_true", default=False,
                     help="逆位(inversion)索引 node_contig_inv/edge_contig_inv を出力(既定OFF)。各共有ノードで "
                          "contig 向きを ref 相対比較し contig 多数派 baseline から外れる箇所を逆位とする。現状 --gfa 直読みのみ")
@@ -3453,6 +3455,12 @@ def main():
     if args.rust_all:
         args.rust_geometry = args.rust_nodes = args.rust_edges = args.rust_ribbon = True
     t0 = time.time()
+    # 参照の選び方は前処理の全段で 1 つ（pathnames.resolve_ref、11-17）。以前は既定 GRCh38 が無いと黙って参照座標を作らなかった
+    if args.distill:
+        args.ref_key, _why = resolve_ref_distill(args.distill, args.ref_key)
+    else:
+        args.ref_key, _why = (args.ref_key or "GRCh38"), "--distill なし"
+    log(f"参照: {args.ref_key}（{_why}）")
 
     # ---- 1. レイアウト npz ----
     d = np.load(args.npz)

@@ -36,8 +36,9 @@ import sys
 import numpy as np
 
 
-def _open_text(path):
-    return gzip.open(path, "rt") if path.endswith(".gz") else open(path, "rt")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from textio import open_text as _open_text   # noqa: E402  .gz/.zst（11-17）
+from pathnames import contig_of, sample_of    # noqa: E402
 
 
 # --- 大規模(WG)向け: 出力を全て貯めず chunk 単位で書き出しメモリ上限を切る ---
@@ -415,16 +416,14 @@ class AnnotAccum:
 def _pansn_contig(nm):
     """PanSN 風 path/contig 名から染色体トークンを取り出す。'#'(PanSN: GRCh38#0#chr1)と
     '.'(MC: GRCh38.chr1)の両区切りに対応。'GRCh38.chr1'->'chr1'; 'CHM13#0#chr1'->'chr1'; 'chr1'->'chr1'。"""
+    if "#" in nm:
+        return contig_of(nm)   # 11-17: PanSN の 4 項目（…#MT#0）は 3 項目目。コンティグ名の中の . では切らない
     return re.split(r"[#.]", nm)[-1]
 
 
 def _pansn_sample(nm):
     """PanSN 風名の sample(先頭フィールド)。'#' 優先、無ければ '.'。区切りが無ければ ''。"""
-    if "#" in nm:
-        return nm.split("#", 1)[0]
-    if "." in nm:
-        return nm.split(".", 1)[0]
-    return ""
+    return sample_of(nm)   # 11-17: 区切りの無い名前（`CASBIT01`）は名前そのもの（以前は '' で参照パスに当たらなかった）
 
 
 def load_ref_contigs(con, ref_key):
@@ -548,12 +547,18 @@ _ATTR = re.compile(r'(\w+) "([^"]*)"')
 
 
 def load_gtf(path, name2cid, gene_types=None):
-    """GTF(1-based closed) -> (genes, exons) を 0-based half-open で返す。gene_types 指定時は絞る。"""
+    """GTF または GFF3(1-based closed) -> (genes, exons) を 0-based half-open で返す。gene_types 指定時は絞る。
+    11-17: GFF3 も読む（第 9 列が key=value; のとき）。gene 行は type が gene / pseudogene、名前は Name → gene_name → ID、
+    型は gene_biotype → gene_type → biotype → type。exon は Parent（転写産物）を辿って属する gene に付ける。"""
     genes, exons = {}, {}
     keep = set(gene_types) if gene_types else None
+    tx2gene = {}            # GFF3: 転写産物の ID → 親（gene の ID）
+    gff3_exons = []         # GFF3: (Parent の ID 群, start0, end)
     with _open_text(path) as fh:
         for line in fh:
             if not line or line[0] == "#":
+                if line.startswith("##FASTA"):
+                    break           # GFF3 の末尾の配列（SGD など）
                 continue
             c = line.rstrip("\n").split("\t")
             if len(c) < 9:
@@ -562,20 +567,43 @@ def load_gtf(path, name2cid, gene_types=None):
             if cid is None:
                 continue
             feat = c[2]
-            if feat not in ("gene", "exon"):
+            if '="' not in c[8] and '"' in c[8]:                       # GTF: key "value";
+                if feat not in ("gene", "exon"):
+                    continue
+                a = dict(_ATTR.findall(c[8]))
+                gid = a.get("gene_id")
+                if not gid:
+                    continue
+                if keep is not None and a.get("gene_type", "") not in keep:
+                    continue
+                if feat == "gene":
+                    genes[gid] = dict(cid=cid, start=int(c[3]) - 1, end=int(c[4]),
+                                      strand=c[6], name=a.get("gene_name", gid),
+                                      gtype=a.get("gene_type", ""))
+                else:
+                    exons.setdefault(gid, []).append((int(c[3]) - 1, int(c[4])))
                 continue
-            a = dict(_ATTR.findall(c[8]))
-            gid = a.get("gene_id")
-            if not gid:
-                continue
-            if keep is not None and a.get("gene_type", "") not in keep:
-                continue
-            if feat == "gene":
-                genes[gid] = dict(cid=cid, start=int(c[3]) - 1, end=int(c[4]),
-                                  strand=c[6], name=a.get("gene_name", gid),
-                                  gtype=a.get("gene_type", ""))
-            else:
-                exons.setdefault(gid, []).append((int(c[3]) - 1, int(c[4])))
+            a = dict(kv.split("=", 1) for kv in c[8].strip().split(";") if "=" in kv)   # GFF3: key=value;
+            if feat in ("gene", "pseudogene"):
+                gid = a.get("ID")
+                if not gid:
+                    continue
+                gtype = a.get("gene_biotype") or a.get("gene_type") or a.get("biotype") or feat
+                if keep is not None and gtype not in keep:
+                    continue
+                genes[gid] = dict(cid=cid, start=int(c[3]) - 1, end=int(c[4]), strand=c[6],
+                                  name=a.get("Name") or a.get("gene_name") or gid, gtype=gtype)
+            elif feat == "exon":
+                if a.get("Parent"):
+                    gff3_exons.append((a["Parent"].split(","), int(c[3]) - 1, int(c[4])))
+            elif a.get("ID") and a.get("Parent"):
+                tx2gene[a["ID"]] = a["Parent"].split(",")[0]
+    for parents, s0, e0 in gff3_exons:
+        for par in parents:
+            g = par if par in genes else tx2gene.get(par)
+            if g in genes:
+                exons.setdefault(g, []).append((s0, e0))
+                break
     if keep is not None:                    # gene 行に出なかった gid の exon を捨てる
         exons = {g: v for g, v in exons.items() if g in genes}
     return genes, exons
@@ -586,7 +614,7 @@ def annotate_gene(con, gtf_path, ref_key, source, acc, gene_types=None,
     name2cid, cid2name = load_ref_contigs(con, ref_key)
     genes, exons = load_gtf(gtf_path, name2cid, gene_types)
     if not genes:
-        sys.exit("[annotate] GTF に一致する contig の gene 行が無い (命名/型フィルタ?)")
+        sys.exit(f"[annotate] 注釈（GTF/GFF3）に、参照 {ref_key} のコンティグ（{sorted(set(cid2name.values()))[:8]}…）と seqid が一致する gene 行が無い（命名/型フィルタ?）")
 
     feat_rows, gene_list, gene_by_contig = [], [], {}
     fid = 0

@@ -12,6 +12,7 @@
 """
 import argparse, collections, heapq, json, os, sqlite3, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); from trav_arrays import put_array
+from pathnames import resolve_ref, sample_of, distill_ref_samples
 import numpy as np
 from numba import njit
 
@@ -64,7 +65,7 @@ tok = lambda pi: np.asarray(p_tok[p_off[pi]:p_off[pi + 1]])
 def seed_from_ref(prefix):
     """種（11-02）: 参照パスのトークンの順位。参照に無いノードは、各パスで直前に通った順位のあるノードの値（先頭は次の値）を前に埋め、パスをまたいだ平均 + 0.5。
     最後に順位へ直す（同点はノード番号順）。古い木の dcol（参照の骨格＋補間の合意列）と同じ考え方を distill だけで作る"""
-    refs = [pi for pi, n in enumerate(names) if (n.startswith(prefix) if prefix else pi == 0)]
+    refs = [pi for pi, n in enumerate(names) if (sample_of(n).lower() == prefix.lower() if prefix else pi == 0)]   # 11-17: 頭の一致でなく sample の一致（大小無視）
     # 参照の alt・random・chrUn などの断片は種に使わない（全ゲノム MC の GRCh38 は 2,580 本のうち主な染色体 24 本）。最長の 1% 以上の長さのパスだけ
     if len(refs) > 1:
         rl = np.array([p_off[pi + 1] - p_off[pi] for pi in refs]); refs = [pi for pi, l in zip(refs, rl) if l >= 0.01 * rl.max()]
@@ -91,6 +92,8 @@ seed_bounds = None
 if a.seed_synteny:
     con0 = sqlite3.connect("file:%s?mode=ro" % a.seed_synteny, uri=True); dt, n_, b_ = con0.execute("select dtype,n,blob from arrays where name='dcol'").fetchone(); dcol = np.frombuffer(b_, np.dtype(dt)).astype(np.int64); con0.close()
 else:
+    # 参照の選び方は前処理の全段で 1 つ（pathnames.resolve_ref、11-17）
+    a.seed_ref, _why = resolve_ref(names, a.seed_ref or None, distill_ref_samples(D)); log(f"参照: {a.seed_ref}（{_why}）")
     dcol = seed_from_ref(a.seed_ref)
 log(f"ノード {N:,} パス {NP} ハプロタイプ {H}")
 

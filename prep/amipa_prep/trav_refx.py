@@ -15,6 +15,7 @@ import argparse, json, os, sqlite3, sys, time
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from trav_arrays import get_array
+from pathnames import sample_of
 
 ap = argparse.ArgumentParser(); ap.add_argument("trav"); ap.add_argument("distill"); ap.add_argument("out")
 ap.add_argument("--ref-step", type=int, default=256); ap.add_argument("--other-step", type=int, default=16384)
@@ -35,7 +36,7 @@ haps = dict(tr.execute("SELECT hid, hap FROM haps"))
 paths = tr.execute("SELECT pid, path, hid FROM paths ORDER BY pid").fetchall()
 refhid = set()
 for pid, path, hid in paths:
-    if (seed and path.startswith(seed)) or path.startswith(("GRCh38", "CHM13")): refhid.add(hid)
+    if (seed and sample_of(path).lower() == seed.lower()) or path.startswith(("GRCh38", "CHM13")): refhid.add(hid)   # 11-17: 参照は sample の一致で（頭の一致だと HG002 が HG0021… にも当たる）
 if not refhid and paths: refhid.add(paths[0][2])
 rows = tr.execute("SELECT pid, i0, i1 FROM trav ORDER BY pid, i0").fetchall()
 log(f"パス {len(paths):,}  通過 {len(rows):,}  参照の株 {sorted(haps.get(h, h) for h in refhid)}  間隔 参照 {a.ref_step} / その他 {a.other_step} bp")

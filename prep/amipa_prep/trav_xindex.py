@@ -36,6 +36,7 @@ from collections import defaultdict
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from trav_arrays import get_array
+from pathnames import contig_of, sample_of
 
 import argparse
 _ap = argparse.ArgumentParser(); _ap.add_argument("trav"); _ap.add_argument("distill"); _ap.add_argument("out"); _ap.add_argument("--db")
@@ -166,11 +167,11 @@ log(f"reps_b {len(ro):,}")
 # ---- 染色体の帯（以前の travChroms と同じ規則）----
 atoms = tr.execute("SELECT x0, x1 FROM atoms ORDER BY x0").fetchall()
 seed = str((meta.get("params") or {}).get("seed_ref", "") if isinstance(meta.get("params"), dict) else "")
-refp = next((p for p in paths if seed and p[1].startswith(seed)), paths[0] if paths else None)
+refp = next((p for p in paths if seed and sample_of(p[1]).lower() == seed.lower()), paths[0] if paths else None)
 ref_hid = refp[2] if refp else -1
 hapsmp = {h.split("#")[0] for h in haps}
 def contig(p):
-    c = p[p.rfind("#") + 1:]; smp = p.split("#")[0] if "#" in p else ""
+    c = contig_of(p) if "#" in p else p; smp = p.split("#")[0] if "#" in p else ""   # 4 項目の PanSN（…#MT#0）は 3 項目目（11-17）
     if smp and c.startswith(smp + "."): return c[len(smp) + 1:]
     if "#" not in p:
         d = c.find(".")
@@ -253,7 +254,7 @@ if _A.db:   # 参照座標: 本体の ref_contigs の名前のパスに沿って
     def cid_of(pn):   # 名前がそのまま（GRCh38.chr13）か、PanSN（GCF_000148365.1#1#NC_017631.1）で頭が ref_key・最後の # の後がコンティグ名
         if pn in rc: return rc[pn]
         if "#" in pn:
-            ctg = pn[pn.rfind("#") + 1:]; head = pn.split("#")[0].lower()
+            ctg = contig_of(pn); head = pn.split("#")[0].lower()
             for (k, nm), cid in rck.items():
                 if nm == ctg and (head == k or head.startswith(k + ".") or head.startswith(k)): return cid
         return None
