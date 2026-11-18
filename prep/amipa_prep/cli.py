@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""amipa prep — GFA を渡すだけで AMIPA DB （多層 SQLite DB ＋ サイドカー）を作る。
+"""amipa prep — GFA から AMIPA の DB（多層 SQLite ＋ サイドカー）を作る。
 
-    # 一気通貫（⓪distill → ①バブル分解 → ②LOD → ③layout → ④emit → bundle）
+    # 最後まで通す（distill → decompose → lod → layout → emit → trav → … → tiled → bundle）
     amipa prep run --gfa graph.gfa --out mygraph.amipa --threads 16
 
-    # アノテやリードも一緒に（同じ 1 コマンドで最後まで）
+    # 注釈やリードも同じ 1 コマンドで
     amipa prep run --gfa graph.gfa --out mygraph.amipa \
         --band cytoBand.hg38.txt.gz --gene gencode.v50.gtf.gz \
         --region chm13.regions.bed --region-ref chm13 \
@@ -14,7 +14,7 @@
     amipa prep add-annot --out mygraph.amipa --gene gencode.v50.gtf.gz
     amipa prep add-reads --out mygraph.amipa --reads HG002=HG002.gaf
 
-    # 途中から/一段だけやり直す
+    # 途中から・一段だけやり直す
     amipa prep status --out mygraph.amipa
     amipa prep run --out mygraph.amipa --from layout      # layout 以降を作り直す
     amipa prep run --out mygraph.amipa --only emit        # emit だけ
@@ -23,20 +23,18 @@
     amipa prep plan --gfa graph.gfa --out mygraph.amipa  # 段ごとのスロット/メモリ/時間の目安
     #                                                      雛形は examples/hpc/
 
-**再開の考え方**: 段ごとに「コマンド行＋入力ファイルの署名(サイズ,mtime)」から鍵を作って
-`state.json` に記録する。次回は鍵と出力の実在を照合し、変わっていない段は飛ばす。
-後段の鍵は**その段の入力ファイルの署名**を含むので、前段が実際に出力を書き換えたときだけ
-後段も自動的に走り直す（無関係な段は走らない）。
-★鍵に「環境で変わるだけで出力を変えない値」（メモリ予算・一時ディレクトリ名など）を
-入れないこと。入れると「何も変えていないのに毎回やり直し」になる。
+再開: 段ごとに「コマンド行と入力ファイルの署名（大きさ・更新時刻）」から鍵を作って
+state.json に記録する。次回は鍵と出力の実在を照合し、変わっていない段は飛ばす。
+後段の鍵はその段の入力ファイルの署名を含むので、前段が実際に出力を書き換えたときだけ
+後段も走り直す。出力を変えない値（メモリ予算・一時領域の場所・スレッド数）は鍵に入れない。
 
-**環境依存の扱い**（詳細は docs/PIPELINE_PORTABILITY.md）:
-  --tmp        ④のDBビルドとリボン spill の置き場。既定は
-               **$TMPDIR → /tmp → <out>/work/tmp** のうち空きが足りる最初のもの。
-               共有FS(Lustre 等)を選ぶと警告する（動くが SQLite のランダム書込が桁で遅くなる）。
-  --threads    段ごとに並列性が違う（②は決定性のため常に 1 スレッド固定）。
-  --mem-gib    ③の pivot 配列のメモリ予算。既定は MemAvailable の 60%。
-  --template   ④が**スキーマ供給用に既存 DB を必要とする**ため。既定は同梱の空テンプレ。
+環境に依存する選択肢:
+  --tmp        DB 本体を組む一時領域。既定は $TMPDIR → /tmp → <out>/work/tmp のうち
+               空きが足りる最初のもの。共有ファイルシステムを選ぶと警告する
+               （動くが SQLite のランダム書き込みが桁で遅くなる）。
+  --threads    バブル分解とレイアウトに効く（lod は再現性のため常に 1 スレッド）。
+  --mem-gib    レイアウトのメモリ予算。既定は使えるメモリの 60%。
+  --template   emit が表の定義を読む空の DB。既定は同梱のもの。
 """
 from __future__ import annotations   # 型注釈を遅延評価（Python 3.9 で `str | None` を書けるように）
 
@@ -1106,96 +1104,97 @@ def add_common(p, need_gfa=False):
                         "ノードが 4〜6 倍減り、SNP が画素を食わなくなる。"
                         "アレルの差分と元ノードとの対応は <db>.collapse に入る")
     p.add_argument("--gff-dir", default=None,
-                   help="株ごとの GFF の置き場（<名前>.gff、名前はパス名の # の前）。あれば <name>.db.genes を作る（Traversals の遺伝子）")
+                   help="株ごとの GFF の置き場。ファイル名は <sample>.{gff,gff3,gtf}[.gz|.zst]（sample はパス名の # の前）、"
+                        "seqid はパス名のコンティグ。<name>.db.genes を作る（Linear の遺伝子）")
     p.add_argument("--ann-rmsk", default=None, help="RepeatMasker の表（UCSC rmsk.txt[.gz]、--ref-key の参照の座標）。<name>.db.ann に入れる")
     p.add_argument("--ann-vcf", action="append", default=None, metavar="SAMPLE=VCF", help="サンプルの変異（参照の座標。GIAB ベンチマークなど）。複数可")
     p.add_argument("--ann-bed", action="append", default=None, metavar="SAMPLE=BED", help="サンプルのベンチマーク領域（この外の変異は判定されていない）。複数可")
     p.add_argument("--no-trav", action="store_true",
-                   help="Traversals の錨・通過 <name>.db.trav を作らない（既定は作る。パスの無いグラフでは作らない）")
+                   help="Linear の索引 <name>.db.trav を作らない（既定は作る。パスの無いグラフでは作らない）。遺伝子の段も作らない")
     p.add_argument("--no-tiled", action="store_true",
-                   help="描画用タイル索引 <name>.db.tiled を作らない（既定は作る。★本体は R-Tree を持たないので、"
+                   help="描画用のタイル索引 <name>.db.tiled を作らない（既定は作る。閲覧側の唯一の空間索引なので、"
                         "無いと viewer で開けない。試験目的以外では付けない）")
     p.add_argument("--threads", type=int, default=len(os.sched_getaffinity(0)),
-                   help="並列度（②は決定性のため常に 1）")
+                   help="並列度。バブル分解とレイアウトに効く（lod は再現性のため常に 1）")
     p.add_argument("--spill", default=os.environ.get("AMIPA_SPILL"),
-                   help="リボン/多重度の disk streaming(spill)の置き場（既定 = --tmp と同じ）。"
-                        "**順次書きなので共有FSでも実害が小さく、必要量は DB より桁違いに大きいことがある**"
-                        "（MC v2 実測で最大 2.3TB）。ノードローカルに入らない規模ではここだけ共有FSへ逃がす")
+                   help="ハプロタイプの帯などをディスクに逃がす場所（既定は --tmp と同じ、環境変数 AMIPA_SPILL）。"
+                        "順次書きなので共有ファイルシステムでもよいが、必要量が DB より桁違いに大きいことがある。"
+                        "ノードローカルに入らない規模ではここだけ共有ファイルシステムへ逃がす")
     p.add_argument("--tmp", default=os.environ.get("AMIPA_TMP"),
-                   help="④のビルド用一時領域（既定: $TMPDIR → /tmp → <out>/work/tmp のうち"
-                        "空きが足りる最初のもの）。**ノードローカルの速いディスク**が望ましい")
-    p.add_argument("--mem-gib", type=float, default=None, help="③の pivot メモリ予算（既定 MemAvailable の 60%%）")
+                   help="DB 本体を組む一時領域（既定は環境変数 AMIPA_TMP、無ければ $TMPDIR → /tmp → <out>/work/tmp のうち"
+                        "空きが足りる最初のもの）。ノードローカルの速いディスクが望ましい")
+    p.add_argument("--mem-gib", type=float, default=None, help="レイアウトのメモリ予算 GiB（既定は使えるメモリの 60%%。ジョブの上限も見る）")
     p.add_argument("--template", type=Path, default=Path(os.environ.get("AMIPA_TEMPLATE_DB", DEFAULT_TEMPLATE)),
-                   help="④のスキーマ供給用 DB（既定は同梱の空テンプレ）")
+                   help="emit が表の定義を読む空の DB（既定は同梱のもの。環境変数 AMIPA_TEMPLATE_DB）")
     p.add_argument("--decomposer", choices=DECOMPOSERS, default=DEFAULT_DECOMPOSER,
-                   help="①のバブル分解器。bubblefinder（既定。最も速く軽いが、内部に閉路を含むバブルは出さない）／"
-                        "billi（閉路を含むバブルも出し、入れ子がより正しい。イメージには同梱しない）")
+                   help="バブル分解器。bubblefinder（既定。最も速く軽いが、内部に閉路を含むバブルは出さない）／"
+                        "billi（閉路を含むバブルも出し、入れ子がより正しい。イメージには同梱しない）。既定は環境変数 AMIPA_DECOMPOSER でも変えられる")
     p.add_argument("--billi", default=DEFAULT_BILLI, help="Billi の実行ファイル（既定 AMIPA_BILLI か PATH 上の billi）")
     p.add_argument("--bubblefinder", default=DEFAULT_BUBBLEFINDER,
                    help="BubbleFinder の実行ファイル（既定 AMIPA_BUBBLEFINDER か PATH 上の BubbleFinder）")
     p.add_argument("--flood", choices=("through", "legacy"), default="through",
-                   help="③の LOD 木でバブルの内部を割り当てる方法。through（既定）／legacy（旧動作。内側のバブルの先が背骨扱いになる）")
-    p.add_argument("--python", default=sys.executable)
+                   help="lod でバブルの内部のノードを割り当てる方法。through（既定）／legacy（以前の動作。内側のバブルより先の外側の内部を割り当て損ねる。以前の DB を再現するときだけ）")
+    p.add_argument("--python", default=sys.executable, help="各段を走らせる Python（既定はこのコマンドを起動した Python）")
     p.add_argument("--ref-key", default=None,
                    help="参照にするパスの sample（参照座標・Linear の向きと染色体の順・--band/--gene/--ann-* の写し先）。"
                         "既定は自動: GFA ヘッダの RS:Z（複数なら GRCh38 → CHM13 を優先）→ GRCh38 → CHM13 → 先頭のパス（大小無視。指定すればそれが優先）")
-    p.add_argument("--min-comp", type=int, default=1000)
-    p.add_argument("--epochs", type=int, default=30)
-    p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--pivots", type=int, default=400)
+    p.add_argument("--min-comp", type=int, default=1000, help="これよりノードの少ない連結成分は、lod と layout で小片としてまとめて扱う（既定 1000）")
+    p.add_argument("--epochs", type=int, default=30, help="レイアウトの反復回数（既定 30）")
+    p.add_argument("--seed", type=int, default=1, help="レイアウトの乱数の種（既定 1）")
+    p.add_argument("--pivots", type=int, default=400, help="PivotMDS の基準点の数（既定 400）")
     p.add_argument("--layout-edge-len", choices=["off", "pathmed", "framemed", "both"], default="off",
-                   help="layout の目標距離。pathmed=辺の目標長を両端のパス上距離の中央値にする"
-                        "（短絡で遠い領域が重なるのを防ぐ。chrY pggb で最悪セル -26%%）。既定 off")
+                   help="辺の目標の長さの決め方。pathmed=辺の両端の間のパスに沿った距離の中央値（近道の辺で遠い領域が"
+                        "重なるのを防ぐ）／framemed=パスが 1 回だけ通るノードの対の間で同じことをする／both=両方。既定 off")
     p.add_argument("--layout-edge-len-cap", type=float, default=1000.0,
-                   help="--layout-edge-len pathmed の目標長の上限")
+                   help="--layout-edge-len pathmed の目標の長さの上限（既定 1000）")
     p.add_argument("--layout-edge-len-frame-cap", type=float, default=100000.0,
-                   help="--layout-edge-len framemed/both の枠の目標長の上限（既定 1e5）")
+                   help="--layout-edge-len framemed/both の目標の長さの上限（既定 1e5）")
     p.add_argument("--layout-path-only", action="store_true",
-                   help="レイアウトをパス誘導のみにする（ピボット・短距離・球の項なし。表示用に変換したグラフ向け）")
+                   help="パスに沿った距離だけで配置する（表示用に変換したグラフ向け）")
     p.add_argument("--layout-path-term", choices=["hop", "bp"], default="hop",
-                   help="--layout-path-only の距離の尺度（hop=ステップ数、既定）")
+                   help="--layout-path-only の距離の尺度（hop=ステップ数〈既定〉、bp=塩基数）")
     p.add_argument("--layout-path-pairs", type=int, default=0,
-                   help="--layout-path-only で 1 epoch あたりの対の数（0=成分内ステップ数）")
+                   help="--layout-path-only で 1 回の反復あたりの対の数（0=成分内のステップ数）")
     p.add_argument("--layout-node-coord", default=None,
-                   help="ノードの座位座標 TSV（locusfold → nodecoord_compact）。ピボット距離と辺の目標長を座位差にする（他の項は従来どおり）")
+                   help="ノードごとの座標（bp）の TSV。配置の距離をこの座標の差にする（実験的）")
     p.add_argument("--layout-coord-circular", type=float, default=0.0,
-                   help="座位座標が環状なら参照の長さ（bp）")
+                   help="--layout-node-coord の座標が環状なら、その長さ（bp）")
     p.add_argument("--layout-coord-smooth", type=float, default=1.0,
-                   help="座位座標をレイアウトするグラフの隣接と整合させる平滑化の辺重み λ（0 で無効。既定 1: 精密なノードは動かず雑音ノードだけ隣へ寄る。大きくすると欠失域が圧縮され波打つ）")
+                   help="--layout-node-coord の座標を隣り合うノードと整合させる平滑化の強さ（0 で無効。既定 1）")
     p.add_argument("--layout-coord-gap-min", type=float, default=20000.0,
-                   help="座位座標の接合部判定の最小隙間（bp）。これと 2u の大きい方を超える隙間の辺だけ座位差を目標長にする")
+                   help="--layout-node-coord で、座標の差を目標の長さに使う辺の最小の隙間（bp。既定 20000）")
     p.add_argument("--layout-init", choices=["pmds", "path", "random"], default="pmds",
-                   help="レイアウトの初期配置（既定 pmds。path=パス内位置で 1 次元に並べる）")
+                   help="レイアウトの初期配置（pmds=PivotMDS〈既定〉、path=パスの中の位置で 1 次元に並べる、random）")
     p.add_argument("--ribbon-disk", action="store_true",
-                   help="リボンを disk streaming で作る（大きいグラフ。RAM を O(node) に抑える）")
-    p.add_argument("--band", type=Path, help="cytoBand（GRCh38）")
-    p.add_argument("--gene", type=Path, help="GENCODE GTF")
+                   help="ハプロタイプの帯の計算をディスクに逃がし、メモリをノード数に比例する程度に抑える（大きいグラフ向け）")
+    p.add_argument("--band", type=Path, help="染色体バンド（UCSC の cytoBand 形式）。座標は参照（--ref-key の規則で選んだもの）")
+    p.add_argument("--gene", type=Path, help="参照の遺伝子。GTF（GENCODE など）か GFF3。座標は参照、gene 行が要る（gene 行の無い UCSC の GTF は --gff-dir で）")
     p.add_argument("--gene-ref-path", default=None, help="--gene を写すときに辿るパスの sample（既定は参照＝--ref-key の規則で選んだもの）")
-    p.add_argument("--region", type=Path, help="領域 BED（CHM13 座標）")
-    p.add_argument("--region-ref", default="chm13")
-    p.add_argument("--reads", action="append", metavar="SAMPLE=GAF", help="リード整列（複数指定可）")
+    p.add_argument("--region", type=Path, help="領域の BED（セントロメアなど）。座標は --region-ref のサンプル")
+    p.add_argument("--region-ref", default="chm13", help="--region の座標のサンプル（既定 chm13）")
+    p.add_argument("--reads", action="append", metavar="SAMPLE=GAF", help="リードの整列（サンプル名=GAF）。GAF のノード名は DB の元の GFA と同じであること。複数指定可")
     p.add_argument("--reads-level", type=int, default=9,
                    help="リード実体の zstd 圧縮レベル（既定 9）。上げると容量は減るが構築が遅くなる"
                         "（閲覧側は遅くならない）")
     p.add_argument("--reads-keep-tags", action="store_true",
                    help="GAF のタグを全部保存する（既定は表示に使わない bq:Z を捨てる）")
     p.add_argument("--reads-append", action="store_true",
-                   help="add-reads 用: 既存のリード索引に**サンプルを追記**する（--reads には新しい"
-                        "サンプルだけを書く）。既存の索引チャンク・実体は触らない。"
-                        "指定しない add-reads は列挙したサンプルで索引を作り直す（従来どおり）")
+                   help="add-reads 用: 既存のリードの索引にサンプルを追記する（--reads には新しい"
+                        "サンプルだけを書く）。既存の索引と実体には触らない。"
+                        "指定しない add-reads は列挙したサンプルで索引を作り直す")
     p.add_argument("--reads-chunk-visits", type=int, default=None,
-                   help="リード索引 1 チャンクのノード通過数予算（既定 5 億 ≒ 構築ピーク 16GB/WG）。"
-                        "半分にするとメモリが 1.5GB ほど減り、チャンク数（読み出し時の blob 数）が倍になる")
+                   help="リードの索引の 1 チャンクあたりのノード通過数（既定 5 億）。"
+                        "下げると構築時のメモリが減り、チャンクの数が増える")
     p.add_argument("--reads-no-names", action="store_true",
                    help="リード名の列と検索索引を作らない。表示は変わらず、名前検索だけ不可になる。"
                         "数十億本のショートリードでは索引だけで数百 GB になるため、その場合に指定する")
     p.add_argument("--reads-force-mismatch", action="store_true",
-                   help="構築前検査（GAF ノード名と葉の一致率）が低くても続行する")
+                   help="取り込み前の検査（GAF のノード名と DB のノードの一致率）が低くても続ける")
     p.add_argument("--read-labels", action="append", metavar="SAMPLE=TSV",
                    help="リードのラベル（リード名<TAB>ラベル の表。例: trio binning の父・母・不明）。"
                         "閲覧側はサンプルの中をラベルごとに分けて並べる。複数指定可")
     p.add_argument("--hash-limit-gb", type=float, default=2.0,
-                   help="manifest で sha256 を計算する上限サイズ（既定 2GB。大きい DB は省略）")
+                   help="manifest.json に sha256 を記録するファイルの大きさの上限 GB（既定 2。これより大きいものは省く）")
     p.add_argument("--force", action="store_true", help="全段やり直す")
     p.add_argument("--dry-run", action="store_true", help="コマンドを表示するだけ")
 
