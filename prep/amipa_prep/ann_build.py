@@ -14,6 +14,7 @@ import argparse, gzip, os, sqlite3, time
 ap = argparse.ArgumentParser()
 ap.add_argument("--out", required=True); ap.add_argument("--rmsk"); ap.add_argument("--ref-key", default="GRCh38")
 ap.add_argument("--vcf", action="append", default=[], metavar="SAMPLE=VCF"); ap.add_argument("--bed", action="append", default=[], metavar="SAMPLE=BED")
+ap.add_argument("--distill", help="あれば参照（--ref-key）のパスにあるコンティグの行だけを残す（全ゲノムの注釈を染色体のグラフに渡したとき。11-18）")
 a = ap.parse_args()
 T0 = time.time()
 def log(m): print(f"[{time.time()-T0:6.1f}s] {m}", flush=True)
@@ -29,10 +30,21 @@ CREATE TABLE var(sample TEXT, contig TEXT, pos INTEGER, ref TEXT, alt TEXT, gt T
 CREATE TABLE bench(sample TEXT, contig TEXT, s INTEGER, e INTEGER);
 """)
 meta = {"ref_key": a.ref_key, "built": time.strftime("%Y-%m-%d %H:%M")}
+keep = None   # 残すコンティグ（None なら全部）
+if a.distill and os.path.exists(os.path.join(a.distill, "p_names.txt")):
+    from pathnames import split_path
+    keep = set()
+    for nm in open(os.path.join(a.distill, "p_names.txt")):
+        s_, _h, c_ = split_path(nm.rstrip("\n"))
+        if nm.strip() and s_.lower() == a.ref_key.lower(): keep.add(c_)
+    if keep: log(f"参照 {a.ref_key} のコンティグ {len(keep)}（{sorted(keep)[:5]}{' …' if len(keep) > 5 else ''}）の行だけ残す")
+    else: log(f"参照 {a.ref_key} のパスが無いので全部残す"); keep = None
+nskip = 0
 if a.rmsk:
     rows = []; maxlen = 0
     for ln in op(a.rmsk):
         f = ln.rstrip("\n").split("\t")
+        if keep is not None and f[5] not in keep: nskip += 1; continue
         s, e = int(f[6]), int(f[7]); maxlen = max(maxlen, e - s)
         rows.append((f[5], s, e, f[9], f[10], f[11], f[12], int(f[2]) / 10.0))
     cur.executemany("INSERT INTO rmsk VALUES (?,?,?,?,?,?,?,?)", rows)
@@ -42,7 +54,9 @@ for sv in a.vcf:
     smp, p = sv.split("=", 1); rows = []
     for ln in op(p):
         if ln[0] == "#": continue
-        f = ln.rstrip("\n").split("\t"); fmt = f[8].split(":"); val = f[9].split(":")
+        f = ln.rstrip("\n").split("\t")
+        if keep is not None and f[0] not in keep: nskip += 1; continue
+        fmt = f[8].split(":"); val = f[9].split(":")
         gt = val[fmt.index("GT")] if "GT" in fmt else "."
         rows.append((smp, f[0], int(f[1]) - 1, f[3], f[4], gt))
     cur.executemany("INSERT INTO var VALUES (?,?,?,?,?,?)", rows); meta["src_vcf_" + smp] = os.path.basename(p)
@@ -52,10 +66,12 @@ for sb in a.bed:
     for ln in op(p):
         f = ln.split("\t")
         if len(f) < 3 or ln[0] == "#": continue
+        if keep is not None and f[0] not in keep: nskip += 1; continue
         rows.append((smp, f[0], int(f[1]), int(f[2])))
     cur.executemany("INSERT INTO bench VALUES (?,?,?,?)", rows); meta["src_bed_" + smp] = os.path.basename(p)
     meta["maxlen_bench"] = str(max([int(meta.get("maxlen_bench", 0))] + [r[3] - r[2] for r in rows]))
     log(f"{smp}: ベンチマーク領域 {len(rows):,} 区間")
+if keep is not None: log(f"参照のパスに無いコンティグの行 {nskip:,} を読み飛ばした")
 cur.executemany("INSERT INTO meta VALUES (?,?)", list(meta.items()))
 cur.executescript("""
 CREATE INDEX rmsk_cs ON rmsk(contig, s);

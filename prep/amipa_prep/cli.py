@@ -633,7 +633,7 @@ def build_stages(b: Bundle, a) -> dict:
     # 参照座標の注釈（--ann-* のとき）: RepeatMasker（UCSC rmsk.txt）と、サンプルごとの変異（VCF）・ベンチマーク領域（BED）。座標は --ref-key の参照の 0 始まり。
     #   DB に依らない（列の参照位置 rb + オフセットと viewer で突き合わせる）ので入力はファイルだけ
     if getattr(a, "ann_rmsk", None) or getattr(a, "ann_vcf", None) or getattr(a, "ann_bed", None):
-        acmd2 = [py, str(PKG / "ann_build.py"), "--out", str(b.ann) + ".new", "--ref-key", ref]; ins2 = []
+        acmd2 = [py, str(PKG / "ann_build.py"), "--out", str(b.ann) + ".new", "--ref-key", ref, "--distill", str(b.distill)]; ins2 = []   # 11-18: グラフの参照コンティグの行だけ
         if a.ann_rmsk: acmd2 += ["--rmsk", str(a.ann_rmsk)]; ins2.append(Path(a.ann_rmsk))
         for flag, specs in (("--vcf", a.ann_vcf or []), ("--bed", a.ann_bed or [])):
             for spec in specs:
