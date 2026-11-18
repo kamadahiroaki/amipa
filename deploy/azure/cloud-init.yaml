@@ -1,7 +1,7 @@
 #cloud-config
 # Azure VM の初期化。`az vm create --custom-data cloud-init.yaml` で渡す。
 #   ・Docker を入れる
-#   ・データディスク(LUN 0)を ext4 で /data にマウントする（**既存データがあれば消さない**）
+#   ・データディスク(LUN 0)を ext4 で /data にマウントする（既存データがあれば消さない）
 #   ・/opt/amipa を作り、systemd で compose を起動できるようにする
 # compose.yml / Caddyfile / .env は作成後に scp で置く（README 参照）。
 
@@ -19,7 +19,7 @@ write_files:
     content: |
       #!/bin/bash
       # データディスクを /data にマウントする（初回だけ mkfs）。
-      # ★既にファイルシステムがあれば絶対に mkfs しない（DB を消さないため）。
+      # 既にファイルシステムがあれば絶対に mkfs しない（DB を消さないため）。
       set -euo pipefail
       DEV=/dev/disk/azure/scsi1/lun0
       for i in {1..30}; do [[ -e $DEV ]] && break; sleep 2; done

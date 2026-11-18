@@ -13,8 +13,8 @@
 
 このアプリの負荷は 4KB ランダム読みが支配的で、シーク回数と IOPS がそのまま体感速度になる。
 
-- ❌ Blob Storage / Azure Files / FUSE マウントに DB を置かない。確実に破綻する
-  （社内 Lustre で実測した「1 回 13.8ms・全ページ読み 0.46MB/s」と同じ罠）。Blob は配布にだけ使う。
+- ❌ Blob Storage / Azure Files / FUSE マウントに DB を置かない。細かいランダム読みの 1 回ごとに
+  ネットワークの往復が乗り、桁で遅くなって実用にならない。Blob は配布にだけ使う。
 - ✅ マネージドディスク（Premium SSD）に置く。さらに host caching = ReadOnly を付ける
   （読み取り専用 DB なので相性が良く、ローカル NVMe がキャッシュとして効く）。
   host caching を使うにはローカル一時ディスク付きのサイズ（`*ds_v5` / `*ads_v5`）を選ぶこと。
@@ -31,9 +31,6 @@
 
 料金は変動するので [Azure Pricing Calculator](https://azure.microsoft.com/pricing/calculator/) で確認する
 （目安: 8vCPU/64GiB クラスで月 5〜8 万円、1TB Premium SSD で月 1.5〜2 万円）。付与枠でも予算アラートは必ず設定する（§8）。
-
-> 枠を節約したい場合は「層を削った WG デモ DB（L0–L13, 推定 26GB）」という選択肢もある
-> （`functions/deploy/PLAN.md` §6.3）。枠に余裕があるならフル深度をそのまま出すのが当然よい。
 
 ## 2. VM を作る
 
@@ -121,22 +118,20 @@ private な GHCR を使う場合は VM で 1 回だけ
 
 ## 4. データを送る（ここが一番時間がかかる）
 
-計算ノードから qsub で流す（ログインノードで数時間流さない）。rsync なので切れても再開できる。
+`sync-bundle.sh` で送る。rsync なので切れても同じコマンドで続きから送れる。全ゲノムは数時間かかるので、
+手元の端末ではなく、切れても困らない場所（ジョブスケジューラのジョブ、`tmux` の中など）から流す。
 
 ```bash
-# HPC 側。ジョブスクリプトの例（scripts/ に置いて qsub）
-#$ -S /bin/bash
-#$ -cwd -j y -l s_vmem=4G -pe def_slot 1 -l ljob      # ★2日を超える見込みなら ljob
-<リポジトリ> \
-  <リポジトリ> \
-  azureuser@<公開ホスト名> /data/bundles
+# DB のディレクトリ（amipa prep の --out）ごと送る。work/ は送らない
+deploy/azure/sync-bundle.sh /path/to/graph.amipa azureuser@<公開ホスト名> /data/bundles
+# 鍵が既定の名前でなければ SSH_KEY=~/.ssh/<鍵> を前に付ける
 ```
 
-- DB を指定すると 同名のサイドカー（.annot / .hapidx / .nametri / .distill）も一緒に送る。
-- `-journal` / `-wal` は送らない（壊れた状態を持ち込まないため。スクリプトで除外済み）。
+- DB 本体（`*.db`）を指定した場合は、同名のサイドカー（`<db>.*` のファイルと `.distill/`）と `reads/` も一緒に送る。
+- `-journal` / `-wal` / `-shm` は送らない（壊れた状態を持ち込まないため。スクリプトで除外済み）。
 - 転送レートが 30MB/s なら 276GB で約 2.6 時間、100MB/s なら約 45 分。
 - 送り終えたらリモートで名前を分かりやすく変えてよい（例 `mc-grch38-wg.db`）。
-  ★サイドカーも同じ名前に揃えて改名する（`<db>.annot` の規約で引くため）。
+  サイドカーも同じ名前に揃えて改名する（`<db>.tiled` のように名前で対応づけるため）。
 
 ## 5. 起動して確認する
 
@@ -150,27 +145,28 @@ curl -s https://$AMIPA_DOMAIN/api/version
 ```
 
 `check` が `RESULT: OK` を返さないうちは公開しない。よくある指摘:
-- `.distill が無い/不完全` → MSA パネルが出ない。転送漏れ
-- `hapidx が見つからない` → hap 絞り込みが効かない。サイドカーの改名漏れ
+- `空間索引（.tiled サイドカー）が無い` → 開けない。転送漏れか、サイドカーの改名漏れ
+- `.distill が無い/不完全` → Linear の塩基の段が出ない。転送漏れ
 
-API の総点検（35 endpoint）も回せる。HPC 側の `functions/reemit2/verify_api.sh` を使う:
+API の総点検も回せる（リポジトリの `tests/run.sh api`。手元から公開先に向けて流す）:
 ```bash
-./verify_api.sh mc-grch38-wg.db <公開ホスト名>:443   # https 経由
+tests/run.sh api mc-grch38-wg.db <公開ホスト名>:443   # https 経由
 ```
 初回は cold なので遅い。これはウォームアップも兼ねる。
 
 ## 6. ウォームアップの方針（WG では特に重要）
 
-- `AMIPA_PREWARM` は WG では `off` にする（★空文字は「無効」ではなく「既定＝全部温める」になる）。253GB を順読みしても RAM(64GiB) には載りきらず、
-  その間ディスク帯域を食って利用者の操作が遅くなる。
-- 代わりに 代表的なビューポートを何回か叩いて温める（`verify_api.sh` か、よく見る領域の URL を curl）。
+- `AMIPA_PREWARM` は未設定（空）のままでよい。既定では DB の置き場がネットワークのファイルシステムの
+  ときだけ温めるので、マネージドディスクでは温めない。WG（253GB）を順読みしても RAM(64GiB) には載りきらず、
+  その間ディスク帯域を食って利用者の操作が遅くなるので、明示的に温めることもしない。
+- 代わりに 代表的なビューポートを何回か叩いて温める（`tests/run.sh api` か、よく見る領域の URL を curl）。
   よく触るページだけがページキャッシュに残る。
 - chr22（8.4GB）は RAM に載るので `AMIPA_PREWARM=chr22.db` を付けてよい。
 
 ## 7. 更新のしかた
 
 ```bash
-ssh $HOST /opt/amipa/update.sh ghcr.io/kamadahiroaki/amipa-viewer:v0.2.0
+ssh $HOST /opt/amipa/update.sh ghcr.io/kamadahiroaki/amipa-viewer:0.2.0
 ```
 `pull` → `up -d` → `/healthz` 確認まで自動。失敗したら `.env.bak` に旧タグが残っているので
 `cp -f .env.bak .env && docker compose up -d` で戻せる。DB は無関係なので触らない。
@@ -179,7 +175,7 @@ DB を差し替えるとき（新しい前処理で作り直したとき）:
 1. 新しい名前で `/data/bundles` に転送（旧 DB は残したまま）
 2. `docker compose run --rm viewer check <新DB>` で点検
 3. 問題なければ利用者に新しい DB 名を案内、または旧 DB を削除
-   ★古いサイドカーを残さない（`.hapidx` は rowid 鍵なので、別の DB に付くと壊れる）
+   古いサイドカーを残さない（名前で対応づけるので、別の DB に付くと黙って壊れる）
 
 ## 8. 監視・費用の見張り
 
@@ -199,7 +195,7 @@ az consumption budget create --budget-name amipa-monthly --amount 300 --time-gra
 - [ ] DB が `:ro` でマウントされている
 - [ ] SSH が自分の IP に絞られている
 - [ ] `check` が RESULT: OK
-- [ ] `verify_api.sh` が 35/35
+- [ ] `tests/run.sh api` が全項目 OK
 - [ ] 予算アラートを設定した
 - [ ] `/api/version` が正しいタグを返す（版の刻印＝図版・報告に載る）
 - [ ] 同時に数人が触ったときの応答を実測した（better-sqlite3 は同期なので重いクエリで詰まりうる）
@@ -210,6 +206,6 @@ az consumption budget create --budget-name amipa-monthly --amount 300 --time-gra
   並列に読めるが、worker ごとにページキャッシュを持つのでメモリを食う。公開規模が読めない間は
   Cloudflare 無料プランを前段に置くのが安上がり（Caddyfile 末尾のコメント参照）。
 - cold な初回アクセス: WG では 1 ビューポートあたり数百のランダム読みが起きうる。
-  host caching(ReadOnly) と RAM で緩和する。それでも遅ければ「層を削ったデモ DB」を検討する。
+  host caching(ReadOnly) と RAM で緩和する。
 - DB の差し替えはダウンタイム無しではできない（同名で上書きすると開いている接続が壊れる）。
   必ず別名で置いてから切り替える。

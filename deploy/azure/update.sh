@@ -1,7 +1,7 @@
 #!/bin/bash
 # 公開インスタンスを新しい viewer イメージへ更新する（VM 上で実行）。
 #   /opt/amipa/update.sh [イメージタグ]
-#     例: /opt/amipa/update.sh ghcr.io/kamadahiroaki/amipa-viewer:v0.2.0
+#     例: /opt/amipa/update.sh ghcr.io/kamadahiroaki/amipa-viewer:0.2.0
 #   引数を省くと .env の AMIPA_IMAGE をそのまま pull し直す（:edge 運用向け）。
 #
 # DB は触らないので、更新はイメージの入れ替えだけ。数十秒で戻る。
@@ -36,6 +36,6 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-echo "[update] ★健全性確認に失敗。ロールバックする場合:" >&2
+echo "[update] 健全性確認に失敗。ロールバックする場合:" >&2
 echo "  cp -f .env.bak .env && docker compose up -d" >&2
 exit 1

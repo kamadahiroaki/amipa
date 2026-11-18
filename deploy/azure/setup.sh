@@ -31,7 +31,7 @@ systemctl enable --now docker
 usermod -aG docker "$ADMIN" || echo "警告: ユーザー $ADMIN が居ない。ADMIN=<名前> を指定して再実行するか、後で手で追加する"
 
 echo "===== 3/4 データディスクを /data へ ====="
-# ★既にファイルシステムがあれば絶対に mkfs しない（DB を消さないため）。
+# 既にファイルシステムがあれば絶対に mkfs しない（DB を消さないため）。
 for _ in {1..30}; do [[ -e $DEV ]] && break; sleep 2; done
 if [[ ! -e $DEV ]]; then
   echo "FATAL: データディスクが見つからない: $DEV" >&2

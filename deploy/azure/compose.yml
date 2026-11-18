@@ -17,6 +17,7 @@ services:
     environment:
       DB_DIR: /data
       PORT: "3001"
+      SESSION_DIR: /var/lib/amipa/sessions   # 下の amipa-sessions ボリューム。共有 URL の状態を再起動後も残す
       AMIPA_READONLY: "1"
       AMIPA_CACHE_MB: "${AMIPA_CACHE_MB:-512}"
       AMIPA_DB_WORKERS: "${AMIPA_DB_WORKERS:-4}"

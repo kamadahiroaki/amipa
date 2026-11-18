@@ -4,7 +4,7 @@
 #   使い方:  sync-bundle.sh <DB のディレクトリ or DB> <user@host> [置き場]
 #   例:      sync-bundle.sh ~/atlases/mc-grch38-wg.amipa azureuser@<公開ホスト名>
 #
-# ・全ゲノムは 250-350GB ある。**ジョブスケジューラ経由で流す**。
+# ・全ゲノムは 250-350GB ある。切れても困らない場所（ジョブスケジューラのジョブなど）から流す。
 #   ログインノードや手元の端末で数時間流さない（切れると最初からになる環境がある）。
 # ・rsync なので再開できる。切れたら同じコマンドをもう一度打つ。
 # ・sqlite の -journal / -wal / -shm は送らない（壊れた状態を持ち込むため）。
@@ -26,7 +26,7 @@ SSH_OPTS="-o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o StrictHostKeyChe
 [[ -n ${SSH_KEY:-} ]] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY -o IdentitiesOnly=yes"
 Z=(); [[ ${RSYNC_Z:-0} == 1 ]] && Z=(-z)
 
-# ★--append-verify: 送信元は不変なので、既に届いている先頭を検証して続きだけ送る。
+# --append-verify: 送信元は不変なので、既に届いている先頭を検証して続きだけ送る。
 #   --inplace の差分アルゴリズムは 200GB 級だと両側を丸ごと読み直すことになり、
 #   再開のたびに時間がかかる。
 COMMON=(-a --copy-links --no-owner --no-group --info=progress2
@@ -35,7 +35,7 @@ COMMON=(-a --copy-links --no-owner --no-group --info=progress2
         -e "ssh $SSH_OPTS")
 
 echo "[sync] $SRC"
-# ★除外後の量を出す（work/ を含めた値を出すと「思ったより多い」と混乱するため）
+# 除外後の量を出す（work/ を含めた値を出すと「思ったより多い」と混乱するため）
 du -shL --apparent-size --exclude=work "$SRC" 2>/dev/null | sed 's/^/[sync] 送る量 /' || true
 
 if [[ -d "$SRC" ]]; then
@@ -43,13 +43,16 @@ if [[ -d "$SRC" ]]; then
   echo "[sync] ディレクトリごと転送（work/ は除外）"
   rsync "${COMMON[@]}" --exclude 'work/' "$SRC" "$DEST_HOST:$DEST_DIR/"
 else
-  # 単一 DB を指した場合は、同名のサイドカーも一緒に送る。
-  # ★.reads を落とすとリード表示だけが黙って消える（以前ここが抜けていた）。
+  # 単一 DB を指した場合は、同名のサイドカー（<db>.* のファイルと <db>.distill/）も一緒に送る。
+  # 種類を書き並べない（.tiled・.trav・.genes … と増えるたびに漏れ、漏れると開けない・機能が黙って消える）。
+  # 一時物（.tmp・.new・-journal など）は除く。名前は元のまま送る（--copy-links でリンクは実体にして送る）。
   ITEMS=("$SRC")
-  for s in .annot .reads .hapidx .nametri .distill; do
-    p="$SRC$s"
-    [[ -e "$p" ]] && ITEMS+=("$(readlink -f "$p")")
+  shopt -s nullglob
+  for p in "$SRC".*; do
+    case "$p" in *.tmp|*.tmp.*|*.new|*bak*|*-journal|*-wal|*-shm) continue ;; esac
+    ITEMS+=("$p")
   done
+  shopt -u nullglob
   # リードの実体は索引から相対で探すので、同じ階層の reads/ も要る
   rd="$(dirname "$SRC")/reads"
   [[ -d "$rd" ]] && ITEMS+=("$rd")
