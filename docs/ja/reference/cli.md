@@ -25,7 +25,7 @@
 |---|---|---|
 | `run` | GFA から DB を作る。終わった段は飛ばす | 全段（`--from`・`--only` で一部） |
 | `status --out DIR` | 段ごとの状態・秒数・終了時刻・最大メモリを表示する | — |
-| `plan` | 段ごとのスロット数・メモリ・時間の目安を出す。何も書き込まない。`--gfa` が必須。`--json` で JSON | — |
+| `plan` | 段ごとのスロット数・メモリ・時間の目安を出す。何も書き込まない。`--gfa` が必須。`--json` で JSON（標準出力は JSON だけ、ログは標準エラー） | — |
 | `add-annot` | 既存の DB に `--band`・`--gene`・`--region` を足す（どれか 1 つは必須） | annot, bundle |
 | `add-reads` | 既存の DB にリードを足す（`--reads` 必須）。線の太さに使うので、タイル索引も作り直す | reads, tiled, bundle |
 | `add-read-labels` | リードにラベルを付ける（`--read-labels` 必須）。整列は作り直さない | rlabel, bundle |

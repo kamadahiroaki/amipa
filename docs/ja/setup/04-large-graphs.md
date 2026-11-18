@@ -68,7 +68,7 @@ AMIPA 自身はスケジューラの書式を持たない（サイトごとに�
 | ファイル | 中身 |
 |---|---|
 | `age-per-stage.sh` | 1 段を実行するジョブ（AGE/SGE） |
-| `age-submit.sh` | 段ごとのジョブを依存でつないで投入する（AGE/SGE） |
+| `age-submit.sh` | 段ごとのジョブを依存でつないで投入する（AGE/SGE）。段の並びと資源は `amipa prep plan --json` から取る |
 | `slurm-per-stage.sbatch` | 1 段を実行するジョブ（Slurm） |
 
 ### 1 ジョブか、段ごとか
@@ -81,7 +81,7 @@ AMIPA 自身はスケジューラの書式を持たない（サイトごとに�
 distill → decompose → lod → layout → emit → trav → (genes, ann, annot, reads, rlabel, xdepth) → tiled → bundle
 ```
 
-括弧の中は、その入力を渡したときだけ要る段。`tiled`（描画用のタイル索引）は必ず流す。無いと閲覧側で DB が開けない。雛形の段の並びは、使う段に合わせて直す。
+括弧の中は、その入力を渡したときだけ要る段。`tiled`（描画用のタイル索引）は必ず流す。無いと閲覧側で DB が開けない。`age-submit.sh` は `amipa prep plan --json` が返す段（入力に応じて走る段だけ）をこの順に投入する。注釈やリードの選択肢は環境変数 `AMIPA_EXTRA` に書くと、plan と各段の両方に渡る。
 
 ジョブ間の依存はスケジューラの機能でつなぐ（AGE なら `-hold_jid`、Slurm なら `--dependency=afterok:`）。依存は多くの場合「前のジョブの終了」であって「成功」ではないので、前段が失敗しても後段は起動する。AMIPA の側は入力が揃っていなければその場で止まるので、壊れた出力は作られない。
 

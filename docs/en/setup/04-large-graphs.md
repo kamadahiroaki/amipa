@@ -70,7 +70,7 @@ AMIPA has no scheduler-specific syntax (it differs per site). Write the job scri
 | File | Content |
 |---|---|
 | `age-per-stage.sh` | Job that runs one stage (AGE/SGE) |
-| `age-submit.sh` | Submits the per-stage jobs chained by dependencies (AGE/SGE) |
+| `age-submit.sh` | Submits the per-stage jobs chained by dependencies (AGE/SGE). Stages and resources come from `amipa prep plan --json` |
 | `slurm-per-stage.sbatch` | Job that runs one stage (Slurm) |
 
 ### One job or one job per stage
@@ -83,7 +83,7 @@ With one job per stage, each stage requests only what it needs. Each job calls `
 distill → decompose → lod → layout → emit → trav → (genes, ann, annot, reads, rlabel, xdepth) → tiled → bundle
 ```
 
-Stages in parentheses are needed only when you pass the corresponding inputs. Always run `tiled` (the tile index for drawing); without it the viewer cannot open the DB. Adjust the stage list in the templates to the stages you use.
+Stages in parentheses are needed only when you pass the corresponding inputs. Always run `tiled` (the tile index for drawing); without it the viewer cannot open the DB. `age-submit.sh` submits, in this order, the stages returned by `amipa prep plan --json` (only those your inputs need). Put annotation and read options in the environment variable `AMIPA_EXTRA`; they are passed to both plan and each stage.
 
 Chain the jobs with your scheduler (`-hold_jid` for AGE, `--dependency=afterok:` for Slurm). Dependencies often mean "the previous job ended", not "succeeded", so later jobs may start after a failure. AMIPA stops at once when its inputs are missing, so no broken output is produced.
 

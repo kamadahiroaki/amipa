@@ -25,7 +25,7 @@ Without containers, call `python3 prep/amipa_prep/cli.py` instead of `amipa prep
 |---|---|---|
 | `run` | Build a DB from a GFA; finished stages are skipped | all (a subset with `--from` / `--only`) |
 | `status --out DIR` | Show state, seconds, finish time and peak memory per stage | — |
-| `plan` | Estimate slots, memory and time per stage. Writes nothing. Requires `--gfa`; `--json` for JSON | — |
+| `plan` | Estimate slots, memory and time per stage. Writes nothing. Requires `--gfa`; `--json` for JSON (stdout carries only the JSON; logs go to stderr) | — |
 | `add-annot` | Add `--band`, `--gene` or `--region` to an existing DB (at least one required) | annot, bundle |
 | `add-reads` | Add reads to an existing DB (`--reads` required). Rebuilds the tile index, which uses read counts for edge widths | reads, tiled, bundle |
 | `add-read-labels` | Label reads (`--read-labels` required). Alignments are not rebuilt | rlabel, bundle |
