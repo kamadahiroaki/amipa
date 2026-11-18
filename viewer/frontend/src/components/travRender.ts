@@ -1621,7 +1621,7 @@ cv.addEventListener('mousedown', e => {
   void inRows
   if (root && e.offsetX >= TREEW && e.offsetX < LAB && oy(e) >= TOP) { const k = rowAt(oy(e)); if (k >= 0 && k < rowHids.length) cb.onSelectHap?.(root.haps[rowHids[k]].hap) }   // 行ラベル → 主画面のパス群の選択
 
-  if (root && e.offsetX >= LAB && oy(e) >= TOP && ($('showctg') as HTMLInputElement).checked) {   // 片 → そのコンティグのリボン（11-10）
+  if (root && e.offsetX >= LAB && oy(e) >= TOP) {   // 片 → そのコンティグのリボン（11-10）。11-18: Tracks の Contigs が切れていても効かせる（ツールチップは常に「クリックで」と案内していた）
     const k = rowAt(oy(e)); if (k >= 0 && k < rowHids.length) { const hid = rowHids[k]; const inR = ($('mode') as HTMLSelectElement).value === 'rows'; const x = xOfPx(e.offsetX)
       const r = inR ? (lastPieces.get(hid) || []).find(p => Math.min(p.px0, p.px1) <= e.offsetX && Math.max(p.px0, p.px1) >= e.offsetX)?.tr : (mrowsByHap.get(hid) || []).find(r => r.hid === hid && r.x0 <= x && r.x1 >= x)
       const pn = r ? (r.pn ?? r.members?.find(m => m.pn)?.pn) : undefined; if (pn) { muteHoverKey = lastHoverNodes; muteAt = [e.offsetX, oy(e)]; sendHover(null); cb.onSelectContig?.(pn) } }
