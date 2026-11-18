@@ -18,9 +18,6 @@ export const bubbleMsaRouter = Router()
 //     emitter(layout_emit_db_relayer.py)が `<out-db>.distill` の symlink をビルド末尾に張る。
 const SCRIPT = amipaScript('bubble_msa.py')       // = viewer/scripts/bubble_msa.py
 const TIMEOUT_MS = Number((process.env.AMIPA_MSA_TIMEOUT_MS ?? process.env.MSA_TIMEOUT_MS)) || 30000
-// 走査するウォーク token 数の上限(抽出器の既定 8 億 = WG cold ~12s 相当)。WG で全 hap を選んだ
-// ときに timeout する前にエラーで返させるための安全弁で、env で緩められる。
-const MAX_TOKENS = Number((process.env.AMIPA_MSA_MAX_TOKENS ?? process.env.MSA_MAX_TOKENS)) || 0
 
 // distill の在り処を 3 段で解決する。emitter は「実 DB の隣」に張るが、DB_DIR の実体は
 // e2e/db・wg/ への **symlink 運用**なので素の `<DB_DIR>/<db>.distill` だけでは足りない。
