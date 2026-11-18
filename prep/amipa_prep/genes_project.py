@@ -64,8 +64,8 @@ for gid, fs in byg.items():
     kids[gid] = [f for f in fs if f[3] == best]
 log(f"遺伝子 {len(genes):,}、子（最長の転写産物）{sum(len(v) for v in kids.values()):,}")
 
-next_gid = cur.execute("SELECT max(gid) FROM gene").fetchone()[0] + 1
-next_fid = cur.execute("SELECT max(fid) FROM feature").fetchone()[0] + 1
+next_gid = (cur.execute("SELECT max(gid) FROM gene").fetchone()[0] or 0) + 1   # 11-17: 遺伝子 0 件（seqid が合わない等）で None + 1 になって落ちた
+next_fid = (cur.execute("SELECT max(fid) FROM feature").fetchone()[0] or 0) + 1
 out_g, out_gt, out_f, out_ft = [], [], [], []
 unanch = {}   # 写しの gid → 端を決められなかった CDS の端の数
 nproj = 0; ncopy2 = 0; next_ext = [0, 0]   # 端を参照に無いノードまで広げた数（遺伝子, 子）

@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """遺伝子サイドカー <db>.genes を作る（株ごとの GFF をパスのトークン範囲に写す）。plans/msa-annotation.md §5、decisions/0006。
   python3 genes_build.py --distill <db>.distill --gff-dir <GFF の置き場> --out <db>.genes [--synteny <db>.synteny]
-  GFF はパス名の先頭（# の前。GRCh38#chr20 → GRCh38、GCF_000148365.1#1#NC_017631.1 → GCF_000148365.1）を名前にした <gff-dir>/<名前>.gff。
-  seqid はパス名の最後の # の後（部分範囲 [a-b] は落とす）。
+  GFF はパス名の先頭（# の前。GRCh38#chr20 → GRCh38、GCF_000148365.1#1#NC_017631.1 → GCF_000148365.1）を名前にした
+  <gff-dir>/<名前>.{gff,gff3,gtf}[.gz|.zst]（11-17: 拡張子と圧縮を広げた。GTF は gene_id/transcript_id から ID/Parent を補う）。
+  seqid はパス名のコンティグ（pathnames.split_path: 3 項目目。4 項目の PanSN の位相ブロックと部分範囲 [a-b] は落とす）。
+  ★11-17: GFF は流し読みし、グラフのパスに無い seqid の行は読まない（全ゲノムの注釈を染色体 1 本のグラフに渡すと
+    全行を載せて 40 GB・出力 6 GB になった）。feature 表に残るのはグラフにある seqid の行と '#' の行だけ。
+    どのパスにも GFF が見つからなければ、期待したファイル名を出して止まる。
   ★11-02 に functions/msa_lod/annot/build_genes.py から prep へ移した。古い木（.synteny）は任意: あれば原子（gene_atom）と接合×遺伝子（junc_gene。古い Blocks パネルの接合カード用）も作る。
     Traversals は gene・gene_tok・feature・feature_tok・gff_header だけを使う
 表:
@@ -25,6 +29,9 @@
 閾値: 分断・片端は 1 bp（2026-10-08 決定）。near は距離を持ち既定 1,000 bp。"""
 import sys, os, re, json, sqlite3, glob, collections, time, argparse
 import numpy as np
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pathnames import acc_seqid   # 11-17: パス名の解釈は pathnames に 1 つ（`GRCh38#chr20`・`GCF#1#NZ_…`・4 項目の `HG00438#2#MT#0`・`GRCh38.chr1`・部分範囲 [a-b]）
+from textio import open_text
 ap = argparse.ArgumentParser(); ap.add_argument("--distill", required=True); ap.add_argument("--gff-dir", required=True); ap.add_argument("--out", required=True)
 ap.add_argument("--gfa", default="", help="W 行の開始位置（SeqStart）を読む GFA（distill に p_start.npy が無いとき。既定は distill の meta.json の gfa）"); ap.add_argument("--synteny", default="", help="古い木 <db>.synteny（任意）。あれば gene_atom と junc_gene も作る")
 A = ap.parse_args(); G = A.gff_dir; NEAR = 1000
@@ -86,36 +93,73 @@ CREATE TABLE gff_header(acc TEXT, lineno INTEGER, line TEXT);
 class Rec:
     __slots__ = ("fid", "lineno", "seqid", "source", "type", "start", "end", "score", "strand", "phase", "attrs", "a", "parent", "gid")
 fid_next = 0; acc_recs = {}                       # acc → (recs, feats_by_seqid)
+GFF_EXTS = [e + z for e in (".gff", ".gff3", ".gtf") for z in ("", ".gz", ".zst")]
+def find_gff(acc):
+    for e in GFF_EXTS:
+        f = f"{G}/{acc}{e}"
+        if os.path.exists(f): return f
+    return None
+_GTF_ATTR = re.compile(r'\s*([^\s"]+)\s+"([^"]*)"\s*;?')
+def _attrs(raw):
+    """第 9 列 → 属性の辞書。GFF3（key=value;）はそのまま、GTF（key "value";）は ID/Parent/Name を補う（11-17）"""
+    if '"' in raw and "=" not in raw.split('"', 1)[0]:
+        a = dict(_GTF_ATTR.findall(raw)); return a, True
+    return dict(kv.split("=", 1) for kv in raw.split(";") if "=" in kv), False
 def load_gff(acc):
     global fid_next
     if acc in acc_recs: return acc_recs[acc]
-    f = f"{G}/{acc}.gff"; recs = []; feats = collections.defaultdict(list); hdr = []
-    if os.path.exists(f):
-        for ln, line in enumerate(open(f), 1):
-            line = line.rstrip("\n")
-            if not line.strip(): continue
-            if line.startswith("#"): hdr.append((acc, ln, line)); continue
-            p = line.split("\t")
-            if len(p) < 9: hdr.append((acc, ln, line)); continue   # 9 列に満たない行も捨てずに header 側へ（再現のため）
-            r = Rec(); fid_next += 1; r.fid = fid_next; r.lineno = ln
-            r.seqid, r.source, r.type, r.start, r.end, r.score, r.strand, r.phase, r.attrs = p[0], p[1], p[2], int(p[3]), int(p[4]), p[5], p[6], p[7], "\t".join(p[8:])
-            r.a = dict(kv.split("=", 1) for kv in r.attrs.split(";") if "=" in kv); r.parent = None; r.gid = None
-            recs.append(r); feats[r.seqid].append(r)
+    f = find_gff(acc); recs = []; feats = collections.defaultdict(list); hdr = []
+    want = want_seqids.get(acc, set()); n_skip = 0
+    if f:
+        with open_text(f) as fh:
+            for ln, line in enumerate(fh, 1):
+                line = line.rstrip("\n")
+                if not line.strip(): continue
+                if line.startswith("##FASTA"): break                 # GFF3 の末尾の配列（SGD など）は注釈でない
+                if line.startswith("#"): hdr.append((acc, ln, line)); continue
+                p = line.split("\t")
+                if len(p) < 9: hdr.append((acc, ln, line)); continue   # 9 列に満たない行も捨てずに header 側へ（再現のため）
+                if p[0] not in want: n_skip += 1; continue           # グラフのパスに無い seqid（11-17）
+                r = Rec(); fid_next += 1; r.fid = fid_next; r.lineno = ln
+                r.seqid, r.source, r.type, r.start, r.end, r.score, r.strand, r.phase, r.attrs = p[0], p[1], p[2], int(p[3]), int(p[4]), p[5], p[6], p[7], "\t".join(p[8:])
+                r.a, gtf = _attrs(r.attrs); r.parent = None; r.gid = None
+                if gtf:   # GTF: gene 行 → ID=gene_id、transcript 行 → ID=transcript_id・Parent=gene_id、その他 → Parent=transcript_id（無ければ gene_id）
+                    gi, ti = r.a.get("gene_id"), r.a.get("transcript_id")
+                    if r.type == "gene" and gi: r.a["ID"] = gi
+                    elif r.type in ("transcript", "mRNA") and ti: r.a["ID"] = ti; r.a["Parent"] = gi or ""
+                    elif ti or gi: r.a["Parent"] = ti or gi
+                    if "gene_name" in r.a and r.type == "gene": r.a.setdefault("Name", r.a["gene_name"])
+                    if "gene_type" not in r.a and "gene_biotype" in r.a: r.a["gene_type"] = r.a["gene_biotype"]
+                recs.append(r); feats[r.seqid].append(r)
         id2 = {r.a["ID"]: r for r in recs if "ID" in r.a}
         for r in recs:
             pa = r.a.get("Parent"); q = id2.get(pa.split(",")[0]) if pa else None
             r.parent = q.fid if q else None
+        print(f"GFF {f}: 行 {len(recs):,}（グラフのパスに無い seqid の行 {n_skip:,} は読み飛ばした。使う seqid {sorted(want)[:6]}{' …' if len(want) > 6 else ''}）", file=sys.stderr)
+        if not recs:
+            print(f"  ★{f} にグラフの seqid（{sorted(want)[:6]}）の行が 1 行も無い。GFF の seqid（第 1 列）とパス名のコンティグが一致しているか確認する", file=sys.stderr)
     cur.executemany("INSERT INTO gff_header VALUES (?,?,?)", hdr)
     acc_recs[acc] = (recs, feats); return acc_recs[acc]
 KEEP = {"gene", "pseudogene", "rRNA", "tRNA", "ncRNA", "tmRNA", "SRP_RNA", "RNase_P_RNA", "antisense_RNA", "riboswitch", "mobile_element", "repeat_region", "regulatory_region"}
 gid = 0; genes_by_pid = {}; n_cds = 0; fid2gid = {}; fid2pid = {}; n_cross = 0
-def acc_seqid(path):
-    if "#" in path: return path.split("#")[0], path.split("#")[-1].split("[")[0]   # 最後の # 区切りが seqid（`GRCh38#chr20` は 2 項、`GCF#1#NZ_…` は 3 項）。部分範囲 [a-b] は落とす
-    acc, _, seqid = path.partition("."); return acc, (seqid or path).split("[")[0]   # # の無い名前（全ゲノム MC の `GRCh38.chr1`）は最初の . で sample と seqid に分ける（11-02）
 def dpid(pid, path): return pid if syn is None else pidx.get(path)   # distill の添字（★名前は重複しうるので、distill 由来の一覧なら pid そのもの）
 # 同じコンティグの断片（11-04）: (acc, seqid) → [(開始, 終わり, pid)]。注釈の行は、自分を丸ごと含む断片にだけ付ける（座標は断片の開始を引いて使う）
 frags = collections.defaultdict(list); pstart = {}
-annotated = [pid for pid, (path, L) in paths.items() if os.path.exists(f"{G}/{acc_seqid(path)[0]}.gff")]
+# GFF の対応づけ（11-17）: パスの sample ごとにファイルを探し、無ければ期待した名前を出す。1 つも無ければ止める
+want_seqids = collections.defaultdict(set)
+for pid, (path, L) in paths.items():
+    _acc, _sq = acc_seqid(path); want_seqids[_acc].add(_sq)
+_found = {acc: find_gff(acc) for acc in want_seqids}
+_miss = sorted(acc for acc, f in _found.items() if f is None)
+if _miss:
+    print(f"GFF の無い sample {len(_miss)}（期待したファイル名の例: {', '.join(f'{G}/{x}.gff' for x in _miss[:5])}{' …' if len(_miss) > 5 else ''}。"
+          f"拡張子は {'/'.join(GFF_EXTS)} のどれでもよい）", file=sys.stderr)
+if not any(_found.values()):
+    _have = sorted(os.listdir(G))[:10] if os.path.isdir(G) else []
+    sys.exit(f"[genes] --gff-dir {G} に、どのパスの GFF も無い。\n"
+             f"  ファイル名はパス名の sample（# の前）: 例えばパス {paths[next(iter(paths))][0] if paths else '?'} なら {G}/{acc_seqid(paths[next(iter(paths))][0])[0] if paths else '?'}.gff"
+             f"（.gff3・.gtf・.gz・.zst も可）。\n  置き場にあるファイル: {_have}")
+annotated = [pid for pid, (path, L) in paths.items() if _found.get(acc_seqid(path)[0])]
 ann_idx = [dpid(pid, paths[pid][0]) for pid in annotated]; ann_idx = [i for i in ann_idx if i is not None]
 if annotated:
     p_start = path_starts()
