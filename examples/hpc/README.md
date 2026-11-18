@@ -12,13 +12,19 @@ amipa prep plan ... --json          # 自動生成に使うなら
 
 | ファイル | 想定 |
 |---|---|
-| `age-single-job.sh` | 1 ジョブで全段（中規模まで。単純） |
-| `age-per-stage.sh` + `age-submit.sh` | 段別ジョブ（全ゲノム規模。資源効率がよい） |
-| `slurm-per-stage.sbatch` | Slurm 版 |
+| `age-per-stage.sh` | 1 段を実行するジョブ（AGE/SGE）。`amipa prep run --only <段>` を呼ぶ |
+| `age-submit.sh` | 段別ジョブを依存で繋いで投入する（AGE/SGE）。段の並びと資源は `amipa prep plan --json` から取る |
+| `slurm-per-stage.sbatch` | 1 段を実行するジョブ（Slurm） |
+
+1 ジョブで全段を流すなら雛形は要らない。ジョブスクリプトの中で `--only` を付けずに
+`amipa prep run --gfa ... --out ... --threads $NSLOTS --tmp <ノードローカル>` を呼べばよい。
+
+段別に回すときは、段の並びを `amipa prep plan` の出力（またはその `--json`）に合わせる。
+`tiled`（描画用のタイル索引）は必ず流す。無いと閲覧側で DB が開けない。
 
 ## どちらを選ぶか
 
-1 ジョブは単純で、`--only` も要らない。ただし多コアを使うのはレイアウト段だけなので、
+1 ジョブは単純で、`--only` も要らない（中規模まではこれでよい）。ただし多コアを使うのはレイアウト段だけなので、
 その他の段の間もスロットを占有する。全ゲノム規模（11 時間級）では 200 コア時間ほど無駄になる。
 
 段別は各段が必要な分だけ要求する。ジョブ間の依存はスケジューラの機能で繋ぐ
@@ -55,7 +61,7 @@ qstat -j <ジョブID> | grep hard_resource     # 反映されたか確認
 scontrol update JobId=<ジョブID> MinMemoryNode=96G
 ```
 
-1 度でも流したら、`qreport -j <ジョブID>`（AGE）や `sacct -j <ジョブID> --format=MaxVMSize`
+1 度でも流したら、`qacct -j <ジョブID>`（AGE）や `sacct -j <ジョブID> --format=MaxVMSize`
 （Slurm）で実測を見て、次からはその値に寄せる。`amipa prep plan` が出すのは出発点でしかない。
 
 ## リード整列の段だけは GAF の量で決まる
