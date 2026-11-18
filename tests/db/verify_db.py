@@ -53,6 +53,8 @@ class Checker:
         # meta を読む。無い旧 DB は本体の nodes_rtree で従来どおり検査する。
         import os
         self.tl = {}
+        _pn = path + ".distill/p_names.txt"
+        self.pathless = os.path.exists(_pn) and os.path.getsize(_pn) == 0
         for cand in (path + ".tiled", os.path.realpath(path) + ".tiled"):
             if os.path.exists(cand):
                 try:
@@ -107,6 +109,9 @@ class Checker:
         return bool(self.q(f"SELECT 1 FROM {table} WHERE {where} LIMIT 1", args))
 
     def rec(self, feature, status, detail):
+        # 11-18: パスの無いグラフ（rGFA・de Bruijn）では、パスから作る機能（リボン・参照座標・逆位/多重度）が空なのが正常
+        if status == NG and self.pathless and feature[:1] in ("⑤", "⑦", "⑧", "⑪"):
+            status, detail = WARN, "パスの無いグラフなので空が正常: " + detail
         self.rows.append((feature, status, detail))
 
     # ---------------------------------------------------------------- 検査本体
@@ -372,8 +377,9 @@ class Checker:
             n = self.n_rows(need)
             nz = self.any_row(need, "LENGTH(blob) > 4")
             if not n:
-                st = NG
-                det.append(f"{label}: {need} が空")
+                # 11-18: 逆位は「逆向きに通るハプロタイプがある」ノードだけの表なので、逆位の無いグラフ（chrM など）では空が正常
+                st = WARN if (label == "逆位" and st != NG) else NG
+                det.append(f"{label}: {need} が空" + ("（逆向きの通過が無ければ正常）" if label == "逆位" else ""))
                 continue
             if not nz:
                 st = WARN
