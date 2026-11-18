@@ -2,6 +2,7 @@
 // 設計: amipa-lab/plans/anchor2-traversals.md。錨の座標 x（多数決順の順位）、通過 trav（コンティグ × 座標区間 × 向き × コピー番号）、
 // コピー copies（同じコンティグの通過の座標の重なり）、境界 bounds（支持・持続度）、原子 atoms、反復 reps（出現単位）。
 // 古い木（.synteny）と Blocks パネルは 11-02 に外した。作るのは prep の trav 段（prep/amipa_prep/trav_build.py ほか）。
+import { contigOf, sampleOf } from './pathNames'
 import Database from 'better-sqlite3'
 import zlib from 'zlib'
 import fs from 'fs'
@@ -204,7 +205,7 @@ export function travPathBp(t: Trav, items: [number, number][], x0: number, x1: n
  *  区間がどの通過にも掛からない（錨の無い所）ときは、いちばん近い通過の端を返す（gap=true）。 */
 export function travRefX(t: Trav, q: { ref?: string; chrom?: string; path?: string; start: number; end: number }): any {
   const norm = (c: string) => c.replace(/^chr/i, '').toLowerCase()
-  const contig = (p: string) => { const c = p.slice(p.lastIndexOf('#') + 1); const smp = p.includes('#') ? p.split('#')[0] : ''; return smp && c.startsWith(smp + '.') ? c.slice(smp.length + 1) : c.replace(/^[A-Za-z0-9]+\.(?=chr)/, '') }
+  const contig = (p: string) => { const c = contigOf(p); const smp = sampleOf(p); return c.startsWith(smp + '.') ? c.slice(smp.length + 1) : c.replace(/^[A-Za-z0-9]+\.(?=chr)/, '') }   // 11-18: pathNames の規則（4 項目の PanSN・GRCh38.chrN）
   let cand: number[] = []
   if (q.path) { cand = t.paths.map((p, i) => p.path === q.path ? i : -1).filter(i => i >= 0) }
   else if (q.chrom) {
@@ -246,7 +247,7 @@ export function travChroms(t: Trav): { x0: number; x1: number; name: string; ref
   if (t.tx) { const o = (t.tx.q.chroms.all() as any[]).map(r => ({ x0: r.x0, x1: r.x1, name: r.name, ref: !!r.ref })); (t as any).__chroms = o; return o }   // 11-12: 前計算
   // コンティグ名＝最後の # の後。頭にサンプル名が付く形（GRCh38#0#GRCh38.chr1）はそれを外す
   //   （# の無い参照のパス名 GRCh38.chr1 も、株の名前 GRCh38#0 のサンプル部分を頭から外す）
-  const contig = (p: string) => { const c = p.slice(p.lastIndexOf('#') + 1); const smp = p.includes('#') ? p.split('#')[0] : ''; if (smp && c.startsWith(smp + '.')) return c.slice(smp.length + 1); if (!p.includes('#')) { const d = c.indexOf('.'); if (d > 0 && t.haps.some(h => h.split('#')[0] === c.slice(0, d))) return c.slice(d + 1) } return c }
+  const contig = (p: string) => { const c = contigOf(p); const smp = sampleOf(p); if (c.startsWith(smp + '.')) return c.slice(smp.length + 1); if (!p.includes('#') && c === p) { const d = c.indexOf('.'); if (d > 0 && t.haps.some(h => h.split('#')[0] === c.slice(0, d))) return c.slice(d + 1) } return c }   // 11-18: pathNames の規則
   const key = (p: string) => contig(p).replace(/^chr/i, '').toLowerCase()
   const refHid = refHidOf(t)
   let rows = t.db.prepare('SELECT pid, hid, x0, x1, nanch FROM trav WHERE nanch >= 1000 ORDER BY x0').all() as { pid: number; hid: number; x0: number; x1: number; nanch: number }[]

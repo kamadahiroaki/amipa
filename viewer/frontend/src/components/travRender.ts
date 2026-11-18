@@ -23,6 +23,7 @@ const CLS_COL = ['#c9ced2', '#e67e22', '#2980b9', '#27ae60', '#8e44ad', '#c0392b
 function hslToInt(h: number, sPct: number, lPct: number): number { const sat = sPct / 100, l = lPct / 100; const c = (1 - Math.abs(2 * l - 1)) * sat; const hp = (h % 360) / 60; const x = c * (1 - Math.abs(hp % 2 - 1)); let r = 0, g2 = 0, b = 0; if (hp < 1) { r = c; g2 = x } else if (hp < 2) { r = x; g2 = c } else if (hp < 3) { g2 = c; b = x } else if (hp < 4) { g2 = x; b = c } else if (hp < 5) { r = x; b = c } else { r = c; b = x } const m = l - c / 2; const R = Math.round((r + m) * 255), G = Math.round((g2 + m) * 255), B = Math.round((b + m) * 255); return (R << 16) | (G << 8) | B }
 const u8 = (b: string) => Uint8Array.from(atob(b), ch => ch.charCodeAt(0)); const u16 = (b: string) => { const a = u8(b); return new Uint16Array(a.buffer, a.byteOffset, a.byteLength >> 1) }; const u32 = (b: string) => { const a = u8(b); return new Uint32Array(a.buffer, a.byteOffset, a.byteLength >> 2) }
 
+import { contigOf, sampleOf } from '../pathNames'
 import { segName, segSetDb, onSegNames, segIds } from '../segNames'
 import { fetchBubbleMsaRanges, BubbleMsaResp, MsaCol, MsaRow } from '../api/client'
 import { matchHapToKey } from './hapKey'
@@ -648,7 +649,7 @@ function applyBase(d: BubbleMsaResp, ranges: number[][], label: string, mode: 'n
   // 11-18: パス番号（distill の pid＝通過の pid）→ 株 を先に引く。名前の照合だけだと PanSN でないパス名（全ゲノム MC の GRCh38.chr17）が株に結び付かず、行ごと消えていた
   const hidOfPid = new Map<number, number>(); for (const t of rows) hidOfPid.set(t.pid, t.hid); for (const t of refTrav) hidOfPid.set(t.pid, t.hid)
   d.rows.forEach((r, mi) => { const nm = r.label.replace(/ ·\d+$/, ''); let hid = (r as any).pi != null ? hidOfPid.get((r as any).pi) : undefined; if (hid == null) hid = hidOf.get(nm)
-    if (hid == null) { const sm = (r.path || nm).split('#')[0]; const c = bySample.get(sm); if (c && c.length === 1) hid = c[0] }   // 参照は 'GRCh38#chr22'（パスが sample#contig の 2 区切り）で .trav の 'GRCh38#0' と合わない → サンプルで引く
+    if (hid == null) { const sm = sampleOf(r.path || nm); const c = bySample.get(sm); if (c && c.length === 1) hid = c[0] }   // 参照は 'GRCh38#chr22'（パスが sample#contig の 2 区切り）で .trav の 'GRCh38#0' と合わない → サンプルで引く
     if (hid == null) return; if (!rowsOf.has(hid)) rowsOf.set(hid, []); rowsOf.get(hid)!.push(mi) })
   const byNode = new Map<string, number[]>(); d.cols.forEach((c, i) => { for (const nm of (c.nodes || [])) { const a = byNode.get(nm); if (a) a.push(i); else byNode.set(nm, [i]) } })
   baseGenesReq = ++baseGenesSeq
@@ -1135,7 +1136,7 @@ function drawContigMarks(g: CanvasRenderingContext2D, hid: number, pcs: Piece[],
     if (hi - lo > 90 && r.pn) {   // 名前と区間
       const a = Math.max(LAB, lo), b = Math.min(W, hi)
       if (b - a > 90) {
-        const nm = r.pn.split('#').pop() || r.pn; const t = r.cs != null && r.ce != null ? `${nm} ${(r.cs / 1e6).toFixed(2)}–${(r.ce / 1e6).toFixed(2)}M` : nm
+        const nm = contigOf(r.pn) || r.pn; const t = r.cs != null && r.ce != null ? `${nm} ${(r.cs / 1e6).toFixed(2)}–${(r.ce / 1e6).toFixed(2)}M` : nm
         g.font = 'bold 8px system-ui'; const tw = g.measureText(t).width
         if (tw + 6 < b - a) { const x = a + 4; g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(x - 2, yy, tw + 4, hh); g.fillStyle = '#fff'; g.fillText(t, x, yy + hh - 1.5) }
       }
@@ -2262,7 +2263,7 @@ function exportRows() {
   hapOrder.forEach((h, i) => { const hp = root!.haps[h].hap; const gm = groupOf.get(h); out.push([i + 1, hp, hp.split('#')[0], grpKeyOf.get(h) ?? '', pinnedHaps.has(hp) ? 1 : 0, gm && gm.length > 1 ? gm.map(x => root!.haps[x].hap).join(',') : '', ...ac.map((_, c) => attrOf(h, c + 1) ?? '')].join('\t')) })
   saveText(`${expBase()}_rows.tsv`, out.join('\n') + '\n'); $('info').textContent = `書き出した: 並び ${hapOrder.length} 株`
 }
-const ctgName = (p: string) => (p.split('#').pop() || p).replace(/^[A-Za-z0-9_-]+\.(?=chr)/, '')   // BED の染色体名: パス名の最後の # の後。GRCh38.chr22 のように株名が頭に付いていれば外す
+const ctgName = (p: string) => contigOf(p)   // BED の染色体名: パス名の最後の # の後。GRCh38.chr22 のように株名が頭に付いていれば外す
 async function exportBed() {
   if (!root) return
   const head = '#chrom\tstart\tend\thaplotype\tscore\tstrand\tpath\tcons_x0\tcons_x1\texact'

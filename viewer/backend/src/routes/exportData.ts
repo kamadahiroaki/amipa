@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { contigOf } from '../pathNames'
 import path from 'path'
 import fs from 'fs'
 import { getDb, getDbDir } from '../db'
@@ -128,7 +129,7 @@ exportRouter.get('/export/bed', (req, res) => {
     for (const c of d.prepare('SELECT contig_id, name FROM ref_contigs').all() as any[]) cn.set(c.contig_id, c.name)
     const chromOf = (cid: number) => {
       const nm = String(cn.get(cid) ?? ('contig' + cid))
-      const p = nm.split('#'); return p[p.length - 1] || nm     // PanSN の末尾成分(例 GRCh38#0#chrY → chrY)
+      return contigOf(nm) || nm     // コンティグ名（GRCh38#0#chrY → chrY、GRCh38.chrY → chrY、4 項目の PanSN も。11-18 pathNames）
     }
 
     const lines: string[] = []

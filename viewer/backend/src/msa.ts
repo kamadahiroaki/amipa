@@ -2,6 +2,7 @@
 //   python 版は常駐の別プロセスで、.trav の配列や distill を自分で読み直し、1 文字ずつのループ（全ゲノムの窓で warm 9 秒）だった。
 //   ここは Traversals の worker の中で、読み込み済みの配列と distill の読み手を共有する。規則は python 版の各所の注記（日付つき）をそのまま移した。
 //   出力は python 版と同じ JSON（tests: functions/travspeed の cmp_msa_ts）。ノードを選ぶモード（Bubble MSA パネル）は python 版に残す
+import { splitPath } from './pathNames'
 import type Database from 'better-sqlite3'
 import { getDb } from './db'
 import type { Distill } from './distill'
@@ -111,7 +112,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   let ntokAll = 0; for (const pi of pis) for (const grp of RG.get(pi)!) for (const [s0, e0] of grp) ntokAll += e0 - s0
   if (ntokAll > maxTokens) return { error: `走査対象が大きすぎます(${pis.length} contig / ${(ntokAll / 1e6).toFixed(1)}M token)。対象サンプル/ハプロタイプを絞ってください。` }
   // ---- 行（通過）----
-  const labelsOf = (pi: number): [string, string, string, string] => { const full = p_names[pi]; const base = full.replace(/\[[^\]]*\]$/, ''); const f = base.split('#'); return [f[0], f.length >= 3 ? f.slice(0, 2).join('#') : base, f.length >= 3 ? f[2] : '', full] }
+  const labelsOf = (pi: number): [string, string, string, string] => { const full = p_names[pi]; const base = full.replace(/\[[^\]]*\]$/, ''); const sp = splitPath(full); return [sp.sample, sp.hap != null ? `${sp.sample}#${sp.hap}` : base, sp.hap != null ? sp.contig : '', full] }   // 11-18: pathNames の規則（4 項目の PanSN も）
   const runs: any[] = []
   outer: for (const pi of pis) {
     const [samp, lab, ctg, full] = labelsOf(pi); const isref = isrefPi(pi); const nb = ntok(pi); if (nb <= 0) continue

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useId, useMemo, Fragment } from 'react'
+import { contigOf } from './pathNames'
 import GraphCanvas, { GraphCanvasHandle, PATH_COLORS, RibbonData , BlockColorMap } from './components/GraphCanvas'
 import Minimap from './components/Minimap'
 import { stainToColor, hexCss, GENE_DENSITY_LOW, GENE_DENSITY_HIGH, EXON_COLOR, INTRON_COLOR } from './annotColors'
@@ -1285,7 +1286,7 @@ export default function App() {
     if (!n) return null
     for (const c of refContigs.values()) {
       const cn = c.name.toLowerCase()
-      if (cn === n || (cn.split('#').pop() ?? cn) === n) return c.contig_id
+      if (cn === n || contigOf(cn) === n) return c.contig_id   // 11-18: pathNames の規則（GRCh38.chrY・4 項目の PanSN）
     }
     return null
   }

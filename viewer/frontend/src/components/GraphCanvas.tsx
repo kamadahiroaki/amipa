@@ -1,4 +1,5 @@
 import type { GuardSink } from '../api/client'
+import { contigOf } from '../pathNames'
 import { segName, onSegNames } from '../segNames'
 import { useEffect, useRef, forwardRef, useImperativeHandle } from 'react'
 import * as PIXI from 'pixi.js'
@@ -2130,7 +2131,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, Props>(function GraphCanvas(
       const light = lerpColor(color, 0xffffff, 0.72), deep = lerpColor(color, 0x000000, 0.5)
       const shade = (pos: number) => { const t = Math.max(0, Math.min(1, rankOf(pos))); return t < 0.5 ? lerpColor(light, color, t * 2) : lerpColor(color, deep, (t - 0.5) * 2) }
       const ticks: { wx: number; wy: number; v: number; st: number }[] = []
-      const ctgName = (route.path ?? '').split('#').pop() || ''
+      const ctgName = route.path ? contigOf(route.path) : ''   // 11-18: pathNames の規則
       const dark = darken(color)
       const quad = (ax: number, ay: number, bx: number, by: number, h: number) => {
         let dx = bx - ax, dy = by - ay; const len = Math.hypot(dx, dy); if (len < 1e-15) return

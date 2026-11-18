@@ -4,7 +4,7 @@
   sample#hap#contig          PanSN（W 行は distill がこの形に直す）
   sample#hap#contig#<整数>   PanSN の 4 項目目（位相ブロック。vg が W 行を P 行に直すと付く `HG00438#2#MT#0`）→ 捨てる
   sample#contig              2 項目（`GRCh38#chrM`）
-  sample.contig              # の無い参照の略記（全ゲノム MC の `GRCh38.chr1`）
+  sample.chrN                # の無い参照の略記（全ゲノム MC の `GRCh38.chr1`）。. の後が chr で始まるときだけ（`NC_000913.3` を切らない）
   name                       区切りなし（`CASBIT01`）→ sample = contig = name
   末尾の [a-b] / [a:b]       部分範囲 → 捨てる（`CHM13#chrM[0-15992]`）
 
@@ -37,7 +37,8 @@ def split_path(name: str):
         return f[0], f[1], f[-1]
     if "." in base:
         s, c = base.split(".", 1)
-        return s, None, c
+        if c[:3].lower() == "chr":   # GRCh38.chr1 の略記だけ（NC_000913.3 のような版番号を切らない。11-18）
+            return s, None, c
     return base, None, base
 
 
