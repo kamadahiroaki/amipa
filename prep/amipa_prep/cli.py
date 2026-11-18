@@ -1122,7 +1122,7 @@ def add_common(p, need_gfa=False):
     p.add_argument("--python", default=sys.executable)
     p.add_argument("--ref-key", default=None,
                    help="参照にするパスの sample（参照座標・Linear の向きと染色体の順・--band/--gene/--ann-* の写し先）。"
-                        "既定は自動: GFA ヘッダの RS:Z → GRCh38 → CHM13 → 先頭のパス（大小無視。指定すればそれが優先）")
+                        "既定は自動: GFA ヘッダの RS:Z（複数なら GRCh38 → CHM13 を優先）→ GRCh38 → CHM13 → 先頭のパス（大小無視。指定すればそれが優先）")
     p.add_argument("--min-comp", type=int, default=1000)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--seed", type=int, default=1)

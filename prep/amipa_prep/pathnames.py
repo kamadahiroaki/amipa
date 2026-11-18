@@ -10,7 +10,8 @@
 
 参照（参照座標・Linear の向きと染色体の順・--band/--gene の写し先）の選び方は 1 つ:
   1. --ref-key が指定され、その sample のパスがある → それ
-  2. GFA ヘッダの RS:Z（minigraph-cactus が参照の sample を書く。distill が meta.json の ref_samples に残す）
+  2. GFA ヘッダの RS:Z（minigraph-cactus が参照の sample を書く。distill が meta.json の ref_samples に残す）。
+     複数並んでいるときはその中で GRCh38 → CHM13 → 先に書かれたもの
   3. GRCh38 → CHM13（大小無視）
   4. 先頭のパスの sample
 sample の照合は大小を無視する（PGGB の `grch38` と MC の `GRCh38`）。返す名前は指定・RS:Z・既定の書き方のまま
@@ -67,9 +68,15 @@ def resolve_ref(names, ref_key=None, rs=()):
         if ref_key.lower() in seen:
             return ref_key, f"--ref-key {ref_key}"
         note = f"（--ref-key {ref_key} に当たるパスが無いので規則で選んだ）"
-    for r in rs or ():
-        if r and r.lower() in seen:
-            return r, f"GFA ヘッダの RS:Z:{r}" + note
+    # RS:Z に複数あるとき（HPRC MC は `RS:Z:CHM13 GRCh38`）は、その中で GRCh38 → CHM13 の順を優先する
+    #   （11-18: 先頭の CHM13 を採ると、以前 GRCh38 で作っていた chrY の例の参照と --band（hg38）がずれた）
+    rs_ok = [r for r in (rs or ()) if r and r.lower() in seen]
+    for d in DEFAULT_REFS:
+        for r in rs_ok:
+            if r.lower() == d.lower():
+                return r, f"GFA ヘッダの RS:Z（{' '.join(rs)}）のうち {r}" + note
+    if rs_ok:
+        return rs_ok[0], f"GFA ヘッダの RS:Z:{rs_ok[0]}" + note
     for r in DEFAULT_REFS:
         if r.lower() in seen:
             return r, f"既定の参照 {r}" + note

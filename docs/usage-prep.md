@@ -29,7 +29,7 @@ docker run --rm -v "$PWD:/work" -w /work -u "$(id -u):$(id -g)" -e HOME=/tmp \
 既定は自動で、次の順に最初に見つかったものを使う（大小は区別しない）。選んだ参照とその理由は各段のログに出る。
 
 1. `--ref-key` で指定した sample
-2. GFA ヘッダの `RS:Z` タグ（minigraph-cactus が参照の sample を書く）
+2. GFA ヘッダの `RS:Z` タグ（minigraph-cactus が参照の sample を書く。`RS:Z:CHM13 GRCh38` のように複数あれば、その中で GRCh38 → CHM13 → 先に書かれたもの）
 3. `GRCh38`、次に `CHM13`
 4. 先頭のパスの sample
 
