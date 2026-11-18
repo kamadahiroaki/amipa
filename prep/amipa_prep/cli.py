@@ -53,6 +53,8 @@ import time
 from pathlib import Path
 
 PKG = Path(__file__).resolve().parent                  # …/prep/amipa_prep
+sys.path.insert(0, str(PKG))
+from pathnames import resolve_ref_distill   # noqa: E402  参照の選び方（11-17）
 DEFAULT_TEMPLATE = PKG / "templates" / "schema.db"
 # バブル分解器（既定 bubblefinder）。コンテナは /opt/bubblefinder/bin/BubbleFinder・/usr/local/bin/billi
 # （AMIPA_BUBBLEFINDER / AMIPA_BILLI）。povu は 2026-11-16 に外した（時間とメモリがグラフの構造で超線形に膨れる）。
@@ -309,7 +311,7 @@ class Bundle:
         if gfa is None:
             die(f"--gfa も既存の DB も無いので名前が決まらない: {self.root}")
         n = gfa.name
-        for suf in (".gz", ".gfa", ".gbz", ".vg"):
+        for suf in (".gz", ".bgz", ".zst", ".gfa1", ".gfa", ".gbz", ".vg"):
             if n.endswith(suf):
                 n = n[: -len(suf)]
         return n
@@ -338,8 +340,9 @@ class Bundle:
 # ───────────────────────────── 段の定義 ─────────────────────────────
 
 class Stage:
-    def __init__(self, name, cmds, inputs, outputs, env=None, note="", mkdirs=(), key_exclude=()):
+    def __init__(self, name, cmds, inputs, outputs, env=None, note="", mkdirs=(), key_exclude=(), cleanup=()):
         self.name = name
+        self.cleanup = list(cleanup)  # 失敗したときに消す途中のファイル（11-17: genes の途中物が 12 GB 残った）
         # 鍵の計算から外すオプション（値が環境で変わるだけで**出力を変えない**もの）。
         # ここに入れないと「何も変えていないのに毎回やり直し」になる。
         self.key_exclude = set(key_exclude)
@@ -412,6 +415,15 @@ def build_stages(b: Bundle, a) -> dict:
     spill = Path(getattr(a, "spill", None) or a.tmp)
 
     st: dict[str, Stage] = {}
+
+    # 参照（11-17）: 全段で同じ規則（pathnames.resolve_ref）。distill の後でないとパス名が分からないので、
+    #   それまでは指定値（無ければ GRCh38）で仮に組む（build_stages は段の直前に毎回呼び直される）
+    if (b.distill / "p_names.txt").exists():
+        ref, why = resolve_ref_distill(b.distill, a.ref_key)
+        if getattr(a, "_ref_logged", None) != ref:
+            log(f"参照: {ref}（{why}）"); a._ref_logged = ref
+    else:
+        ref = a.ref_key or "GRCh38"
 
     # ⓪ distill: GFA を 1 回だけ走査して dense-id numpy 中間にする。
     #    以降の段は GFA を再パースしない（WG では I/O 律速の主因だった）。
@@ -542,7 +554,7 @@ def build_stages(b: Bundle, a) -> dict:
                 "--emit-inversion", "--emit-multiplicity",
                 "--budget-floor", "1000", "--budget-rmin", "2", "--budget-rmax", "2.5",
                 "--budget-shrink", "0.8", "--budget-span-weight", "1.0",
-                "--ref-key", a.ref_key]
+                "--ref-key", ref]
     if a.ribbon_disk:
         emit_cmd += ["--ribbon-disk", "--ribbon-spill-dir", str(spill)]
     st["emit"] = Stage(
@@ -560,13 +572,13 @@ def build_stages(b: Bundle, a) -> dict:
     #   種は参照パス（--ref-key で始まる名前のパス。無ければ先頭のパス）。一時ファイルに書いてから置き換える（途中で落ちても古い .trav を壊さない）。
     #   パスの無いグラフでは作れない（distill の p_names が空なら段を作らない）
     pn = b.distill / "p_names.txt"
-    has_paths = (not pn.exists()) or pn.stat().st_size > 0
+    has_paths = pn.stat().st_size > 0 if pn.exists() else getattr(a, "_assume_paths", True)   # distill の前は plan が GFA を見て決める（11-17）
     if not getattr(a, "no_trav", False) and has_paths:
         tmp_trav = Path(str(b.trav) + ".tmp")
         st["trav"] = Stage(
             "trav",
             [["rm", "-f", str(tmp_trav)],
-             [py, str(PKG / "trav_build.py"), "--distill", str(b.distill), "--seed-ref", a.ref_key, "--out", str(tmp_trav)],
+             [py, str(PKG / "trav_build.py"), "--distill", str(b.distill), "--seed-ref", ref, "--out", str(tmp_trav)],
              [py, str(PKG / "trav_xfill.py"), str(tmp_trav), str(b.distill)],
              [py, str(PKG / "trav_super.py"), str(b.db), str(tmp_trav), str(b.distill)],
              # 11-12: 葉 → 各層の祖先の配列（/route が本体の親をたどらない）。trav_super.py が work/ に残した本体の nodes の表を使う
@@ -582,6 +594,7 @@ def build_stages(b: Bundle, a) -> dict:
              ["mv", "-f", str(b.travx) + ".tmp", str(b.travx)],
              ["mv", "-f", str(b.xtiles) + ".tmp", str(b.xtiles)],
              ["mv", "-f", str(b.anc) + ".tmp", str(b.anc)]],
+            cleanup=[tmp_trav, str(b.travx) + ".tmp", str(b.travx) + ".tmp.arr", str(b.xtiles) + ".tmp", str(b.anc) + ".tmp"],
             inputs=[b.distill, b.db], outputs=[b.trav, b.travx, b.xtiles, b.anc, b.refx],
             env={**thread_env(1), "NUMBA_NUM_THREADS": "1"},
             note="Traversals の錨・座標・通過（種は参照パス）",
@@ -589,7 +602,12 @@ def build_stages(b: Bundle, a) -> dict:
 
     # 遺伝子（--gff-dir のとき）: パス名の先頭を名前にした <gff-dir>/<名前>.gff を各パスのトークン範囲に写す（genes_build.py）。
     #   続けて、注釈の無いパスへ注釈のあるパスの遺伝子をノードの共有で写す（genes_project.py。全株に注釈があれば何も足さない）
-    if getattr(a, "gff_dir", None):
+    #   11-17: パスの無いグラフでは作らない（trav と同じ）。座標に .trav を使うので trav も要る（--no-trav なら飛ばす）
+    if getattr(a, "gff_dir", None) and not (has_paths and ("trav" in st or b.trav.exists())):
+        if not getattr(a, "_genes_skip_logged", False):
+            log("[genes] " + ("パスが無いグラフなので --gff-dir は使えない → 飛ばす" if not has_paths else "--no-trav のときは遺伝子の段を作れない（.trav の座標を使う）→ 飛ばす"))
+            a._genes_skip_logged = True
+    if getattr(a, "gff_dir", None) and has_paths and ("trav" in st or b.trav.exists()):
         raw = b.work / "genes.raw"
         st["genes"] = Stage(
             "genes",
@@ -608,13 +626,14 @@ def build_stages(b: Bundle, a) -> dict:
              ["mv", "-f", str(b.gsearch) + ".tmp", str(b.gsearch)],
              ["mv", "-f", str(b.genex) + ".tmp", str(b.genex)]],
             inputs=[b.distill, Path(a.gff_dir)] + ([b.trav] if "trav" in st else []), outputs=[b.genes, b.gsearch, b.genex], env=thread_env(1),
+            cleanup=[raw, str(b.genes) + ".tmp", str(b.gsearch) + ".tmp", str(b.genex) + ".tmp", b.work / "genelof.npz"],
             note="株ごとの遺伝子（GFF → パスのトークン範囲、参照の注釈を写す）",
         )
 
     # 参照座標の注釈（--ann-* のとき）: RepeatMasker（UCSC rmsk.txt）と、サンプルごとの変異（VCF）・ベンチマーク領域（BED）。座標は --ref-key の参照の 0 始まり。
     #   DB に依らない（列の参照位置 rb + オフセットと viewer で突き合わせる）ので入力はファイルだけ
     if getattr(a, "ann_rmsk", None) or getattr(a, "ann_vcf", None) or getattr(a, "ann_bed", None):
-        acmd2 = [py, str(PKG / "ann_build.py"), "--out", str(b.ann) + ".new", "--ref-key", a.ref_key]; ins2 = []
+        acmd2 = [py, str(PKG / "ann_build.py"), "--out", str(b.ann) + ".new", "--ref-key", ref]; ins2 = []
         if a.ann_rmsk: acmd2 += ["--rmsk", str(a.ann_rmsk)]; ins2.append(Path(a.ann_rmsk))
         for flag, specs in (("--vcf", a.ann_vcf or []), ("--bed", a.ann_bed or [])):
             for spec in specs:
@@ -624,15 +643,23 @@ def build_stages(b: Bundle, a) -> dict:
                           note="参照座標の反復・変異の注釈（Traversals の塩基の段）")
 
     # アノテ（任意）: <db>.annot サイドカーへ書き、被覆索引を張る。DB 本体は不変。
-    if a.band or a.gene or a.region:
+    #   11-17: 参照のパスに写すので、パスの無いグラフ（minigraph の rGFA・de Bruijn）では作らない（rGFA の SN/SO の参照座標は未対応）
+    if (a.band or a.gene or a.region) and not has_paths:
+        if not getattr(a, "_annot_skip_logged", False):
+            log("[annot] パスが無いグラフなので --band/--gene/--region は写せない → 飛ばす（参照のパスが要る。rGFA の SN/SO は未対応）")
+            a._annot_skip_logged = True
+    elif a.band or a.gene or a.region:
         acmd = [py, str(PKG / "annotate.py"), str(b.db)]
         ins = [b.db]
         if a.band:
-            acmd += ["--band", str(a.band)]
+            acmd += ["--band", str(a.band)] + ([] if ref.lower() == "grch38" else ["--band-ref", ref])
             ins.append(a.band)
         if a.gene:
             acmd += ["--gene", str(a.gene), "--gene-distill", str(b.distill),
-                     "--gene-ref-path", a.gene_ref_path]
+                     "--gene-ref-path", a.gene_ref_path or ("grch38" if ref.lower() == "grch38" else ref)]
+            # 参照が GRCh38 のときは以前と同じコマンド行にする（段の鍵が変わって既存の出力一式の annot がやり直しにならないように）
+            if ref.lower() != "grch38":
+                acmd += ["--gene-ref", ref]
             ins.append(a.gene)
         if a.region:
             acmd += ["--region", str(a.region), "--region-ref", a.region_ref,
@@ -895,12 +922,21 @@ def execute(b: Bundle, a, want: list[str]) -> None:
         for d in s.mkdirs:
             Path(d).mkdir(parents=True, exist_ok=True)
         t0 = time.time(); usage = {}
-        for c in s.cmds:
-            if c[0] == "<internal:manifest>":
-                write_manifest(b, a.hash_limit_gb, a)
-            else:
-                u = run_cmd(c, b.logs / f"{name}.log", s.env, a.dry_run)
-                for k, v in u.items(): usage[k] = round(usage.get(k, 0) + v, 2) if k.endswith("_s") else max(usage.get(k, 0), v)
+        try:
+            for c in s.cmds:
+                if c[0] == "<internal:manifest>":
+                    write_manifest(b, a.hash_limit_gb, a)
+                else:
+                    u = run_cmd(c, b.logs / f"{name}.log", s.env, a.dry_run)
+                    for k, v in u.items(): usage[k] = round(usage.get(k, 0) + v, 2) if k.endswith("_s") else max(usage.get(k, 0), v)
+        except SystemExit:
+            for f in s.cleanup:
+                try:
+                    Path(f).unlink()
+                    log(f"[{name}] 途中のファイルを消した: {f}")
+                except FileNotFoundError:
+                    pass
+            raise
         if not s.outputs_ok():
             die(f"[{name}] 出力が揃っていない: {[str(o) for o in s.outputs]}")
         state["stages"][name] = {
@@ -921,7 +957,33 @@ def execute(b: Bundle, a, want: list[str]) -> None:
 
 # ─────────────────────── 資源の見積り（plan） ───────────────────────
 
-def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0, decomposer: str = "bubblefinder") -> dict:
+def gfa_has_paths(gfa, limit_bytes: float = 4e9) -> bool:
+    """plan 用（11-17）: GFA に P・W 行があるか。大きい GFA は走査せず「ある」とみなす（P・W は末尾に来ることが多く全文を読むことになる）"""
+    try:
+        if gfa is None or Path(gfa).stat().st_size > limit_bytes:
+            return True
+        from textio import open_text
+        with open_text(gfa) as fh:
+            for ln in fh:
+                if ln[:1] in ("P", "W"):
+                    return True
+        return False
+    except OSError:
+        return True
+
+
+def gff_plain_bytes(gff_dir) -> int:
+    """--gff-dir のファイルの伸長後の大きさの目安（圧縮は 10 倍とみなす）"""
+    tot = 0
+    if gff_dir and Path(gff_dir).is_dir():
+        for f in Path(gff_dir).iterdir():
+            n = f.name
+            if any(n.endswith(e + z) for e in (".gff", ".gff3", ".gtf") for z in ("", ".gz", ".zst")):
+                tot += f.stat().st_size * (10 if n.endswith((".gz", ".zst")) else 1)
+    return tot
+
+
+def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0, decomposer: str = "bubblefinder", gff_bytes: int = 0) -> dict:
     """段ごとの資源の目安。**HPRC MC-GRCh38 v1.0（GFA 48.3GB）の実測に合わせて較正**してある。
 
     実測 maxvmem / 実時間（= スケジューラのメモリ上限が縛る量。RSS ではない。2026-08-18 の通し）:
@@ -966,7 +1028,10 @@ def sizing(gfa_bytes: int, threads: int, gaf_bytes: int = 0, decomposer: str = "
                           hours=0.2 + q / 50),
         # trav は 11-02 の実測: 全ゲノム MC(GFA 48GB・44 億トークン) 最大 RSS 43GB・2.9h / chr20-22(250M トークン) 2.9GB。
         "trav":      dict(slots=1, total=clamp(1.0 * g + 4, 8, 160), hours=0.1 + g / 16),
-        "genes":     dict(slots=1, total=clamp(0.3 * g + 8, 8, 48), hours=0.1 + g / 100),
+        # genes（11-17）: GFF のうちグラフのパスにある seqid の行だけを載せる。上限は「全行がグラフにある」とき:
+        #   実測 GENCODE v50 GFF3（伸長 4.7 GB・1,124 万行）を全部載せて 40.6 GB → 伸長 1 GB あたり約 9 GB。
+        #   染色体 1 本のグラフに全ゲノムの注釈を渡すなら、実際はその染色体の分だけになる
+        "genes":     dict(slots=1, total=clamp(0.3 * g + 8 + 9 * gff_bytes / 1e9, 8, 400), hours=0.1 + g / 100 + gff_bytes / 1e9 / 30),
         "ann":       dict(slots=1, total=8, hours=0.1),
         "xdepth":    dict(slots=1, total=clamp(0.3 * g + 8, 8, 48), hours=0.1 + g / 50),
         "rlabel":    dict(slots=1, total=8, hours=0.1),
@@ -986,7 +1051,10 @@ def show_plan(b: Bundle, a) -> None:
         pth = Path(spec.split("=", 1)[1]) if "=" in spec else None
         if pth and pth.exists():
             gaf_bytes += pth.stat().st_size
-    size = sizing(gfa_bytes, a.threads, gaf_bytes, getattr(a, "decomposer", DEFAULT_DECOMPOSER))
+    gff_bytes = gff_plain_bytes(getattr(a, "gff_dir", None))
+    size = sizing(gfa_bytes, a.threads, gaf_bytes, getattr(a, "decomposer", DEFAULT_DECOMPOSER), gff_bytes)
+    if not (b.distill / "p_names.txt").exists():
+        a._assume_paths = gfa_has_paths(a.gfa)   # パスの無い GFA では trav・genes・annot を見積らない（11-17）
     stages = [n for n in STAGES if n in build_stages(b, a)]
     if a.json:
         out = {n: {**size[n], "per_slot": -(-size[n]["total"] // size[n]["slots"])} for n in stages}
@@ -1006,6 +1074,8 @@ def show_plan(b: Bundle, a) -> None:
     print("  ・HPRC MC-GRCh38 v1.0(GFA 48.3GB / GAF 60.1GB)の実測に 1.3-1.5 倍の余裕を掛けた値。"
           "グラフの密度で変わるので出発点として使い、1 度流したら実測で詰めること")
     print("  ・スロットあたりで指定する環境（例: AGE の s_vmem）では「/スロット」の列を使う")
+    if "genes" in stages:
+        print("  ・genes は --gff-dir の GFF が全部グラフにあるときの上限（グラフに無い seqid の行は読み飛ばすので、通常はずっと小さい）")
     print("  ・ジョブスクリプトの雛形は examples/hpc/ を参照（中で `amipa prep run --only <段>` を呼ぶ）")
 
 
@@ -1050,7 +1120,9 @@ def add_common(p, need_gfa=False):
     p.add_argument("--flood", choices=("through", "legacy"), default="through",
                    help="③の LOD 木でバブルの内部を割り当てる方法。through（既定）／legacy（旧動作。内側のバブルの先が背骨扱いになる）")
     p.add_argument("--python", default=sys.executable)
-    p.add_argument("--ref-key", default="GRCh38", help="参照座標に使うパスの sample key")
+    p.add_argument("--ref-key", default=None,
+                   help="参照にするパスの sample（参照座標・Linear の向きと染色体の順・--band/--gene/--ann-* の写し先）。"
+                        "既定は自動: GFA ヘッダの RS:Z → GRCh38 → CHM13 → 先頭のパス（大小無視。指定すればそれが優先）")
     p.add_argument("--min-comp", type=int, default=1000)
     p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--seed", type=int, default=1)
@@ -1082,7 +1154,7 @@ def add_common(p, need_gfa=False):
                    help="リボンを disk streaming で作る（大きいグラフ。RAM を O(node) に抑える）")
     p.add_argument("--band", type=Path, help="cytoBand（GRCh38）")
     p.add_argument("--gene", type=Path, help="GENCODE GTF")
-    p.add_argument("--gene-ref-path", default="grch38")
+    p.add_argument("--gene-ref-path", default=None, help="--gene を写すときに辿るパスの sample（既定は参照＝--ref-key の規則で選んだもの）")
     p.add_argument("--region", type=Path, help="領域 BED（CHM13 座標）")
     p.add_argument("--region-ref", default="chm13")
     p.add_argument("--reads", action="append", metavar="SAMPLE=GAF", help="リード整列（複数指定可）")

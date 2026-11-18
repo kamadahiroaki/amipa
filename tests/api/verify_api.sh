@@ -112,7 +112,8 @@ if [ -n "$NAME" ]; then
 fi
 if [ -n "$LEAF" ]; then
   hit "/node_sequence (葉)" "node_sequence?db=$DB&name=$LEAF"
-  hit "/leaf_bases (葉)"    "leaf_bases?db=$DB&layer=$ML&$R"
+  # 11-17: /leaf_bases は 1 bp の葉だけを返す。葉がすべて k 塩基以上の de Bruijn グラフ（unitig）では空が正常
+  hit "/leaf_bases (葉)"    "leaf_bases?db=$DB&layer=$ML&$R" allow-empty
 fi
 
 
