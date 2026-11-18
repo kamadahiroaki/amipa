@@ -263,7 +263,7 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
     const brk_ = (r.brk || []).filter(([i]: number[]) => 0 < i && i < nodes.length).map(([i, n_]: number[]) => [nodes[i - 1], nodes[i], Math.trunc(n_)])
     let hseq_ = nodes.map((n_, i) => (ors[i] ? (seqleaf.get(n_) ?? 'N') : rc(seqleaf.get(n_) ?? 'N'))).join('')
     if (rdo) hseq_ = rdo.map((st_, i) => (ors[i] ? st_ : rc(st_))).join('').replace(/-/g, '').replace(/\./g, '')
-    raw.push({ rdinfo: r.rd ? { aln: r.rd.aln, sample: r.rd.sample, ...(r.rd.group != null ? { group: r.rd.group } : {}), name: r.rd.name, mapq: r.rd.mapq, nins: r.nins ?? 0 } : null, rins: rins_, occ, occ_inv, occ_st, seqn: rev ? [...nodes].reverse() : nodes, hseq: hseq_, samp: r.samp, label: r.label, path: r.path,
+    raw.push({ rdinfo: r.rd ? { aln: r.rd.aln, sample: r.rd.sample, ...(r.rd.group != null ? { group: r.rd.group } : {}), name: r.rd.name, mapq: r.rd.mapq, nins: r.nins ?? 0 } : null, rins: rins_, occ, occ_inv, occ_st, seqn: rev ? [...nodes].reverse() : nodes, hseq: hseq_, pi: r.pi ?? null, samp: r.samp, label: r.label, path: r.path,
       strand: rev ? '-' : '+', cells, inv, ends: rev ? [ce[1], ce[0]] : [ce[0], ce[1]], nodes: new Set(nodes), seq: rev ? [...nodes].reverse() : nodes, isref: r.isref, brk: brk_, cflip: !!cflip })
   }
   const normRow = (r: any) => { const seqn: string[] = r.seq, oi: boolean[] = r.occ_inv, ost: string[] = r.occ_st; const occ: string[] = r.occ = [...r.occ0]
@@ -481,6 +481,6 @@ export function bubbleMsaRanges(C: MsaCtx, req: any, opt: { label?: string; flan
   prof('並べ替え・アレル'); const pick = (c: any) => { const o: any = {}; for (const k of ['kind', 'nodes', 'g', 'rb', 'variant', 'off', 'bp', 'so', 'nl', 'cp', 'ri']) if (k in c) o[k] = c[k]; return o }
   return { name: label, bp: minA ? minA[0] : null, refname, nrow: rows2.length, nallele: nu, scan: { leaves: leaves.length, contigs: pis.length, tokens: ntokAll },
     cols: cols.map(pick),
-    rows: rows2.map(r => ({ samp: r.samp, label: r.label, path: r.path, strand: r.strand, seq: r.seq, isref: r.isref, allele: r.allele, inv: invmaj(r), invc: r.cflip ? ctgInvCols(r) : invcols(r), cinv: !!r.cflip, hseq: r.hseq ?? '', read: r.rdinfo,
+    rows: rows2.map(r => ({ pi: r.pi ?? null, samp: r.samp, label: r.label, path: r.path, strand: r.strand, seq: r.seq, isref: r.isref, allele: r.allele, inv: invmaj(r), invc: r.cflip ? ctgInvCols(r) : invcols(r), cinv: !!r.cflip, hseq: r.hseq ?? '', read: r.rdinfo,
       rins: r.rdinfo ? (((r.rins || []).concat(r.rext || [])).length ? (r.rins || []).concat(r.rext || []) : null) : null, seqt: r.seqt !== r.seq ? r.seqt : null, ends: r.ends ?? [false, false], brk: r.brk ?? [] })) }
 }

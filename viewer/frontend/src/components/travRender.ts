@@ -645,7 +645,9 @@ function applyBase(d: BubbleMsaResp, ranges: number[][], label: string, mode: 'n
   if (d.error || !d.cols || !d.rows || !d.cols.length) { $('info').textContent = `塩基の段: ${d.error || '列が無い'}`; $('info').style.color = '#c0392b'; return }
   const hidOf = new Map(root.haps.map(h => [h.hap, h.hid])); const rowsOf = new Map<number, number[]>()
   const bySample = new Map<string, number[]>(); for (const h of root.haps) { const sm = h.hap.split('#')[0]; if (!bySample.has(sm)) bySample.set(sm, []); bySample.get(sm)!.push(h.hid) }
-  d.rows.forEach((r, mi) => { const nm = r.label.replace(/ ·\d+$/, ''); let hid = hidOf.get(nm)
+  // 11-18: パス番号（distill の pid＝通過の pid）→ 株 を先に引く。名前の照合だけだと PanSN でないパス名（全ゲノム MC の GRCh38.chr17）が株に結び付かず、行ごと消えていた
+  const hidOfPid = new Map<number, number>(); for (const t of rows) hidOfPid.set(t.pid, t.hid); for (const t of refTrav) hidOfPid.set(t.pid, t.hid)
+  d.rows.forEach((r, mi) => { const nm = r.label.replace(/ ·\d+$/, ''); let hid = (r as any).pi != null ? hidOfPid.get((r as any).pi) : undefined; if (hid == null) hid = hidOf.get(nm)
     if (hid == null) { const sm = (r.path || nm).split('#')[0]; const c = bySample.get(sm); if (c && c.length === 1) hid = c[0] }   // 参照は 'GRCh38#chr22'（パスが sample#contig の 2 区切り）で .trav の 'GRCh38#0' と合わない → サンプルで引く
     if (hid == null) return; if (!rowsOf.has(hid)) rowsOf.set(hid, []); rowsOf.get(hid)!.push(mi) })
   const byNode = new Map<string, number[]>(); d.cols.forEach((c, i) => { for (const nm of (c.nodes || [])) { const a = byNode.get(nm); if (a) a.push(i); else byNode.set(nm, [i]) } })
