@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [reference/db-format.md](ja/reference/db-format.md) / English [reference/db-format.md](en/reference/db-format.md)
+
 # DB の中身
 
 DB = 1 つのディレクトリ。丸ごとコピーすれば別のマシンでそのまま開ける。

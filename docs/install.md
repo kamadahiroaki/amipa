@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [setup/01-install.md](ja/setup/01-install.md) / English [setup/01-install.md](en/setup/01-install.md)
+
 # 導入
 
 必要なのは Docker（または Apptainer）だけ。Node も Python も conda も要らない。

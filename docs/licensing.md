@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [reference/licensing.md](ja/reference/licensing.md) / English [reference/licensing.md](en/reference/licensing.md)
+
 # ライセンス
 
 | 対象 | ライセンス | 理由 |

@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [reference/pipeline.md](ja/reference/pipeline.md) / English [reference/pipeline.md](en/reference/pipeline.md)
+
 # 前処理は何をしているか
 
 GFA を 5 段で多解像度 DB に変える。各段の出力は `work/` に残るので、

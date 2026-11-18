@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [setup/05-serve.md](ja/setup/05-serve.md) / English [setup/05-serve.md](en/setup/05-serve.md)
+
 # クラウドで公開する
 
 単一の VM で足りる。DB は SQLite なのでデータベースサーバは要らない。

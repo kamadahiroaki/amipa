@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [guide/01-first-look.md](ja/guide/01-first-look.md)、[reference/viewer-config.md](ja/reference/viewer-config.md) / English [guide/01-first-look.md](en/guide/01-first-look.md), [reference/viewer-config.md](en/reference/viewer-config.md)
+
 # DB を見る（`amipa serve`）
 
 ```bash

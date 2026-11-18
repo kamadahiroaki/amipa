@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [reference/third-party.md](ja/reference/third-party.md) / English [reference/third-party.md](en/reference/third-party.md)
+
 # 依存している外部ソフトウェア
 
 AMIPA は以下を利用している。それぞれのライセンスは各プロジェクトを参照。

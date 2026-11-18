@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [setup/03-your-data.md](ja/setup/03-your-data.md)、[setup/04-large-graphs.md](ja/setup/04-large-graphs.md) / English [setup/03-your-data.md](en/setup/03-your-data.md), [setup/04-large-graphs.md](en/setup/04-large-graphs.md)
+
 # GFA から DB を作る（`amipa prep`）
 
 ```bash

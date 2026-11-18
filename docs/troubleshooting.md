@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [setup/troubleshooting.md](ja/setup/troubleshooting.md) / English [setup/troubleshooting.md](en/setup/troubleshooting.md)
+
 # うまくいかないとき
 
 ## 閲覧

@@ -1,3 +1,5 @@
+> この文書は移動した（Moved）: 日本語 [reference/citation.md](ja/reference/citation.md) / English [reference/citation.md](en/reference/citation.md)
+
 # 引用のしかた
 
 AMIPA を使った結果を発表するときは、AMIPA 本体と、実際に使った工程の外部ツールを引用してください。
