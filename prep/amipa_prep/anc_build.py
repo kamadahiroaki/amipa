@@ -34,6 +34,7 @@ else:
 lay, code, par = A[:, 0], A[:, 1], A[:, 2]; del A
 ML = int(lay.max())
 leaf = code[(lay == ML) & ((code >> 40) == 0)] & (SH - 1); N = int(leaf.max()) if len(leaf) else 0; LO = int(leaf.min()) if len(leaf) else 0
+if LO < (1 << 20): LO = 0   # 番号が 0 付近から始まるなら従来どおり 0 から（format 1 と同じ中身。古い閲覧側でも読める）
 num = code & (SH - 1); pre = code >> 40
 assert int(num.max()) < (1 << 30), "名前の番号が 2^30 を超える（uint32 に詰められない）"
 assert int(pre.max()) <= 2, "n/G/S 以外の接頭辞がある"
@@ -44,7 +45,7 @@ for l in range(1, ML + 1):
     m = lay == l; c = code[m]; p = par[m]; o = np.argsort(c); by[l] = (c[o], p[o])
 W = N - LO + 1   # 添字 ＝ 葉の番号 − LO
 cur = np.full(W, -1, np.int64); cur[leaf - LO] = leaf   # 葉の符号（接頭辞 0）
-hdr = {"format": 2, "maxlayer": ML, "lo": LO, "n": N, "layers": {}}
+hdr = {"format": 2, "maxlayer": ML, "lo": LO, "n": N, "layers": {}} if LO else {"format": 1, "maxlayer": ML, "n": N, "layers": {}}
 tmp = a.out + ".tmp"
 with open(tmp, "wb") as f:
     f.write(b"\0" * 4096); pos = 4096
