@@ -192,7 +192,7 @@ def main():
         sys.exit(f"[distill] 重なりのある L 行が {n_ovl:,} 本ある（例: {ovl_ex}）。\n"
                  f"  AMIPA は重なりのない（blunt な）GFA だけを扱う。重なりを無視するとパスの塩基列が継ぎ目ごとに重複する。\n"
                  f"  de Bruijn グラフ（Bifrost・Cuttlefish・BCALM など）は重なりを除いた GFA に変換してから渡す"
-                 f"（例: `vg view -Fv x.gfa | vg mod -n - | vg view -` や GetBlunted）。")
+                 f"（例: GetBlunted）。")
     N = len(s_id_o); E = len(la_o); P = len(p_names)
     s_id_o = np.asarray(s_id_o, np.int64)
     s_bp = np.asarray(s_bp, np.int64)
